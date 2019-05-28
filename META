@@ -1,4 +1,0 @@
-description = "User-friendly interface to Arg"
-version = "1"
-archive(byte) = "cmdargs.cma"
-archive(native) = "cmdargs.cmxa" 
