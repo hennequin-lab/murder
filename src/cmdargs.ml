@@ -42,3 +42,9 @@ let default d x =
   match x with
   | None -> d
   | Some z -> z
+
+
+let in_dir cmdarg =
+    let usage = Printf.sprintf "%s [directory]" cmdarg in
+    let dir = get_string cmdarg |> force ~usage in
+    Printf.sprintf "%s/%s" dir
