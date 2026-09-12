@@ -19,4 +19,5 @@
   nx
   ppx_ptree
   rune
-  stdio))
+  stdio
+  (windtrap :with-test)))
