@@ -219,3 +219,175 @@ val sketch
     function. Skipped observations are not an error: a prediction that is a
     constant of the differentiation has a zero block by construction. *)
 val check : 'p sketch -> (unit, string) result
+
+(** {1 The optimizer: Algorithm 1's update}
+
+    {!sketch} measures; this turns a measurement into a step. It is the whole
+    of SOFO beyond the sketching — the damped subspace solve and the parameter
+    update — and it is deliberately small: everything expensive or
+    differentiable belongs to the sketch.
+
+    Two halves, split by what compiles rather than by taste. The sketching half
+    is differentiable and jits ({!Compiled}), while the update needs the SVD of
+    the sketched GGN, which does not compile: it runs eagerly on the host at
+    O(k³), negligible beside a model with P ≫ k parameters — the premise of
+    the algorithm. A deployment therefore compiles one program and keeps the
+    update outside it:
+
+    {[
+    module O = Sofo.Optim.Compiled (Params)
+
+    (* traced once, replayed for every step: the compiled half *)
+    let sketch_step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss)
+
+    (* the loop: one replay, one eager solve, one eager step *)
+    let params, state =
+      let out = sketch_step { O.params; key = state.Sofo.Optim.key } in
+      (match O.check out with
+       | Error m -> failwith m
+       | Ok () -> ());
+      O.update ~lr ~damping params out, Sofo.Optim.next state
+    ]}
+
+    The state is only the direction stream — a key carried as a tensor, so it
+    rides the compiled step as an ordinary input leaf and one compilation
+    serves the whole run — and an iteration counter. Directions are drawn
+    inside the compiled step, from that key, so every replay starts from a fresh
+    random subspace without a retrace. *)
+
+module Optim : sig
+  (** {2 State} *)
+
+  type state =
+    { key : Nx.int32_t (** The stream the directions Θ are drawn from. *)
+    ; step : int (** Iterations completed. *)
+    }
+
+  (** [init ?key ()] is a fresh state: step 0, and [key] as the stream's root,
+      or a subkey of the ambient {!Nx.Rng} scope when [key] is omitted. The
+      whole run follows from this key. *)
+  val init : ?key:Nx.Rng.key -> unit -> state
+
+  (** [next st] is the state of the iteration after [st]: the counter advances
+      and the key becomes the subkey the counter indexes, so no two steps share
+      a direction draw. *)
+  val next : state -> state
+
+  (** {2 Directions} *)
+
+  (** [directions (module P) ?key ~k params] is Θ: one standard-normal [k]-lane
+      batch per float leaf, and zero lanes for leaves that cannot carry a
+      direction (an RNG key, an index, a counter — they do not participate).
+      A pure function of [key] (or of the ambient scope when [key] is
+      omitted), so the compiled step can draw it from a key that is an input
+      leaf, and a caller can reproduce a step's subspace by name. This is
+      {!sketch}'s own sampler, keyed. *)
+  val directions
+    :  (module Nx.Ptree.S with type t = 'p)
+    -> ?key:Nx.Rng.key
+    -> k:int
+    -> 'p
+    -> 'p
+
+  (** [apply (module P) ~k thetas z] is Θz: the parameter-space direction the
+      sketch coordinates [z] denote, each leaf in its parameter's dtype.
+      {!sketch} returns the same function as the [apply] field of its record;
+      this one takes the directions as a value, because a compiled step cannot
+      return a closure. *)
+  val apply : (module Nx.Ptree.S with type t = 'p) -> k:int -> 'p -> Nx.float64_t -> 'p
+
+  (** {2 The update} *)
+
+  (** [coordinates ?damping ggn c] is the damped sketched solve
+      [U (S + λ·s_max I)⁻¹ Vᵀ C] of the sketched normal equations [ggn·z = c],
+      from the SVD of [ggn] — Algorithm 1, lines 10–12. [damping] (λ, default
+      [1e-6]) is relative to the largest singular value, as the paper's is; the
+      solve is eager and O(k³), and it is the one place the library needs a
+      factorization.
+
+      {b Note.} The SVD is not differentiable and does not compile, so this is
+      for the host side of a step, not inside a [Rune.jit]ed program. *)
+  val coordinates : ?damping:float -> Nx.float64_t -> Nx.float64_t -> Nx.float64_t
+
+  (** [update (module P) ~lr ?damping sk params] is one SOFO step:
+      [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C], from the sketch [sk] measured at
+      [params]. [lr] defaults to [1.0], which together with [damping = 0.] is
+      the exact Newton step inside the sketched subspace. *)
+  val update
+    :  (module Nx.Ptree.S with type t = 'p)
+    -> ?lr:float
+    -> ?damping:float
+    -> 'p sketch
+    -> 'p
+    -> 'p
+
+  (** {2 One eager step} *)
+
+  (** [step (module P) ~k ~lr ?damping ?strict st ~loss ~params] sketches
+      [loss] at [params] along directions drawn from [st]'s key, applies the
+      update, and returns the new parameters, the next state and the sketch —
+      the loss, C, G̃ and the diagnostics, for logging or {!check}. One call is
+      one training iteration, eager end to end; use {!Compiled} when the
+      sketching half should be compiled. *)
+  val step
+    :  (module Nx.Ptree.S with type t = 'p)
+    -> k:int
+    -> lr:float
+    -> ?damping:float
+    -> ?strict:bool
+    -> state
+    -> loss:('p -> ('c, 'd) Nx.t)
+    -> params:'p
+    -> 'p * state * 'p sketch
+
+  (** {2 The compiled half}
+
+      [Compiled (P)] is the sketching computation as a pure function of
+      [(params, key)], with the structure types a compiled step needs. Wrap it
+      once —
+
+      {[
+      let step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss)
+      ]}
+
+      — and every later call replays: the shapes of [in_] do not change across
+      a training run, and the directions come from the key the caller threads,
+      so a fresh subspace costs nothing. What comes back is everything the
+      update needs and nothing that needs a factorization. *)
+  module Compiled (P : Nx.Ptree.S) : sig
+    type in_ =
+      { params : P.t
+      ; key : Nx.int32_t
+      }
+
+    (** [In] is [in_] as a parameter tree: one input structure for the whole
+        compiled step, parameters and key together. *)
+    module In : Nx.Ptree.S with type t = in_
+
+    type out =
+      { loss : Nx.float64_t (** The primal total, as a scalar. *)
+      ; c : Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
+      ; ggn : Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
+      ; dirs : P.t (** Θ, the directions the sketch was measured along. *)
+      ; observed_loss : Nx.float64_t
+      ; observed_c : Nx.float64_t
+      }
+
+    module Out : Nx.Ptree.S with type t = out
+
+    (** [sketch ~k loss] draws Θ from [in_.key], sketches [loss] at
+        [in_.params], and returns the numbers together with the directions.
+        Pure, differentiable in nothing, and safe to compile. *)
+    val sketch : k:int -> (P.t -> ('c, 'd) Nx.t) -> in_ -> out
+
+    (** [update ?lr ?damping params out] is {!Optim.update} on a compiled
+        step's output: the eager half. *)
+    val update : ?lr:float -> ?damping:float -> P.t -> out -> P.t
+
+    (** [check out] is {!check} on a compiled step's output — the same
+        statement about the observed little losses, made where the values are
+        readable. A compiled trace cannot read them, so this is how a
+        compiled deployment keeps the cross-check. *)
+    val check : out -> (unit, string) result
+  end
+end

@@ -32,3 +32,5 @@ type 'p sketch = 'p Sketch.t =
 
 let sketch = Sketch.run
 let check = Sketch.check
+
+module Optim = Optim

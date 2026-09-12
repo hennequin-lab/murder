@@ -21,11 +21,10 @@
    compiled sketch is correct but grows with the horizon, where a plain
    compiled rollout stages the same scan as a loop.
 
-   The SOFO update rule of Algorithm 1 (SVD, relative damping, the subspace
-   solve) is deliberately out of scope — it is the next milestone, and this
-   example is the interface it will be built on. The FGD loop here is the
-   first-order method the paper compares against, and it steps with [apply] and
-   [C] only. *)
+   The SOFO update rule of Algorithm 1 lives in the library now
+   ([Sofo.Optim]); this example still trains first-order, stepping with
+   [apply] and [C] alone — the method the paper compares against — and wiring
+   this loop to the update is M5's remaining piece. *)
 
 let f64 = Nx.float64
 

@@ -89,11 +89,19 @@ let relative_gap observed total =
   let scale = Nx.item [] (Nx.max (Nx.abs total)) in
   if scale = 0.0 then gap else gap /. scale
 
-let check (sk : 'p t) : (unit, string) result =
-  let tol = 1e-5 in
-  let d = sk.diagnostics in
-  let loss_gap = relative_gap d.observed_loss sk.loss in
-  let c_gap = relative_gap d.observed_c sk.c in
+(* The cross-check on the numbers rather than on the record: a compiled step
+   hands the observed sums back as tensors, and [Sofo.check] must mean the same
+   thing there. *)
+let check_sums
+      ~tol
+      ~(loss : Nx.float64_t)
+      ~(c : Nx.float64_t)
+      ~(observed_loss : Nx.float64_t)
+      ~(observed_c : Nx.float64_t)
+  : (unit, string) result
+  =
+  let loss_gap = relative_gap observed_loss loss in
+  let c_gap = relative_gap observed_c c in
   if loss_gap <= tol && c_gap <= tol
   then Ok ()
   else
@@ -106,6 +114,15 @@ let check (sk : 'p t) : (unit, string) result =
           sketch but not in the loss"
          loss_gap
          c_gap)
+
+let check (sk : 'p t) : (unit, string) result =
+  let tol = 1e-5 in
+  check_sums
+    ~tol
+    ~loss:sk.loss
+    ~c:sk.c
+    ~observed_loss:sk.diagnostics.observed_loss
+    ~observed_c:sk.diagnostics.observed_c
 
 let run
       (type p)

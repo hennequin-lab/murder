@@ -1,5 +1,5 @@
 (library
  (name sofo)
  (public_name sofo)
- (private_modules collector observe sketch)
+ (private_modules collector observe optim sketch)
  (libraries nx.core nx rune))

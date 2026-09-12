@@ -5,7 +5,10 @@
 `batched_jvps` branch — 103 tests across `test/test_jvp_k.ml` and
 `test/test_tangent.ml`, 16 in `sofo/test/` — and M4 (composition tests and the
 Lorenz example) is implemented: 31 tests in `sofo/test/` and
-`sofo/example/lorenz.ml`, on top of two rune fixes it turned up (§14.5).
+`sofo/example/lorenz.ml`, on top of two rune fixes it turned up (§14.5). The
+optimizer — Algorithm 1's update — now lives in the library too
+(`Sofo.Optim`, §14.6, 18 more tests), before M5 rather than as part of it, and
+in sofo rather than in vega.
 Findings that correct this design are in §13; §14.1, §14.4 and §14.5 record
 what M2, M3 and M4 settled. The SOFO *parameter update* itself (Alg. 1, line
 10–12: SVD, relative damping, subspace solve) is explicitly **out of scope**
@@ -580,9 +583,14 @@ the memory probe), and the example carries the smoke numbers — §14.5.
   rune fixes were needed (§14.5), and a jitted sketch is pinned by a test.
   §14.5 also records the student-teacher `sofo/example/linear.ml`, which
   exercises the Alg. 1 update outside the library as its bootstrap.
-- **M5 (phase 2):** update rule + training loop + vega integration; revisit
+- **M4.5 — the optimizer (done):** `Sofo.Optim` — Algorithm 1's damped solve
+  and parameter step, the vega-shaped state it is driven from, the jittable
+  sketching half (`Compiled`), and 18 tests (`sofo/test/test_optim.ml`). §14.6
+  records the shape and why it is where it is.
+- **M5 (phase 2):** the training loop on `Sofo.Optim` — the Lorenz example
+  currently steps first-order only — and a damping/schedule policy; revisit
   compiled forward mode (staged forward scan, §13.5, and the collector-state
-  question of §14.3).
+  question of §14.3). Vega integration is no longer planned (see §10).
 
 Build wiring: `sofo` already sits in the shared dune workspace and declares
 deps on `rune`/`nx`; `sofo.txt` is the paper text for reference.
@@ -986,3 +994,68 @@ and contracts them on the host. Either `sketch` grows an eager
 `apply_dirs ~thetas z` (a function of values, not of the closure), or the
 compiled-step deployment returns Θ as this example does; the update module
 should not have to choose a second time.
+
+### 14.6 The optimizer as built (`Sofo.Optim`)
+
+The update rule landed before M5 and in sofo rather than in vega — the
+optimizer is defined against the sketch, and vega's structural optimizers
+should not grow a member whose step needs a factorization until the interface
+has seen more use. 18 tests in `sofo/test/test_optim.ml`.
+
+`Sofo.Optim` is vega-shaped: a state that is data, pure functions over
+parameter structures, hyperparameters passed per step.
+
+- **State** is `{ key : Nx.int32_t; step : int }`. The key is a *tensor*
+  because it is what a compiled sketch step takes as an ordinary input leaf;
+  the counter is a host `int` because it only ever feeds key derivation
+  (`next` folds it into the key) and schedules. The whole run follows from the
+  initial key, and no two steps share a subspace.
+- **`directions ?key ~k params`** is Θ: one standard-normal `k`-lane batch per
+  float leaf, zero lanes for leaves that cannot carry a direction. It is
+  `Sketch.sample` under `Nx.Rng.with_key`, so it is a pure function of the key
+  — which is exactly what lets a compiled step draw it inside the trace.
+- **`coordinates ?damping ggn c`** is Alg. 1's solve, SVD and all. Matrix
+  first, then the right-hand side, like `Nx.solve a b`; `eigh` would give the
+  same numbers for a symmetric PSD G̃, but the SVD is what the algorithm says.
+  The relative damping λ (default 1e-6) is what makes a rank-deficient sketch
+  solvable at all.
+- **`update`** is the step: solve, contract (`apply`, which takes the
+  directions as a value because a compiled step cannot return the record's
+  closure), shift by η. Non-float leaves pass through untouched and each float
+  leaf keeps its dtype, as in vega; both are pinned by tests.
+- **`step`** is the eager one-call iteration — draw Θ from the state, sketch,
+  update, advance the state — and returns the sketch alongside, so a loop can
+  log the loss and run `Sofo.check` without a second pass.
+- **`Compiled (P)`** is the jittable half, and the reason the module is larger
+  than `update` alone. `In = { params; key }` and `Out = { loss; c; ggn; dirs;
+  observed_loss; observed_c }` are parameter trees, so
+  `Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss)` traces the whole
+  sketching computation once and replays it for the run. `Out` carries the
+  observed sums so that `O.check` — the same statement as `Sofo.check`, on the
+  numbers — survives a compiled deployment: a trace cannot read values, but
+  the host can, on what the trace returned.
+
+`sketch` itself gained nothing for this: the eager update uses the record's
+`apply`, the compiled one uses the directions it hands back, and both wrap the
+same solve and shift. The split is forced by the hardware rather than chosen —
+the sketching half differentiates and compiles, `Nx.svd` does neither.
+
+**Numbers** (`example/linear.ml`, now driven entirely by the library and ~40
+lines shorter; P = 256, K = 32, CPU): trace + compile ≈ 21 ms with a warm
+kernel cache (0.95 s cold), replay 0.9 ms, eager update (SVD of 32×32, solve,
+shift) 0.2 ms; the loss falls 2.24 → 0.014 in 40 steps, against 1.60 for a
+first-order control replaying the *same* compiled sketch. The second-order
+model residual stays at 1e-15, which is the joint check on C, G̃, Θ and the
+update.
+
+Two things to carry into M5:
+
+- **Convergence is k/P per step, not Newton's rate.** A step solves exactly
+  inside its random subspace and ignores the rest, so the loss falls by
+  whatever share of the gradient the subspace captured — with K/P ≈ 12% that
+  is a few percent per step, which is what the paper's curves show too. A
+  schedule and a damping policy are the knobs, and both are per-step arguments
+  here.
+- **What is eager is a policy, not a constraint of the interface.** Everything
+  the update consumes is tensors; a factorizing `eigh` that compiles (or a
+  host-side step under `pmap`) would change no signature.

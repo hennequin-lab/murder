@@ -1,4 +1,4 @@
 (tests
- (names test_curv test_sketch test_compose)
+ (names test_curv test_sketch test_compose test_optim)
  (package sofo)
  (libraries sofo nx nx.core windtrap))
