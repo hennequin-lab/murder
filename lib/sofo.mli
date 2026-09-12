@@ -320,9 +320,23 @@ module Optim : sig
     | `Relative_from_bottom of float
     ]
 
-  (** [coordinates ?damping ggn c] is the damped sketched solve
-      [(V (S + γ·I) Vᵀ)⁻¹ c] of the sketched normal equations [ggn·z = c], from
-      the SVD of [ggn] — Algorithm 1, lines 10–12 — with [γ] from [damping].
+  (** How the damped spectrum is inverted.
+
+      - [`Inverse] is Algorithm 1's [(S + γ·I)⁻¹]: the exact Newton step inside
+        the sketched subspace;
+      - [`Inverse_sqrt] is [(S + γ·I)^{-1/2}], which caps what a direction the
+        sketch resolves poorly can contribute and gives the step a square-root
+        scaling — closer to a normalized-gradient step than to a Newton one,
+        and usually wanting a larger [lr]. *)
+  type preconditioner =
+    [ `Inverse
+    | `Inverse_sqrt
+    ]
+
+  (** [coordinates ?damping ?preconditioner ggn c] is the damped sketched solve
+      [U (S + γ·I)^{-p} Vᵀ c] of the sketched normal equations [ggn·z = c],
+      from the SVD of [ggn] — Algorithm 1, lines 10–12 — with [γ] from
+      [damping] and [p] from [preconditioner] (default [`Inverse]).
       The solve is eager and O(k³), and it is the one place the library needs a
       factorization.
 
@@ -331,9 +345,14 @@ module Optim : sig
 
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
       smallest singular value is 0. *)
-  val coordinates : ?damping:damping -> Nx.float64_t -> Nx.float64_t -> Nx.float64_t
+  val coordinates
+    :  ?damping:damping
+    -> ?preconditioner:preconditioner
+    -> Nx.float64_t
+    -> Nx.float64_t
+    -> Nx.float64_t
 
-  (** [update (module P) ~lr ?damping sk params] is one SOFO step:
+  (** [update (module P) ~lr ?damping ?preconditioner sk params] is one SOFO step:
       [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C], from the sketch [sk] measured at
       [params]. [lr] defaults to [1.0], which together with no damping is the
       exact Newton step inside the sketched subspace. *)
@@ -341,13 +360,14 @@ module Optim : sig
     :  (module Nx.Ptree.S with type t = 'p)
     -> ?lr:float
     -> ?damping:damping
+    -> ?preconditioner:preconditioner
     -> 'p sketch
     -> 'p
     -> 'p
 
   (** {2 One eager step} *)
 
-  (** [step (module P) ~k ~lr ?damping ?strict st ~loss ~params] sketches
+  (** [step (module P) ~k ~lr ?damping ?preconditioner ?strict st ~loss ~params] sketches
       [loss] at [params] along directions drawn from [st]'s key, applies the
       update, and returns the new parameters, the next state and the sketch —
       the loss, C, G̃ and the diagnostics, for logging or {!check}. One call is
@@ -358,6 +378,7 @@ module Optim : sig
     -> k:int
     -> lr:float
     -> ?damping:damping
+    -> ?preconditioner:preconditioner
     -> ?strict:bool
     -> state
     -> loss:('p -> ('c, 'd) Nx.t)
@@ -404,9 +425,15 @@ module Optim : sig
         Pure, differentiable in nothing, and safe to compile. *)
     val sketch : k:int -> (P.t -> ('c, 'd) Nx.t) -> in_ -> out
 
-    (** [update ?lr ?damping params out] is {!Optim.update} on a compiled
-        step's output: the eager half. *)
-    val update : ?lr:float -> ?damping:damping -> P.t -> out -> P.t
+    (** [update ?lr ?damping ?preconditioner params out] is {!Optim.update} on
+        a compiled step's output: the eager half. *)
+    val update
+      :  ?lr:float
+      -> ?damping:damping
+      -> ?preconditioner:preconditioner
+      -> P.t
+      -> out
+      -> P.t
 
     (** [check out] is {!check} on a compiled step's output — the same
         statement about the observed little losses, made where the values are

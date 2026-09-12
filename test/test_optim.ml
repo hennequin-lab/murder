@@ -209,10 +209,25 @@ let test_coordinates_diagonal () =
     ~msg:"relative from the bottom: z = C / (s + 0.5·s_min)"
     [| 1.0 /. 4.125; -2.0 /. 1.125; 3.0 /. 0.375 |]
     z;
-  (* the default is Algorithm 1's: relative to the top *)
+  (* the square-root preconditioner on the same G̃ and γ = 2:
+     z = C / sqrt(s + 2) *)
+  let z =
+    Sofo.Optim.coordinates
+      ~damping:(`Relative_from_top 0.5)
+      ~preconditioner:`Inverse_sqrt
+      ggn
+      c
+  in
+  check_arr
+    ~msg:"inverse sqrt: z = C / sqrt(s + γ)"
+    [| 1.0 /. sqrt 6.0; -2.0 /. sqrt 3.0; 2.0 |]
+    z;
+  (* and the defaults are Algorithm 1's: relative to the top, inverted *)
   let d = Sofo.Optim.coordinates ggn c in
   let t = Sofo.Optim.coordinates ~damping:(`Relative_from_top 1e-6) ggn c in
-  check_arr ~msg:"the default is `Relative_from_top 1e-6" (to_arr d) t
+  check_arr ~msg:"the default is `Relative_from_top 1e-6" (to_arr d) t;
+  let i = Sofo.Optim.coordinates ~preconditioner:`Inverse ggn c in
+  check_arr ~msg:"the default preconditioner is `Inverse" (to_arr d) i
 
 let test_coordinates_survives_a_singular_direction () =
   (* A rank-deficient sketch (a lane the data does not excite) is exactly what

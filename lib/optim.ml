@@ -26,6 +26,11 @@ type damping =
   | `Relative_from_bottom of float
   ]
 
+type preconditioner =
+  [ `Inverse
+  | `Inverse_sqrt
+  ]
+
 type state =
   { key : Nx.int32_t
     (* The stream Θ is drawn from. A tensor, not a host value: it is what a
@@ -92,12 +97,14 @@ let shift (type p) (module P : Nx.Ptree.S with type t = p) ~lr (params : p) (dw 
 
 (* ── the update (Alg. 1, lines 10–12) ────────────────────────────────────── *)
 
-(* z = U (S + γ I)⁻¹ Vᵀ C, from the SVD of the sketched GGN, with γ set by the
-   damping mode. G̃ is symmetric positive semi-definite, so V = U up to signs
-   and an eigendecomposition would do; the SVD is what the algorithm prescribes
-   and what is used here. *)
+(* z = U (S + γ I)^{-p} Vᵀ C, from the SVD of the sketched GGN, with γ set by
+   the damping mode and p by the preconditioner (1, Alg. 1's; or 1/2, which
+   caps what a poorly resolved direction can contribute). G̃ is symmetric
+   positive semi-definite, so V = U up to signs and an eigendecomposition would
+   do; the SVD is what the algorithm prescribes and what is used here. *)
 let coordinates
       ?(damping : damping = `Relative_from_top 1e-6)
+      ?(preconditioner : preconditioner = `Inverse)
       (ggn : Nx.float64_t)
       (c : Nx.float64_t)
   : Nx.float64_t
@@ -119,19 +126,25 @@ let coordinates
       factor *. smin
   in
   let damped = Nx.add s (Nx.mul_s (Nx.ones_like s) gamma) in
+  let scale =
+    match preconditioner with
+    | `Inverse -> damped
+    | `Inverse_sqrt -> Nx.sqrt damped
+  in
   let rhs = Nx.matmul vt (Nx.reshape [| k; 1 |] (Nx.contiguous c)) in
-  Nx.reshape [| k |] (Nx.matmul u (Nx.div rhs (Nx.reshape [| k; 1 |] damped)))
+  Nx.reshape [| k |] (Nx.matmul u (Nx.div rhs (Nx.reshape [| k; 1 |] scale)))
 
 let update
       (type p)
       (module P : Nx.Ptree.S with type t = p)
       ?(lr = 1.0)
       ?damping
+      ?preconditioner
       (sk : p Sketch.t)
       (params : p)
   : p
   =
-  let dw = sk.apply (coordinates ?damping sk.ggn sk.c) in
+  let dw = sk.apply (coordinates ?damping ?preconditioner sk.ggn sk.c) in
   shift (module P) ~lr params dw
 
 (* ── the eager step ──────────────────────────────────────────────────────── *)
@@ -142,6 +155,7 @@ let step
       ~k
       ~lr
       ?damping
+      ?preconditioner
       ?(strict = false)
       (st : state)
       ~(loss : p -> (c, d) Nx.t)
@@ -152,7 +166,7 @@ let step
   let sk =
     Sketch.run (module P) ~k ~sketch_sampler:(fun _ _ -> thetas) ~strict loss params
   in
-  let params = update (module P) ~lr ?damping sk params in
+  let params = update (module P) ~lr ?damping ?preconditioner sk params in
   params, next st, sk
 
 (* ── the compiled half ───────────────────────────────────────────────────── *)
@@ -235,9 +249,11 @@ module Compiled (P : Nx.Ptree.S) = struct
     ; observed_c = sk.diagnostics.observed_c
     }
 
-  let update ?(lr = 1.0) ?damping (params : P.t) (o : out) : P.t =
+  let update ?(lr = 1.0) ?damping ?preconditioner (params : P.t) (o : out) : P.t =
     let k = (Nx.shape o.c).(0) in
-    let dw = apply (module P) ~k o.dirs (coordinates ?damping o.ggn o.c) in
+    let dw =
+      apply (module P) ~k o.dirs (coordinates ?damping ?preconditioner o.ggn o.c)
+    in
     shift (module P) ~lr params dw
 
   (* The consistency check, on the numbers the compiled step handed back: the

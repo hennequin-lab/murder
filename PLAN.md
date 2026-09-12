@@ -1025,6 +1025,15 @@ parameter structures, hyperparameters passed per step.
   between tasks while the top-relative form stays comparable to the paper's
   numbers. The bottom-relative mode lifts only what is barely resolved, so it
   needs a full-rank sketch, and it raises rather than dividing by s_min = 0.
+  The damped spectrum is then inverted exactly ([`Inverse], Algorithm 1's
+  [(S + γI)⁻¹]) or with its square root ([`Inverse_sqrt],
+  [(S + γI)^{-1/2}]). The square root caps what a direction the sketch barely
+  resolves can contribute, but it is *not* scale-free the way the exact solve
+  is — the step grows as the curvature's inverse square root — so an η tuned
+  for one loss normalization does not carry to another: on the linear example
+  the exact solve wants η = 1 and the square root η ≈ 0.1, with η = 1
+  diverging. The quadratic-model check (residual 1e-15) holds for either, so
+  the difference is the step's scaling, not the arithmetic.
 - **`update`** is the step: solve, contract (`apply`, which takes the
   directions as a value because a compiled step cannot return the record's
   closure), shift by η. Non-float leaves pass through untouched and each float

@@ -39,6 +39,7 @@ type config =
   ; steps : int
   ; lr : float
   ; damping : Sofo.Optim.damping (* how γ is scaled; see Sofo.Optim *)
+  ; preconditioner : Sofo.Optim.preconditioner
   ; fgd_lr : float
   ; compare : bool
   ; seed : int
@@ -52,6 +53,10 @@ let damping_to_string = function
   | `Absolute value -> Printf.sprintf "absolute %.3g" value
   | `Relative_from_top factor -> Printf.sprintf "%.3g x s_max" factor
   | `Relative_from_bottom factor -> Printf.sprintf "%.3g x s_min" factor
+
+let preconditioner_to_string = function
+  | `Inverse -> "(S+γI)⁻¹"
+  | `Inverse_sqrt -> "(S+γI)^-1/2"
 
 (* ── the student ─────────────────────────────────────────────────────────── *)
 
@@ -94,7 +99,7 @@ let run config =
   let state = Sofo.Optim.init ~key:k0 () in
   Printf.printf
     "student-teacher linear regression: y = x·W*, %d samples, x:[%d], W:[%d;%d]\n\
-     P = %d parameters, K = %d (%.1f%%), eta = %g, damping %s\n\n"
+     P = %d parameters, K = %d (%.1f%%), eta = %g, damping %s, preconditioner %s\n\n"
     config.samples
     config.dim
     config.dim
@@ -103,7 +108,8 @@ let run config =
     config.k
     (100.0 *. float_of_int config.k /. float_of_int parameters)
     config.lr
-    (damping_to_string config.damping);
+    (damping_to_string config.damping)
+    (preconditioner_to_string config.preconditioner);
   (* One eager sketch first: Sofo.check reads values to compare the observed
      little losses with the loss, which a compiled trace must not do. *)
   let sk0 =
@@ -156,12 +162,25 @@ let run config =
       (* the host's half: solve, then step. Everything inside the clock is
          eager, host-side, and O(K³). *)
       let t0 = Unix.gettimeofday () in
-      let params = O.update ~lr:config.lr ~damping:config.damping params out in
+      let params =
+        O.update
+          ~lr:config.lr
+          ~damping:config.damping
+          ~preconditioner:config.preconditioner
+          params
+          out
+      in
       let update_ms = (Unix.gettimeofday () -. t0) *. 1e3 in
       (* the sketch's second-order model of the step just taken; exact for this
          loss, so the residual should sit at rounding. Re-solving for the
          coordinates outside the clock keeps the timed region to one solve. *)
-      let z = coordinates ~damping:config.damping out.O.ggn out.O.c in
+      let z =
+        coordinates
+          ~damping:config.damping
+          ~preconditioner:config.preconditioner
+          out.O.ggn
+          out.O.c
+      in
       let linear = Nx.item [] (Nx.sum (Nx.mul out.O.c z)) in
       let quad = Nx.item [] (Nx.sum (Nx.mul z (Nx.matmul out.O.ggn z))) in
       let after = Nx.item [] (objective params) in
@@ -259,14 +278,27 @@ let run config =
 
 (* ── command line ────────────────────────────────────────────────────────── *)
 
-let make_config dim out samples k steps lr damping damping_mode fgd_lr compare seed =
+let make_config
+      dim
+      out
+      samples
+      k
+      steps
+      lr
+      damping
+      damping_mode
+      preconditioner
+      fgd_lr
+      compare
+      seed
+  =
   let damping =
     match damping_mode with
     | `Top -> `Relative_from_top damping
     | `Bottom -> `Relative_from_bottom damping
     | `Absolute -> `Absolute damping
   in
-  { dim; out; samples; k; steps; lr; damping; fgd_lr; compare; seed }
+  { dim; out; samples; k; steps; lr; damping; preconditioner; fgd_lr; compare; seed }
 
 let config_term =
   let open Cmdliner in
@@ -306,6 +338,17 @@ let config_term =
             "What lambda is relative to: $(b,top) (default, Algorithm 1's lambda*s_max), \
              $(b,bottom) (lambda*s_min), or $(b,absolute) (lambda itself).")
   in
+  let preconditioner =
+    Arg.(
+      value
+      & opt (enum [ "inverse", `Inverse; "sqrt", `Inverse_sqrt ]) `Inverse
+      & info
+          [ "preconditioner"; "p" ]
+          ~docv:"KIND"
+          ~doc:
+            "$(b,inverse) (default, Algorithm 1's (S+γI)⁻¹) or $(b,sqrt) ((S+γI)^-1/2: \
+             scale-sensitive, so it usually wants its own $(b,--lr)).")
+  in
   let fgd_lr =
     Arg.(
       value
@@ -335,6 +378,7 @@ let config_term =
     $ lr
     $ damping
     $ damping_mode
+    $ preconditioner
     $ fgd_lr
     $ compare
     $ seed)
