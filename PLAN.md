@@ -578,6 +578,8 @@ the memory probe), and the example carries the smoke numbers — §14.5.
   `jvp_k` alone and `Sofo.sketch`, with wall-clock and memory smoke numbers
   against a per-lane `vmap∘jvp` Σ YᵀHY reference, and honest jit numbers. Two
   rune fixes were needed (§14.5), and a jitted sketch is pinned by a test.
+  §14.5 also records the student-teacher `sofo/example/linear.ml`, which
+  exercises the Alg. 1 update outside the library as its bootstrap.
 - **M5 (phase 2):** update rule + training loop + vega integration; revisit
   compiled forward mode (staged forward scan, §13.5, and the collector-state
   question of §14.3).
@@ -948,3 +950,39 @@ to 6.5e-16 relative on C = Θᵀ∇c, and the sketch's C is bit-identical to
 and a first-order subspace smoke run (normalized ΘΘᵀ∇c, η = 0.05, 15 steps)
 reaches 0.62 — enough to show one loss function training under the same driver,
 not enough to be a result; the update rule of Alg. 1 is M5.
+
+**The update's bootstrap (`sofo/example/linear.ml`).** §10 keeps the update out
+of the library, but the interface it will be built on is now exercised
+end-to-end: student-teacher linear regression (`y = x·W*`) whose mean-squared
+loss is exactly quadratic in the parameters, so the sketch's second-order model
+is exact and the example checks it after every step — residuals at 1e-15, which
+validates C, G̃, the sampled Θ and the update jointly, with no reference
+implementation.
+
+The shape of the example is forced by `Nx.svd` not compiling, which is the
+structure M5 will have to live with:
+
+1. `Rune.jit` wraps the sketch — the forward pass, the K tangent batches, the
+   collector — and the `(c, C, G̃)` bundle leaves the compiled program as
+   ordinary tensors;
+2. `Nx.svd` (Alg. 1 line 10; G̃ is symmetric PSD, so `eigh` would give the same
+   numbers, but SVD is what the algorithm says) and the damped solve
+   `z = U(S + λ s_max I)⁻¹VᵀC` run eagerly on the host, at O(K³);
+3. the parameter step `θ ← θ − η·Θz` is applied eagerly.
+
+Directions are drawn *inside* the trace, from an RNG key threaded as an input
+leaf of the carried structure — the shapes never change, so one compilation
+serves every iteration and each replay draws fresh Θ (the alternative, a
+captured key, is a compile-time constant and `jit` refuses it). Measured on CPU
+with P = 256, K = 32, 512 samples: trace + compile ≈ 21 ms with a warm kernel
+cache (0.95 s cold, `JITCACHE=0`), replay 0.9 ms, host update (SVD of 32×32,
+solve, step) 0.2 ms. The loss falls from 2.24 to 0.014 in 40 steps, where the
+*same compiled sketch* stepped first-order (`z = C`, normalized) reaches only
+1.60 — the GGN's contribution, in ten lines of host code.
+
+One API note for M5: `sketch.apply` is a closure and cannot leave a compiled
+program, so the example has the compiled step return the directions Θ it used
+and contracts them on the host. Either `sketch` grows an eager
+`apply_dirs ~thetas z` (a function of values, not of the closure), or the
+compiled-step deployment returns Θ as this example does; the update module
+should not have to choose a second time.
