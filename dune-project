@@ -16,8 +16,10 @@
    (>= 5.5.0))
   base
   cmdargs
+  cmdliner
   nx
   ppx_ptree
   rune
   stdio
+  base-unix
   (windtrap :with-test)))

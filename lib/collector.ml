@@ -52,10 +52,34 @@ let shape_string s = String.concat "," (Array.to_list (Array.map string_of_int s
    prediction; a single-tangent forward mode has no such thing, and saying so
    is more useful than contracting a mismatched shape. *)
 let record (type a b c d) (st : t) ~(y : (a, b) Nx.t) ~(l : (c, d) Nx.t) ~(curv : Curv.t) =
-  st.loss <- Nx.add st.loss (Nx.reshape [||] (Nx.cast Nx.float64 l));
+  (* The little loss may itself be packed along an enclosing map's axis — an
+     observation performed inside [Rune.vmap], carrying one little loss per
+     mapped element. Each of them contributes to the total loss, so the value
+     and the tangent are summed over the batch, exactly as the curvature block
+     below (a contraction over every element of the prediction) already sums
+     over it. The three must agree, and [Sofo.check] compares their sums with
+     the loss the driver returned: a loss the user reduced with a mean over the
+     map's axis disagrees by the batch factor and is reported. *)
+  st.loss <- Nx.add st.loss (Nx.reshape [||] (Nx.cast Nx.float64 (Nx.sum l)));
   (match Rune.tangent l with
    | None -> ()
-   | Some dl -> st.c <- Nx.add st.c (Nx.reshape [| st.k |] (Nx.cast Nx.float64 dl)));
+   | Some dl ->
+     (* The tangent's own lane structure mirrors the prediction's below: a
+        tangent without one comes from a single-tangent forward mode, and
+        saying so beats failing inside a reshape. *)
+     let n = Nx.numel dl in
+     if n mod st.k <> 0
+     then
+       invalid_arg
+         (Printf.sprintf
+            "Sofo: a little loss's tangent has %d elements, not a multiple of the \
+             sketch's %d lanes — a tangent of shape [%s] comes from Rune.jvp, which has \
+             no lane axis to contract over; differentiate with Rune.jvp_k"
+            n
+            st.k
+            (shape_string (Nx.shape dl)));
+     let lanes = Nx.reshape [| st.k; -1 |] (Nx.contiguous (Nx.cast Nx.float64 dl)) in
+     st.c <- Nx.add st.c (Nx.sum lanes ~axes:[ 1 ]));
   match Rune.tangent y with
   | None -> st.skipped <- st.skipped + 1
   | Some dy ->
@@ -80,7 +104,7 @@ let record (type a b c d) (st : t) ~(y : (a, b) Nx.t) ~(l : (c, d) Nx.t) ~(curv 
     st.ggn <- Nx.add st.ggn (Nx.cast Nx.float64 block);
     st.blocks <- st.blocks + 1
 
-let handler : type r. t -> (r, r) Effect.Deep.handler =
+let rec handler : type r. t -> (r, r) Effect.Deep.handler =
   fun st ->
   let open Effect.Deep in
   (* Bound, and annotated, before it goes into the record: the [type c.] form
@@ -94,6 +118,20 @@ let handler : type r. t -> (r, r) Effect.Deep.handler =
         (fun k ->
           record st ~y ~l ~curv;
           continue k ())
+    (* A scan inside the loss must fold *here*. Whichever handler claims the
+       fold runs it, and any handler outside the claimer — an enclosing
+       transformation — would run it beyond this handler's extent, where the
+       little losses performed in the body go unobserved. Claim it, re-install
+       this handler around the eager fold, and answer the staging probe with
+       [false]: a collector cannot stage a loop. (The claim only decides who
+       folds the scan: the operations still flow outward to [jvp_k], which sees
+       an ordinary unrolled loop and tracks every step.) *)
+    | Rune.Scan_claim.E_scan_probe -> Some (fun k -> continue k false)
+    | Rune.Scan_claim.E_scan req ->
+      Some
+        (fun k ->
+          let res = match_with (fun () -> Rune.Scan_claim.eager req) () (handler st) in
+          continue k res)
     | _ -> None
   in
   { retc = Fun.id; exnc = raise; effc }

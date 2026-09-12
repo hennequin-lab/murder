@@ -1,14 +1,16 @@
 # SOFO in OCaml — design plan for an effects-based sketching frontend
 
-**Status:** M1 (batched forward mode, `7d669442`) and M2 (the tangent query,
-`64534b41`) are implemented and committed on the `batched_jvps` branch — 103
-tests across `test/test_jvp_k.ml` and `test/test_tangent.ml` — and M3, the sofo
-package, is implemented and passing (16 tests in `sofo/test/`), though `sofo/`
-is not under version control. Findings that correct this design are in §13;
-§14.1 and §14.4 record what M2 and M3 settled. The SOFO *parameter update*
-itself (Alg. 1, line 10–12: SVD, relative damping, subspace solve) is
-explicitly **out of scope** for now; we only design the interface so that a
-later update module plugs in cleanly.
+**Status:** M1 (batched forward mode, `7d669442`), M2 (the tangent query,
+`64534b41`) and M3 (the sofo package) are implemented and committed on the
+`batched_jvps` branch — 103 tests across `test/test_jvp_k.ml` and
+`test/test_tangent.ml`, 16 in `sofo/test/` — and M4 (composition tests and the
+Lorenz example) is implemented: 31 tests in `sofo/test/` and
+`sofo/example/lorenz.ml`, on top of two rune fixes it turned up (§14.5).
+Findings that correct this design are in §13; §14.1, §14.4 and §14.5 record
+what M2, M3 and M4 settled. The SOFO *parameter update* itself (Alg. 1, line
+10–12: SVD, relative damping, subspace solve) is explicitly **out of scope**
+for now; we only design the interface so that a later update module plugs in
+cleanly.
 
 Reference: `sofo.pdf` (Yu, Xia, Ma, Lengyel, Hennequin, NeurIPS 2024);
 extracted text in `sofo.txt`. Equation/algorithm references below point there.
@@ -511,7 +513,9 @@ reference), and (7)'s live-entry probe with it — but not its weak-pointer
 canary on step-*t* tensors. (2)–(6) and (8) are in M3's `sofo/test/`: every
 `Curv` constructor against `Rune.hessian'`, the collector against an explicit
 Σ YᵀHY, the end-to-end quadratic model, an exact ΘᵀJᵀHJΘ, C against
-`value_and_grad`, and the consistency checker. (9) is left for M4.
+`value_and_grad`, and the consistency checker. (9) is M4's
+`sofo/test/test_compose.ml` (15 tests: the §7 matrix, plus a jitted sketch and
+the memory probe), and the example carries the smoke numbers — §14.5.
 
 1. **`jvp_k` vs `vmap∘jvp`** (L1): random graphs, structures, dtypes; also
    K=1 vs `jvp`.
@@ -567,13 +571,13 @@ canary on step-*t* tensors. (2)–(6) and (8) are in M3's `sofo/test/`: every
   it settled.
 - **M3 — sofo (done):** `sofo/lib/{curv,observe,collector,sketch,sofo}.ml`
   with `sofo.mli`, and 16 tests in `sofo/test/` (4 curvature, 12 end-to-end).
-  `sofo/` is not a git repository, so nothing was committed. §14.2 was the plan;
-  §14.4 records where it changed.
-- **M4 — sofo:** composition tests §9.9 + example: a small RNN (Lorenz-style,
-  sparsely supervised endpoint loss — paper §4.1) sketched in all three modes
-  (SOFO/FGD/exact grad) from one loss function; memory & wallclock smoke
-  numbers vs `vmap∘jvp` and vs `value_and_grad`. §14.3 records what a *jitted*
-  step can and cannot do today, so the example reports honestly.
+  §14.2 was the plan; §14.4 records where it changed.
+- **M4 — sofo (done):** composition tests §9.9
+  (`sofo/test/test_compose.ml`, 15 tests) and the example
+  (`sofo/example/lorenz.ml`): one loss function driven by `value_and_grad`,
+  `jvp_k` alone and `Sofo.sketch`, with wall-clock and memory smoke numbers
+  against a per-lane `vmap∘jvp` Σ YᵀHY reference, and honest jit numbers. Two
+  rune fixes were needed (§14.5), and a jitted sketch is pinned by a test.
 - **M5 (phase 2):** update rule + training loop + vega integration; revisit
   compiled forward mode (staged forward scan, §13.5, and the collector-state
   question of §14.3).
@@ -618,11 +622,13 @@ deps on `rune`/`nx`; `sofo.txt` is the paper text for reference.
    driver installs `jvp_k`, and a deeper forward mode is suspended while the
    collector's callback runs), so it guards future drivers rather than user
    error.
-9. **New (M1):** under `jit` the collector's accumulator is a graph-level
-   value, so an unrolled horizon grows the trace (§14.3). Until the staged
-   forward scan exists, decide whether `Sofo.sketch` raises when it detects it
-   is being traced, or documents the unrolling and returns the unrolled
-   program.
+9. ~~New (M1): under `jit` the collector's accumulator is a graph-level value,
+   so an unrolled horizon grows the trace.~~ **Settled (M4, §14.5):** a jitted
+   sketch is correct and pinned by a test, `~strict` raises `Jit_error` inside
+   the trace, and the unrolling is reported rather than hidden — the collector
+   claims each scan, and compile time grows with the horizon where a plain
+   jitted rollout stages it as a loop. Staging the forward scan remains M5's
+   question, and it is the collector-state change §14.3 describes.
 
 ---
 
@@ -857,3 +863,88 @@ draws in float64 and casts to the leaf's dtype, because `Dtype.is_float` is a
 predicate rather than a witness and this is the type-safe formulation. `mse` is
 a mean over all elements and `softmax_ce` a mean over rows, each curvature
 derived from its own reduction, so value and curvature cannot drift apart.
+
+### 14.5 M4 as built: the matrix, two rune fixes, and what a jitted step costs
+
+M4 shipped as `sofo/test/test_compose.ml` — 15 tests, one per ✓/✓-bonus row of
+§7 (with the two intractable-in-principle rows, `vmap` outside and the unscaled
+in-map observation, checked for their errors instead of their numbers), plus a
+jitted sketch and a memory probe — and `sofo/example/lorenz.ml`, the paper's
+§4.1 task in miniature. The matrix itself needed no design change. Three other
+things did.
+
+- **The transformation gate leaked, and a failing sketch disabled `jit` for the
+  rest of the process.** `Rune.jit` asked whether a transformation was
+  installed by reading a global `Gate.transform_depth` counter kept balanced by
+  `Fun.protect` around each handler installation. An exception raised in an
+  enclosing effect handler is re-raised in that handler's fiber, abandoning the
+  fiber below it without unwinding it, so the finalizer never ran: one failed
+  observation (the collector's reshape error, any user handler that raises) and
+  every later `jit` in the process stepped aside silently. Fixed in rune
+  (`a02d2364`) by asking the same question as an effect — `Gate.E_transforming`,
+  answered by reverse, forward, batched forward, vmap, the jit tracer and the
+  debug logger, the way `Scan.E_scan_probe` already asks about staging — and
+  pinned by a rune test that raises from an enclosing handler under `grad` and
+  under `jvp_k` of `vmap`. This matters to sofo beyond hygiene: the composition
+  suite's ✗ rows *must* raise, and a test that raises may not poison the tests
+  after it.
+- **The scan claim was private, so a collector could not hold the fold.**
+  `jvp_k ∘ Rune.scan` — §7's core case, "per-step observations fire" — fired
+  *no* observations at all: `Forward_k` claims `E_scan` and folds in its own
+  context, which is outside the collector, and sofo had no way to claim the
+  scan itself. `Rune.Scan_claim` now exposes the claim (`eager`, the abstract
+  `req`/`res`, and the `E_scan`/`E_scan_probe` constructors, rebound so they are
+  the same effects `scan` performs); the collector answers the probe `false`
+  and folds under a re-installed copy of itself, so the operations still flow
+  outward to `jvp_k` as an ordinary unrolled loop (test: `T` observations, GGN
+  equal to Σ_t Y_tᵀH_tY_t from per-lane single-tangent jvps). Any handler of
+  one's own that performs effects inside a scan body needs the same two cases.
+- **A packed observation (vmap innermost) is additive.** `vmap` re-performs the
+  mapped body once with physically batched tensors, so an observation inside a
+  map fires once carrying one little loss per mapped element. §7 is right that
+  the *contraction* sums over M; the value and the tangent follow the same
+  reading, so the collector sums them and the three stay consistent. A loss the
+  user reduced with a mean over the map's axis is then a factor of M away from
+  the observations — `Sofo.check` reports it and `strict` refuses the sketch —
+  which is the documented trap and the reason the cross-check exists. Two ways
+  out, both tested: fold the factor into the little loss (value and curvature
+  scaled by 1/M, the map reduced with a sum outside), or observe the batched
+  prediction after the map, which is what the example does. `Curv.hvp`'s
+  closure receives the physically batched direction under a map, like every
+  other curvature (they broadcast); now documented.
+- **An RNN written for `vmap` must keep the activation on the left.** Storing
+  the weights transposed (`z·Cᵀ`, `relu(·)·Wᵀ`) is valid eagerly and is the
+  form `vmap`'s matmul rule can translate; the textbook `Cz` order is fine
+  eagerly but raises `dot: cannot contract [1,3] to [4,3]` under a map, which
+  is §13.3's untranslated matmul rule again. Fixing `vmap` there the way §13.1
+  fixed `Forward_k` remains the separate cleanup §13.3 flagged.
+
+**§14.3 pinned, and measured.** A jitted sketch is correct: with `jit`
+outermost, loss, C and G̃ match eager execution exactly, a replay is identical,
+and `~strict:true` raises `Rune.Jit_error` at trace time (the check reads
+values, so it refuses rather than freezing them into the program). The cost is
+the unrolling, and the example reports it as unrolling rather than as a
+disappointment: a single-trial plain rollout stages its scan as a loop
+(trace+compile 6.4 ms at T=32, 7.3 ms at T=64, replay 0.8 ms, CPU), while the
+same rollout under a sketch claims the scan and unrolls (403 ms → 638 ms). The
+staged forward scan stays M5's question (§13.5), together with the
+collector-state change §14.3 describes.
+
+**Memory.** The O(1)-in-T claim holds where it was made: a recurrence stepped
+in a plain loop holds 7 live tangent bindings at T=32 and 7 at T=128, with a
+forced major collection before each reading. Under `Rune.scan` the count grows
+with T (37 → 133), because the eager fold stacks every step's output before
+returning it and the store follows what is reachable — `scan`'s contract, not
+the differentiation accumulating; the activations *inside* a step die with the
+step, and the dominant tensor stays the paper's App. C bound, k×M×hidden.
+
+**Smoke numbers** (example defaults: k = 32, 64 trials, T = 32, hidden = 128,
+P = 905, K/P = 3.5%, float64 CPU; `--lanes`, `--trials`, `--hidden`, `--runs`
+to change them): `value_and_grad` 17 ms, `jvp_k` over 32 lanes 108 ms,
+`Sofo.sketch` 125 ms, and the per-lane `vmap∘jvp` plus explicit Σ YᵀHY reference
+306 ms — 2.45× the sketch, in line with §8's estimate. The three drivers agree
+to 6.5e-16 relative on C = Θᵀ∇c, and the sketch's C is bit-identical to
+`jvp_k`'s. At a near-identity initialization the endpoint loss starts at 1.03,
+and a first-order subspace smoke run (normalized ΘΘᵀ∇c, η = 0.05, 15 steps)
+reaches 0.62 — enough to show one loss function training under the same driver,
+not enough to be a result; the update rule of Alg. 1 is M5.

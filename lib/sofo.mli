@@ -87,7 +87,10 @@ module Curv : sig
       side-effect free, and [y] fixes the element type [f] is written at, so
       captured tensors need no casting. This is the escape hatch for losses
       with no structured form, and it costs one vectorized translation of [f]
-      per observation. *)
+      per observation. Under an enclosing [Rune.vmap] the direction [f]
+      receives carries the map's batch axes, like every other curvature here:
+      a shape-dependent [f] must accept them, as [Scale], [Diag] and
+      [Softmax_ce] do by construction. *)
   val hvp : y:('a, 'b) Nx.t -> (('a, 'b) Nx.t -> ('a, 'b) Nx.t) -> t
 end
 
@@ -101,7 +104,19 @@ end
     user's own arithmetic defines both the value and its tangent. A little loss
     that depends on several predictions may be observed once per prediction
     (the blocks add) or jointly, by observing a concatenation of them with a
-    matching curvature. *)
+    matching curvature.
+
+    {b Inside [Rune.vmap].} Everything the mapped function performs happens
+    once, on physically batched tensors, so an observation inside a map carries
+    one little loss per mapped element, packed along the batch axis. The
+    collector sums their values and tangents — each packed little loss
+    contributes to the total, and the single k×k block contracts over the whole
+    batch — so the observation accounts for the batch's contribution to the
+    loss, whatever reduction the user applies outside. A mean over the map's
+    axis is therefore a factor of [M] away from the observations, which
+    {!check} reports (and [strict] refuses): fold the factor into the little
+    loss (scale the value and its curvature by [1/M], and reduce the map's
+    outputs with a sum), or observe the batched prediction after the map. *)
 val observe : y:('a, 'b) Nx.t -> curv:Curv.t -> ('a, 'b) Nx.t -> unit
 
 (** [mse ?w y target] is the mean weighted squared error
@@ -170,6 +185,17 @@ type 'p sketch =
     discrepancy. It reads tensor values, so it concretizes the sketch's
     numbers: inside a [Rune.jit]ed function it raises [Rune.Jit_error] instead.
     Check the returned sketch when compiling.
+
+    The same loss function runs under the other drivers without changing: the
+    observations are inert to {!Rune.value_and_grad} and to {!Rune.jvp_k} alone.
+    A [Rune.scan] inside the loss folds inside the collector, so a per-step
+    observation fires for every step; a [Rune.vmap] inside the loss batches the
+    trials inside the tangent axis (put batch dimensions there, never outside
+    the sketch — {!Rune.vmap} around [sketch] is a lane error, not a batch of
+    sketches). Inside a [Rune.jit]ed function a sketch is correct but unrolled:
+    the collector claims each scan and its accumulations are traced beside the
+    primal operations, so compile time grows with the horizon where a plain
+    compiled rollout stages the same scan as a loop.
 
     Raises [Invalid_argument] if [k < 1], if [loss] does not return a scalar, or
     if a marked prediction's tangent is not a [k]-lane batch (marking a loss
