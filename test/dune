@@ -1,0 +1,4 @@
+(tests
+ (names test_curv test_sketch)
+ (package sofo)
+ (libraries sofo nx nx.core windtrap))
