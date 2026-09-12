@@ -38,7 +38,7 @@ type config =
   ; k : int (* subspace dimension *)
   ; steps : int
   ; lr : float
-  ; damping : float (* λ, relative to the largest singular value *)
+  ; damping : Sofo.Optim.damping (* how γ is scaled; see Sofo.Optim *)
   ; fgd_lr : float
   ; compare : bool
   ; seed : int
@@ -47,6 +47,11 @@ type config =
 let median xs =
   let xs = List.sort compare xs in
   List.nth xs (List.length xs / 2)
+
+let damping_to_string = function
+  | `Absolute value -> Printf.sprintf "absolute %.3g" value
+  | `Relative_from_top factor -> Printf.sprintf "%.3g x s_max" factor
+  | `Relative_from_bottom factor -> Printf.sprintf "%.3g x s_min" factor
 
 (* ── the student ─────────────────────────────────────────────────────────── *)
 
@@ -89,7 +94,7 @@ let run config =
   let state = Sofo.Optim.init ~key:k0 () in
   Printf.printf
     "student-teacher linear regression: y = x·W*, %d samples, x:[%d], W:[%d;%d]\n\
-     P = %d parameters, K = %d (%.1f%%), eta = %g, lambda = %g\n\n"
+     P = %d parameters, K = %d (%.1f%%), eta = %g, damping %s\n\n"
     config.samples
     config.dim
     config.dim
@@ -98,7 +103,7 @@ let run config =
     config.k
     (100.0 *. float_of_int config.k /. float_of_int parameters)
     config.lr
-    config.damping;
+    (damping_to_string config.damping);
   (* One eager sketch first: Sofo.check reads values to compare the observed
      little losses with the loss, which a compiled trace must not do. *)
   let sk0 =
@@ -254,7 +259,13 @@ let run config =
 
 (* ── command line ────────────────────────────────────────────────────────── *)
 
-let make_config dim out samples k steps lr damping fgd_lr compare seed =
+let make_config dim out samples k steps lr damping damping_mode fgd_lr compare seed =
+  let damping =
+    match damping_mode with
+    | `Top -> `Relative_from_top damping
+    | `Bottom -> `Relative_from_bottom damping
+    | `Absolute -> `Absolute damping
+  in
   { dim; out; samples; k; steps; lr; damping; fgd_lr; compare; seed }
 
 let config_term =
@@ -282,10 +293,18 @@ let config_term =
     Arg.(
       value
       & opt float 1e-6
+      & info [ "damping"; "r" ] ~docv:"lambda" ~doc:"Damping factor.")
+  in
+  let damping_mode =
+    Arg.(
+      value
+      & opt (enum [ "top", `Top; "bottom", `Bottom; "absolute", `Absolute ]) `Top
       & info
-          [ "damping"; "r" ]
-          ~docv:"lambda"
-          ~doc:"Damping relative to the largest singular value.")
+          [ "damping-mode" ]
+          ~docv:"MODE"
+          ~doc:
+            "What lambda is relative to: $(b,top) (default, Algorithm 1's lambda*s_max), \
+             $(b,bottom) (lambda*s_min), or $(b,absolute) (lambda itself).")
   in
   let fgd_lr =
     Arg.(
@@ -315,6 +334,7 @@ let config_term =
     $ steps
     $ lr
     $ damping
+    $ damping_mode
     $ fgd_lr
     $ compare
     $ seed)

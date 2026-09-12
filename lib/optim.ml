@@ -20,6 +20,12 @@
    a compiled step as an ordinary input leaf, and the iteration counter, which
    stays on the host because it only ever feeds key derivation and schedules. *)
 
+type damping =
+  [ `Absolute of float
+  | `Relative_from_top of float
+  | `Relative_from_bottom of float
+  ]
+
 type state =
   { key : Nx.int32_t
     (* The stream Θ is drawn from. A tensor, not a host value: it is what a
@@ -86,18 +92,33 @@ let shift (type p) (module P : Nx.Ptree.S with type t = p) ~lr (params : p) (dw 
 
 (* ── the update (Alg. 1, lines 10–12) ────────────────────────────────────── *)
 
-(* z = U (S + λ s_max I)⁻¹ Vᵀ C, from the SVD of the sketched GGN. G̃ is
-   symmetric positive semi-definite, so V = U up to signs and an eigende-
-   composition would do; the SVD is what the algorithm prescribes and what is
-   used here. *)
-let coordinates ?(damping = 1e-6) (ggn : Nx.float64_t) (c : Nx.float64_t) : Nx.float64_t =
+(* z = U (S + γ I)⁻¹ Vᵀ C, from the SVD of the sketched GGN, with γ set by the
+   damping mode. G̃ is symmetric positive semi-definite, so V = U up to signs
+   and an eigendecomposition would do; the SVD is what the algorithm prescribes
+   and what is used here. *)
+let coordinates
+      ?(damping : damping = `Relative_from_top 1e-6)
+      (ggn : Nx.float64_t)
+      (c : Nx.float64_t)
+  : Nx.float64_t
+  =
   let k = (Nx.shape c).(0) in
   let u, s, vt = Nx.svd ggn in
-  let smax =
-    Nx.item [ 0 ] s
-    (* singular values descend *)
+  let gamma =
+    match damping with
+    | `Absolute value -> value
+    | `Relative_from_top factor -> factor *. Nx.item [ 0 ] s (* singular values descend *)
+    | `Relative_from_bottom factor ->
+      let smin = Nx.item [ k - 1 ] s in
+      if smin <= 0.0
+      then
+        invalid_arg
+          "Sofo.Optim.coordinates: `Relative_from_bottom needs a full-rank sketch, but \
+           the smallest singular value of the sketched GGN is 0; damp absolutely or from \
+           the top instead";
+      factor *. smin
   in
-  let damped = Nx.add s (Nx.mul_s (Nx.ones_like s) (damping *. smax)) in
+  let damped = Nx.add s (Nx.mul_s (Nx.ones_like s) gamma) in
   let rhs = Nx.matmul vt (Nx.reshape [| k; 1 |] (Nx.contiguous c)) in
   Nx.reshape [| k |] (Nx.matmul u (Nx.div rhs (Nx.reshape [| k; 1 |] damped)))
 

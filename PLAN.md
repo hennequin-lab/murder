@@ -1017,8 +1017,14 @@ parameter structures, hyperparameters passed per step.
 - **`coordinates ?damping ggn c`** is Alg. 1's solve, SVD and all. Matrix
   first, then the right-hand side, like `Nx.solve a b`; `eigh` would give the
   same numbers for a symmetric PSD G̃, but the SVD is what the algorithm says.
-  The relative damping λ (default 1e-6) is what makes a rank-deficient sketch
-  solvable at all.
+  Damping is a polymorphic variant — `` `Absolute λ`` (γ = λ),
+  `` `Relative_from_top λ`` (γ = λ·s_max, Alg. 1's and the default, at
+  λ = 1e-6) and `` `Relative_from_bottom λ`` (γ = λ·s_min) — because λ's
+  meaning is scale-dependent: the G̃ of a mean over 32 batch elements and of one
+  over 512 differ by an order of magnitude, so an absolute λ does not transfer
+  between tasks while the top-relative form stays comparable to the paper's
+  numbers. The bottom-relative mode lifts only what is barely resolved, so it
+  needs a full-rank sketch, and it raises rather than dividing by s_min = 0.
 - **`update`** is the step: solve, contract (`apply`, which takes the
   directions as a value because a compiled step cannot return the record's
   closure), shift by η. Non-float leaves pass through untouched and each float

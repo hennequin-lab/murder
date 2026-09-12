@@ -183,9 +183,9 @@ let test_apply_agrees_with_the_sketch () =
 
 let test_coordinates_identity () =
   let c = Nx.create f64 [| k |] [| 1.0; -2.0; 3.5 |] in
-  let z = Sofo.Optim.coordinates ~damping:0.0 (Nx.eye f64 k) c in
+  let z = Sofo.Optim.coordinates ~damping:(`Absolute 0.0) (Nx.eye f64 k) c in
   check_arr ~msg:"G̃ = I: z = C" (to_arr c) z;
-  let z = Sofo.Optim.coordinates ~damping:0.5 (Nx.eye f64 k) c in
+  let z = Sofo.Optim.coordinates ~damping:(`Relative_from_top 0.5) (Nx.eye f64 k) c in
   check_arr ~msg:"G̃ = I, λ = 0.5: z = C / 1.5" [| 1.0 /. 1.5; -2.0 /. 1.5; 3.5 /. 1.5 |] z
 
 let test_coordinates_diagonal () =
@@ -194,10 +194,25 @@ let test_coordinates_diagonal () =
     Nx.create f64 [| k; k |] [| s.(0); 0.0; 0.0; 0.0; s.(1); 0.0; 0.0; 0.0; s.(2) |]
   in
   let c = Nx.create f64 [| k |] [| 1.0; -2.0; 3.0 |] in
-  let z = Sofo.Optim.coordinates ~damping:0.0 ggn c in
+  let z = Sofo.Optim.coordinates ~damping:(`Absolute 0.0) ggn c in
   check_arr ~msg:"z = C / s" [| 0.25; -2.0; 12.0 |] z;
-  let z = Sofo.Optim.coordinates ~damping:0.5 ggn c in
-  check_arr ~msg:"z = C / (s + λ·s_max)" [| 1.0 /. 6.0; -2.0 /. 3.0; 3.0 /. 2.25 |] z
+  let z = Sofo.Optim.coordinates ~damping:(`Relative_from_top 0.5) ggn c in
+  check_arr ~msg:"z = C / (s + λ·s_max)" [| 1.0 /. 6.0; -2.0 /. 3.0; 3.0 /. 2.25 |] z;
+  (* the three modes on the same diagonal G̃: s = [4; 1; 0.25], c = [1; -2; 3] *)
+  let z = Sofo.Optim.coordinates ~damping:(`Absolute 0.5) ggn c in
+  check_arr
+    ~msg:"absolute: z = C / (s + 0.5)"
+    [| 1.0 /. 4.5; -2.0 /. 1.5; 3.0 /. 0.75 |]
+    z;
+  let z = Sofo.Optim.coordinates ~damping:(`Relative_from_bottom 0.5) ggn c in
+  check_arr
+    ~msg:"relative from the bottom: z = C / (s + 0.5·s_min)"
+    [| 1.0 /. 4.125; -2.0 /. 1.125; 3.0 /. 0.375 |]
+    z;
+  (* the default is Algorithm 1's: relative to the top *)
+  let d = Sofo.Optim.coordinates ggn c in
+  let t = Sofo.Optim.coordinates ~damping:(`Relative_from_top 1e-6) ggn c in
+  check_arr ~msg:"the default is `Relative_from_top 1e-6" (to_arr d) t
 
 let test_coordinates_survives_a_singular_direction () =
   (* A rank-deficient sketch (a lane the data does not excite) is exactly what
@@ -208,17 +223,26 @@ let test_coordinates_survives_a_singular_direction () =
   (* The solve of a singular system is only defined through the damping: the
      null direction is resolved with magnitude |c|/(λ·s_max), finite but large
      when λ is small, and suppressed as λ grows. *)
-  let z = Sofo.Optim.coordinates ~damping:1e-3 ggn c in
+  let z = Sofo.Optim.coordinates ~damping:(`Relative_from_top 1e-3) ggn c in
   is_true ~msg:"finite" (Array.for_all Float.is_finite (to_arr z));
   check_arr
     ~msg:"the damped diagonal formula"
     [| 1.0 /. 2.002; 1.0 /. 0.002; 1.0 /. 0.002 |]
     z;
-  let z = Sofo.Optim.coordinates ~damping:1.0 ggn c in
+  let z = Sofo.Optim.coordinates ~damping:(`Relative_from_top 1.0) ggn c in
   is_true
     ~msg:"more damping shrinks the null direction"
     (Float.abs (Nx.item [ 1 ] z) < 1.0);
-  check_arr ~msg:"λ = 1: z = C / (s + 2)" [| 1.0 /. 4.0; 0.5; 0.5 |] z
+  check_arr ~msg:"λ = 1: z = C / (s + 2)" [| 1.0 /. 4.0; 0.5; 0.5 |] z;
+  (* the modes that do not need a full-rank sketch still work: absolute damping
+     is its own reference, and damping from the top has s_max to lean on *)
+  let z = Sofo.Optim.coordinates ~damping:(`Absolute 0.5) ggn c in
+  check_arr ~msg:"absolute on a singular sketch" [| 1.0 /. 2.5; 2.0; 2.0 |] z;
+  let z = Sofo.Optim.coordinates ~damping:(`Relative_from_top 0.5) ggn c in
+  check_arr ~msg:"from the top on a singular sketch" [| 1.0 /. 3.0; 1.0; 1.0 |] z;
+  (* and the one that does says so *)
+  raises_match Exn.invalid_arg (fun () ->
+    ignore (Sofo.Optim.coordinates ~damping:(`Relative_from_bottom 0.5) ggn c))
 
 (* ── the update ──────────────────────────────────────────────────────────── *)
 
@@ -229,7 +253,7 @@ let test_update_annihilates_the_sketched_gradient () =
      vanish at the new parameters. *)
   let p = params () in
   let sk = sketch64 p in
-  let p' = Sofo.Optim.update (module Params) ~lr:1.0 ~damping:0.0 sk p in
+  let p' = Sofo.Optim.update (module Params) ~lr:1.0 ~damping:(`Absolute 0.0) sk p in
   let sk' = sketch64 p' in
   is_true
     ~msg:(Printf.sprintf "|C'| = %.3g at the new parameters" (max_abs sk'.c))
@@ -270,8 +294,12 @@ let test_update_uses_damping () =
      smaller than the undamped solve's, and the loss still decreases. *)
   let p = params () in
   let sk = sketch_at p in
-  let undamped = Sofo.Optim.update (module Params) ~lr:1.0 ~damping:0.0 sk p in
-  let damped = Sofo.Optim.update (module Params) ~lr:1.0 ~damping:1.0 sk p in
+  let undamped =
+    Sofo.Optim.update (module Params) ~lr:1.0 ~damping:(`Absolute 0.0) sk p
+  in
+  let damped =
+    Sofo.Optim.update (module Params) ~lr:1.0 ~damping:(`Relative_from_top 1.0) sk p
+  in
   is_true
     ~msg:"damped step is shorter"
     (max_abs (Nx.sub damped.w p.w) < max_abs (Nx.sub undamped.w p.w));
@@ -304,7 +332,14 @@ let test_step_decreases_the_loss_and_advances () =
     then best, first
     else (
       let p, st, sk =
-        Sofo.Optim.step (module Params) ~k:8 ~lr:1.0 ~damping:0.0 st ~loss ~params:p
+        Sofo.Optim.step
+          (module Params)
+          ~k:8
+          ~lr:1.0
+          ~damping:(`Absolute 0.0)
+          st
+          ~loss
+          ~params:p
       in
       (match Sofo.check sk with
        | Ok () -> ()
@@ -362,8 +397,10 @@ let test_compiled_sketch_matches_the_eager_one () =
    | Ok () -> ()
    | Error msg -> fail ("the compiled sketch does not add up: " ^ msg));
   (* and with damping, the update is the same map *)
-  let a = O.update ~lr:0.5 ~damping:1e-3 p out in
-  let b = Sofo.Optim.update (module Params) ~lr:0.5 ~damping:1e-3 sk p in
+  let a = O.update ~lr:0.5 ~damping:(`Relative_from_top 1e-3) p out in
+  let b =
+    Sofo.Optim.update (module Params) ~lr:0.5 ~damping:(`Relative_from_top 1e-3) sk p
+  in
   check_arr ~msg:"compiled update" (to_arr a.w) b.w;
   check_arr ~msg:"compiled update (float32)" (to_arr a.v) b.v;
   equal
@@ -416,7 +453,7 @@ let test_compiled_loop_trains () =
       is_true
         ~msg:(Printf.sprintf "step %d decreases the loss (%.8g < %.8g)" (9 - i) l prev)
         (l < prev);
-      let p = O.update ~lr:1.0 ~damping:0.0 p out in
+      let p = O.update ~lr:1.0 ~damping:(`Absolute 0.0) p out in
       let first = if i = 8 then l else first in
       go p (Sofo.Optim.next st) (i - 1) l (Float.min best l) first)
   in

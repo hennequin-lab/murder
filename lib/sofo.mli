@@ -298,25 +298,49 @@ module Optim : sig
 
   (** {2 The update} *)
 
+  (** The damping mode: how the [γ] of [(S + γ·I)⁻¹] is chosen from the
+      sketch's singular values.
+
+      - [`Absolute λ] adds [λ] itself;
+      - [`Relative_from_top λ] adds [λ·s_max] — Algorithm 1's [λ·s_max], and
+        the default, [`Relative_from_top 1e-6];
+      - [`Relative_from_bottom λ] adds [λ·s_min].
+
+      The relative modes are what make [λ] dimensionless: the scale of G̃
+      depends on how the loss reduces — a mean over a batch of 32 and one over
+      512 differ by an order of magnitude — so an absolute [λ] does not
+      transfer between tasks. Damping from the top lifts every direction in
+      proportion to the largest curvature; damping from the bottom lifts only
+      what is barely resolved, and so needs a full-rank sketch: with [s_min = 0]
+      there is nothing to be relative to, and {!coordinates} raises rather than
+      dividing by it. *)
+  type damping =
+    [ `Absolute of float
+    | `Relative_from_top of float
+    | `Relative_from_bottom of float
+    ]
+
   (** [coordinates ?damping ggn c] is the damped sketched solve
-      [U (S + λ·s_max I)⁻¹ Vᵀ C] of the sketched normal equations [ggn·z = c],
-      from the SVD of [ggn] — Algorithm 1, lines 10–12. [damping] (λ, default
-      [1e-6]) is relative to the largest singular value, as the paper's is; the
-      solve is eager and O(k³), and it is the one place the library needs a
+      [(V (S + γ·I) Vᵀ)⁻¹ c] of the sketched normal equations [ggn·z = c], from
+      the SVD of [ggn] — Algorithm 1, lines 10–12 — with [γ] from [damping].
+      The solve is eager and O(k³), and it is the one place the library needs a
       factorization.
 
       {b Note.} The SVD is not differentiable and does not compile, so this is
-      for the host side of a step, not inside a [Rune.jit]ed program. *)
-  val coordinates : ?damping:float -> Nx.float64_t -> Nx.float64_t -> Nx.float64_t
+      for the host side of a step, not inside a [Rune.jit]ed program.
+
+      Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
+      smallest singular value is 0. *)
+  val coordinates : ?damping:damping -> Nx.float64_t -> Nx.float64_t -> Nx.float64_t
 
   (** [update (module P) ~lr ?damping sk params] is one SOFO step:
       [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C], from the sketch [sk] measured at
-      [params]. [lr] defaults to [1.0], which together with [damping = 0.] is
-      the exact Newton step inside the sketched subspace. *)
+      [params]. [lr] defaults to [1.0], which together with no damping is the
+      exact Newton step inside the sketched subspace. *)
   val update
     :  (module Nx.Ptree.S with type t = 'p)
     -> ?lr:float
-    -> ?damping:float
+    -> ?damping:damping
     -> 'p sketch
     -> 'p
     -> 'p
@@ -333,7 +357,7 @@ module Optim : sig
     :  (module Nx.Ptree.S with type t = 'p)
     -> k:int
     -> lr:float
-    -> ?damping:float
+    -> ?damping:damping
     -> ?strict:bool
     -> state
     -> loss:('p -> ('c, 'd) Nx.t)
@@ -382,7 +406,7 @@ module Optim : sig
 
     (** [update ?lr ?damping params out] is {!Optim.update} on a compiled
         step's output: the eager half. *)
-    val update : ?lr:float -> ?damping:float -> P.t -> out -> P.t
+    val update : ?lr:float -> ?damping:damping -> P.t -> out -> P.t
 
     (** [check out] is {!check} on a compiled step's output — the same
         statement about the observed little losses, made where the values are
