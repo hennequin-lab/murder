@@ -201,13 +201,13 @@ type 'p sketch =
     if a marked prediction's tangent is not a [k]-lane batch (marking a loss
     differentiated with [Rune.jvp] rather than [Rune.jvp_k]). *)
 val sketch
-  :  (module Nx.Ptree.S with type t = 'p)
+  : (module P : Nx.Ptree.S)
   -> k:int
-  -> ?sketch_sampler:(int -> 'p -> 'p)
-  -> ?strict:bool
-  -> ('p -> ('c, 'd) Nx.t)
-  -> 'p
-  -> 'p sketch
+     -> ?sketch_sampler:(int -> P.t -> P.t)
+     -> ?strict:bool
+     -> (P.t -> ('c, 'd) Nx.t)
+     -> P.t
+     -> P.t sketch
 
 (** [check sk] compares the little losses the collector observed with the loss
     the driver returned: [Ok ()] when they agree within a small relative

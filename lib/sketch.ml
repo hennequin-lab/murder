@@ -125,14 +125,13 @@ let check (sk : 'p t) : (unit, string) result =
     ~observed_c:sk.diagnostics.observed_c
 
 let run
-      (type p)
-      (module P : Nx.Ptree.S with type t = p)
+      (module P : Nx.Ptree.S)
       ~k
       ?sketch_sampler
       ?(strict = false)
-      (loss : p -> ('c, 'd) Nx.t)
-      (params : p)
-  : p t
+      (loss : P.t -> ('c, 'd) Nx.t)
+      (params : P.t)
+  : P.t t
   =
   if k < 1 then invalid_arg (Printf.sprintf "Sofo.sketch: k must be at least 1, got %d" k);
   let thetas =
