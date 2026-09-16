@@ -1,7 +1,7 @@
 # SYMO on the modern Raven stack — port plan
 
 Status: M0 (pure front end) and M1 (compiler on Nx) are implemented in
-`symo/lib/` with 18 passing tests (`dune runtest`); M2-M4 are pending. Two Nx
+`symo/lib/` with 18 passing tests (`dune runtest`); M2-M4 are pending; see §11 for the pickup checklist. Two Nx
 `einsum` defects shaped the tensor-side design (§10). `old_code/` is
 reference-only (excluded from the build via `(data_only_dirs old_code)` and
 gitignored); we will **not** try to compile it.
@@ -933,6 +933,108 @@ Status: M0 and M1 are done. `symo/lib/` now has `Sides`, `Index`, `Symmetry`,
 `Term`, `Component`, `Basis`, `Delta`, `Contract` and `Compiler`, with 18 tests
 in `symo/test/`, all green. Next: M2 (`First_order`/`Second_order` orbit
 machinery), then the `Taylor` step and its `Rune.jit` halves.
+
+---
+
+## 11. Pickup notes for M2-M4 (next session)
+
+**State.** Commit `cd1ecf5` on `main` (tree clean): scaffold, plan, the symbolic
+front end and the compiler. `cd symo && dune build @check && dune runtest` is
+green (10 front-end + 8 compiler tests). Nothing after M1 exists yet.
+
+**Facts and traps**
+
+- `symo/` is its own git repo inside the `raven-and-friends` dune workspace.
+  Build from `symo/`; dune walks up to the workspace root and uses the shared
+  `dune.lock`. Local packages `nx`, `rune`, `ppx_ptree` come from `raven/`.
+- Never build `old_code/`: it is `(data_only_dirs)` and gitignored.
+- pi-lens checks OCaml files at write time. A freshly created file reports
+  "No config found for file … Try calling `dune build`", and that stale finding
+  stays cached until the file is written again. It is a false alarm: run the
+  build, then make a trivial edit to the file to refresh the cache.
+- The compiler never calls `Nx.einsum` directly: ties go through
+  `Delta.tensor` + `Contract.binary`/`permute_sum` (\u00a710). Keep it that way
+  until the two Nx defects are fixed upstream.
+
+**Module map (what to build on)**
+
+| module | role |
+| --- | --- |
+| `lib/sides.ml`, `index.ml`, `symmetry.ml` | axis bookkeeping; `Sides.t`; `Absent/Id/Perm`; `collapse_dims` |
+| `lib/term.ml` | `{ ties; free }`, `sort`/`equal`/`transpose`, `normalization`, `inner_product`, `coefficient` |
+| `lib/component.ml` | `Single`/`Sum`, `inner_product`, `coefficient`, `design_matrix` |
+| `lib/basis.ml` | the symbolic basis (`components`, `group_axes`) |
+| `lib/delta.ml`, `lib/contract.ml` | Kronecker deltas; pairwise contiguous contractions |
+| `lib/compiler.ml` | `basis_of_spec`, `compile`, `compile_manual`; `apply_block`, `dense_block`, `estimate_factors`, `transform` |
+| `test/` | windtrap suites; `support.ml` has the brute-force references |
+
+`Symmetry.collapse_dims` exists but is not used yet: M2 should use it to derive
+`surrogate_dims`. `lib/dune` does not yet enable `ppx_ptree`; M2 needs
+`(preprocess (pps ppx_ptree))`.
+
+**M2 — orbit machinery (`lib/orbit.ml`)**
+
+Reference: `old_code/symo.ml:115` (`First_order`) and `:205` (`Second_order`).
+
+1. `Make (M : Nx.Ptree.Uniform)` with `dims : int list M.t` and
+   `symmetries : Symmetry.spec list M.t`; instantiate the packed walker with
+   `Nx.Ptree.instantiate (module M)` at `Nx.float32_t`; derive
+   `surrogate_dims` by `M.map2` of `Symmetry.collapse_dims` over symmetries and
+   dims.
+2. `First_order`: compile per-leaf `Compiler.t` trees at `dims` (`large`) and
+   at `surrogate_dims` (`small`); then `factors_of_params` (`M.map2` with
+   `estimate_factors (\`Outer_product (x, ones))`), `dense_of_factors` (`M.fold`
+   concatenating `dense_block` in traversal order), `factors_of_dense` (split at
+   precomputed offsets), `params_of_dense`, `orbit_average`.
+3. `Second_order`: pair matrix `Compiler.t array M.t` (row per leaf, array over
+   the flat index of the second leaf); `factors_of_pair`, `factors_of_dense`,
+   `dense_of_factors ~symmetric` (block matrix, `0.5·(X+Xᵀ)` when symmetric),
+   `apply ~symmetric ~factors v` — for leaf `i`, sum `c_ij.apply_block` over
+   `j`; leaf order comes from `M.fold`.
+4. Tests `test/test_orbit.ml`: exact `S_n` enumeration (n ≤ 4) as the oracle —
+   build the orbit average by iterating all permutations and calling
+   `Compiler.transform`, compare with `orbit_average` and the surrogate
+   round-trips; Monte-Carlo for larger n; check `A S Aᵀ = S` on trees.
+
+**M3 — eager `Taylor` step**
+
+Reference: `old_code/symo.ml:394` (`Taylor`).
+
+- `lib/solve.ml`: `svd64`, damped symmetric powers,
+  `hessian_inverse ~damping sigma_w sigma_g`. Host-side only; `Rune.jit`
+  refuses svd/eig.
+- `lib/optim.ml`: `config`, `state` (theta and g_avg trees, `sigma_g_avg` and
+  the two beta counters as tensors), `init`, and the `prepare` / `solve` /
+  `finish` split of §3.5, with the eager `step` composing them. Keep
+  `Taylor`'s `max 1e-4 (beta *. config.beta)` floor.
+- Tests: invariant quadratic (`S_g ≈ H S_w H`), EMA/debias schedules, Newton
+  agreement. No `Models` in lib.
+
+**M4 — jitted step**
+
+- `Compiled.prepare` / `Compiled.finish` via `Rune.jit2`, with state threaded
+  as input/output leaves; `Compiled.step` = prepare → host `hessian_inverse` →
+  finish. Verify eager/jit parity, no `Jit_error`, no retracing; `Contract`
+  keeps every operand contiguous and every einsum binary.
+
+**Decisions to keep**
+
+- `Taylor` only; no `Original`/`Global`; no models in the library.
+- The §4.1 renames are in effect (`Compiler.compile`, `apply_block`,
+  `dense_block`, `estimate_factors`, `Term.coefficient`, …).
+- float32 tensors; float64 only inside the compile-time Cholesky and the host
+  SVD.
+- `surrogate_dims` derived, not user-supplied.
+
+**Open questions deferred to M2/M3**
+
+- `ties_one_side` is ported as-is: add the "what breaks without it" test.
+- Partition enumeration is factorial; memoize `basis_of_spec` per
+  `(spec, dims)` if compile time hurts.
+- `learning_rate : float option` ("measure only"): keep, or split
+  `direction`/`shift`.
+- Memory: `Term.coefficient`'s `Outer_product` case materializes the outer
+  product; revisit if second-order estimation on large tensors is slow.
 
 ---
 
