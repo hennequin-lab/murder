@@ -9,7 +9,8 @@
 
    [components] are the basis elements (each with one factor), [group_axes]
    records which axes must be transformed by the same group element (one list
-   per group id), and [label] is the human-readable symmetry specification. *)
+   per group id), [group_ids] is the group id of each entry of [group_axes]
+   (sorted), and [label] is the human-readable symmetry specification. *)
 
 open Base
 
@@ -18,6 +19,7 @@ type t =
   ; symmetric : bool
   ; components : Component.t list
   ; group_axes : Index.t list list
+  ; group_ids : int list
   }
 
 let equal (a : t) (b : t) = Poly.equal a b

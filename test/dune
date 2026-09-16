@@ -9,3 +9,10 @@
  (modules test_compiler support)
  (package symo)
  (libraries base stdio nx nx.core symo windtrap))
+
+(test
+ (name test_orbit)
+ (modules test_orbit support)
+ (package symo)
+ (libraries base stdio nx nx.core symo windtrap)
+ (preprocess (pps ppx_ptree)))

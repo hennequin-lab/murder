@@ -13,4 +13,7 @@ module Symmetry = Symmetry
 module Term = Term
 module Component = Component
 module Basis = Basis
+module Delta = Delta
+module Contract = Contract
 module Compiler = Compiler
+module Orbit = Orbit

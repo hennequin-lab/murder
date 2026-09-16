@@ -145,6 +145,21 @@ let test_symmetric () =
     ~dims:(dims ~left:[ 2; 3 ] ~right:[ 2; 3 ])
     (spec ~left:[ Symmetry.Id; Perm 0 ] ~right:[ Symmetry.Id; Symmetry.Perm 0 ])
 
+(* A spec without [Id] axes has no free axes, so every component carries a
+   scalar factor. The factor must multiply the contraction even though it is
+   not an einsum operand (regression: it was silently dropped). *)
+let test_scalar_factor () =
+  check_basis
+    ~name:"scalar factor"
+    ~dims:(dims ~left:[ 3 ] ~right:[])
+    (spec ~left:[ Symmetry.Perm 0 ] ~right:[ Symmetry.Absent ])
+
+let test_scalar_factor_two_groups () =
+  check_basis
+    ~name:"scalar factors, two groups"
+    ~dims:(dims ~left:[ 2; 3 ] ~right:[])
+    (spec ~left:[ Symmetry.Perm 0; Symmetry.Perm 1 ] ~right:[ Symmetry.Absent ])
+
 let test_compile_manual () =
   let d = dims ~left:[ 2; 3 ] ~right:[ 2; 3 ] in
   let s = spec ~left:[ Symmetry.Id; Perm 0 ] ~right:[ Symmetry.Id; Symmetry.Perm 0 ] in
@@ -171,6 +186,8 @@ let tests =
   ; test "full permutation" test_full_permutation
   ; test "two groups" test_two_groups
   ; test "symmetric merge" test_symmetric
+  ; test "scalar factor" test_scalar_factor
+  ; test "scalar factors, two groups" test_scalar_factor_two_groups
   ; test "manual compilation" test_compile_manual
   ]
 

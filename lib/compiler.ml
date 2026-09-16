@@ -88,7 +88,12 @@ let compile_apply_term ~(dims : int list Sides.t) term =
     in
     let t =
       match factor_labels with
-      | None -> Contract.permute_sum ~labels ~output:final_output t
+      | None ->
+        (* A term with no free axes carries a scalar factor; it must still
+           multiply the contraction. [Nx.mul] broadcasts the scalar, and
+           unlike [Nx.item] it stays traceable under [Rune.jit]. *)
+        assert (is_scalar factor);
+        Nx.mul (Contract.permute_sum ~labels ~output:final_output t) factor
       | Some factor_labels ->
         Contract.binary
           ~labels_a:factor_labels
@@ -284,8 +289,15 @@ let basis_of_spec ~symmetric (symm : Symmetry.t) : Basis.t =
   in
   find_perms left symm.left;
   find_perms right symm.right;
+  (* Sorted by group id: [transform] takes one permutation per entry of
+     [group_axes], and different leaves of the same model must agree on
+     which group each entry belongs to, so a deterministic order is part of
+     the contract. *)
+  let group_ids = Hashtbl.keys unique_perms |> List.sort ~compare:Int.compare in
   let unique_perms =
-    Hashtbl.data unique_perms |> List.map ~f:(List.sort ~compare:Index.compare)
+    Hashtbl.to_alist unique_perms
+    |> List.sort ~compare:(fun (a, _) (b, _) -> Int.compare a b)
+    |> List.map ~f:(fun (_, ids) -> List.sort ids ~compare:Index.compare)
   in
   let possible_ties = List.map unique_perms ~f:partitions in
   let components =
@@ -307,7 +319,12 @@ let basis_of_spec ~symmetric (symm : Symmetry.t) : Basis.t =
     then bundle_transposes components
     else List.map components ~f:(fun t -> Component.Single t)
   in
-  { label = Symmetry.label_of symm; symmetric; components; group_axes = unique_perms }
+  { label = Symmetry.label_of symm
+  ; symmetric
+  ; components
+  ; group_axes = unique_perms
+  ; group_ids
+  }
 
 let compile_basis ~(dims : int list Sides.t) (basis : Basis.t) =
   let components = basis.components in
@@ -330,4 +347,7 @@ let compile ?(symmetric = false) ~dims spec =
   compile_basis ~dims (basis_of_spec ~symmetric spec)
 
 let compile_manual ?(symmetric = false) ~dims ~group_axes components =
-  compile_basis ~dims { Basis.label = "manual"; symmetric; components; group_axes }
+  let group_ids = List.init (List.length group_axes) ~f:Fn.id in
+  compile_basis
+    ~dims
+    { Basis.label = "manual"; symmetric; components; group_axes; group_ids }
