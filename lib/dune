@@ -1,0 +1,4 @@
+(library
+ (name symo)
+ (public_name symo)
+ (libraries base stdio nx nx.io rune))

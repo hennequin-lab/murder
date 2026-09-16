@@ -1,0 +1,2 @@
+; Legacy code kept around for reference: never build or lint it.
+(data_only_dirs old_code)
