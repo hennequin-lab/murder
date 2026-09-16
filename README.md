@@ -35,9 +35,10 @@ under `Sofo.sketch` — swap the driver, not the model.
 
 ## A quick look: `example/linear_simple.ml`
 
-Student–teacher linear regression: draw a teacher `W*`, a student `W`, and
-minibatches `y = x·W*`, then train the student with the SOFO update. This is the
-whole example (run it with `dune exec example/linear_simple.exe`):
+Student–teacher linear regression with ill-conditioned inputs: draw a teacher
+`W*`, a student `W`, and minibatches `y = x·W*`, then train the student with
+the SOFO update. This is the whole example (run it with
+`dune exec example/linear_simple.exe`):
 
 ```ocaml
 open Base
@@ -70,6 +71,8 @@ let student = Model.init ~d_in ~d_out
 let minibatch =
   let open Infix in
   let teacher = Model.init ~d_in ~d_out in
+  (* draw inputs from an ill-conditioned Gaussian;
+     this covariance is the GGN (and also the Hessian in this case)! *)
   let input_cov_sqrt =
     let u, _ = qr (randn float32 [| d_in; d_in |]) in
     let lambda =
@@ -96,7 +99,6 @@ let objective params key =
   let y' = Model.forward params x in
   Sofo.mse y' y
 
-(* JIT compilation machinery for a sketched objective *)
 let sketch_step =
   Rune.jit2 ~device (module O.In) (module O.Out) (O.sketch ~k:n_tangents objective)
 
