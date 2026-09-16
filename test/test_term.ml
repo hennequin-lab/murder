@@ -37,11 +37,11 @@ let test_symmetry_label () =
   let symm = { Sides.left = [ Symmetry.Id; Perm 0 ]; right = [ Symmetry.Perm 0 ] } in
   equal string "IxP1_P1" (Symmetry.label_of symm)
 
-let test_collapse_dims () =
+let test_surrogate_dims () =
   equal
     (list int)
-    [ 3; 1; 2 ]
-    (Symmetry.collapse_dims [ Symmetry.Id; Perm 0; Symmetry.Id ] [ 3; 5; 2 ])
+    [ 3; 2; 2 ]
+    (Symmetry.surrogate_dims ~surrogate_dim:2 [ Symmetry.Id; Perm 0; Symmetry.Id ] [ 3; 5; 2 ])
 
 let sample = term ~ties:[ [ left 0; left 1 ]; [ right 0; right 0 ] ] ~free:[ left 2 ]
 
@@ -102,7 +102,7 @@ let tests =
   ; test "characters run out" test_to_char_out_of_range
   ; test "axis helpers" test_axis_helpers
   ; test "symmetry labels" test_symmetry_label
-  ; test "surrogate dimensions collapse permuted axes" test_collapse_dims
+  ; test "surrogate dimensions keep Id axes and shrink permuted ones" test_surrogate_dims
   ; test "term canonicalization" test_term_canonicalization
   ; test "term transpose" test_term_transpose
   ; test "normalization" test_normalization

@@ -26,6 +26,7 @@ module Single = struct
 
   let dims : int list t = { w = [ 2; 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ] }
+  let surrogate_dim = 2
 end
 
 module O = Orbit.Make (Single)
@@ -36,6 +37,7 @@ module Two_groups = struct
 
   let dims : int list t = { w = [ 2; 2; 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0; Perm 1 ] }
+  let surrogate_dim = 2
 end
 
 module O2 = Orbit.Make (Two_groups)
@@ -47,6 +49,7 @@ module Multi = struct
 
   let dims : int list t = { w = [ 2; 3 ]; v = [ 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ]; v = [ Perm 1 ] }
+  let surrogate_dim = 2
 end
 
 module OM = Orbit.Make (Multi)

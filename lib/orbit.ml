@@ -32,6 +32,11 @@ module type Model = sig
       axis, [Id] marks an untouched ("free") axis, and [Perm i] marks an axis
       transformed by group [i]. *)
   val symmetries : Symmetry.spec list t
+
+  (** The mock dimension a permuted axis takes at surrogate size: the small
+      group the estimator works on (2 by convention). It must be at least 2 so
+      the surrogate group is non-trivial. *)
+  val surrogate_dim : int
 end
 
 module type S = sig
@@ -98,7 +103,14 @@ module Make (M : Model) = struct
 
   let dims = M.dims
   let symmetries = M.symmetries
-  let surrogate_dims = M.map2 Symmetry.collapse_dims M.symmetries M.dims
+
+  (* The surrogate keeps [Id] axes at full size and shrinks permuted axes to
+     the model's non-trivial mock dimension (see {!Symmetry.surrogate_dims}). *)
+  let surrogate_dims =
+    M.map2
+      (fun specs dims -> Symmetry.surrogate_dims ~surrogate_dim:M.surrogate_dim specs dims)
+      M.symmetries
+      M.dims
 
   (* Dense surrogate layout: leaves are concatenated in traversal order; the
      [i]-th leaf occupies [starts.(i) ..] for its own [small_sizes.(i)]

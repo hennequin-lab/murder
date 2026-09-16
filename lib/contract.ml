@@ -24,7 +24,11 @@ let check_unique ~what labels =
   go (List.sort labels ~compare:Char.compare)
 
 (* [binary ~labels_a ~labels_b ~out a b] contracts [a] and [b], keeping the
-   labels [out] (in that order) and summing the rest. *)
+   labels [out] (in that order) and summing the rest. Operands are
+   materialized first: Nx's multi-operand contraction can reshape a
+   non-contiguous intermediate, and a broadcast view (an outer product, a
+   broadcast factor) then trips the [Invalid_argument] on incompatible strides
+   (see PLAN.md §10). *)
 let binary ~labels_a ~labels_b ~out a b =
   check_unique ~what:"left operand" labels_a;
   check_unique ~what:"right operand" labels_b;
@@ -33,7 +37,7 @@ let binary ~labels_a ~labels_b ~out a b =
     ^ "->"
     ^ String.of_char_list out
   in
-  Nx.contiguous (Nx.einsum equation [| a; b |])
+  Nx.contiguous (Nx.einsum equation [| Nx.contiguous a; Nx.contiguous b |])
 
 (* [permute_sum ~labels ~output t] moves the axes labelled [output] (in that
    order) to the front and sums the remaining axes. *)
