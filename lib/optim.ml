@@ -113,7 +113,8 @@ let coordinates
   : Nx.float64_t
   =
   let k = (Nx.shape c).(0) in
-  let u, s, vt = Nx.svd ggn in
+  let u, s, _ = Nx.svd ggn in
+  let vt = Nx.transpose u in
   let gamma =
     match damping with
     | `Absolute value -> value
@@ -128,7 +129,7 @@ let coordinates
            the top instead";
       factor *. smin
   in
-  let damped = Nx.add s (Nx.mul_s (Nx.ones_like s) gamma) in
+  let damped = Nx.add_s s gamma in
   let scale =
     match preconditioner with
     | `Inverse -> damped
