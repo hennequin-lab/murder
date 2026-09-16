@@ -1,10 +1,15 @@
 # SYMO on the modern Raven stack — port plan
 
-Status: M0 (pure front end) and M1 (compiler on Nx) are implemented in
-`symo/lib/` with 18 passing tests (`dune runtest`); M2-M4 are pending; see §11 for the pickup checklist. Two Nx
-`einsum` defects shaped the tensor-side design (§10). `old_code/` is
-reference-only (excluded from the build via `(data_only_dirs old_code)` and
-gitignored); we will **not** try to compile it.
+Status: the port is complete through M5. `symo/lib/` implements the pure
+front end, the compiler on Nx, the orbit machinery, the host estimator, the
+eager Taylor step and its jitted halves, with 34 passing tests
+(`dune runtest`: 10 front end + 10 compiler + 6 orbit + 5 optimizer + 3 jit)
+and a documented public `symo.mli` (`Symo.Make` is the entry point). One
+assumption of the original plan turned out to be wrong (§2.4, §6.3): surrogate
+dimensions shrink permuted axes to a small *non-trivial* mock dimension (2),
+not to 1. Two Nx `einsum` defects shaped the tensor-side design (§10).
+`old_code/` is reference-only (excluded from the build via
+`(data_only_dirs old_code)` and gitignored); we will **not** try to compile it.
 
 Reference for the algorithm:
 
@@ -172,10 +177,11 @@ last three stages touch tensors.
 6. if `~symmetric`, merge a term with its transpose into a `Sum`
    (`bundle_transposes`), else wrap each as a `Single`.
 
-The result is a `Basis.t = { label; symmetric; components; group_axes }` (old
-`Invariance.t`). The old code `print`s the component count here — port without
-the print (or log behind a flag); the count is already recoverable from
-`components`.
+The result is a `Basis.t = { label; symmetric; components; group_axes; group_ids }`
+(old `Invariance.t`). `group_axes` is sorted by group id so a permutation
+assignment is interpretable across leaves. The old code `print`s the
+component count here — port without the print (or log behind a flag); the
+count is already recoverable from `components`.
 
 ### 2.2 From terms to contractions
 
@@ -261,13 +267,18 @@ second order. Working on the surrogate is what makes the small-matrix solve
 cheap: its size is the number of factor coefficients, not the number of
 parameters.
 
-The old code asks the user for `surrogate_dims`. From reading the compiler,
-they are forced to be `dims` with every `Perm` axis set to `1` (the `Id` axes
-survive; `Absent` axes do not exist). Reason: `apply_block` broadcasts the
-uninvolved (`Perm`) left axes to their dimension, so a `Perm` axis left at `n`
-would make a block `n×` too large; the factor space itself only spans the free
-axes. **Plan: derive them (`Symmetry.collapse_dims`) and check the equality
-numerically.** Keep an explicit override for safety.
+The old code asks the user for `surrogate_dims`. Reading the compiler alone
+suggests setting every `Perm` axis to `1` (that is what the first draft of
+this plan assumed, and `Symmetry.collapse_dims` implemented), but that is
+**wrong**: with a one-element surrogate group all basis components coincide,
+the surrogate is degenerate, and the estimated curvature vanishes identically
+(`S_w = 0` even for a basic `[Id; Perm]` weight). The paper
+(`arts/symo/overleaf/main.tex:415`) and the original `symo-compiler`
+repository use a small *non-trivial* mock dimension (2) for permuted axes
+while `Id` axes keep their size. **As built: `Symmetry.surrogate_dims
+~surrogate_dim` derives them, with `surrogate_dim : int` on the model
+(`Orbit.Model`), defaulting to the paper's 2.** The explicit per-leaf form of
+the old API is not kept.
 
 ---
 
@@ -462,7 +473,7 @@ module Index    : sig type t = Left of int | Right of int ...
                         val to_char : ?shifted:bool -> t -> char ... end
 module Symmetry : sig type spec = Absent | Id | Perm of int ...
                         val label_of : spec list Sides.t -> string
-                        val collapse_dims : spec list -> int list -> int list end
+                        val surrogate_dims : surrogate_dim:int -> spec list -> int list -> int list end
 module Term     : sig type t = { ties : Index.t list list; free : Index.t list } ...
                         val normalization : dims:int list Sides.t -> t -> float
                         val coefficient : dims:int list Sides.t -> t
@@ -478,6 +489,7 @@ module Make (M : sig
     include Nx.Ptree.Uniform
     val dims : int list t
     val symmetries : Symmetry.spec list t
+    val surrogate_dim : int (* small mock dimension for permuted axes, 2 *)
   end) : sig
   (* typed view of the tree at the working dtype *)
   module P : Nx.Ptree.S with type t = Nx.float32_t M.t
@@ -511,6 +523,15 @@ The functor is the closest analogue of the old `Symo.Make` and makes the
 If an explicit value-based API is preferred later, `compile` can return a
 record of functions; the internals are the same.
 
+**As built**, the public surface is `symo.mli` itself; the sketch above keeps
+the intent, with these differences: the surrogate convention of §2.4
+(`surrogate_dim` on the model, `Symmetry.surrogate_dims`); `Orbit.S` carries
+`dims`/`symmetries`/`surrogate_dims` and the `First_order`/`Second_order`
+signatures; `Optim.S` (in `optim.ml`) carries `config = Optim.Config.t`,
+`State`, `Mid` and `Compiled`, and `Symo.Make` includes it; the packed walker
+is `ptree`, and the per-leaf aliases are lower-case functions rather than a
+`P` module.
+
 ### 3.7 `Compiled.t` is a value, not a module
 
 `Compiler.compile` returns the record of closures described in §1.4. Tests
@@ -527,7 +548,7 @@ Test-only helpers (random factors, brute-force group enumeration) live in
 | --- | --- | --- |
 | `sides.ml` | 7 | verbatim |
 | `index.ml` | 87 | verbatim; generalise `to_char`, keep `Comparator` |
-| `symmetry.ml` | 23 | renames + `collapse_dims` (`surrogate_dims` derivation) |
+| `symmetry.ml` | 23 | renames + `surrogate_dims` derivation (`surrogate_dim` per model) |
 | `invariance.ml` | 20 | renames (`Basis.t`) |
 | `term.ml` | 174 | pure parts verbatim modulo renames; `coefficient` → `Nx.einsum` |
 | `component.ml` | 35 | pure; `design_matrix` → `Nx.create`/`Nx.float32` |
@@ -574,7 +595,7 @@ throughout the plan; confirmed at implementation start):
 | `First_order.estimate_factors'` | `First_order.factors_of_dense` | from the dense surrogate |
 | `First_order.build_surrogate` | `First_order.dense_of_factors` | |
 | `First_order.expand_surrogate` | `First_order.params_of_dense` | |
-| `First_order.jit_with` | `First_order.compile_with` | |
+| `First_order.jit_with` | `First_order.large` / `First_order.small` | compiled tables, not a function of dims |
 | `Second_order.estimate_factors` | `Second_order.factors_of_pair` | cross-covariance |
 | `Second_order.estimate_factors'` | `Second_order.factors_of_dense` | |
 | `Second_order.build_surrogate` | `Second_order.dense_of_factors` | |
@@ -712,10 +733,12 @@ Sylvester), `Owl.Linalg.D.eig`/`damped_inverse`, `ssvd`.
    specs travel with the parameter tree, so `map2`/`fold2` replace the old
    index bookkeeping (`Int.incr i; P.iter …`). Flat arrays survive only for
    the pair matrix of `Second_order` and the dense surrogate.
-3. **Derive `surrogate_dims`.** `Symmetry.collapse_dims` sets every `Perm`
-   axis to `1`. This removes a user-supplied parameter that must otherwise be
-   kept in sync with `dims` and `symmetries`. Verify against exact orbit
-   averages before deleting the explicit form.
+3. **Derive `surrogate_dims`.** `Symmetry.surrogate_dims ~surrogate_dim`
+   keeps `Id` axes and shrinks each `Perm` axis to `min surrogate_dim dim`.
+   The surrogate group must stay non-trivial (dimension ≥ 2, the paper's
+   convention); collapsing it to 1 makes the surrogate degenerate. The check
+   that caught this: the Newton-step test on an invariant quadratic produced
+   `S_w = 0` and then NaNs.
 4. **Cholesky instead of SVD pinv for the design matrix**, with a compile-time
    jitter/SVD fallback for rank-deficient bases (§2.3). Rationale: `B` is a
    Gram matrix, so Cholesky is the natural factorization; the solves are
@@ -832,27 +855,28 @@ Tests: dense brute force on one tensor for specs `[Id;Perm 0]`,
 Cholesky-vs-SVD equivalence tests. Acceptance: every compiled closure matches
 the exact enumeration.
 
-**M2 — orbit machinery.** `First_order`, `Second_order`, offset/surrogate
-layout, `surrogate_dims` derivation. Tests: single- and multi-leaf trees,
-hidden-permutation and autoencoder specs, `S_n` enumeration for `n ≤ 4` plus
-MC for larger `n`. Acceptance: `orbit_average` and the surrogate round-trips
-within float32 tolerance; `A S Aᵀ = S`.
+**M2 — orbit machinery (done).** `First_order`, `Second_order`, offset/surrogate
+layout. As built, `surrogate_dims` uses a non-trivial mock dimension for
+permuted axes (§2.4), not 1. Tests: single- and multi-leaf trees and multiple
+permutation groups, against exact `S_n` enumeration. Acceptance met:
+`orbit_average` and the surrogate round-trips within float32 tolerance;
+`A S Aᵀ = S`.
 
-**M3 — eager Taylor step.** `Solve` (host `svd64`, damped symmetric powers,
-`hessian_inverse`), `Optim.prepare`/`solve`/`finish`/`step`, pure and
-structured for jit. Tests: invariant quadratics, exchange identity, EMA/
-debias schedules, end-to-end fixture. Acceptance: Newton agreement on
-quadratics; stable training on the fixture.
+**M3 — eager Taylor step (done).** `Solve` (host `svd64`, damped symmetric
+powers, `hessian_inverse`), `Optim.prepare`/`solve`/`finish`/`step`. Tests:
+exchange identity, Newton agreement on an invariant quadratic, EMA/debias
+schedules, end-to-end fixture. Acceptance met.
 
-**M4 — jitted step.** `Compiled.prepare`/`finish`/`step` via `Rune.jit2`,
-state threaded as input/output leaves. Tests: eager/jit parity, no
-`Jit_error`, no retracing across iterations. Acceptance: bitwise-ish parity
-over 100 steps and a measurable speedup on a larger fixture.
+**M4 — jitted step (done).** `Compiled.create`/`step` via `Rune.jit2`, state
+threaded as input/output leaves. Tests: 50-step eager/jit parity, state
+threading, no `Jit_error`, and a replay-not-retrace timing check. Measured on a
+32×16 two-layer fixture: first compiled step ~3.6 s (trace + compile), later
+steps ~1.7 ms against ~5 ms eager.
 
-**M5 — polish and performance.** Write `symo.mli` with the doc style of
-`sofo.mli`; memoise `basis_of_spec` per `(spec, dims)`; profile the step and
-decide between the solve and precomputed-inverse variants of §2.3; optional
-`donate`/beam tuning. Examples live outside the library, later.
+**M5 — polish and performance (done).** `symo.mli` with sofo-style docs;
+`basis_of_spec` memoized per `(symmetric, spec)`; the solve-versus-inverse
+question settled in favour of the traceable triangular solves (§11). Examples
+still live outside the library.
 
 ---
 
@@ -868,8 +892,9 @@ decide between the solve and precomputed-inverse variants of §2.3; optional
    inspection. Degenerate dims are the concrete case to test.
 3. **`ties_one_side`.** Ported as an empirical filter; keep the old comment and
    add a test showing what breaks if it is removed.
-4. **`surrogate_dims`** derivation needs numerical confirmation before the
-   explicit user argument is removed.
+4. **`surrogate_dims`** (resolved). Derived from `dims` and the model's
+   `surrogate_dim`; permuted axes take a small non-trivial mock dimension
+   (2), not 1 (§2.4).
 5. **Combinatorial compile cost.** Partition enumeration is factorial in the
    number of tied axes; second order compiles `n²` entities. Memoisation per
    `(spec, dims)` and a component-count warning are probably needed for
@@ -923,118 +948,90 @@ Workaround (implemented, `lib/delta.ml`, `lib/contract.ml`):
 - `Delta.tensor ~order dim` builds the tie tensor;
 - `Contract.binary` contracts exactly two operands and materializes the result;
 - `Contract.permute_sum` does the final permutation and summation manually;
-- the compiler contracts deltas one at a time, tracking labels as characters.
+- the compiler contracts deltas one at a time, tracking labels as characters;
+- both operands of a contraction are materialized (`Nx.contiguous`) first: the
+  reshape failure of defect 2 also fires on non-contiguous *inputs* (outer
+  products and broadcast factors), not only on intermediates.
 
 Every contraction is binary and every operand is contiguous, so the jit story
 is unchanged: `einsum` still lowers to primitives, and `contiguous` is a
 no-op where Nx would otherwise fail.
 
-Status: M0 and M1 are done. `symo/lib/` now has `Sides`, `Index`, `Symmetry`,
-`Term`, `Component`, `Basis`, `Delta`, `Contract` and `Compiler`, with 18 tests
-in `symo/test/`, all green. Next: M2 (`First_order`/`Second_order` orbit
-machinery), then the `Taylor` step and its `Rune.jit` halves.
+Status: superseded by §11 — the whole port is now implemented; this section
+keeps the defect reproductions that shaped `Delta`/`Contract`.
 
 ---
 
-## 11. Pickup notes for M2-M4 (next session)
+## 11. Port status and deviations from the plan
 
-**State.** Commit `cd1ecf5` on `main` (tree clean): scaffold, plan, the symbolic
-front end and the compiler. `cd symo && dune build @check && dune runtest` is
-green (10 front-end + 8 compiler tests). Nothing after M1 exists yet.
+**Status.** The port is complete through M5. `symo/lib/` implements the pure
+front end (`Sides`, `Index`, `Symmetry`, `Term`, `Component`, `Basis`), the
+compiler (`Delta`, `Contract`, `Compiler`), the orbit machinery (`Orbit`), the
+host estimator (`Solve`) and the optimizer with its jitted halves (`Optim`).
+`dune runtest` is green: 34 tests (10 front end + 10 compiler + 6 orbit +
+5 optimizer + 3 jit). The public surface is `symo.mli`, with `Symo.Make (M)`
+as the entry point; `basis_of_spec` is memoized per `(symmetric, spec)`.
 
-**Facts and traps**
+The final `Make (M)` result is:
 
-- `symo/` is its own git repo inside the `raven-and-friends` dune workspace.
-  Build from `symo/`; dune walks up to the workspace root and uses the shared
-  `dune.lock`. Local packages `nx`, `rune`, `ppx_ptree` come from `raven/`.
-- Never build `old_code/`: it is `(data_only_dirs)` and gitignored.
-- pi-lens checks OCaml files at write time. A freshly created file reports
-  "No config found for file … Try calling `dune build`", and that stale finding
-  stays cached until the file is written again. It is a false alarm: run the
-  build, then make a trivial edit to the file to refresh the cache.
-- The compiler never calls `Nx.einsum` directly: ties go through
-  `Delta.tensor` + `Contract.binary`/`permute_sum` (\u00a710). Keep it that way
-  until the two Nx defects are fixed upstream.
+- `ptree : Nx.Ptree.S` over `Nx.float32_t M.t` (for `Rune.grad`/`Rune.jit`);
+- `Orbit.S`: `dims`, `symmetries`, `surrogate_dims`, `First_order`,
+  `Second_order`;
+- `Optim.S`: `type config = Optim.Config.t`, `State`/`Mid` (uniform records),
+  `init`, `prepare`, `solve`, `finish`, `step`, `debug_save`, `Compiled`.
 
-**Module map (what to build on)**
+The model module supplies `dims : int list t`, `symmetries : spec list t` and
+`surrogate_dim : int` (`[@@deriving ptree]` for the traversals).
 
-| module | role |
-| --- | --- |
-| `lib/sides.ml`, `index.ml`, `symmetry.ml` | axis bookkeeping; `Sides.t`; `Absent/Id/Perm`; `collapse_dims` |
-| `lib/term.ml` | `{ ties; free }`, `sort`/`equal`/`transpose`, `normalization`, `inner_product`, `coefficient` |
-| `lib/component.ml` | `Single`/`Sum`, `inner_product`, `coefficient`, `design_matrix` |
-| `lib/basis.ml` | the symbolic basis (`components`, `group_axes`) |
-| `lib/delta.ml`, `lib/contract.ml` | Kronecker deltas; pairwise contiguous contractions |
-| `lib/compiler.ml` | `basis_of_spec`, `compile`, `compile_manual`; `apply_block`, `dense_block`, `estimate_factors`, `transform` |
-| `test/` | windtrap suites; `support.ml` has the brute-force references |
+**What changed relative to this plan.**
 
-`Symmetry.collapse_dims` exists but is not used yet: M2 should use it to derive
-`surrogate_dims`. `lib/dune` does not yet enable `ppx_ptree`; M2 needs
-`(preprocess (pps ppx_ptree))`.
+1. **Surrogate dimensions (corrected).** §2.4 and §6.3 claimed
+   `surrogate_dims` are `dims` with every `Perm` axis set to 1. That is wrong:
+   with a one-element surrogate group the distinct basis components coincide
+   and the estimated curvature vanishes identically (`S_w = 0` even for a
+   basic `[Id; Perm]` weight, so the Newton step is NaN). The paper
+   (`arts/symo/overleaf/main.tex:415`) and the original `symo-compiler`
+   repository use a small *non-trivial* mock dimension (2) for permuted axes,
+   keeping `Id` axes at full size. `Symmetry.surrogate_dims ~surrogate_dim`
+   replaces `collapse_dims`, and `Orbit.Model` gained `val surrogate_dim : int`.
+   The M3 Newton test is the check that caught the degeneracy.
 
-**M2 — orbit machinery (`lib/orbit.ml`)**
+2. **`Contract.binary` materializes its operands.** The second Nx `einsum`
+   defect of §10 (reshaping a non-contiguous intermediate) also fires when an
+   *input* is a broadcast view — which the larger surrogates routinely produce
+   (outer products). Every contraction now starts from `Nx.contiguous`
+   operands.
 
-Reference: `old_code/symo.ml:115` (`First_order`) and `:205` (`Second_order`).
+3. **Scalar factors.** `compile_apply_term` dropped the factor of a component
+   with no free axes; the old code multiplied it (`f normaliser * factor * r`).
+   Fixed with a broadcasting `Nx.mul` (no `Nx.item`, so it stays traceable) and
+   covered by compiler regression tests.
 
-1. `Make (M : Nx.Ptree.Uniform)` with `dims : int list M.t` and
-   `symmetries : Symmetry.spec list M.t`; instantiate the packed walker with
-   `Nx.Ptree.instantiate (module M)` at `Nx.float32_t`; derive
-   `surrogate_dims` by `M.map2` of `Symmetry.collapse_dims` over symmetries and
-   dims.
-2. `First_order`: compile per-leaf `Compiler.t` trees at `dims` (`large`) and
-   at `surrogate_dims` (`small`); then `factors_of_params` (`M.map2` with
-   `estimate_factors (\`Outer_product (x, ones))`), `dense_of_factors` (`M.fold`
-   concatenating `dense_block` in traversal order), `factors_of_dense` (split at
-   precomputed offsets), `params_of_dense`, `orbit_average`.
-3. `Second_order`: pair matrix `Compiler.t array M.t` (row per leaf, array over
-   the flat index of the second leaf); `factors_of_pair`, `factors_of_dense`,
-   `dense_of_factors ~symmetric` (block matrix, `0.5·(X+Xᵀ)` when symmetric),
-   `apply ~symmetric ~factors v` — for leaf `i`, sum `c_ij.apply_block` over
-   `j`; leaf order comes from `M.fold`.
-4. Tests `test/test_orbit.ml`: exact `S_n` enumeration (n ≤ 4) as the oracle —
-   build the orbit average by iterating all permutations and calling
-   `Compiler.transform`, compare with `orbit_average` and the surrogate
-   round-trips; Monte-Carlo for larger n; check `A S Aᵀ = S` on trees.
+4. **`Solve.symmetric_power` and zero spectra.** A negative power of a zero
+   singular value is taken to be zero (pseudo-inverse semantics) rather than
+   `inf`, so a zero surrogate yields a zero direction instead of NaN.
 
-**M3 — eager `Taylor` step**
+5. **`Second_order.dense_of_factors ~symmetric:true` symmetrizes** the
+   assembled block with `0.5·(X + Xᵀ)`. Old Taylor called `build_surrogate`
+   without the symmetric flag, so it did not symmetrize explicitly; its factors
+   were estimated with the symmetric basis, so the difference is float-level,
+   and the explicit form is what §4.2 describes.
 
-Reference: `old_code/symo.ml:394` (`Taylor`).
+6. **The estimator solve stays host-side.** The design matrices are
+   #components × #components (a handful of rows), so the two triangular solves
+   per factor estimation are cheap and do not bloat the trace; the
+   precomputed-inverse variant of §2.3 is not needed. Measured on the 32×16
+   two-layer fixture: the first compiled step costs ~3.6 s (trace + compile),
+   later steps ~1.7 ms against ~5 ms eager.
 
-- `lib/solve.ml`: `svd64`, damped symmetric powers,
-  `hessian_inverse ~damping sigma_w sigma_g`. Host-side only; `Rune.jit`
-  refuses svd/eig.
-- `lib/optim.ml`: `config`, `state` (theta and g_avg trees, `sigma_g_avg` and
-  the two beta counters as tensors), `init`, and the `prepare` / `solve` /
-  `finish` split of §3.5, with the eager `step` composing them. Keep
-  `Taylor`'s `max 1e-4 (beta *. config.beta)` floor.
-- Tests: invariant quadratic (`S_g ≈ H S_w H`), EMA/debias schedules, Newton
-  agreement. No `Models` in lib.
+**Deferred / still open.**
 
-**M4 — jitted step**
-
-- `Compiled.prepare` / `Compiled.finish` via `Rune.jit2`, with state threaded
-  as input/output leaves; `Compiled.step` = prepare → host `hessian_inverse` →
-  finish. Verify eager/jit parity, no `Jit_error`, no retracing; `Contract`
-  keeps every operand contiguous and every einsum binary.
-
-**Decisions to keep**
-
-- `Taylor` only; no `Original`/`Global`; no models in the library.
-- The §4.1 renames are in effect (`Compiler.compile`, `apply_block`,
-  `dense_block`, `estimate_factors`, `Term.coefficient`, …).
-- float32 tensors; float64 only inside the compile-time Cholesky and the host
-  SVD.
-- `surrogate_dims` derived, not user-supplied.
-
-**Open questions deferred to M2/M3**
-
-- `ties_one_side` is ported as-is: add the "what breaks without it" test.
-- Partition enumeration is factorial; memoize `basis_of_spec` per
-  `(spec, dims)` if compile time hurts.
-- `learning_rate : float option` ("measure only"): keep, or split
-  `direction`/`shift`.
-- Memory: `Term.coefficient`'s `Outer_product` case materializes the outer
-  product; revisit if second-order estimation on large tensors is slow.
+- `ties_one_side` remains the empirical filter of the original; the "what
+  breaks without it" test is still missing.
+- `learning_rate : float option` ("measure only") is kept.
+- `donate`/`beam` tuning and examples outside the library.
+- `Pinned`/`Free`/`Bounded` parameter constraints (§6.6).
+- A fully jitted estimator (Newton–Schulz) remains a non-goal.
 
 ---
 

@@ -16,12 +16,16 @@
 
 open Base
 
-type config =
-  { learning_rate : float option
-  ; beta_1 : float
-  ; beta_2 : float
-  ; damping : float
-  }
+module Config = struct
+  type t =
+    { learning_rate : float option
+    ; beta_1 : float
+    ; beta_2 : float
+    ; damping : float
+    }
+end
+
+type config = Config.t
 
 (* [bump_tensor beta_t beta] decays a bias-correction counter by [beta] with a
    floor, so the debiasing denominator never reaches zero. *)
@@ -31,7 +35,66 @@ let bump_tensor beta_t beta =
 let ema ~beta x avg = Nx.add (Nx.mul_s avg beta) (Nx.mul_s x (1. -. beta))
 let debias beta_t x = Nx.div x (Nx.sub (Nx.scalar Nx.float32 1.) beta_t)
 
-module Make (M : Nx.Ptree.Uniform) (O : Orbit.S with type 'a t = 'a M.t) = struct
+module type S = sig
+  type 'a tree
+
+  type config = Config.t
+
+  module State : sig
+    type 'a t =
+      { theta : 'a tree
+      ; g_avg : 'a tree
+      ; sigma_g_avg : 'a
+      ; beta_1_t : 'a
+      ; beta_2_t : 'a
+      }
+
+    include Nx.Ptree.Uniform with type 'a t := 'a t
+  end
+
+  type state = Nx.float32_t State.t
+
+  module Mid : sig
+    type 'a t =
+      { theta : 'a tree
+      ; g_avg : 'a tree
+      ; g_avg_debias : 'a tree
+      ; sigma_w : 'a
+      ; sigma_g : 'a
+      ; sigma_g_avg : 'a
+      ; beta_1_t : 'a
+      ; beta_2_t : 'a
+      }
+
+    include Nx.Ptree.Uniform with type 'a t := 'a t
+  end
+
+  type mid = Nx.float32_t Mid.t
+
+  val init : config:config -> Nx.float32_t tree -> state
+  val prepare : config:config -> state:state -> grads:Nx.float32_t tree -> mid
+  val solve : damping:float -> mid -> Nx.float32_t
+  val finish : config:config -> mid:mid -> Nx.float32_t -> state
+  val step : config:config -> state:state -> grads:Nx.float32_t tree -> state
+  val debug_save : string -> Nx.float32_t -> unit
+
+  module Compiled : sig
+    type t
+
+    val create : config:config -> t
+
+    val step : t -> config:config -> state:state -> grads:Nx.float32_t tree -> state
+  end
+end
+
+module Make (M : Nx.Ptree.Uniform) (O : Orbit.S with type 'a t = 'a M.t) :
+  S with type 'a tree = 'a M.t = struct
+  type 'a tree = 'a M.t
+
+  type config = Config.t
+
+  open Config
+
   module State = struct
     type 'a t =
       { theta : 'a M.t

@@ -98,7 +98,7 @@ let split_flat starts dense =
   Nx.array_split ~axis:0 (`Indices (List.tl_exn (Array.to_list starts))) dense
   |> Array.of_list
 
-module Make (M : Model) = struct
+module Make (M : Model) : S with type 'a t = 'a M.t = struct
   type 'a t = 'a M.t
 
   let dims = M.dims

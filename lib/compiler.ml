@@ -265,7 +265,7 @@ let ties_one_side ids =
      rejected (empirically: they break the size invariance of the surrogate);
    - when symmetry is required, a term and its transpose are merged into one
      component. *)
-let basis_of_spec ~symmetric (symm : Symmetry.t) : Basis.t =
+let basis_of_spec_uncached ~symmetric (symm : Symmetry.t) : Basis.t =
   let open Symmetry in
   let is_first_order = Poly.(symm.right = [ Absent ] || symm.left = [ Absent ]) in
   let left i = Index.Left i in
@@ -325,6 +325,33 @@ let basis_of_spec ~symmetric (symm : Symmetry.t) : Basis.t =
   ; group_axes = unique_perms
   ; group_ids
   }
+
+(* The basis depends only on the symmetry specification — not on the
+   dimensions — so it is memoized: second-order compilation asks for n²
+   specifications, and repeated layer shapes revisit the same ones (all
+   diagonal pairs, every pair of identical layers, and the surrogate
+   compilation of every basis). Only the enumeration is shared; the closures
+   and the design matrix are rebuilt per [dims]. *)
+let basis_cache : (string, Basis.t) Hashtbl.t = Hashtbl.create (module String)
+
+let basis_cache_key ~symmetric (symm : Symmetry.t) =
+  let side specs =
+    List.map specs ~f:(function
+      | Symmetry.Absent -> "A"
+      | Symmetry.Id -> "I"
+      | Symmetry.Perm i -> "P" ^ Int.to_string i)
+    |> String.concat ~sep:","
+  in
+  String.concat ~sep:"|" [ (if symmetric then "sym" else "asym"); side symm.left; side symm.right ]
+
+let basis_of_spec ~symmetric spec =
+  let key = basis_cache_key ~symmetric spec in
+  match Hashtbl.find basis_cache key with
+  | Some basis -> basis
+  | None ->
+    let basis = basis_of_spec_uncached ~symmetric spec in
+    Hashtbl.set basis_cache ~key ~data:basis;
+    basis
 
 let compile_basis ~(dims : int list Sides.t) (basis : Basis.t) =
   let components = basis.components in

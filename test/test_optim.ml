@@ -111,8 +111,8 @@ let test_newton_step () =
   let w = Nx.sub delta (Nx.mean ~axes:[ 1 ] ~keepdims:true delta) in
   let theta = Nx.add theta_star w in
   let g = Nx.matmul (Nx.mul_s a 3.0) w in
-  let config =
-    { Optim.learning_rate = Some 1.0; beta_1 = 0.0; beta_2 = 0.0; damping = 1e-6 }
+  let config : Q.config =
+    { learning_rate = Some 1.0; beta_1 = 0.0; beta_2 = 0.0; damping = 1e-6 }
   in
   let state = Q.init ~config { Quad.w = theta } in
   let state = Q.step ~config ~state ~grads:{ Quad.w = g } in
@@ -122,8 +122,8 @@ let test_newton_step () =
   is_true ~msg:"loss decreased" Float.(after < before);
   check ~msg:"Newton step lands on the minimizer" ~tol:2e-3 theta_star state.theta.w;
   (* [learning_rate = None] measures without shifting the parameters. *)
-  let measure =
-    { Optim.learning_rate = None; beta_1 = 0.0; beta_2 = 0.0; damping = 1e-6 }
+  let measure : Q.config =
+    { learning_rate = None; beta_1 = 0.0; beta_2 = 0.0; damping = 1e-6 }
   in
   let state' = Q.step ~config:measure ~state:(Q.init ~config:measure { Quad.w = theta }) ~grads:{ Quad.w = g } in
   check ~msg:"measure-only keeps theta" ~tol:1e-6 theta state'.theta.w
@@ -150,8 +150,8 @@ let test_end_to_end () =
     ; w2 = Nx.Rng.normal (Nx.Rng.key 10) Nx.float32 [| 1; 3 |]
     }
   in
-  let config =
-    { Optim.learning_rate = Some 0.5; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+  let config : M.config =
+    { learning_rate = Some 0.5; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
   in
   let state = M.init ~config params in
   let loss params = Nx.item [] (mlp_loss params) in

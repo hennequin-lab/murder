@@ -37,8 +37,8 @@ let mlp_loss (p : Nx.float32_t Mlp.t) =
   let d = Nx.sub out ys in
   Nx.mean (Nx.mul d d)
 
-let config =
-  { Optim.learning_rate = Some 0.3; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+let config : M.config =
+  { learning_rate = Some 0.3; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
 
 let params () =
   { Mlp.w1 = Nx.Rng.normal (Nx.Rng.key 9) Nx.float32 [| 3; 2 |]
