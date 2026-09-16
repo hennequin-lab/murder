@@ -98,21 +98,93 @@ let shift (type p) (module P : Nx.Ptree.S with type t = p) ~lr (params : p) (dw 
     params
     dw
 
+(* ── whitening the sampled basis ─────────────────────────────────────────── *)
+
+(* [gram (module P) ~k dirs] is Θ Θᵀ: the [k×k] Gram matrix of the tangents,
+   accumulated leaf by leaf — each float leaf contributes its own outer product
+   rather than a materialized [k×P] matrix. Leaves are promoted to float64
+   first, so the matrix does not depend on the model's dtypes, and a leaf that
+   cannot carry a direction is zero and contributes nothing. *)
+let gram (type p) (module P : Nx.Ptree.S with type t = p) ~k (dirs : p) : Nx.float64_t =
+  let z = ref (Nx.zeros Nx.float64 [| k; k |]) in
+  P.iter
+    (fun leaf ->
+       if Nx_core.Dtype.is_float (Nx.dtype leaf)
+       then (
+         let m =
+           Nx.reshape [| k; Nx.numel leaf / k |] (Nx.contiguous (Nx.cast Nx.float64 leaf))
+         in
+         z := Nx.add !z (Nx.matmul m (Nx.transpose m))))
+    dirs;
+  !z
+
+(* The whitening transform Q = Z^{-1/2} of a Gram matrix, from its SVD: the
+   matrix that turns the tangents a sketch was drawn along into an orthonormal
+   basis. [Nx.svd] may return a [vt] that is not [u]'s transpose even though Z
+   is symmetric — the singular vectors of a degenerate spectrum are defined
+   only up to a rotation within it — so the second factor is [u]'s own
+   transpose, and Q is the symmetric inverse square root: [Q G̃ Qᵀ] and the
+   step's [Θ (Q z)] are then the same change of basis, which they would not be
+   for [u·s^{-1/2}·vt]. [coordinates] makes the same choice for the same
+   reason.
+
+   A rank-deficient Gram has no inverse square root and no arithmetic will
+   produce one: some drawn lanes span nothing, which is a statement about [k]
+   against the number of parameters, so it raises. *)
+let inverse_sqrt (z : Nx.float64_t) : Nx.float64_t =
+  let k = (Nx.shape z).(0) in
+  let u, s, _ = Nx.svd z in
+  let smin = Nx.item [ k - 1 ] s
+  and smax = Nx.item [ 0 ] s in
+  if smin <= 1e-12 *. smax
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Sofo.Optim: the drawn directions cannot be whitened — their Gram matrix is \
+          rank-deficient (s_min/s_max = %.2g), so %d orthonormal directions do not fit \
+          in what they span; whitening needs at least as many parameters that can carry \
+          a direction as there are lanes."
+         (if smax = 0.0 then 0.0 else smin /. smax)
+         k);
+  let inv_sqrt = Nx.div (Nx.ones_like s) (Nx.sqrt s) in
+  Nx.matmul (Nx.mul u (Nx.reshape [| 1; k |] inv_sqrt)) (Nx.transpose u)
+
 (* ── the update (Alg. 1, lines 10–12) ────────────────────────────────────── *)
 
 (* z = U (S + γ I)^{-p} Vᵀ C, from the SVD of the sketched GGN, with γ set by
    the damping mode and p by the preconditioner (1, Alg. 1's; or 1/2, which
    caps what a poorly resolved direction can contribute). G̃ is symmetric
    positive semi-definite, so V = U up to signs and an eigendecomposition would
-   do; the SVD is what the algorithm prescribes and what is used here. *)
+   do; the SVD is what the algorithm prescribes and what is used here.
+
+   [gram] whitens before it solves. The sketched GGN is the curvature of the
+   sampled subspace expressed in whatever basis the draw happened to produce,
+   so it says what the loss does only once that basis is orthonormal:
+   G̃ ← Q G̃ Qᵀ and C ← Q C with Q = (ΘΘᵀ)^{-1/2}, and the coordinates come back
+   through Qᵀ so that [apply] of them is the step. The whitening belongs here,
+   with the Gram handed in, rather than on the directions themselves: the SVD
+   that produces Q cannot run inside a jitted step, while this one is host-side
+   by construction. *)
 let coordinates
       ?(damping : damping = `Relative_from_top 1e-6)
       ?(preconditioner : preconditioner = `Inverse)
+      ?gram
       (ggn : Nx.float64_t)
       (c : Nx.float64_t)
   : Nx.float64_t
   =
   let k = (Nx.shape c).(0) in
+  let q = Option.map inverse_sqrt gram in
+  let ggn =
+    match q with
+    | None -> ggn
+    | Some q -> Nx.matmul q (Nx.matmul ggn (Nx.transpose q))
+  in
+  let c =
+    match q with
+    | None -> c
+    | Some q -> Nx.matmul q c
+  in
   let u, s, _ = Nx.svd ggn in
   let vt = Nx.transpose u in
   let gamma =
@@ -136,7 +208,12 @@ let coordinates
     | `Inverse_sqrt -> Nx.sqrt damped
   in
   let rhs = Nx.matmul vt (Nx.reshape [| k; 1 |] (Nx.contiguous c)) in
-  Nx.reshape [| k |] (Nx.matmul u (Nx.div rhs (Nx.reshape [| k; 1 |] scale)))
+  let z = Nx.reshape [| k |] (Nx.matmul u (Nx.div rhs (Nx.reshape [| k; 1 |] scale))) in
+  (* Back to the sketch's own coordinates, where [apply] contracts them: the
+     step is Θ (Q z). *)
+  match q with
+  | None -> z
+  | Some q -> Nx.matmul (Nx.transpose q) z
 
 let update
       (type p)
@@ -148,7 +225,8 @@ let update
       (params : p)
   : p
   =
-  let dw = sk.apply (coordinates ?damping ?preconditioner sk.ggn sk.c) in
+  let g = gram (module P) ~k:sk.k sk.dirs in
+  let dw = sk.apply (coordinates ?damping ?preconditioner ~gram:g sk.ggn sk.c) in
   shift (module P) ~lr params dw
 
 (* ── the eager step ──────────────────────────────────────────────────────── *)
@@ -284,8 +362,9 @@ module Compiled (P : Nx.Ptree.S) (Aux : Nx.Ptree.S) = struct
     : P.t * state
     =
     let k = (Nx.shape o.c).(0) in
+    let g = gram (module P) ~k o.dirs in
     let dw =
-      apply (module P) ~k o.dirs (coordinates ?damping ?preconditioner o.ggn o.c)
+      apply (module P) ~k o.dirs (coordinates ?damping ?preconditioner ~gram:g o.ggn o.c)
     in
     shift (module P) ~lr params dw, next st
 

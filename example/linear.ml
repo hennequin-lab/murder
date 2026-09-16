@@ -178,11 +178,14 @@ let run config =
       let update_ms = (Unix.gettimeofday () -. t0) *. 1e3 in
       (* the sketch's second-order model of the step just taken; exact for this
          loss, so the residual should sit at rounding. Re-solving for the
-         coordinates outside the clock keeps the timed region to one solve. *)
+         coordinates outside the clock keeps the timed region to one solve, and
+         the Gram is what makes this the step the update took: the solve is the
+         whitened one, and [O.update] whitens with the same matrix. *)
       let z =
         coordinates
           ~damping:config.damping
           ~preconditioner:config.preconditioner
+          ~gram:(gram (module Params) ~k:config.k out.O.dirs)
           out.O.ggn
           out.O.c
       in

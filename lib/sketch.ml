@@ -48,6 +48,11 @@ type 'p t =
   ; ggn : Nx.float64_t
     (** The sketched generalized Gauss-Newton matrix ΘᵀJᵀHJΘ, shape [k;k],
         accumulated in float64 and symmetrized. *)
+  ; dirs : 'p
+    (** Θ, the directions the sketch was measured along: one [k]-lane batch per
+        float leaf, and zero lanes where no direction can be drawn. The basis
+        is the draw's own — the update whitens it (see [Optim.coordinates]),
+        so nothing downstream has to assume it is orthonormal. *)
   ; apply : Nx.float64_t -> 'p
     (** [apply z] is Θz for z : [k] — the parameter-space direction the
         sketch's coordinates denote, with each leaf in its parameter's
@@ -157,6 +162,7 @@ let run
     ; loss = Nx.reshape [||] (Nx.cast Nx.float64 y)
     ; c = Nx.reshape [| k |] (Nx.cast Nx.float64 dy)
     ; ggn = Collector.ggn st
+    ; dirs = thetas
     ; apply =
         (fun z ->
           if Nx.shape z <> [| k |]

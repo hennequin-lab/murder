@@ -1034,6 +1034,24 @@ parameter structures, hyperparameters passed per step.
   the exact solve wants η = 1 and the square root η ≈ 0.1, with η = 1
   diverging. The quadratic-model check (residual 1e-15) holds for either, so
   the difference is the step's scaling, not the arithmetic.
+- **The solve whitens the sampled basis** before it damps or inverts anything:
+  from the Gram of the drawn tangents — a leafwise reduction, `Optim.gram` —
+  it takes Q = (ΘΘᵀ)^{-1/2}, forms Q G̃ Qᵀ and Q C, and brings the coordinates
+  back through Qᵀ, so the step is Θ (Q z): a k×k mixing of the *coordinates*,
+  not of the k×P tangent leaves. Whitening belongs here rather than in the
+  sampler because the SVD that produces Q cannot run inside a jitted step
+  (`Rune.jit` refuses `svd`, and reading a traced value to get around it is
+  refused too), while the update is host-side by construction — so the compiled
+  step keeps drawing raw directions from the key it is handed, and the cost of
+  an orthonormal basis is one extra k×k SVD per step. What it buys is that the
+  damped step is a statement about the *subspace*: with damping on, a step must
+  not change because the draw's lanes came out 10× longer, and it does not, and
+  λ·s_max is then relative to the curvature rather than to the draw. Q is the
+  symmetric inverse square root (U S^{-1/2} Uᵀ from the Gram's SVD, with the
+  returned `vt` unused, as in the solve below): U S^{-1/2} Vᵀ is a different
+  change of basis — the two agree only when the SVD's factors are exact
+  transposes, which a degenerate spectrum does not promise — and the step's
+  Θ (Q z) would then not be the step that Q G̃ Qᵀ and Q C solved for.
 - **`update`** is the step: solve, contract (`apply`, which takes the
   directions as a value because a compiled step cannot return the record's
   closure), shift by η. Non-float leaves pass through untouched and each float
@@ -1063,10 +1081,12 @@ parameter structures, hyperparameters passed per step.
   numbers — survives a compiled deployment: a trace cannot read values, but
   the host can, on what the trace returned.
 
-`sketch` itself gained nothing for this: the eager update uses the record's
+`sketch` itself gained one field for this — the directions it drew, since the
+update needs their Gram — and nothing else: the eager update uses the record's
 `apply`, the compiled one uses the directions it hands back, and both wrap the
-same solve and shift. The split is forced by the hardware rather than chosen —
-the sketching half differentiates and compiles, `Nx.svd` does neither.
+same solve, the same whitening and the same shift. The split is forced by the
+hardware rather than chosen — the sketching half differentiates and compiles,
+`Nx.svd` does neither.
 
 **Numbers** (`example/linear.ml`, now driven entirely by the library and ~40
 lines shorter; P = 256, K = 32, CPU): trace + compile ≈ 21 ms with a warm

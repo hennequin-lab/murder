@@ -26,6 +26,7 @@ type 'p sketch = 'p Sketch.t =
   ; loss : Nx.float64_t
   ; c : Nx.float64_t
   ; ggn : Nx.float64_t
+  ; dirs : 'p
   ; apply : Nx.float64_t -> 'p
   ; diagnostics : diagnostics
   }

@@ -320,6 +320,81 @@ let test_update_uses_damping () =
     (max_abs (Nx.sub damped.w p.w) < max_abs (Nx.sub undamped.w p.w));
   is_true ~msg:"damped step still decreases the loss" (Nx.item [] sk.loss > 0.0)
 
+(* ── whitening the sampled basis ─────────────────────────────────────────── *)
+
+let test_gram_of_constant_directions () =
+  (* ΘΘᵀ is a leafwise reduction: every float leaf contributes its own outer
+     product, its dtype does not matter, and a leaf that cannot carry a
+     direction contributes nothing. With every lane the same, each entry is the
+     number of parameters that carry a direction. *)
+  let k = 3 in
+  let dirs =
+    { w = Nx.ones f64 [| k; d; o |]
+    ; v = Nx.ones f32 [| k; d; 1 |]
+    ; tag = Nx.zeros Nx.int32 [| k; 2 |]
+    }
+  in
+  let z = Sofo.Optim.gram (module Params) ~k dirs in
+  check_arr ~msg:"Z = P·J" (Array.make (k * k) (float_of_int ((d * o) + d))) z
+
+(* A per-lane rescaling of a direction tree: the same subspace, in a different
+   basis. *)
+let stretch (type q) (module Q : Nx.Ptree.S with type t = q) (s : Nx.float64_t) (t : q)
+  : q
+  =
+  let k = Nx.numel s in
+  Q.map
+    (fun leaf ->
+       if Nx_core.Dtype.is_float (Nx.dtype leaf)
+       then (
+         let shape =
+           Array.append [| k |] (Array.make (Array.length (Nx.shape leaf) - 1) 1)
+         in
+         Nx.cast (Nx.dtype leaf) (Nx.mul (Nx.reshape shape s) (Nx.cast Nx.float64 leaf)))
+       else leaf)
+    t
+
+let test_whitening_makes_the_step_independent_of_the_basis () =
+  (* A step is a vector of parameter space, so it can depend on the subspace the
+     directions span and not on the basis they were drawn in. Whitening is what
+     makes that true once damping is in play: the damped solve of the raw GGN is
+     a different step for a different draw, because s_max is then a property of
+     the draw rather than of the curvature. Here the two draws span exactly the
+     same subspace and differ only in their lanes' lengths. *)
+  let p = params () in
+  let s = Nx.create f64 [| k |] [| 1.0; 2.0; 4.0 |] in
+  let raw k p = Sofo.Optim.directions (module Params) ~key ~k p in
+  let stretched k p = stretch (module Params) s (raw k p) in
+  let damping = `Relative_from_top 0.1 in
+  let sk_raw = Sofo.sketch (module Params) ~k ~sketch_sampler:raw loss p in
+  let sk_str = Sofo.sketch (module Params) ~k ~sketch_sampler:stretched loss p in
+  let a = Sofo.Optim.update (module Params) ~lr:1.0 ~damping sk_raw p in
+  let b = Sofo.Optim.update (module Params) ~lr:1.0 ~damping sk_str p in
+  check_arr ~eps:1e-9 ~msg:"whitened step, float64 leaf" (to_arr a.w) b.w;
+  check_arr ~eps:1e-6 ~msg:"whitened step, float32 leaf" (to_arr a.v) b.v;
+  (* and the same two draws without the whitening are two different steps, so
+     the assertion above is not passing by accident *)
+  let z (sk : params Sofo.sketch) = Sofo.Optim.coordinates ~damping sk.ggn sk.c in
+  let sa = Sofo.Optim.apply (module Params) ~k sk_raw.dirs (z sk_raw) in
+  let sb = Sofo.Optim.apply (module Params) ~k sk_str.dirs (z sk_str) in
+  is_true
+    ~msg:
+      (Printf.sprintf
+         "unwhitened, the same subspace gives two steps: %.3g apart, %.3g long"
+         (max_abs (Nx.sub sa.w sb.w))
+         (max_abs (Nx.sub sa.w p.w)))
+    (max_abs (Nx.sub sa.w sb.w) > 0.01 *. max_abs (Nx.sub sa.w p.w))
+
+let test_whitening_needs_k_parameters () =
+  (* k orthonormal directions need k dimensions to live in. With fewer
+     parameters than lanes the Gram is singular and there is no whitening to be
+     had, so the update says so instead of returning infinities. *)
+  let p = params () in
+  let k = 2 * ((d * o) + d) in
+  let sk = Sofo.sketch (module Params) ~k ~sketch_sampler:sampler loss p in
+  raises_match Exn.invalid_arg (fun () ->
+    ignore (Sofo.Optim.update (module Params) ~lr:0.1 sk p))
+
 (* ── the state and the eager step ────────────────────────────────────────── *)
 
 let test_next_advances_the_stream () =
@@ -581,6 +656,14 @@ let tests =
           "keeps dtypes, skips non-float leaves"
           test_update_leaves_dtypes_and_non_float_leaves_alone
       ; test "damping shortens the step" test_update_uses_damping
+      ]
+  ; group
+      "whitening the basis"
+      [ test "gram accumulates leafwise" test_gram_of_constant_directions
+      ; test "k lanes need k parameters" test_whitening_needs_k_parameters
+      ; test
+          "the step does not depend on the basis"
+          test_whitening_makes_the_step_independent_of_the_basis
       ]
   ; group
       "the state and the eager step"

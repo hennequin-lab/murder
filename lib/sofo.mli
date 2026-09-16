@@ -158,6 +158,11 @@ type 'p sketch =
   ; ggn : Nx.float64_t
     (** The sketched generalized Gauss-Newton matrix ΘᵀJᵀHJΘ, shape [k;k].
         Blocks are accumulated in float64 and the result symmetrized. *)
+  ; dirs : 'p
+    (** Θ, the directions the sketch was measured along: one [k]-lane batch
+        per float leaf, and zero lanes where no direction can be drawn. They
+        are in whatever basis the draw produced, which {!Optim.coordinates}
+        whitens rather than assumes away. *)
   ; apply : Nx.float64_t -> 'p
     (** [apply z] is the parameter-space direction Θz for [z : [k]], each
         leaf in its parameter's dtype. *)
@@ -308,6 +313,14 @@ module Optim : sig
       return a closure. *)
   val apply : (module Nx.Ptree.S with type t = 'p) -> k:int -> 'p -> Nx.float64_t -> 'p
 
+  (** [gram (module P) ~k thetas] is ΘΘᵀ — [VᵀV] for [V] the [P×k] matrix of a
+      tangent batch's components — accumulated leaf by leaf rather than over a
+      materialized matrix. It is the matrix {!coordinates} takes the inverse
+      square root of when it whitens, so it is also how a caller checks or
+      reuses the conditioning of a drawn subspace. Float64 whoever the leaves
+      are; a leaf that cannot carry a direction contributes nothing. *)
+  val gram : (module Nx.Ptree.S with type t = 'p) -> k:int -> 'p -> Nx.float64_t
+
   (** {2 The update} *)
 
   (** The damping mode: how the [γ] of [(S + γ·I)⁻¹] is chosen from the
@@ -321,11 +334,15 @@ module Optim : sig
       The relative modes are what make [λ] dimensionless: the scale of G̃
       depends on how the loss reduces — a mean over a batch of 32 and one over
       512 differ by an order of magnitude — so an absolute [λ] does not
-      transfer between tasks. Damping from the top lifts every direction in
-      proportion to the largest curvature; damping from the bottom lifts only
-      what is barely resolved, and so needs a full-rank sketch: with [s_min = 0]
-      there is nothing to be relative to, and {!coordinates} raises rather than
-      dividing by it. *)
+      transfer between tasks. They are relative to the [s_max] and [s_min] of
+      the {e whitened} G̃ (see {!coordinates}), so they are statements about
+      the curvature of the sampled subspace rather than about the draw that
+      happened to span it: a draw whose directions are 10× longer would
+      otherwise lift its own damping. Damping from the top lifts every
+      direction in proportion to the largest curvature; damping from the
+      bottom lifts only what is barely resolved, and so needs a full-rank
+      sketch: with [s_min = 0] there is nothing to be relative to, and
+      {!coordinates} raises rather than dividing by it. *)
   type damping =
     [ `Absolute of float
     | `Relative_from_top of float
@@ -345,21 +362,34 @@ module Optim : sig
     | `Inverse_sqrt
     ]
 
-  (** [coordinates ?damping ?preconditioner ggn c] is the damped sketched solve
-      [U (S + γ·I)^{-p} Vᵀ c] of the sketched normal equations [ggn·z = c],
-      from the SVD of [ggn] — Algorithm 1, lines 10–12 — with [γ] from
-      [damping] and [p] from [preconditioner] (default [`Inverse]).
+  (** [coordinates ?damping ?preconditioner ?gram ggn c] is the damped sketched
+      solve [U (S + γ·I)^{-p} Vᵀ c] of the sketched normal equations
+      [ggn·z = c], from the SVD of [ggn] — Algorithm 1, lines 10–12 — with [γ]
+      from [damping] and [p] from [preconditioner] (default [`Inverse]).
       The solve is eager and O(k³), and it is the one place the library needs a
       factorization.
 
-      {b Note.} The SVD is not differentiable and does not compile, so this is
-      for the host side of a step, not inside a [Rune.jit]ed program.
+      [gram] is the directions' Gram matrix ({!gram}), and it whitens the
+      problem first: [ggn ← Q ggn Qᵀ] and [c ← Q c] with [Q = (ΘΘᵀ)^{-1/2}],
+      before the damping and the inversion, and the result comes back through
+      [Qᵀ]. The solve is a statement about the subspace the directions span,
+      and it is basis-independent only once the basis is orthonormal — which is
+      also what makes the [s_max] and [s_min] that {!damping} is relative to
+      properties of the curvature rather than of the draw. Omit [gram] to solve
+      in the sketch's own basis, unconsidered directions and all.
+
+      {b Note.} Neither SVD — of the Gram, nor of the sketched GGN — is
+      differentiable or compiles, so this is for the host side of a step, not
+      inside a [Rune.jit]ed program.
 
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
-      smallest singular value is 0. *)
+      smallest singular value is 0, and for a [gram] that is rank-deficient:
+      [k] orthonormal directions do not fit in what fewer than [k] parameters
+      span. *)
   val coordinates
     :  ?damping:damping
     -> ?preconditioner:preconditioner
+    -> ?gram:Nx.float64_t
     -> Nx.float64_t
     -> Nx.float64_t
     -> Nx.float64_t
@@ -367,7 +397,12 @@ module Optim : sig
   (** [update (module P) ~lr ?damping ?preconditioner sk params] is one SOFO step:
       [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C], from the sketch [sk] measured at
       [params]. [lr] defaults to [1.0], which together with no damping is the
-      exact Newton step inside the sketched subspace. *)
+      exact Newton step inside the sketched subspace.
+
+      The solve is {!coordinates} with the sketch's own directions: the Gram of
+      [sk.dirs] whitens it, so the damping is relative to the curvature of the
+      subspace and the parameter step is [Θ (Q z)] — the coordinates {!apply}
+      contracts are the whitened solve brought back to the drawn basis. *)
   val update
     :  (module Nx.Ptree.S with type t = 'p)
     -> ?lr:float
