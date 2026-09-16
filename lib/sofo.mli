@@ -246,14 +246,17 @@ val check : 'p sketch -> (unit, string) result
       (match O.check out with
        | Error m -> failwith m
        | Ok () -> ());
-      O.update ~lr ~damping params out, Sofo.Optim.next state
+      O.update ~lr ~damping state params out
     ]}
 
     The state is only the direction stream — a key carried as a tensor, so it
     rides the compiled step as an ordinary input leaf and one compilation
     serves the whole run — and an iteration counter. Directions are drawn
     inside the compiled step, from that key, so every replay starts from a fresh
-    random subspace without a retrace. *)
+    random subspace without a retrace. {!Compiled.update} takes that state and
+    returns its successor with the new parameters, so the stream and the
+    parameters advance together and a loop cannot replay the subspace it just
+    measured. *)
 
 module Optim : sig
   (** {2 State} *)
@@ -270,7 +273,9 @@ module Optim : sig
 
   (** [next st] is the state of the iteration after [st]: the counter advances
       and the key becomes the subkey the counter indexes, so no two steps share
-      a direction draw. *)
+      a direction draw. {!step} and {!Compiled.update} advance the state
+      themselves and hand it back; this is for a loop that draws sketches
+      without updating — a first-order control, or a run that only measures. *)
   val next : state -> state
 
   (** {2 Directions} *)
@@ -425,15 +430,31 @@ module Optim : sig
         Pure, differentiable in nothing, and safe to compile. *)
     val sketch : k:int -> (P.t -> ('c, 'd) Nx.t) -> in_ -> out
 
-    (** [update ?lr ?damping ?preconditioner params out] is {!Optim.update} on
-        a compiled step's output: the eager half. *)
+    (** [update ?lr ?damping ?preconditioner st params out] is one SOFO step on
+        a compiled sketch: [θ ← θ − η·Θ U (S + γ·I)⁻¹ Vᵀ C] from the output
+        [out] sketched at [params], together with [st]'s successor. [lr]
+        defaults to [1.0], which together with no damping is the exact Newton
+        step inside the sketched subspace.
+
+        [st] is the state whose key produced [out] — the one the compiled step
+        consumed — so a call advances the parameters and the direction stream
+        together and the next iteration is guaranteed a fresh subspace. Pass
+        the state the sketch was drawn from, and thread the one you get back:
+
+        {[
+        let params, state = O.update ~lr ~damping state params out in
+        ]}
+
+        {!Optim.update} is the same step without the state, for callers that
+        hold a sketch and nothing else. *)
     val update
       :  ?lr:float
       -> ?damping:damping
       -> ?preconditioner:preconditioner
+      -> state
       -> P.t
       -> out
-      -> P.t
+      -> P.t * state
 
     (** [check out] is {!check} on a compiled step's output — the same
         statement about the observed little losses, made where the values are

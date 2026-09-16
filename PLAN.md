@@ -1037,7 +1037,13 @@ parameter structures, hyperparameters passed per step.
 - **`update`** is the step: solve, contract (`apply`, which takes the
   directions as a value because a compiled step cannot return the record's
   closure), shift by η. Non-float leaves pass through untouched and each float
-  leaf keeps its dtype, as in vega; both are pinned by tests.
+  leaf keeps its dtype, as in vega; both are pinned by tests. The compiled
+  `O.update` also takes the state the sketch's output was drawn from and
+  returns its successor, so a deployment loop threads `(params, state)` in one
+  call and the direction stream advances with the parameters, where a
+  hand-written `next` could be forgotten and would silently replay a subspace.
+  The eager `Sofo.Optim.update` stays a function of the sketch alone — `step`
+  is where that path advances the state.
 - **`step`** is the eager one-call iteration — draw Θ from the state, sketch,
   update, advance the state — and returns the sketch alongside, so a loop can
   log the loss and run `Sofo.check` without a second pass.

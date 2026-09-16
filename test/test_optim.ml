@@ -411,8 +411,14 @@ let test_compiled_sketch_matches_the_eager_one () =
   (match O.check out with
    | Ok () -> ()
    | Error msg -> fail ("the compiled sketch does not add up: " ^ msg));
-  (* and with damping, the update is the same map *)
-  let a = O.update ~lr:0.5 ~damping:(`Relative_from_top 1e-3) p out in
+  (* and with damping, the update is the same map; it also advances the state
+     it was given, so the next step's sketch cannot reuse this one's subspace *)
+  let st = Sofo.Optim.init ~key () in
+  let a, st' = O.update ~lr:0.5 ~damping:(`Relative_from_top 1e-3) st p out in
+  equal ~msg:"the compiled update advances the state" int 1 st'.Sofo.Optim.step;
+  is_true
+    ~msg:"and the stream with it"
+    (Nx.item [ 0 ] st'.Sofo.Optim.key <> Nx.item [ 0 ] st.Sofo.Optim.key);
   let b =
     Sofo.Optim.update (module Params) ~lr:0.5 ~damping:(`Relative_from_top 1e-3) sk p
   in
@@ -468,9 +474,10 @@ let test_compiled_loop_trains () =
       is_true
         ~msg:(Printf.sprintf "step %d decreases the loss (%.8g < %.8g)" (9 - i) l prev)
         (l < prev);
-      let p = O.update ~lr:1.0 ~damping:(`Absolute 0.0) p out in
+      let p, st = O.update ~lr:1.0 ~damping:(`Absolute 0.0) st p out in
+      equal ~msg:"the update advances the state" int (9 - i) st.Sofo.Optim.step;
       let first = if i = 8 then l else first in
-      go p (Sofo.Optim.next st) (i - 1) l (Float.min best l) first)
+      go p st (i - 1) l (Float.min best l) first)
   in
   let best, initial = go p st 8 Float.infinity Float.infinity Float.infinity in
   is_true

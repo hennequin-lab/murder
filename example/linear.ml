@@ -162,11 +162,12 @@ let run config =
       (* the host's half: solve, then step. Everything inside the clock is
          eager, host-side, and O(K³). *)
       let t0 = Unix.gettimeofday () in
-      let params =
+      let params, state =
         O.update
           ~lr:config.lr
           ~damping:config.damping
           ~preconditioner:config.preconditioner
+          state
           params
           out
       in
@@ -198,7 +199,6 @@ let run config =
           l
           (max_abs (Nx.sub params.w teacher))
           residual;
-      let state = next state in
       loop params state (i + 1) (l :: losses, update_ms :: updates, residual :: residuals)
   in
   let params, state, losses, update_ms, residuals = loop student0 state 1 ([], [], []) in

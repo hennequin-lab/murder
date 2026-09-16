@@ -18,7 +18,10 @@
    Everything here is a pure function of values. The only state is [state]: the
    key the directions are drawn from, carried as an int32 tensor so it can ride
    a compiled step as an ordinary input leaf, and the iteration counter, which
-   stays on the host because it only ever feeds key derivation and schedules. *)
+   stays on the host because it only ever feeds key derivation and schedules.
+   An iteration consumes that state and produces its successor, so [step] and
+   [Compiled.update] return the two together and a loop threads one state
+   rather than remembering to derive the next one. *)
 
 type damping =
   [ `Absolute of float
@@ -249,12 +252,17 @@ module Compiled (P : Nx.Ptree.S) = struct
     ; observed_c = sk.diagnostics.observed_c
     }
 
-  let update ?(lr = 1.0) ?damping ?preconditioner (params : P.t) (o : out) : P.t =
+  (* The step, and the state that produced it, advanced together: the caller
+     threads one state through the loop, so the key the sketch consumed and the
+     key the next sketch is drawn from cannot drift apart. *)
+  let update ?(lr = 1.0) ?damping ?preconditioner (st : state) (params : P.t) (o : out)
+    : P.t * state
+    =
     let k = (Nx.shape o.c).(0) in
     let dw =
       apply (module P) ~k o.dirs (coordinates ?damping ?preconditioner o.ggn o.c)
     in
-    shift (module P) ~lr params dw
+    shift (module P) ~lr params dw, next st
 
   (* The consistency check, on the numbers the compiled step handed back: the
      same statement as [Sofo.check], which cannot run inside a trace because it
