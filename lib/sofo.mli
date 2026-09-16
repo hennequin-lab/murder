@@ -235,14 +235,14 @@ val check : 'p sketch -> (unit, string) result
     update outside it:
 
     {[
-    module O = Sofo.Optim.Compiled (Params)
+    module O = Sofo.Optim.Compiled (Params) (Aux)
 
     (* traced once, replayed for every step: the compiled half *)
     let sketch_step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss)
 
     (* the loop: one replay, one eager solve, one eager step *)
     let params, state =
-      let out = sketch_step { O.params; key = state.Sofo.Optim.key } in
+      let out = sketch_step { O.params; key = state.Sofo.Optim.key; aux } in
       (match O.check out with
        | Error m -> failwith m
        | Ok () -> ());
@@ -256,7 +256,14 @@ val check : 'p sketch -> (unit, string) result
     random subspace without a retrace. {!Compiled.update} takes that state and
     returns its successor with the new parameters, so the stream and the
     parameters advance together and a loop cannot replay the subspace it just
-    measured. *)
+    measured.
+
+    The third kind of input, [Aux], is the loss's own: the batch, a schedule
+    value, whatever the caller has that the parameters do not. It is not a
+    parameter — the sketch does not differentiate it and the update does not
+    move it — but it rides the same input tree, so a new batch is a new input
+    to a program already compiled, and {!No_aux} covers the losses that need
+    none. *)
 
 module Optim : sig
   (** {2 State} *)
@@ -392,26 +399,40 @@ module Optim : sig
 
   (** {2 The compiled half}
 
-      [Compiled (P)] is the sketching computation as a pure function of
-      [(params, key)], with the structure types a compiled step needs. Wrap it
-      once —
+      [Compiled (P) (Aux)] is the sketching computation as a pure function of
+      [(params, key, aux)], with the structure types a compiled step needs.
+      Wrap it once —
 
       {[
       let step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss)
       ]}
 
       — and every later call replays: the shapes of [in_] do not change across
-      a training run, and the directions come from the key the caller threads,
-      so a fresh subspace costs nothing. What comes back is everything the
-      update needs and nothing that needs a factorization. *)
-  module Compiled (P : Nx.Ptree.S) : sig
+      a training run, the directions come from the key the caller threads, and
+      so does the aux, so a fresh subspace or a new batch costs nothing. What
+      comes back is everything the update needs and nothing that needs a
+      factorization. *)
+
+  (** [No_aux] is the trivial auxiliary input — [t] is [unit], with no leaves —
+      for losses that read the parameters and nothing else:
+      [Compiled (P) (No_aux)] with a [loss] of the form
+      [fun params () -> ...]. *)
+  module No_aux : Nx.Ptree.S with type t = unit
+
+  module Compiled (P : Nx.Ptree.S) (Aux : Nx.Ptree.S) : sig
     type in_ =
-      { params : P.t
-      ; key : Nx.int32_t
+      { params : P.t (** The parameters to sketch at. *)
+      ; key : Nx.int32_t (** The state's key: the direction stream. *)
+      ; aux : Aux.t
+        (** Everything else the loss reads: the batch, a schedule value, a
+            per-step scale. Auxiliary leaves are data, not parameters —
+            the sketch never differentiates them and {!update} never moves
+            them — but they ride the input tree, so changing them between
+            steps is a new input, not a new trace. *)
       }
 
     (** [In] is [in_] as a parameter tree: one input structure for the whole
-        compiled step, parameters and key together. *)
+        compiled step, parameters, key and aux together. *)
     module In : Nx.Ptree.S with type t = in_
 
     type out =
@@ -426,9 +447,15 @@ module Optim : sig
     module Out : Nx.Ptree.S with type t = out
 
     (** [sketch ~k loss] draws Θ from [in_.key], sketches [loss] at
-        [in_.params], and returns the numbers together with the directions.
-        Pure, differentiable in nothing, and safe to compile. *)
-    val sketch : k:int -> (P.t -> ('c, 'd) Nx.t) -> in_ -> out
+        [in_.params] with [in_.aux], and returns the numbers together with the
+        directions. Pure, differentiable in nothing, and safe to compile.
+
+        The loss takes the parameters and the aux, in that order. It is the
+        same function the eager entry points take, closed over its aux —
+        [Sofo.sketch (module P) ~k (fun params -> loss params aux) params],
+        and likewise [Optim.step]'s [~loss] — so one objective serves the
+        compiled half and the {!check} pass that precedes it. *)
+    val sketch : k:int -> (P.t -> Aux.t -> ('c, 'd) Nx.t) -> in_ -> out
 
     (** [update ?lr ?damping ?preconditioner st params out] is one SOFO step on
         a compiled sketch: [θ ← θ − η·Θ U (S + γ·I)⁻¹ Vᵀ C] from the output

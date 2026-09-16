@@ -8,10 +8,13 @@
 
    compile the sketching half  →  solve eagerly  →  step eagerly
 
-   [Sofo.Optim.Compiled (Params).sketch] is the sketching computation as a pure
-   function of [(params, key)], which [Rune.jit2] compiles once and replays for
-   the whole run: the directions Θ are drawn inside it from the key the caller
-   threads, so a fresh random subspace costs nothing. The update needs the SVD
+   [Sofo.Optim.Compiled (Params) (Sofo.Optim.No_aux).sketch] is the sketching
+   computation as a pure function of [(params, key, aux)], which [Rune.jit2]
+   compiles once and replays for the whole run: the directions Θ are drawn
+   inside it from the key the caller threads, so a fresh random subspace costs
+   nothing, and the loss's own inputs ride the same tree as [aux], so a new
+   batch is a new input to a program already compiled. (This loss reads only
+   the parameters, hence [No_aux].) The update needs the SVD
    of the sketched GGN, which does not compile, so it runs on the host where
    eager CPU linalg is the right tool anyway — G̃ is K×K and Alg. 1's whole
    point is that inverting it costs O(K³) against a model with P ≫ K
@@ -74,8 +77,9 @@ module Params = struct
 end
 
 (* The two halves, tied to the parameter structure: [O] is the jittable
-   sketching step, [Sofo.Optim] the eager update. *)
-module O = Sofo.Optim.Compiled (Params)
+   sketching step, [Sofo.Optim] the eager update. This loss reads nothing but
+   the parameters, so the aux is the trivial one. *)
+module O = Sofo.Optim.Compiled (Params) (Sofo.Optim.No_aux)
 
 let max_abs t = Nx.item [] (Nx.max (Nx.abs t))
 let l2 t = Nx.item [] (Nx.sqrt (Nx.sum (Nx.square t)))
@@ -94,7 +98,7 @@ let run config =
   in
   let student0 = { w = w0 } in
   let y = Nx.matmul x teacher in
-  let objective (p : params) = Sofo.mse (Nx.matmul x p.w) y in
+  let objective (p : params) () = Sofo.mse (Nx.matmul x p.w) y in
   let parameters = config.dim * config.out in
   let state = Sofo.Optim.init ~key:k0 () in
   Printf.printf
@@ -118,7 +122,7 @@ let run config =
       ~k:config.k
       ~sketch_sampler:(fun k p ->
         Sofo.Optim.directions (module Params) ~key:state.Sofo.Optim.key ~k p)
-      objective
+      (fun p -> objective p ())
       student0
   in
   (match Sofo.check sk0 with
@@ -139,14 +143,14 @@ let run config =
          ; observed_loss = Nx.zeros f64 [||]
          ; observed_c = Nx.zeros f64 [||]
          })
-      { O.params = student0; key = state.key }
+      { O.params = student0; key = state.key; aux = () }
   in
   (* One trace for the whole run. *)
   let sketch_step =
     Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k:config.k objective)
   in
   let t0 = Unix.gettimeofday () in
-  let out0 = sketch_step { O.params = student0; key = state.key } in
+  let out0 = sketch_step { O.params = student0; key = state.key; aux = () } in
   let compile_ms = (Unix.gettimeofday () -. t0) *. 1e3 in
   (match O.check out0 with
    | Ok () -> ()
@@ -157,7 +161,7 @@ let run config =
     then params, state, List.rev losses, List.rev updates, List.rev residuals
     else
       let open Sofo.Optim in
-      let out = sketch_step { O.params; key = state.key } in
+      let out = sketch_step { O.params; key = state.key; aux = () } in
       let l = Nx.item [] out.O.loss in
       (* the host's half: solve, then step. Everything inside the clock is
          eager, host-side, and O(K³). *)
@@ -184,7 +188,7 @@ let run config =
       in
       let linear = Nx.item [] (Nx.sum (Nx.mul out.O.c z)) in
       let quad = Nx.item [] (Nx.sum (Nx.mul z (Nx.matmul out.O.ggn z))) in
-      let after = Nx.item [] (objective params) in
+      let after = Nx.item [] (objective params ()) in
       let predicted =
         l -. (config.lr *. linear) +. (config.lr *. config.lr /. 2.0 *. quad)
       in
@@ -202,7 +206,7 @@ let run config =
       loop params state (i + 1) (l :: losses, update_ms :: updates, residual :: residuals)
   in
   let params, state, losses, update_ms, residuals = loop student0 state 1 ([], [], []) in
-  let final = Nx.item [] (objective params) in
+  let final = Nx.item [] (objective params ()) in
   let initial = Nx.item [] sk0.loss in
   Printf.printf
     "\nSOFO: loss %.6g → %.6g (%.1e× smaller) in %d steps; |W - W*|max %.4g → %.4g\n"
@@ -228,7 +232,7 @@ let run config =
       then params
       else
         let open Sofo.Optim in
-        let out = sketch_step { O.params; key = state.key } in
+        let out = sketch_step { O.params; key = state.key; aux = () } in
         (* z = C: the gradient sketch is already a coordinate vector *)
         let dw = apply (module Params) ~k:config.k out.O.dirs out.O.c in
         let scale = config.fgd_lr /. Float.max 1e-30 (l2 dw.w) in
@@ -241,7 +245,7 @@ let run config =
         fgd (next state) params (i + 1)
     in
     let fgd_params = fgd state student0 1 in
-    let fgd_final = Nx.item [] (objective fgd_params) in
+    let fgd_final = Nx.item [] (objective fgd_params ()) in
     Printf.printf
       "\n\
        first-order control (same sketch, z = C, normalized, eta = %g): loss %.6g → %.6g\n"
@@ -254,7 +258,7 @@ let run config =
       (fun i ->
          let state = Sofo.Optim.next state in
          let t0 = Unix.gettimeofday () in
-         let out = sketch_step { O.params; key = state.Sofo.Optim.key } in
+         let out = sketch_step { O.params; key = state.Sofo.Optim.key; aux = () } in
          ignore i;
          ignore (Nx.item [] out.O.loss);
          (Unix.gettimeofday () -. t0) *. 1e3)

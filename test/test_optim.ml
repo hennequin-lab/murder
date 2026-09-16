@@ -398,11 +398,15 @@ let test_step_strict_reports_an_unobserved_term () =
 
 (* ── the compiled half ───────────────────────────────────────────────────── *)
 
-module O = Sofo.Optim.Compiled (Params)
+module O = Sofo.Optim.Compiled (Params) (Sofo.Optim.No_aux)
+
+(* The compiled half's loss takes the aux; these tests have nothing beside the
+   parameters to put in one. *)
+let loss_c p () = loss p
 
 let test_compiled_sketch_matches_the_eager_one () =
   let p = params () in
-  let out = O.sketch ~k loss { O.params = p; key } in
+  let out = O.sketch ~k loss_c { O.params = p; key; aux = () } in
   let sk = sketch_at p in
   check_arr ~msg:"loss" (to_arr out.O.loss) sk.loss;
   check_arr ~msg:"C" (to_arr out.O.c) sk.c;
@@ -435,9 +439,9 @@ let test_jitted_sketch_matches_eager () =
      numbers agree up to floating point, and the check still holds on the
      values it hands back. *)
   let p = params () in
-  let step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss) in
-  let eager = O.sketch ~k loss { O.params = p; key } in
-  let jitted = step { O.params = p; key } in
+  let step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss_c) in
+  let eager = O.sketch ~k loss_c { O.params = p; key; aux = () } in
+  let jitted = step { O.params = p; key; aux = () } in
   (* jit fuses kernels, so the numbers agree to floating point rather than
      exactly — and the float32 leaf in this loss sits at ~1e-7. The subspace
      itself is drawn by the same generator, so it agrees to rounding. *)
@@ -450,7 +454,7 @@ let test_jitted_sketch_matches_eager () =
    | Error msg -> fail ("the jitted sketch does not add up: " ^ msg));
   (* one compilation, fresh subspaces: a different key is a different Θ from
      the same program *)
-  let other = step { O.params = p; key = Nx.Rng.fold_in key 1 } in
+  let other = step { O.params = p; key = Nx.Rng.fold_in key 1; aux = () } in
   is_false
     ~msg:"a new key draws a new subspace"
     (max_abs (Nx.sub other.O.dirs.w jitted.O.dirs.w) = 0.0)
@@ -460,13 +464,13 @@ let test_compiled_loop_trains () =
      loss, and a state that never needs to leave the host. *)
   let p = params () in
   let k = 8 in
-  let step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss) in
+  let step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss_c) in
   let st = Sofo.Optim.init ~key () in
   let rec go p st i prev best first =
     if i = 0
     then best, first
     else (
-      let out = step { O.params = p; key = st.Sofo.Optim.key } in
+      let out = step { O.params = p; key = st.Sofo.Optim.key; aux = () } in
       (match O.check out with
        | Ok () -> ()
        | Error msg -> fail ("compiled check: " ^ msg));
@@ -483,6 +487,71 @@ let test_compiled_loop_trains () =
   is_true
     ~msg:(Printf.sprintf "loss %.6g → best %.6g" initial best)
     (best < initial *. 0.5)
+
+(* ── the aux input ───────────────────────────────────────────────────────── *)
+
+(* What a loss reads besides the parameters: here, a shift added to the
+   targets. Leaves like this ride the input tree, so a compiled step reads a
+   new one as an ordinary input. *)
+module Aux = struct
+  type t = { shift : Nx.float64_t (* [o] *) }
+
+  let map (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a = { shift = f a.shift }
+
+  let map2 (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a b =
+    { shift = f a.shift b.shift }
+
+  let iter (f : 'a 'b. ('a, 'b) Nx.t -> unit) a = f a.shift
+end
+
+module Oaux = Sofo.Optim.Compiled (Params) (Aux)
+
+let loss_with_aux p (a : Aux.t) = Sofo.mse (Nx.matmul x p.w) (Nx.add targets a.shift)
+
+let test_compiled_aux_reaches_the_loss () =
+  (* The aux is an input, not a parameter: a new one is a new problem for a
+     program already compiled, and it changes nothing about what is
+     differentiated — the step still annihilates C. *)
+  let p = params () in
+  let step =
+    Rune.jit2 (module Oaux.In) (module Oaux.Out) (Oaux.sketch ~k loss_with_aux)
+  in
+  let aux = { Aux.shift = Nx.create f64 [| o |] [| 1.0; -0.5; 0.25 |] } in
+  let out = step { Oaux.params = p; key; aux } in
+  (* the same numbers as an eager sketch with the aux closed over *)
+  let eager =
+    Sofo.sketch
+      (module Params)
+      ~k
+      ~sketch_sampler:sampler
+      (fun p -> loss_with_aux p aux)
+      p
+  in
+  check_arr ~eps:1e-6 ~msg:"loss, aux in the tree" (to_arr eager.loss) out.Oaux.loss;
+  check_arr ~rel:1e-5 ~msg:"C, aux in the tree" (to_arr eager.c) out.Oaux.c;
+  check_arr ~rel:1e-5 ~msg:"G̃, aux in the tree" (to_arr eager.ggn) out.Oaux.ggn;
+  (* a different aux, same program, same key: a different loss *)
+  let other = step { Oaux.params = p; key; aux = { Aux.shift = Nx.zeros f64 [| o |] } } in
+  is_false
+    ~msg:"a new aux is a new loss"
+    (Float.equal (Nx.item [] other.Oaux.loss) (Nx.item [] out.Oaux.loss));
+  (* and the loss is still exactly quadratic in the parameters, whatever the
+     aux held: no damping and unit lr must annihilate C at the new ones *)
+  let p', _ =
+    Oaux.update ~lr:1.0 ~damping:(`Absolute 0.0) (Sofo.Optim.init ~key ()) p out
+  in
+  let after =
+    Sofo.sketch
+      (module Params)
+      ~k
+      ~sketch_sampler:sampler
+      (fun p -> loss_with_aux p aux)
+      p'
+  in
+  is_true
+    ~msg:(Printf.sprintf "|C'| = %.3g at the new parameters" (max_abs after.c))
+    (max_abs after.c < 1e-9);
+  is_true ~msg:"the loss decreased" (Nx.item [] after.loss < Nx.item [] out.Oaux.loss)
 
 let tests =
   [ group
@@ -531,6 +600,7 @@ let tests =
           test_compiled_sketch_matches_the_eager_one
       ; test "jitted sketch matches eager" test_jitted_sketch_matches_eager
       ; test "a compiled loop trains" test_compiled_loop_trains
+      ; test "aux reaches the loss" test_compiled_aux_reaches_the_loss
       ]
   ]
 

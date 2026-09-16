@@ -1047,11 +1047,18 @@ parameter structures, hyperparameters passed per step.
 - **`step`** is the eager one-call iteration — draw Θ from the state, sketch,
   update, advance the state — and returns the sketch alongside, so a loop can
   log the loss and run `Sofo.check` without a second pass.
-- **`Compiled (P)`** is the jittable half, and the reason the module is larger
-  than `update` alone. `In = { params; key }` and `Out = { loss; c; ggn; dirs;
-  observed_loss; observed_c }` are parameter trees, so
+- **`Compiled (P) (Aux)`** is the jittable half, and the reason the module is
+  larger than `update` alone. `In = { params; key; aux }` and `Out = { loss;
+  c; ggn; dirs; observed_loss; observed_c }` are parameter trees, so
   `Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss)` traces the whole
-  sketching computation once and replays it for the run. `Out` carries the
+  sketching computation once and replays it for the run. `Aux` is the third
+  kind of input: what the loss reads besides the parameters — the batch, a
+  schedule value, a per-step scale — which is data rather than a parameter
+  (the sketch never differentiates it, `update` never moves it), but must ride
+  the same tree so that a new batch is a new input to an already-compiled
+  program instead of a retrace. `No_aux` is its trivial instance for losses
+  that take the parameters alone, and the loss is `P.t → Aux.t → loss`, which
+  the eager entry points recover by closing over the aux. `Out` carries the
   observed sums so that `O.check` — the same statement as `Sofo.check`, on the
   numbers — survives a compiled deployment: a trace cannot read values, but
   the host can, on what the trace returned.

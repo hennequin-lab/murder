@@ -1,3 +1,4 @@
 (executables
- (names lorenz linear)
- (libraries sofo nx nx.core rune cmdliner unix))
+ (names lorenz linear linear_simple)
+ (libraries sofo nx nx.core rune base stdio cmdliner unix)
+ (preprocess (pps ppx_ptree)))

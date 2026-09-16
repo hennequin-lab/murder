@@ -178,24 +178,39 @@ let step
    training step is [Rune.jit2 (module In) (module Out) (sketch ~k loss)] and
    a loop threads [in_] to [out] to the next [in_] without ever retracing. *)
 
-module Compiled (P : Nx.Ptree.S) = struct
+(* The trivial auxiliary input: no leaves at all, for a loss that reads the
+   parameters and nothing else. *)
+module No_aux = struct
+  type t = unit
+
+  let map (_ : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) () = ()
+  let map2 (_ : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) () () = ()
+  let iter (_ : 'a 'b. ('a, 'b) Nx.t -> unit) () = ()
+end
+
+module Compiled (P : Nx.Ptree.S) (Aux : Nx.Ptree.S) = struct
   type in_ =
     { params : P.t (* the parameters to sketch at *)
     ; key : Nx.int32_t (* the state's key: the direction stream *)
+    ; aux : Aux.t (* whatever else the loss reads; never differentiated *)
     }
 
   module In = struct
     type t = in_
 
     let map (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) i =
-      { params = P.map f i.params; key = f i.key }
+      { params = P.map f i.params; key = f i.key; aux = Aux.map f i.aux }
 
     let map2 (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a b =
-      { params = P.map2 f a.params b.params; key = f a.key b.key }
+      { params = P.map2 f a.params b.params
+      ; key = f a.key b.key
+      ; aux = Aux.map2 f a.aux b.aux
+      }
 
     let iter (f : 'a 'b. ('a, 'b) Nx.t -> unit) i =
       P.iter f i.params;
-      f i.key
+      f i.key;
+      Aux.iter f i.aux
   end
 
   type out =
@@ -237,13 +252,22 @@ module Compiled (P : Nx.Ptree.S) = struct
       f o.observed_c
   end
 
-  (* The sketching computation, as a pure function of (params, key). Compile it
-     with [Rune.jit2]; run it as it is for an eager step. The directions are
-     drawn *inside* it, from the carried key, so one compilation serves every
-     iteration. *)
-  let sketch ~k (loss : P.t -> ('c, 'd) Nx.t) (i : in_) : out =
+  (* The sketching computation, as a pure function of (params, key, aux).
+     Compile it with [Rune.jit2]; run it as it is for an eager step. The
+     directions are drawn *inside* it, from the carried key, so one
+     compilation serves every iteration, and so is the aux: the loss sees the
+     tree's leaves, so a batch that changes between steps is data, not a new
+     trace. *)
+  let sketch ~k (loss : P.t -> Aux.t -> ('c, 'd) Nx.t) (i : in_) : out =
     let dirs = directions (module P) ~key:i.key ~k i.params in
-    let sk = Sketch.run (module P) ~k ~sketch_sampler:(fun _ _ -> dirs) loss i.params in
+    let sk =
+      Sketch.run
+        (module P)
+        ~k
+        ~sketch_sampler:(fun _ _ -> dirs)
+        (fun params -> loss params i.aux)
+        i.params
+    in
     { loss = sk.loss
     ; c = sk.c
     ; ggn = sk.ggn
