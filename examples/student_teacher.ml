@@ -85,6 +85,6 @@ let () =
   for step = 1 to steps do
     let _, grads = Rune.value_and_grad S.ptree loss !state.S.State.theta in
     state := S.Compiled.step compiled ~config ~state:!state ~grads;
-    if Int.equal (Int.rem step print_every) 0
+    if Int.(step % print_every = 0)
     then Stdio.printf "%8d  %12.6f\n" step (Nx.item [] (loss !state.S.State.theta))
   done
