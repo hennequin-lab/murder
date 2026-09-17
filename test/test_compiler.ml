@@ -78,7 +78,7 @@ let check_coefficients ~dims components data =
       (Nx.to_array (Component.coefficient ~dims comp (`Outer_product (left, right)))))
 
 let check_basis ?(symmetric = false) ~name ~dims spec =
-  let compiled = Compiler.compile ~symmetric ~dims spec in
+  let compiled = Compiler.compile ~ensure_size_invariance:true ~symmetric ~dims spec in
   let components = compiled.basis.components in
   let data =
     Nx.Rng.normal (Nx.Rng.key 11) Nx.float32 (Array.of_list (dims.left @ dims.right))
@@ -180,7 +180,7 @@ let test_scalar_factor_two_groups () =
 let test_compile_manual () =
   let d = dims ~left:[ 2; 3 ] ~right:[ 2; 3 ] in
   let s = spec ~left:[ Symmetry.Id; Perm 0 ] ~right:[ Symmetry.Id; Symmetry.Perm 0 ] in
-  let auto = Compiler.compile ~symmetric:true ~dims:d s in
+  let auto = Compiler.compile ~ensure_size_invariance:true ~symmetric:true ~dims:d s in
   let manual =
     Compiler.compile_manual
       ~symmetric:true

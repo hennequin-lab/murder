@@ -37,6 +37,13 @@ module type Model = sig
       group the estimator works on (2 by convention). It must be at least 2 so
       the surrogate group is non-trivial. *)
   val surrogate_dim : int
+
+  (** Whether or not to keep only those terms that ensure that the surrogate matrix is
+      truly size invariant. We currently have a gap in the theory: some terms that do belong
+      to the commutant algebra (and are numerically verified to contribute to orbit averages)
+      appear to break the size invariance of the surrogate's spectrum, breaking square-rooting
+      and inversion. *)
+  val ensure_size_invariance : bool
 end
 
 module type S = sig
@@ -45,6 +52,16 @@ module type S = sig
   val dims : int list t
   val symmetries : Symmetry.spec list t
   val surrogate_dims : int list t
+
+  (** [random_transform ~key theta] applies a random element of the global
+      symmetry group to the parameter tree [theta]: one uniformly random
+      permutation per group id in {!Model.symmetries}, applied to every axis
+      tagged [Perm id] (all such axes share the group's dimension); [Id] axes
+      are untouched. The element is drawn from [key] with
+      {!Nx.Rng.fold_in}, so the function is pure and traces under
+      [Rune.jit] — pass the key as an input leaf there, as [Rune.jit] rejects
+      a captured key. *)
+  val random_transform : key:Nx.Rng.key -> Nx.float32_t t -> Nx.float32_t t
 
   module First_order : sig
     type factors = Nx.float32_t list t
@@ -55,7 +72,7 @@ module type S = sig
     val small : Compiler.t t
     val factors_of_params : Nx.float32_t t -> factors
     val factors_of_dense : Nx.float32_t -> factors
-    val dense_of_factors : factors -> Nx.float32_t
+    val dense_of_factors : ?full:bool -> factors -> Nx.float32_t
     val params_of_dense : Nx.float32_t -> Nx.float32_t t
 
     (** The nearest invariant point, [R1]. *)
@@ -71,7 +88,7 @@ module type S = sig
     val small : ?symmetric:bool -> unit -> Compiler.t array t
     val factors_of_pair : ?symmetric:bool -> Nx.float32_t t -> Nx.float32_t t -> factors
     val factors_of_dense : ?symmetric:bool -> Nx.float32_t -> factors
-    val dense_of_factors : ?symmetric:bool -> factors -> Nx.float32_t
+    val dense_of_factors : ?symmetric:bool -> ?full:bool -> factors -> Nx.float32_t
 
     (** [apply ~factors v] applies the second-order operator assembled from
         [factors] to the parameter tree [v]. *)
@@ -100,6 +117,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
 
   let dims = M.dims
   let symmetries = M.symmetries
+  let ensure_size_invariance = M.ensure_size_invariance
 
   (* The surrogate keeps [Id] axes at full size and shrinks permuted axes to
      the model's non-trivial mock dimension (see {!Symmetry.surrogate_dims}). *)
@@ -139,6 +157,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       M.map2
         (fun specs dims ->
            Compiler.compile
+             ~ensure_size_invariance
              ~dims:{ Sides.left = dims; right = [] }
              { Sides.left = specs; right = [ Symmetry.Absent ] })
         symmetries
@@ -154,8 +173,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
         large
         x
 
-    let dense_of_factors factors =
-      M.map2 (fun c f -> c.Compiler.dense_block ~factors:f) small factors
+    let dense_of_factors ?(full = false) factors =
+      let compiled = if full then large else small in
+      M.map2 (fun c f -> c.Compiler.dense_block ~factors:f) compiled factors
       |> fun blocks ->
       M.fold (fun _ acc b -> b :: acc) [] blocks |> List.rev |> Nx.concatenate ~axis:0
 
@@ -175,6 +195,61 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
     let orbit_average x = params_of_dense (dense_of_factors (factors_of_params x))
   end
 
+  (* The global group: every axis tagged [Perm id] anywhere in the tree is
+     transformed by the same group element, so its dimension must be the same
+     in every leaf. [group_dims] is the ascending list of [(id, dim)] pairs. *)
+  let group_dims =
+    M.fold2
+      (fun _ acc specs leaf_dims ->
+         List.fold2_exn specs leaf_dims ~init:acc ~f:(fun acc spec dim ->
+           match spec with
+           | Symmetry.Perm id -> (id, dim) :: acc
+           | Symmetry.Id | Symmetry.Absent -> acc))
+      []
+      symmetries
+      dims
+    |> List.fold ~init:[] ~f:(fun acc (id, dim) ->
+      match List.Assoc.find acc id ~equal:Int.equal with
+      | None -> (id, dim) :: acc
+      | Some existing ->
+        if Int.equal existing dim
+        then acc
+        else
+          invalid_arg
+            (Printf.sprintf
+               "Symo.Orbit: group %d acts on axes of different dimensions (%d and %d)"
+               id
+               existing
+               dim))
+    |> List.sort ~compare:(fun (a, _) (b, _) -> Int.compare a b)
+
+  (* [Nx.Rng.permutation] builds its sort keys by slicing the two columns of
+     an [n × 2] block and reshapes the result; under [Rune.jit] that slice is
+     miscompiled (the jitted permutation is not even a permutation), so draw
+     the sort keys with one float64 uniform instead. Its 53 random bits make
+     the permutation uniform for every practical [n], and the eager and
+     jitted draws agree exactly. *)
+  let random_permutation ~key n =
+    Nx.argsort (Nx.Rng.uniform key Nx.float64 [| n |]) ~axis:0 ~descending:false
+
+  (* Draw the group element and apply it leafwise: each compiler's
+     [group_ids] selects the permutations its own axes are tied to, so leaves
+     that share a group id are acted on by the same permutation. *)
+  let random_transform ~key theta =
+    let perms =
+      List.map group_dims ~f:(fun (id, dim) ->
+        id, random_permutation ~key:(Nx.Rng.fold_in key id) dim)
+    in
+    M.map2
+      (fun c x ->
+         let perms =
+           List.map c.Compiler.basis.group_ids ~f:(fun id ->
+             List.Assoc.find_exn perms id ~equal:Int.equal)
+         in
+         c.Compiler.transform ~perms x)
+      First_order.large
+      theta
+
   module Second_order = struct
     type factors = Nx.float32_t list array t
 
@@ -186,6 +261,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
         (fun _ i ->
            Array.init n ~f:(fun j ->
              Compiler.compile
+               ~ensure_size_invariance
                ~symmetric:(symmetric && Int.equal i j)
                ~dims:{ Sides.left = dims_arr.(i); right = dims_arr.(j) }
                { Sides.left = symms_arr.(i); right = symms_arr.(j) }))
@@ -210,8 +286,8 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
         cs
         leaf_index
 
-    let dense_of_factors ?(symmetric = true) factors =
-      let cs = small ~symmetric () in
+    let dense_of_factors ?(symmetric = true) ?(full = false) factors =
+      let cs = (if full then large else small) ~symmetric () in
       let rows =
         M.map2
           (fun row fs ->

@@ -40,6 +40,7 @@ module Mlp = struct
      dimension, the permuted hidden axis shrinks to 2. It must stay
      non-trivial (>= 2), or the estimated curvature vanishes. *)
   let surrogate_dim = 2
+  let ensure_size_invariance = false
 end
 
 module S = Symo.Make (Mlp)

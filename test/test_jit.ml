@@ -24,6 +24,7 @@ module Mlp = struct
   let dims : int list t = { w1 = [ 3; 2 ]; w2 = [ 1; 3 ] }
   let symmetries : Symmetry.spec list t = { w1 = [ Perm 0; Id ]; w2 = [ Id; Perm 0 ] }
   let surrogate_dim = 2
+  let ensure_size_invariance = false
 end
 
 module M = Make (Mlp)
@@ -52,6 +53,9 @@ let params () =
 
 let check_leaf ~msg ~tol (a : Nx.float32_t) (b : Nx.float32_t) =
   equal ~msg (array (float tol)) (Nx.to_array a) (Nx.to_array b)
+
+let check_tree ~msg ~tol (a : Nx.float32_t Mlp.t) (b : Nx.float32_t Mlp.t) =
+  Mlp.map2 (fun x y -> check_leaf ~msg ~tol x y) a b |> ignore
 
 let check_state ~msg ~tol (a : M.state) (b : M.state) =
   M.State.map2 (fun x y -> check_leaf ~msg ~tol x y) a b |> ignore
@@ -108,10 +112,33 @@ let test_no_retrace () =
   let replayed = time (fun () -> List.iter (List.range 0 10) ~f:(fun _ -> one_step ())) in
   is_true ~msg:"ten replays cost less than the first trace" Float.(replayed < 5. *. first)
 
+(* [random_transform] samples its permutations inside the trace from a key,
+   so it compiles: the key is an input leaf and the same draws replay. *)
+module Key = struct
+  type 'a t = { key : 'a } [@@deriving ptree]
+end
+
+let test_random_transform_jit () =
+  let theta = params () in
+  let jitted =
+    Rune.jit2
+      (Nx.Ptree.instantiate (module Key))
+      (Nx.Ptree.instantiate (module Mlp))
+      (fun { Key.key } -> M.random_transform ~key theta)
+  in
+  List.iter (List.range 0 5) ~f:(fun seed ->
+    let key = Nx.Rng.key (200 + seed) in
+    check_tree
+      ~msg:"jitted random transform"
+      ~tol:1e-9
+      (jitted { Key.key })
+      (M.random_transform ~key theta))
+
 let tests =
   [ test "eager and jitted steps agree over a run" test_parity
   ; test "state threads through compiled calls" test_state_threads
   ; test "compiled calls replay instead of retracing" test_no_retrace
+  ; test "jitted random group element" test_random_transform_jit
   ]
 
 let () = run "symo jit" tests

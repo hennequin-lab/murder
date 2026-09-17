@@ -1038,6 +1038,19 @@ The model module supplies `dims : int list t`, `symmetries : spec list t` and
    coefficient itself. The dense and outer-product entries are checked
    against each other in `test_compiler.ml`.
 
+8. **`Orbit.random_transform` draws permutations without
+   `Nx.Rng.permutation`.** The tree-level `random_transform ~key` samples one
+   permutation per group id from the key and applies the resulting group
+   element to the parameter tree, so a training loop can (say) average a loss
+   over the orbit. `Nx.Rng.permutation` miscompiles under `Rune.jit`: its
+   sort keys slice the columns of an `n × 2` random block, and the jitted
+   slice yields repeated indices, so the "permutation" is not one. The draw
+   therefore uses a float64 `Nx.Rng.uniform` followed by `argsort` (53 random
+   bits), which is uniform and bit-identical between eager and jitted.
+   `test_orbit` checks group membership, including that leaves sharing a
+   group id receive the same permutation, and `test_jit` the eager/jitted
+   parity.
+
 **Deferred / still open.**
 
 - `ties_one_side` remains the empirical filter of the original; the "what

@@ -18,9 +18,7 @@ type t =
   { ties : Index.t list list
   ; free : Index.t list
   }
-
-let raw_equal (a : t) (b : t) = Poly.equal a b
-let compare (a : t) (b : t) = Poly.compare a b
+[@@deriving compare, equal, sexp]
 
 let map t ~f =
   { ties = List.map t.ties ~f:(fun group -> List.map group ~f)
@@ -41,7 +39,7 @@ let sort t =
 
 (* Equality of terms, insensitive to the order of ties, of indices within a
    tie, and of free axes. *)
-let equal a b = raw_equal (sort a) (sort b)
+let equal a b = equal (sort a) (sort b)
 let transpose t = map t ~f:Index.transpose |> sort
 let is_symmetric t = equal t (transpose t)
 

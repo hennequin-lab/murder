@@ -18,5 +18,8 @@
    (>= 5.5.0))
   base
   nx
+  ppx_ptree
   rune
-  stdio))
+  stdio
+  ppx_compare
+  ppx_sexp_conv))

@@ -14,9 +14,7 @@ open Base
 type t =
   | Single of Term.t
   | Sum of Term.t list
-
-let equal (a : t) (b : t) = Poly.equal a b
-let compare (a : t) (b : t) = Poly.compare a b
+[@@deriving compare, equal, sexp]
 
 let transpose = function
   | Single term -> Single (Term.transpose term)

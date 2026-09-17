@@ -27,6 +27,7 @@ module Single = struct
   let dims : int list t = { w = [ 2; 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ] }
   let surrogate_dim = 2
+  let ensure_size_invariance = false
 end
 
 module O = Orbit.Make (Single)
@@ -38,6 +39,7 @@ module Two_groups = struct
   let dims : int list t = { w = [ 2; 2; 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0; Perm 1 ] }
   let surrogate_dim = 2
+  let ensure_size_invariance = false
 end
 
 module O2 = Orbit.Make (Two_groups)
@@ -54,9 +56,27 @@ module Multi = struct
   let dims : int list t = { w = [ 2; 3 ]; v = [ 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ]; v = [ Perm 1 ] }
   let surrogate_dim = 2
+  let ensure_size_invariance = false
 end
 
 module OM = Orbit.Make (Multi)
+
+(* Two leaves sharing one group id: a global element must act on both with the
+   same permutation. *)
+module Shared = struct
+  type 'a t =
+    { a : 'a
+    ; b : 'a
+    }
+  [@@deriving ptree]
+
+  let dims : int list t = { a = [ 3; 2 ]; b = [ 2; 3 ] }
+  let symmetries : Symmetry.spec list t = { a = [ Perm 0; Id ]; b = [ Id; Perm 0 ] }
+  let surrogate_dim = 2
+  let ensure_size_invariance = false
+end
+
+module OS = Orbit.Make (Shared)
 
 (* ------------------------------------------------------------------------
    Group enumeration
@@ -353,6 +373,72 @@ let test_multi_leaf_invariance () =
     (transform_tree (OM.Second_order.apply ~factors v))
     (OM.Second_order.apply ~factors (transform_tree v))
 
+(* ------------------------------------------------------------------------
+   Random group elements
+   ------------------------------------------------------------------------ *)
+
+let shared_equal a b =
+  Shared.fold2
+    (fun _ acc x y -> acc && Array.equal Float.equal (Nx.to_array x) (Nx.to_array y))
+    true
+    a
+    b
+
+(* The images of [x] under the six global group elements, by enumeration. *)
+let shared_images x =
+  let c = OS.First_order.large in
+  List.map
+    (List.map (permutations 3) ~f:(fun p -> [| p |]))
+    ~f:(fun assignment ->
+      Shared.map2
+        (fun c x -> c.Compiler.transform ~perms:(perms_of_ids c assignment) x)
+        c
+        x)
+
+let test_random_transform () =
+  let x = { Single.w = Nx.Rng.normal (Nx.Rng.key 61) Nx.float32 [| 2; 3 |] } in
+  let key = Nx.Rng.key 62 in
+  check_single
+    ~msg:"random transform is deterministic"
+    ~tol:1e-9
+    (O.random_transform ~key x)
+    (O.random_transform ~key x);
+  let fixed = O.First_order.orbit_average x in
+  check_single
+    ~msg:"random transform fixes the orbit average"
+    ~tol:1e-5
+    fixed
+    (O.random_transform ~key fixed);
+  check_single
+    ~msg:"random transform preserves the orbit average"
+    ~tol:1e-5
+    fixed
+    (O.First_order.orbit_average (O.random_transform ~key x));
+  (* The orbit average is a fixed point of every group element, so the checks
+     above would pass for a no-op; distinct keys must draw distinct elements. *)
+  let first = Nx.to_array (O.random_transform ~key x).w in
+  is_true
+    ~msg:"distinct keys draw distinct group elements"
+    (List.exists (List.range 1 8) ~f:(fun seed ->
+       not
+         (Array.equal
+            Float.equal
+            first
+            (Nx.to_array (O.random_transform ~key:(Nx.Rng.key (62 + seed)) x).w))))
+
+let test_random_transform_shared () =
+  let x =
+    { Shared.a = Nx.Rng.normal (Nx.Rng.key 71) Nx.float32 [| 3; 2 |]
+    ; Shared.b = Nx.Rng.normal (Nx.Rng.key 72) Nx.float32 [| 2; 3 |]
+    }
+  in
+  let images = shared_images x in
+  List.iter (List.range 0 5) ~f:(fun seed ->
+    let y = OS.random_transform ~key:(Nx.Rng.key (130 + seed)) x in
+    is_true
+      ~msg:"random element is in the global group"
+      (List.exists images ~f:(fun image -> shared_equal image y)))
+
 let tests =
   [ test "first order against the group" test_first_order_exact
   ; test "first order commutes with the group" test_first_order_equivariant
@@ -360,6 +446,8 @@ let tests =
   ; test "two permutation groups" test_two_groups_exact
   ; test "multi-leaf orbit machinery" test_multi_leaf
   ; test "multi-leaf invariance" test_multi_leaf_invariance
+  ; test "random group element" test_random_transform
+  ; test "random group element is global" test_random_transform_shared
   ]
 
 let () = run "symo orbit" tests

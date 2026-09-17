@@ -17,13 +17,7 @@ module T = struct
   type t =
     | Left of int
     | Right of int
-
-  let compare (a : t) (b : t) = Poly.compare a b
-  let equal (a : t) (b : t) = Poly.equal a b
-
-  let sexp_of_t = function
-    | Left i -> Sexp.List [ Sexp.Atom "Left"; Sexp.Atom (Int.to_string i) ]
-    | Right i -> Sexp.List [ Sexp.Atom "Right"; Sexp.Atom (Int.to_string i) ]
+  [@@deriving compare, equal, sexp]
 end
 
 include T

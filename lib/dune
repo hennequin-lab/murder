@@ -3,4 +3,4 @@
  (public_name symo)
  (libraries base stdio nx nx.io rune)
  (preprocess
-  (pps ppx_ptree)))
+  (pps ppx_compare ppx_sexp_conv ppx_ptree ppx_sexp_message)))

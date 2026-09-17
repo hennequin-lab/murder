@@ -20,9 +20,9 @@ module RNN = struct
     }
   [@@deriving ptree, sexp]
 
-  let hidden = 256
-  let input_dim = 16
-  let output_dim = 64
+  let hidden = 8
+  let input_dim = 4
+  let output_dim = 3
 
   let dims =
     { b = [ input_dim; hidden ]
@@ -42,6 +42,7 @@ module RNN = struct
      dimension, the permuted hidden axis shrinks to 2. It must stay
      non-trivial (>= 2), or the estimated curvature vanishes. *)
   let surrogate_dim = 3
+  let ensure_size_invariance = false
 
   let init () =
     let w = randn float32 [| hidden; hidden |] in
@@ -87,25 +88,48 @@ let loss (p : Nx.float32_t RNN.t) =
   let pred = RNN.forward ~dt p ~input in
   mean (square Infix.(pred - targets))
 
-let _, grad = Rune.value_and_grad (Ptree.instantiate (module RNN)) loss student
+let value_and_grad_jit =
+  let ptree = Ptree.instantiate (module RNN) in
+  Rune.jit2 ~device:"CPU" ptree ptree (fun params ->
+    let _, grad = Rune.value_and_grad ptree loss params in
+    grad)
+
+let grad = value_and_grad_jit student
 
 module S = Symo.Make (RNN)
 
 let _ = print [%message (S.surrogate_dims : int list RNN.t)]
 
 let save_cov_for label theta =
-  let s1 =
-    Stdio.print_endline "computing first-order factors";
-    let factors = S.First_order.factors_of_params theta in
-    S.First_order.dense_of_factors factors
-  in
   let s2 =
     Stdio.print_endline "computing second-order factors";
     let factors = S.Second_order.factors_of_pair ~symmetric:true theta theta in
-    S.Second_order.dense_of_factors ~symmetric:true factors
+    let n_factors = RNN.map (Array.map ~f:List.length) factors in
+    print [%message (n_factors : int array RNN.t)];
+    S.Second_order.dense_of_factors ~symmetric:true ~full:true factors
   in
-  let c2 = Infix.(s2 - (s1 *@ transpose s1)) in
-  Nx_io.save_txt (Printf.sprintf "rnn_%s_c2" label) c2
+  let s2_emp =
+    let key = Rng.key 1985 in
+    let flatten x =
+      RNN.fold
+        (fun _ acc x ->
+           let x = reshape [| -1; 1 |] x in
+           match acc with
+           | None -> Some x
+           | Some a -> Some (concatenate ~axis:0 [ a; x ]))
+        None
+        x
+      |> Option.value_exn
+    in
+    List.range 0 10_000
+    |> List.fold ~init:(scalar float32 0.) ~f:(fun acc i ->
+      if Int.(i % 10 = 0) then Stdio.printf "\r%06i%!" i;
+      let g = S.Orbit.random_transform ~key:(Rng.fold_in key i) grad |> flatten in
+      Infix.(acc + (g *@ transpose g /$ Float.(of_int 10_000))))
+  in
+  Stdio.print_endline "";
+  Nx_io.save_txt (Printf.sprintf "rnn_%s_s2" label) s2;
+  Nx_io.save_txt (Printf.sprintf "rnn_%s_s2_emp" label) s2_emp
 
 let _ = save_cov_for "params" student
 let _ = save_cov_for "grad" grad

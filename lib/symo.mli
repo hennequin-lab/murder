@@ -134,8 +134,9 @@ module Orbit : sig
 
   (** [Make (M)] lifts the per-tensor compiler to the whole parameter tree:
       one compiler per leaf at full size and at surrogate size, factor
-      estimation from parameters and from dense surrogates, and the orbit
-      averages [R1] and [R2]. *)
+      estimation from parameters and from dense surrogates, the orbit
+      averages [R1] and [R2], and a random group element applied to the tree
+      ([random_transform]). *)
   module Make (M : Model) : S with type 'a t = 'a M.t
 end
 
