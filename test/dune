@@ -15,18 +15,21 @@
  (modules test_orbit support)
  (package symo)
  (libraries base stdio nx nx.core symo windtrap)
- (preprocess (pps ppx_ptree)))
+ (preprocess
+  (pps ppx_ptree)))
 
 (test
  (name test_optim)
  (modules test_optim)
  (package symo)
  (libraries base stdio nx nx.core symo windtrap rune)
- (preprocess (pps ppx_ptree)))
+ (preprocess
+  (pps ppx_ptree)))
 
 (test
  (name test_jit)
  (modules test_jit)
  (package symo)
  (libraries base stdio nx nx.core symo windtrap rune unix)
- (preprocess (pps ppx_ptree)))
+ (preprocess
+  (pps ppx_ptree)))

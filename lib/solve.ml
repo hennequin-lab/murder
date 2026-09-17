@@ -29,7 +29,6 @@ let svd64 x =
   let u, s, _ = Nx.svd (Nx.cast Nx.float64 x) in
   Nx.cast Nx.float32 u, Nx.cast Nx.float32 s
 
-
 (* [damp_spectrum ~damping s] is [damping * s_max + s]. The relative damping
    keeps the smallest directions of a singular surrogate finite. *)
 let damp_spectrum ~damping s =

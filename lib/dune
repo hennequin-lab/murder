@@ -2,4 +2,5 @@
  (name symo)
  (public_name symo)
  (libraries base stdio nx nx.io rune)
- (preprocess (pps ppx_ptree)))
+ (preprocess
+  (pps ppx_ptree)))

@@ -45,7 +45,11 @@ module O2 = Orbit.Make (Two_groups)
 (* Two leaves: [w] carries group 0 on its second axis, [v] group 1 on its
    first. The groups are independent, so the global group is a product. *)
 module Multi = struct
-  type 'a t = { w : 'a; v : 'a } [@@deriving ptree]
+  type 'a t =
+    { w : 'a
+    ; v : 'a
+    }
+  [@@deriving ptree]
 
   let dims : int list t = { w = [ 2; 3 ]; v = [ 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ]; v = [ Perm 1 ] }
@@ -67,8 +71,10 @@ let permutations n =
       List.concat_map xs ~f:(fun x ->
         go (x :: acc) (List.filter xs ~f:(fun y -> not (Int.equal x y))))
   in
-  List.map (go [] (List.range 0 n)) ~f:(fun p ->
-    Nx.create Nx.int32 [| n |] (Array.of_list (List.map p ~f:Int32.of_int_trunc)))
+  List.map
+    (go [] (List.range 0 n))
+    ~f:(fun p ->
+      Nx.create Nx.int32 [| n |] (Array.of_list (List.map p ~f:Int32.of_int_trunc)))
 
 let cartesian xss =
   List.fold xss ~init:[ [] ] ~f:(fun acc xs ->
@@ -98,28 +104,27 @@ let perms_of_ids (c : Compiler.t) assignment =
    ------------------------------------------------------------------------ *)
 
 let vec x = Nx.reshape [| -1 |] (Nx.contiguous x)
-
 let mean tensors n = Nx.mul_s (List.reduce_exn tensors ~f:Nx.add) (1. /. Float.of_int n)
 
 (* [R1(x)] for one compiled leaf, by enumeration. *)
 let exact_r1 (c : Compiler.t) x =
   let elements = group_elements c in
   let x = Nx.reshape (Array.of_list c.dims.left) x in
-  mean
-    (List.map elements ~f:(fun perms -> c.transform ~perms x))
-    (List.length elements)
+  mean (List.map elements ~f:(fun perms -> c.transform ~perms x)) (List.length elements)
 
 (* The outer product of a flat leaf with itself, laid out as the block of the
    second-order operator: shape [dims.left @ dims.right]. *)
 let outer_self (c : Compiler.t) x =
-  let left = c.dims.left and right = c.dims.right in
+  let left = c.dims.left
+  and right = c.dims.right in
   let x = Nx.reshape (Array.of_list left) x in
   let a_shape = Array.of_list (left @ List.map right ~f:(fun _ -> 1)) in
   let b_shape = Array.of_list (List.map left ~f:(fun _ -> 1) @ right) in
   Nx.mul (Nx.reshape a_shape x) (Nx.reshape b_shape x)
 
 let outer_pair (c : Compiler.t) a b =
-  let left = c.dims.left and right = c.dims.right in
+  let left = c.dims.left
+  and right = c.dims.right in
   let a = Nx.reshape (Array.of_list left) a in
   let b = Nx.reshape (Array.of_list right) b in
   let a_shape = Array.of_list (left @ List.map right ~f:(fun _ -> 1)) in
@@ -130,7 +135,9 @@ let outer_pair (c : Compiler.t) a b =
 let exact_r2 (c : Compiler.t) x =
   let elements = group_elements c in
   let base = outer_self c x in
-  mean (List.map elements ~f:(fun perms -> c.transform ~perms base)) (List.length elements)
+  mean
+    (List.map elements ~f:(fun perms -> c.transform ~perms base))
+    (List.length elements)
 
 (* ------------------------------------------------------------------------
    Checks
@@ -146,16 +153,16 @@ let indices tree =
   List.iteri paths ~f:(fun i path -> Hashtbl.set table ~key:path ~data:i);
   Single.map (fun path -> Hashtbl.find_exn table path) (Single.names tree)
 
-let check_single ~msg ~tol (expected : Nx.float32_t Single.t) (got : Nx.float32_t Single.t)
+let check_single
+      ~msg
+      ~tol
+      (expected : Nx.float32_t Single.t)
+      (got : Nx.float32_t Single.t)
   =
-  ignore
-    (Single.map2
-       (fun e g -> check_leaf ~msg ~tol e g)
-       expected
-       got
-      : unit Single.t)
+  ignore (Single.map2 (fun e g -> check_leaf ~msg ~tol e g) expected got : unit Single.t)
 
-let multi_leaves t = Multi.fold (fun _ acc x -> x :: acc) [] t |> List.rev |> Array.of_list
+let multi_leaves t =
+  Multi.fold (fun _ acc x -> x :: acc) [] t |> List.rev |> Array.of_list
 
 let multi_indices tree =
   let paths = Multi.fold (fun path acc _ -> path :: acc) [] tree |> List.rev in
@@ -164,8 +171,7 @@ let multi_indices tree =
   Multi.map (fun path -> Hashtbl.find_exn table path) (Multi.names tree)
 
 let check_multi ~msg ~tol (expected : Nx.float32_t Multi.t) (got : Nx.float32_t Multi.t) =
-  ignore
-    (Multi.map2 (fun e g -> check_leaf ~msg ~tol e g) expected got : unit Multi.t)
+  ignore (Multi.map2 (fun e g -> check_leaf ~msg ~tol e g) expected got : unit Multi.t)
 
 (* ------------------------------------------------------------------------
    Tests
@@ -183,7 +189,9 @@ let test_first_order_exact () =
   let dense =
     O.First_order.dense_of_factors (O.First_order.factors_of_params { Single.w = x })
   in
-  let round_trip = O.First_order.dense_of_factors (O.First_order.factors_of_dense dense) in
+  let round_trip =
+    O.First_order.dense_of_factors (O.First_order.factors_of_dense dense)
+  in
   check_leaf ~msg:"surrogate round trip" ~tol:1e-5 dense round_trip
 
 let test_first_order_equivariant () =
@@ -218,7 +226,8 @@ let test_second_order_exact () =
   check_leaf ~msg:"surrogate round trip" ~tol:1e-5 dense round_trip;
   (* The action of the assembled operator. *)
   let v = { Single.w = Nx.Rng.normal (Nx.Rng.key 22) Nx.float32 [| 2; 3 |] } in
-  let l = 6 and r = 6 in
+  let l = 6
+  and r = 6 in
   let expected_v = Nx.matmul (Nx.reshape [| l; r |] expected) (vec v.w) in
   let got_v = (O.Second_order.apply ~factors v).w in
   check_leaf ~msg:"operator action" ~tol:1e-4 (Nx.reshape [| 2; 3 |] expected_v) got_v
@@ -234,7 +243,6 @@ let test_two_groups_exact () =
 (* The global group of the two-leaf model: group 0 (dim 3) and group 1
    (dim 3) are independent. *)
 let multi_global_elements = cartesian (List.map [ 3; 3 ] ~f:permutations)
-
 let multi_assignments = List.map multi_global_elements ~f:Array.of_list
 
 let exact_multi_r1 (x : Nx.float32_t Multi.t) =
@@ -242,9 +250,12 @@ let exact_multi_r1 (x : Nx.float32_t Multi.t) =
   let acc =
     Multi.map2
       (fun c x ->
-        let shape = Array.of_list c.Compiler.dims.left in
-        List.fold multi_assignments ~init:(Nx.zeros Nx.float32 shape) ~f:(fun acc assignment ->
-          Nx.add acc (c.Compiler.transform ~perms:(perms_of_ids c assignment) x)))
+         let shape = Array.of_list c.Compiler.dims.left in
+         List.fold
+           multi_assignments
+           ~init:(Nx.zeros Nx.float32 shape)
+           ~f:(fun acc assignment ->
+             Nx.add acc (c.Compiler.transform ~perms:(perms_of_ids c assignment) x)))
       OM.First_order.large
       x
   in
@@ -260,7 +271,9 @@ let exact_multi_r2_apply (x : Nx.float32_t Multi.t) (v : Nx.float32_t Multi.t) =
   let n = Array.length row_arr in
   let result =
     Array.init n ~f:(fun i ->
-      let acc = ref (Nx.zeros Nx.float32 (Array.of_list row_arr.(i).(0).Compiler.dims.left)) in
+      let acc =
+        ref (Nx.zeros Nx.float32 (Array.of_list row_arr.(i).(0).Compiler.dims.left))
+      in
       for j = 0 to n - 1 do
         let c = row_arr.(i).(j) in
         let base = outer_pair c xs.(i) xs.(j) in
@@ -280,7 +293,7 @@ let exact_multi_r2_apply (x : Nx.float32_t Multi.t) (v : Nx.float32_t Multi.t) =
       done;
       !acc)
   in
-  let idx = multi_indices (OM.First_order.large) in
+  let idx = multi_indices OM.First_order.large in
   Multi.map2 (fun i _ -> result.(i)) idx OM.First_order.large
 
 let test_multi_leaf () =
@@ -290,7 +303,11 @@ let test_multi_leaf () =
     }
   in
   let expected_r1 = exact_multi_r1 x in
-  check_multi ~msg:"multi-leaf orbit average" ~tol:1e-5 expected_r1 (OM.First_order.orbit_average x);
+  check_multi
+    ~msg:"multi-leaf orbit average"
+    ~tol:1e-5
+    expected_r1
+    (OM.First_order.orbit_average x);
   let v =
     { Multi.w = Nx.Rng.normal (Nx.Rng.key 43) Nx.float32 [| 2; 3 |]
     ; v = Nx.Rng.normal (Nx.Rng.key 44) Nx.float32 [| 3 |]
@@ -298,10 +315,16 @@ let test_multi_leaf () =
   in
   let factors = OM.Second_order.factors_of_pair x x in
   let expected = exact_multi_r2_apply x v in
-  check_multi ~msg:"multi-leaf operator action" ~tol:1e-4 expected (OM.Second_order.apply ~factors v);
+  check_multi
+    ~msg:"multi-leaf operator action"
+    ~tol:1e-4
+    expected
+    (OM.Second_order.apply ~factors v);
   (* Surrogate round trip across the two blocks. *)
   let dense = OM.Second_order.dense_of_factors factors in
-  let round_trip = OM.Second_order.dense_of_factors (OM.Second_order.factors_of_dense dense) in
+  let round_trip =
+    OM.Second_order.dense_of_factors (OM.Second_order.factors_of_dense dense)
+  in
   check_leaf ~msg:"multi-leaf surrogate round trip" ~tol:1e-5 dense round_trip
 
 let test_multi_leaf_invariance () =
@@ -319,8 +342,7 @@ let test_multi_leaf_invariance () =
   let c = OM.First_order.large in
   let assignment =
     Array.of_list
-      (List.map [ 3; 3 ] ~f:(fun dim ->
-         Nx.Rng.permutation (Nx.Rng.key 55) dim))
+      (List.map [ 3; 3 ] ~f:(fun dim -> Nx.Rng.permutation (Nx.Rng.key 55) dim))
   in
   let transform_tree t =
     Multi.map2 (fun c x -> c.Compiler.transform ~perms:(perms_of_ids c assignment) x) c t

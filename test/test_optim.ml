@@ -31,11 +31,14 @@ module Q = Make (Quad)
 (* A two-layer MLP with a hidden-permutation symmetry: the same group element
    permutes the rows of [w1] and the columns of [w2]. *)
 module Mlp = struct
-  type 'a t = { w1 : 'a; w2 : 'a } [@@deriving ptree]
+  type 'a t =
+    { w1 : 'a
+    ; w2 : 'a
+    }
+  [@@deriving ptree]
 
   let dims : int list t = { w1 = [ 3; 2 ]; w2 = [ 1; 3 ] }
-  let symmetries : Symmetry.spec list t =
-    { w1 = [ Perm 0; Id ]; w2 = [ Id; Perm 0 ] }
+  let symmetries : Symmetry.spec list t = { w1 = [ Perm 0; Id ]; w2 = [ Id; Perm 0 ] }
   let surrogate_dim = 2
 end
 
@@ -51,12 +54,19 @@ let close ~tol a b = Float.(abs (a - b) < tol)
 (* The large Hessian [A ⊗ C] of the quadratic, as a 6×6 matrix: [a] is 2×2
    and [c] is 3×3. *)
 let kron23 a c =
-  let a = Nx.to_array a and c = Nx.to_array c in
-  Nx.create Nx.float32 [| 6; 6 |] (Array.init 36 ~f:(fun k ->
-    let row = k / 6 and col = Int.rem k 6 in
-    let r1 = row / 3 and r2 = Int.rem row 3 in
-    let c1 = col / 3 and c2 = Int.rem col 3 in
-    a.((r1 * 2) + c1) *. c.((r2 * 3) + c2)))
+  let a = Nx.to_array a
+  and c = Nx.to_array c in
+  Nx.create
+    Nx.float32
+    [| 6; 6 |]
+    (Array.init 36 ~f:(fun k ->
+       let row = k / 6
+       and col = Int.rem k 6 in
+       let r1 = row / 3
+       and r2 = Int.rem row 3 in
+       let c1 = col / 3
+       and c2 = Int.rem col 3 in
+       a.((r1 * 2) + c1) *. c.((r2 * 3) + c2)))
 
 (* ------------------------------------------------------------------------
    Tests
@@ -66,8 +76,16 @@ let test_schedules () =
   let s v = Nx.scalar Nx.float32 v in
   equal ~msg:"momentum" (float 1e-6) 1.5 (Nx.item [] (Optim.ema ~beta:0.5 (s 2.) (s 1.)));
   equal ~msg:"debias" (float 1e-6) 6.0 (Nx.item [] (Optim.debias (s 0.5) (s 3.)));
-  equal ~msg:"counter decay" (float 1e-6) 0.05 (Nx.item [] (Optim.bump_tensor (s 0.1) 0.5));
-  equal ~msg:"counter floor" (float 1e-6) 1e-4 (Nx.item [] (Optim.bump_tensor (s 1e-6) 0.5))
+  equal
+    ~msg:"counter decay"
+    (float 1e-6)
+    0.05
+    (Nx.item [] (Optim.bump_tensor (s 0.1) 0.5));
+  equal
+    ~msg:"counter floor"
+    (float 1e-6)
+    1e-4
+    (Nx.item [] (Optim.bump_tensor (s 1e-6) 0.5))
 
 let test_solve_identity () =
   let sigma_w = mat32 [| 2; 2 |] [| 1.5; 0.2; 0.2; 0.8 |] in
@@ -81,12 +99,17 @@ let test_solve_identity () =
   let singular = mat32 [| 2; 2 |] [| 1.0; 1.0; 1.0; 1.0 |] in
   let sigma_g0 = Nx.zeros Nx.float32 [| 2; 2 |] in
   let regularized = Solve.hessian_inverse ~damping:1e-3 singular sigma_g0 in
-  is_true ~msg:"damped singular solve is finite"
+  is_true
+    ~msg:"damped singular solve is finite"
     (Array.for_all (Nx.to_array regularized) ~f:Float.is_finite)
 
 let test_exchange_identity () =
   let a = mat32 [| 2; 2 |] [| 2.0; 0.5; 0.5; 1.0 |] in
-  let c = Nx.add (Nx.mul_s (Nx.eye Nx.float32 3) 3.0) (Nx.mul_s (Nx.ones Nx.float32 [| 3; 3 |]) 0.7) in
+  let c =
+    Nx.add
+      (Nx.mul_s (Nx.eye Nx.float32 3) 3.0)
+      (Nx.mul_s (Nx.ones Nx.float32 [| 3; 3 |]) 0.7)
+  in
   let h_large = kron23 a c in
   let delta = Nx.Rng.normal (Nx.Rng.key 1) Nx.float32 [| 2; 3 |] in
   (* A non-invariant offset: the orbit average removes the row means. *)
@@ -95,7 +118,7 @@ let test_exchange_identity () =
   let compiled = (Q.Second_order.large ()).w.(0) in
   let sw =
     compiled.dense_block
-      ~factors:(Q.Second_order.factors_of_pair { Quad.w = w } { Quad.w = w }).w.(0)
+      ~factors:(Q.Second_order.factors_of_pair { Quad.w } { Quad.w }).w.(0)
   in
   let sg =
     compiled.dense_block
@@ -106,7 +129,9 @@ let test_exchange_identity () =
 
 let test_newton_step () =
   let a = mat32 [| 2; 2 |] [| 2.0; 0.5; 0.5; 1.0 |] in
-  let theta_star = Nx.create Nx.float32 [| 2; 3 |] [| 0.4; 0.4; 0.4; -0.2; -0.2; -0.2 |] in
+  let theta_star =
+    Nx.create Nx.float32 [| 2; 3 |] [| 0.4; 0.4; 0.4; -0.2; -0.2; -0.2 |]
+  in
   let delta = Nx.Rng.normal (Nx.Rng.key 2) Nx.float32 [| 2; 3 |] in
   let w = Nx.sub delta (Nx.mean ~axes:[ 1 ] ~keepdims:true delta) in
   let theta = Nx.add theta_star w in
@@ -125,7 +150,12 @@ let test_newton_step () =
   let measure : Q.config =
     { learning_rate = None; beta_1 = 0.0; beta_2 = 0.0; damping = 1e-6 }
   in
-  let state' = Q.step ~config:measure ~state:(Q.init ~config:measure { Quad.w = theta }) ~grads:{ Quad.w = g } in
+  let state' =
+    Q.step
+      ~config:measure
+      ~state:(Q.init ~config:measure { Quad.w = theta })
+      ~grads:{ Quad.w = g }
+  in
   check ~msg:"measure-only keeps theta" ~tol:1e-6 theta state'.theta.w
 
 (* ------------------------------------------------------------------------
@@ -136,7 +166,9 @@ let xs = Nx.Rng.normal (Nx.Rng.key 7) Nx.float32 [| 8; 2 |]
 
 let ys =
   let w = mat32 [| 2; 1 |] [| 1.0; -0.5 |] in
-  Nx.add (Nx.matmul xs w) (Nx.mul_s (Nx.Rng.normal (Nx.Rng.key 8) Nx.float32 [| 8; 1 |]) 0.05)
+  Nx.add
+    (Nx.matmul xs w)
+    (Nx.mul_s (Nx.Rng.normal (Nx.Rng.key 8) Nx.float32 [| 8; 1 |]) 0.05)
 
 let mlp_loss (p : Nx.float32_t Mlp.t) =
   let h = Nx.relu (Nx.matmul xs (Nx.transpose p.w1)) in

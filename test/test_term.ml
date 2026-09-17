@@ -41,7 +41,10 @@ let test_surrogate_dims () =
   equal
     (list int)
     [ 3; 2; 2 ]
-    (Symmetry.surrogate_dims ~surrogate_dim:2 [ Symmetry.Id; Perm 0; Symmetry.Id ] [ 3; 5; 2 ])
+    (Symmetry.surrogate_dims
+       ~surrogate_dim:2
+       [ Symmetry.Id; Perm 0; Symmetry.Id ]
+       [ 3; 5; 2 ])
 
 let sample = term ~ties:[ [ left 0; left 1 ]; [ right 0; right 0 ] ] ~free:[ left 2 ]
 

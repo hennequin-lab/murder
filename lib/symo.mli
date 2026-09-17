@@ -30,18 +30,17 @@
     specification per leaf, alongside the leaf dimensions:
 
     {[
-      module Model = struct
-        type 'a t = { w : 'a } [@@deriving ptree]
+    module Model = struct
+      type 'a t = { w : 'a } [@@deriving ptree]
 
-        let dims = { w = [ 100; 78 ] }
-        let symmetries = { w = [ Symmetry.Id; Symmetry.Perm 0 ] }
-        let surrogate_dim = 2
-      end
+      let dims = { w = [ 100; 78 ] }
+      let symmetries = { w = [ Symmetry.Id; Symmetry.Perm 0 ] }
+      let surrogate_dim = 2
+    end
     ]}
 
     {!Make} turns that declaration into the orbit machinery and the Taylor
-    optimizer for the whole parameter tree. The estimator works on a {e
-    surrogate} network: [Id] axes keep their dimension, permuted axes shrink
+    optimizer for the whole parameter tree. The estimator works on a {e surrogate} network: [Id] axes keep their dimension, permuted axes shrink
     to {!Orbit.Model.surrogate_dim} (2 in the paper). The surrogate group must
     stay non-trivial — collapsing it to a single element makes the estimated
     curvature vanish identically — which is why the dimension is explicit
@@ -74,55 +73,61 @@
     output leaves, so a training loop traces once and then replays:
 
     {[
-      let config = { Optim.learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 } in
-      let compiled = S.Compiled.create ~config in
-      let rec train state n =
-        if n = 0
-        then state
-        else begin
-          let _, grads = Rune.value_and_grad S.ptree loss state.S.State.theta in
-          train (S.Compiled.step compiled ~config ~state ~grads) (n - 1)
-        end
-      in
-      train (S.init ~config params) 1000
+    let config =
+      { Optim.learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+    in
+    let compiled = S.Compiled.create ~config in
+    let rec train state n =
+      if n = 0
+      then state
+      else (
+        let _, grads = Rune.value_and_grad S.ptree loss state.S.State.theta in
+        train (S.Compiled.step compiled ~config ~state ~grads) (n - 1))
+    in
+    train (S.init ~config params) 1000
     ]}
 
     Compiled functions are not thread-safe and cache on the leaf signature of
     the state; changing the tree's shape or dtype retraces. *)
 
-module Sides : module type of Sides
 (** The two sides of a commutation equation: the left and right copies an
     orbit average pairs. *)
+module Sides : module type of Sides
 
-module Index : module type of Index
 (** Axis indices of a commutation equation: [Left i] names the [i]-th axis of
     the left side, [Right i] the [i]-th axis of the right side. Indices
     compare structurally, collect in sets, and compile to einsum characters. *)
+module Index : module type of Index
 
-module Symmetry : module type of Symmetry
 (** Symmetry specifications: one {!Symmetry.spec} per axis, and the surrogate
     dimensions a specification induces. *)
+module Symmetry : module type of Symmetry
 
-module Term : module type of Term
 (** Basis terms: index ties (Kronecker deltas) plus the free axes that carry a
     factor. The pure part of the compiler also lives here — term ordering,
     transposition, normalization, and the symbolic and dense projections. *)
+module Term : module type of Term
 
-module Component : module type of Component
 (** Basis components: a single term, or a term summed with its transpose in
     the symmetric case. *)
+module Component : module type of Component
 
-module Basis : module type of Basis
 (** The symbolic basis of the invariant subspace: its components, the axes
     tied by each group, and the group ids that order them. *)
+module Basis : module type of Basis
 
-module Compiler : module type of Compiler
 (** The per-tensor compiler: a symmetry specification at fixed dimensions
     becomes closures for factor estimation, dense blocks and batched
     block-vector products. The design matrix is factorized once, at compile
     time, by Cholesky (with a jittered retry and an SVD pseudo-inverse
     fallback for degenerate bases). *)
+module Compiler : module type of Compiler
 
+(** Orbit machinery: first- and second-order averages over a parameter tree.
+
+    Everything here is a composition of tree traversals and [Nx] operations —
+    no host read of a tensor value, no dynamic shapes, no RNG — so the eager
+    functions are traceable as they stand. *)
 module Orbit : sig
   module type Model = Orbit.Model
   module type S = Orbit.S
@@ -133,12 +138,8 @@ module Orbit : sig
       averages [R1] and [R2]. *)
   module Make (M : Model) : S with type 'a t = 'a M.t
 end
-(** Orbit machinery: first- and second-order averages over a parameter tree.
 
-    Everything here is a composition of tree traversals and [Nx] operations —
-    no host read of a tensor value, no dynamic shapes, no RNG — so the eager
-    functions are traceable as they stand. *)
-
+(** The host-side estimator solve. *)
 module Solve : sig
   (** [svd64 x] is the economy SVD of [x], computed in float64 and returned in
       float32. *)
@@ -161,12 +162,11 @@ module Solve : sig
       host-side on the small dense surrogate matrices. *)
   val hessian_inverse : damping:float -> Nx.float32_t -> Nx.float32_t -> Nx.float32_t
 end
-(** The host-side estimator solve. *)
 
-module Optim : module type of Optim
 (** The Taylor optimizer on the orbit machinery: bias-corrected momentum, an
     EMA of the gradient surrogate with debiasing, the estimator solve, the
     parameter shift, and the compiled [prepare]/[finish] pair. *)
+module Optim : module type of Optim
 
 (** [Make (M)] is the library entry point: the orbit machinery ({!Orbit.Make})
     and the Taylor optimizer ({!Optim.Make}) for a model [M], plus [ptree],

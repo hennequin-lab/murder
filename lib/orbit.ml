@@ -51,8 +51,8 @@ module type S = sig
 
     (** The per-tensor compilers at full and at surrogate size. *)
     val large : Compiler.t t
-    val small : Compiler.t t
 
+    val small : Compiler.t t
     val factors_of_params : Nx.float32_t t -> factors
     val factors_of_dense : Nx.float32_t -> factors
     val dense_of_factors : factors -> Nx.float32_t
@@ -69,10 +69,7 @@ module type S = sig
 
     val large : ?symmetric:bool -> unit -> Compiler.t array t
     val small : ?symmetric:bool -> unit -> Compiler.t array t
-
-    val factors_of_pair :
-      ?symmetric:bool -> Nx.float32_t t -> Nx.float32_t t -> factors
-
+    val factors_of_pair : ?symmetric:bool -> Nx.float32_t t -> Nx.float32_t t -> factors
     val factors_of_dense : ?symmetric:bool -> Nx.float32_t -> factors
     val dense_of_factors : ?symmetric:bool -> factors -> Nx.float32_t
 
@@ -108,7 +105,8 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
      the model's non-trivial mock dimension (see {!Symmetry.surrogate_dims}). *)
   let surrogate_dims =
     M.map2
-      (fun specs dims -> Symmetry.surrogate_dims ~surrogate_dim:M.surrogate_dim specs dims)
+      (fun specs dims ->
+         Symmetry.surrogate_dims ~surrogate_dim:M.surrogate_dim specs dims)
       M.symmetries
       M.dims
 
@@ -140,9 +138,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
     let compile d =
       M.map2
         (fun specs dims ->
-          Compiler.compile
-            ~dims:{ Sides.left = dims; right = [] }
-            { Sides.left = specs; right = [ Symmetry.Absent ] })
+           Compiler.compile
+             ~dims:{ Sides.left = dims; right = [] }
+             { Sides.left = specs; right = [ Symmetry.Absent ] })
         symmetries
         d
 
@@ -152,15 +150,14 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
     let factors_of_params x =
       M.map2
         (fun c x ->
-          c.Compiler.estimate_factors (`Outer_product (x, Nx.scalar Nx.float32 1.0)))
+           c.Compiler.estimate_factors (`Outer_product (x, Nx.scalar Nx.float32 1.0)))
         large
         x
 
     let dense_of_factors factors =
       M.map2 (fun c f -> c.Compiler.dense_block ~factors:f) small factors
       |> fun blocks ->
-      M.fold (fun _ acc b -> b :: acc) [] blocks |> List.rev
-      |> Nx.concatenate ~axis:0
+      M.fold (fun _ acc b -> b :: acc) [] blocks |> List.rev |> Nx.concatenate ~axis:0
 
     let factors_of_dense dense =
       let pieces = split_dense dense in
@@ -170,8 +167,8 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let factors = factors_of_dense dense in
       M.map2
         (fun c f ->
-          c.Compiler.apply_block ~factors:f (Nx.ones Nx.float32 [| 1 |])
-          |> Nx.reshape (Array.of_list c.Compiler.dims.left))
+           c.Compiler.apply_block ~factors:f (Nx.ones Nx.float32 [| 1 |])
+           |> Nx.reshape (Array.of_list c.Compiler.dims.left))
         large
         factors
 
@@ -187,11 +184,11 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let n = Array.length dims_arr in
       M.map2
         (fun _ i ->
-          Array.init n ~f:(fun j ->
-            Compiler.compile
-              ~symmetric:(symmetric && Int.equal i j)
-              ~dims:{ Sides.left = dims_arr.(i); right = dims_arr.(j) }
-              { Sides.left = symms_arr.(i); right = symms_arr.(j) }))
+           Array.init n ~f:(fun j ->
+             Compiler.compile
+               ~symmetric:(symmetric && Int.equal i j)
+               ~dims:{ Sides.left = dims_arr.(i); right = dims_arr.(j) }
+               { Sides.left = symms_arr.(i); right = symms_arr.(j) }))
         d
         leaf_index
 
@@ -208,8 +205,8 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let b_arr = to_array b in
       M.map2
         (fun row i ->
-          Array.mapi row ~f:(fun j c ->
-            c.Compiler.estimate_factors (`Outer_product (a_arr.(i), b_arr.(j)))))
+           Array.mapi row ~f:(fun j c ->
+             c.Compiler.estimate_factors (`Outer_product (a_arr.(i), b_arr.(j)))))
         cs
         leaf_index
 
@@ -218,8 +215,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let rows =
         M.map2
           (fun row fs ->
-            Array.map2_exn row fs ~f:(fun c f -> c.Compiler.dense_block ~factors:f)
-            |> Array.to_list |> Nx.concatenate ~axis:1)
+             Array.map2_exn row fs ~f:(fun c f -> c.Compiler.dense_block ~factors:f)
+             |> Array.to_list
+             |> Nx.concatenate ~axis:1)
           cs
           factors
         |> fun rows -> M.fold (fun _ acc r -> r :: acc) [] rows |> List.rev
@@ -232,16 +230,16 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let row_pieces = split_flat starts dense in
       M.map2
         (fun compilers i ->
-          let dense_row = row_pieces.(i) in
-          let col_pieces =
-            Nx.array_split
-              ~axis:1
-              (`Indices (List.tl_exn (Array.to_list starts)))
-              dense_row
-            |> Array.of_list
-          in
-          Array.mapi compilers ~f:(fun j c ->
-            c.Compiler.estimate_factors (`Full col_pieces.(j))))
+           let dense_row = row_pieces.(i) in
+           let col_pieces =
+             Nx.array_split
+               ~axis:1
+               (`Indices (List.tl_exn (Array.to_list starts)))
+               dense_row
+             |> Array.of_list
+           in
+           Array.mapi compilers ~f:(fun j c ->
+             c.Compiler.estimate_factors (`Full col_pieces.(j))))
         cs
         leaf_index
 
@@ -251,18 +249,18 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let v_arr = to_array v in
       M.map2
         (fun row i ->
-          let _, acc =
-            Array.fold2_exn
-              row
-              f_arr.(i)
-              ~init:(0, Nx.scalar Nx.float32 0.0)
-              ~f:(fun (j, acc) c f ->
-                let vj = v_arr.(j) in
-                let vj = Nx.reshape (Array.append [| 1 |] (Nx.shape vj)) vj in
-                let z = c.Compiler.apply_block ~factors:f vj in
-                j + 1, Nx.add acc (Nx.reshape (Array.of_list c.Compiler.dims.left) z))
-          in
-          Nx.contiguous acc)
+           let _, acc =
+             Array.fold2_exn
+               row
+               f_arr.(i)
+               ~init:(0, Nx.scalar Nx.float32 0.0)
+               ~f:(fun (j, acc) c f ->
+                 let vj = v_arr.(j) in
+                 let vj = Nx.reshape (Array.append [| 1 |] (Nx.shape vj)) vj in
+                 let z = c.Compiler.apply_block ~factors:f vj in
+                 j + 1, Nx.add acc (Nx.reshape (Array.of_list c.Compiler.dims.left) z))
+           in
+           Nx.contiguous acc)
         cs
         leaf_index
   end

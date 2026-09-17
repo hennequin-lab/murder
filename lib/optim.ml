@@ -6,9 +6,9 @@
 (* The Taylor optimizer (Eq. 10 of the paper) on the orbit machinery.
 
    The step is split so that only the estimator solve is not traceable:
-     prepare (traceable)               solve (host)          finish (traceable)
-     momentum, orbit averages,    ->   damped symmetric   ->  factors of H_inv,
-     dense S_w/S_g, EMA, betas         powers, svd64          apply to g_avg, shift
+   prepare (traceable)               solve (host)          finish (traceable)
+   momentum, orbit averages,    ->   damped symmetric   ->  factors of H_inv,
+   dense S_w/S_g, EMA, betas         powers, svd64          apply to g_avg, shift
 
    [prepare] and [finish] touch neither [Nx.item] of a traced value nor a
    data-dependent branch, so [Compiled] can wrap them in [Rune.jit2] with the
@@ -37,7 +37,6 @@ let debias beta_t x = Nx.div x (Nx.sub (Nx.scalar Nx.float32 1.) beta_t)
 
 module type S = sig
   type 'a tree
-
   type config = Config.t
 
   module State : sig
@@ -82,7 +81,6 @@ module type S = sig
     type t
 
     val create : config:config -> t
-
     val step : t -> config:config -> state:state -> grads:Nx.float32_t tree -> state
   end
 end
@@ -90,7 +88,6 @@ end
 module Make (M : Nx.Ptree.Uniform) (O : Orbit.S with type 'a t = 'a M.t) :
   S with type 'a tree = 'a M.t = struct
   type 'a tree = 'a M.t
-
   type config = Config.t
 
   open Config

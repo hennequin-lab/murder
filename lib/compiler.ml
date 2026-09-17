@@ -342,7 +342,9 @@ let basis_cache_key ~symmetric (symm : Symmetry.t) =
       | Symmetry.Perm i -> "P" ^ Int.to_string i)
     |> String.concat ~sep:","
   in
-  String.concat ~sep:"|" [ (if symmetric then "sym" else "asym"); side symm.left; side symm.right ]
+  String.concat
+    ~sep:"|"
+    [ (if symmetric then "sym" else "asym"); side symm.left; side symm.right ]
 
 let basis_of_spec ~symmetric spec =
   let key = basis_cache_key ~symmetric spec in
