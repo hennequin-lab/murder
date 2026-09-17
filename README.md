@@ -1,15 +1,14 @@
-# symo — weight-space symmetry for curvature estimation
+# SYMO — weight-space symmetry for curvature estimation
 
 SYMO exploits the symmetries of a neural network to estimate its curvature from
 orbit averages of gradients, and uses the estimate to precondition gradient
-descent. It is the OCaml implementation of
+descent. This repo is the OCaml implementation of
 
 > Artemev, Xia, Boyd, Yu, Dangel, Hennequin, Bernacchia,
-> *Exploiting weight-space symmetries for approximating curvature*, ICML 2026,
+> _Exploiting weight-space symmetries for approximating curvature_, ICML 2026,
 > [arXiv:2606.00442](https://arxiv.org/abs/2606.00442).
 
-built on the Raven stack (`nx` tensors, `rune` autodiff/JIT, `ppx_ptree`
-parameter trees).
+built on the [Raven](https://github.com/raven-ml/raven) stack (`nx` tensors, `rune` autodiff/JIT, `ppx_ptree` parameter trees).
 
 ## The idea
 
@@ -145,27 +144,27 @@ dune runtest          # 34 tests
 
 The suites are:
 
-| suite | what it checks |
-| --- | --- |
-| `test_term` | term ordering, normalization, symbolic inner products |
+| suite           | what it checks                                                                                                        |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `test_term`     | term ordering, normalization, symbolic inner products                                                                 |
 | `test_compiler` | compiled closures against brute-force sums over the index space, the Cholesky design solve, invariance (`A S Aᵀ = S`) |
-| `test_orbit` | `R1`/`R2` and surrogate round trips against exact enumeration of the symmetry group |
-| `test_optim` | estimator identities, Newton step on an invariant quadratic, end-to-end training |
-| `test_jit` | 50-step eager/compiled parity, state threading, replay-not-retrace |
+| `test_orbit`    | `R1`/`R2` and surrogate round trips against exact enumeration of the symmetry group                                   |
+| `test_optim`    | estimator identities, Newton step on an invariant quadratic, end-to-end training                                      |
+| `test_jit`      | 50-step eager/compiled parity, state threading, replay-not-retrace                                                    |
 
 ## Library layout
 
-| module | role |
-| --- | --- |
-| `Sides`, `Index` | the two sides of a commutation equation; axis indices and einsum characters |
-| `Symmetry` | `Absent`/`Id`/`Perm i` specs and the surrogate dimension they induce |
-| `Term`, `Component`, `Basis` | basis terms (ties + free axes), components, and the symbolic basis of the invariant subspace |
-| `Delta`, `Contract` | Kronecker-delta operands and pairwise materialized einsum contractions |
-| `Compiler` | one specification at fixed dimensions → closures for factor estimation, dense blocks and batched block-vector products |
-| `Orbit` | lifts the compiler to the whole parameter tree (`First_order`, `Second_order`) |
-| `Solve` | the host-side estimator (`svd64`, damped symmetric powers, `H`/`H_inv`) |
-| `Optim` | the Taylor step, eager and jitted (`State`, `Mid`, `Compiled`) |
-| `Make` | the entry point: orbit machinery + optimizer + packed traversal |
+| module                       | role                                                                                                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `Sides`, `Index`             | the two sides of a commutation equation; axis indices and einsum characters                                            |
+| `Symmetry`                   | `Absent`/`Id`/`Perm i` specs and the surrogate dimension they induce                                                   |
+| `Term`, `Component`, `Basis` | basis terms (ties + free axes), components, and the symbolic basis of the invariant subspace                           |
+| `Delta`, `Contract`          | Kronecker-delta operands and pairwise materialized einsum contractions                                                 |
+| `Compiler`                   | one specification at fixed dimensions → closures for factor estimation, dense blocks and batched block-vector products |
+| `Orbit`                      | lifts the compiler to the whole parameter tree (`First_order`, `Second_order`)                                         |
+| `Solve`                      | the host-side estimator (`svd64`, damped symmetric powers, `H`/`H_inv`)                                                |
+| `Optim`                      | the Taylor step, eager and jitted (`State`, `Mid`, `Compiled`)                                                         |
+| `Make`                       | the entry point: orbit machinery + optimizer + packed traversal                                                        |
 
 ## Design notes
 
