@@ -58,7 +58,24 @@ let check_coefficients ~dims components data =
           Nx.add acc (Support.coefficient_brute ~dims t data))
     in
     let got = Component.coefficient ~dims comp (`Full data) in
-    equal ~msg:"coefficient" (array (float 1e-5)) (Nx.to_array expected) (Nx.to_array got))
+    equal ~msg:"coefficient" (array (float 1e-5)) (Nx.to_array expected) (Nx.to_array got));
+  (* The outer-product entry point estimates the same coefficients from the
+     two sides separately; it must agree with the dense path, which is what
+     the brute force above checks. Regression: it used to materialize the
+     [prod dims.left * prod dims.right] outer product. *)
+  let left = Nx.Rng.normal (Nx.Rng.key 16) Nx.float32 (Array.of_list dims.left) in
+  let right = Nx.Rng.normal (Nx.Rng.key 17) Nx.float32 (Array.of_list dims.right) in
+  let full =
+    let left_shape = Array.of_list (dims.left @ List.map dims.right ~f:(fun _ -> 1)) in
+    let right_shape = Array.of_list (List.map dims.left ~f:(fun _ -> 1) @ dims.right) in
+    Nx.mul (Nx.reshape left_shape left) (Nx.reshape right_shape right)
+  in
+  List.iter components ~f:(fun comp ->
+    equal
+      ~msg:"outer-product coefficient"
+      (array (float 1e-5))
+      (Nx.to_array (Component.coefficient ~dims comp (`Full full)))
+      (Nx.to_array (Component.coefficient ~dims comp (`Outer_product (left, right)))))
 
 let check_basis ?(symmetric = false) ~name ~dims spec =
   let compiled = Compiler.compile ~symmetric ~dims spec in

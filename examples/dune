@@ -1,5 +1,13 @@
 (executable
  (name student_teacher)
+ (modules student_teacher)
  (libraries base stdio nx nx.core symo rune)
  (preprocess
   (pps ppx_ptree)))
+
+(executable
+ (name rnn)
+ (modules rnn)
+ (libraries base stdio nx nx.core symo hugin rune)
+ (preprocess
+  (pps ppx_sexp_conv ppx_sexp_message ppx_ptree)))

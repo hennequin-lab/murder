@@ -135,24 +135,89 @@ let coefficient ~(dims : int list Sides.t) term data =
   let dim_of = Index.dim_of ~dims in
   let normalizer = normalization ~dims term in
   let label = Index.to_char in
-  let all_ids = Index.all_indices ~dims in
   let free_labels = List.map term.free ~f:label in
-  let data =
-    match data with
-    | `Full x -> Nx.reshape (Array.of_list (dims.left @ dims.right)) x
-    | `Outer_product (x_left, x_right) ->
-      let left_shape = Array.of_list (dims.left @ List.map dims.right ~f:(fun _ -> 1)) in
-      let right_shape = Array.of_list (List.map dims.left ~f:(fun _ -> 1) @ dims.right) in
-      Nx.mul (Nx.reshape left_shape x_left) (Nx.reshape right_shape x_right)
+  let delta group =
+    Delta.tensor ~order:(List.length group) (dim_of (List.hd_exn group))
   in
-  let labels = List.map all_ids ~f:label in
-  let t, labels =
-    List.fold term.ties ~init:(data, labels) ~f:(fun (t, labels) group ->
-      let tie_labels = List.map group ~f:label in
-      let out =
-        List.filter labels ~f:(fun c -> not (List.mem tie_labels c ~equal:Char.equal))
-      in
-      let delta = Delta.tensor ~order:(List.length group) (dim_of (List.hd_exn group)) in
-      Contract.binary ~labels_a:labels ~labels_b:tie_labels ~out t delta, out)
-  in
-  Nx.mul_s (Contract.permute_sum ~labels ~output:free_labels t) normalizer
+  match data with
+  | `Full x ->
+    let data = Nx.reshape (Array.of_list (dims.left @ dims.right)) x in
+    let labels = List.map (Index.all_indices ~dims) ~f:label in
+    let t, labels =
+      List.fold term.ties ~init:(data, labels) ~f:(fun (t, labels) group ->
+        let tie_labels = List.map group ~f:label in
+        let out =
+          List.filter labels ~f:(fun c -> not (List.mem tie_labels c ~equal:Char.equal))
+        in
+        Contract.binary ~labels_a:labels ~labels_b:tie_labels ~out t (delta group), out)
+    in
+    Nx.mul_s (Contract.permute_sum ~labels ~output:free_labels t) normalizer
+  | `Outer_product (x_left, x_right) ->
+    (* Never form [x_left ⊗ x_right]: that intermediate has the size of the
+       dense tensor, [prod dims.left * prod dims.right] (quartic in the
+       hidden dimension for a square weight pair), and it was what made the
+       second-order estimation OOM. Contract each tie into the operand that
+       carries its indices instead; a tie with left indices keeps its right
+       labels on the left operand, so the two operands meet only once, in
+       the final contraction, whose intermediate is never larger than the
+       coefficient itself. *)
+    let left_labels = List.mapi dims.left ~f:(fun i _ -> label (Index.Left i)) in
+    let right_labels = List.mapi dims.right ~f:(fun i _ -> label (Index.Right i)) in
+    let t_left, left_labels, t_right, right_labels =
+      List.fold
+        term.ties
+        ~init:(x_left, left_labels, x_right, right_labels)
+        ~f:(fun (t_left, left_labels, t_right, right_labels) group ->
+          let tie_labels = List.map group ~f:label in
+          let kept labels =
+            List.filter labels ~f:(fun c -> List.mem tie_labels c ~equal:Char.equal)
+          in
+          let dropped labels =
+            List.filter labels ~f:(fun c -> not (List.mem tie_labels c ~equal:Char.equal))
+          in
+          if List.exists group ~f:Index.is_left
+          then (
+            (* The tie's right labels move to the left operand, where the
+               final contraction pairs them with the right operand's. *)
+            let out = dropped left_labels @ kept right_labels in
+            ( Contract.binary
+                ~labels_a:left_labels
+                ~labels_b:tie_labels
+                ~out
+                t_left
+                (delta group)
+            , out
+            , t_right
+            , right_labels ))
+          else (
+            let out = dropped right_labels in
+            ( t_left
+            , left_labels
+            , Contract.binary
+                ~labels_a:right_labels
+                ~labels_b:tie_labels
+                ~out
+                t_right
+                (delta group)
+            , out )))
+    in
+    let t =
+      match left_labels, right_labels with
+      | [], [] -> Nx.mul t_left t_right
+      | _, [] ->
+        Nx.mul
+          (Contract.permute_sum ~labels:left_labels ~output:free_labels t_left)
+          t_right
+      | [], _ ->
+        Nx.mul
+          t_left
+          (Contract.permute_sum ~labels:right_labels ~output:free_labels t_right)
+      | _, _ ->
+        Contract.binary
+          ~labels_a:left_labels
+          ~labels_b:right_labels
+          ~out:free_labels
+          t_left
+          t_right
+    in
+    Nx.mul_s t normalizer

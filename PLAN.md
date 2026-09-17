@@ -1026,6 +1026,18 @@ The model module supplies `dims : int list t`, `symmetries : spec list t` and
    two-layer fixture: the first compiled step costs ~3.6 s (trace + compile),
    later steps ~1.7 ms against ~5 ms eager.
 
+7. **`Term.coefficient` on an outer product never materializes it.** §4
+   joined the two sides with one `Nx.einsum`, but that multi-operand path
+   trips defect 2 of §10, so the port built the full
+   `prod dims.left · prod dims.right` product with a broadcasting `Nx.mul`
+   instead. That intermediate is quartic in the hidden dimension for a square
+   weight pair (17 GB at 256×256) and OOMed `examples/rnn.ml`. Each tie is now
+   folded into the side that carries its indices — a tie with left indices
+   keeps its right labels on the left operand — and the two sides meet once,
+   in the final contraction, whose intermediate is never larger than the
+   coefficient itself. The dense and outer-product entries are checked
+   against each other in `test_compiler.ml`.
+
 **Deferred / still open.**
 
 - `ties_one_side` remains the empirical filter of the original; the "what

@@ -45,5 +45,11 @@ _coverage/
 sofo.pdf
 sofo.txt
 
+# Run artifacts of examples/ (Nx_io.save_txt dumps)
+/target
+/rnn_params_c2
+/rnn_grad_c2
+/rnn_s2
+
 # Legacy reference code (not part of the build)
 old_code/
