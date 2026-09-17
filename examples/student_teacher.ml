@@ -34,9 +34,7 @@ module Mlp = struct
      [w2] by the same group element: one [Perm 0] group ties the two axes
      together. The other axes are [Id] (free, never transformed). *)
   let symmetries : Symmetry.spec list t =
-    { w1 = [ Symmetry.Perm 0; Symmetry.Id ]
-    ; w2 = [ Symmetry.Id; Symmetry.Perm 0 ]
-    }
+    { w1 = [ Symmetry.Perm 0; Symmetry.Id ]; w2 = [ Symmetry.Id; Symmetry.Perm 0 ] }
 
   (* The surrogate network the estimator works on: free axes keep their
      dimension, the permuted hidden axis shrinks to 2. It must stay
@@ -49,7 +47,6 @@ module S = Symo.Make (Mlp)
 let batch = 128
 let steps = 500
 let print_every = 50
-
 let inputs = Nx.Rng.normal (Nx.Rng.key 0) Nx.float32 [| batch; Mlp.input_dim |]
 
 let init key =
@@ -57,7 +54,9 @@ let init key =
     Nx.Rng.normal (Nx.Rng.fold_in key 0) Nx.float32 [| Mlp.hidden; Mlp.input_dim |]
   in
   let w2 = Nx.Rng.normal (Nx.Rng.fold_in key 1) Nx.float32 [| 1; Mlp.hidden |] in
-  { Mlp.w1 = Nx.mul_s w1 (1. /. Float.sqrt (Float.of_int Mlp.hidden)); w2 = Nx.mul_s w2 0.5 }
+  { Mlp.w1 = Nx.mul_s w1 (1. /. Float.sqrt (Float.of_int Mlp.hidden))
+  ; w2 = Nx.mul_s w2 0.5
+  }
 
 let forward (p : Nx.float32_t Mlp.t) x =
   let h = Nx.relu (Nx.matmul x (Nx.transpose p.w1)) in
@@ -76,8 +75,11 @@ let () =
   in
   let compiled = S.Compiled.create ~config in
   let state = ref (S.init ~config (init (Nx.Rng.key 7))) in
-  Stdio.printf "student-teacher MLP: %d hidden units, %d inputs, %d examples\n" Mlp.hidden
-    Mlp.input_dim batch;
+  Stdio.printf
+    "student-teacher MLP: %d hidden units, %d inputs, %d examples\n"
+    Mlp.hidden
+    Mlp.input_dim
+    batch;
   Stdio.printf "%8s  %12s\n" "step" "mse";
   Stdio.printf "%8d  %12.6f\n" 0 (Nx.item [] (loss !state.S.State.theta));
   for step = 1 to steps do

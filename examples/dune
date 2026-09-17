@@ -1,4 +1,5 @@
 (executable
  (name student_teacher)
  (libraries base stdio nx nx.core symo rune)
- (preprocess (pps ppx_ptree)))
+ (preprocess
+  (pps ppx_ptree)))
