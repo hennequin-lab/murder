@@ -1,0 +1,13 @@
+(executable
+ (name rnn)
+ (modules rnn)
+ (libraries base stdio bos nx nx.core symo hugin rune vega cmdargs)
+ (preprocess
+  (pps ppx_sexp_conv ppx_sexp_message ppx_ptree)))
+
+(executable
+ (name mlp_landscape)
+ (modules mlp_landscape)
+ (libraries base stdio bos nx nx.core symo hugin rune vega kaun cmdargs)
+ (preprocess
+  (pps ppx_sexp_conv ppx_sexp_message ppx_ptree)))
