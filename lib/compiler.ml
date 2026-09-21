@@ -38,10 +38,36 @@ let side_counts ~(dims : int list Sides.t) =
   let product list = List.fold list ~init:1 ~f:Int.( * ) in
   product dims.left, product dims.right
 
+(* Multiply [r] by the Kronecker identity over the left axes [ids], which
+   forces all of them equal. [r] carries a singleton axis for each of them;
+   the identity is applied two axes at a time, so no tensor of order
+   [List.length ids] is materialized. *)
+let tie_left_axes ~(dims : int list Sides.t) r ids =
+  let left_pos = function
+    | Index.Left i -> i
+    | Index.Right _ -> assert false
+  in
+  let n_left = List.length dims.left in
+  let step r i j =
+    let dim = Index.dim_of ~dims i in
+    let shape = Array.create ~len:(1 + n_left) 1 in
+    shape.(1 + left_pos i) <- dim;
+    shape.(1 + left_pos j) <- dim;
+    Nx.mul r (Nx.reshape shape (Nx.eye Nx.float32 dim))
+  in
+  let rec go r = function
+    | i :: (j :: _ as rest) -> go (step r i j) rest
+    | _ -> r
+  in
+  go r ids
+
 (* Compile one term into [fun ~factor v -> ...]: [v] is a batch of vectors
-   ([batch × dims.right]) and the result is [batch × dims.left]. Ties are
-   contracted against delta operands, free axes travel in the factor, and axes
-   involved in neither are broadcast along. *)
+   ([batch × dims.right]) and the result is [batch × dims.left]. A tie between
+   right axes is a repeated index in the vector's einsum equation (a repeated
+   index names the diagonal); a tie between a left and a right axis makes the
+   left output axis take the right axis's label; a tie between left axes keeps
+   one representative axis and is completed by [tie_left_axes]. Free axes
+   travel in the factor; axes involved in neither are broadcast along. *)
 let compile_apply_term ~(dims : int list Sides.t) term =
   let dim_of = Index.dim_of ~dims in
   let normalizer = Term.normalization ~dims term in
@@ -49,63 +75,80 @@ let compile_apply_term ~(dims : int list Sides.t) term =
   let involved = Term.indices_involved term in
   let left_ids = List.mapi dims.left ~f:(fun i _ -> Index.Left i) in
   let right_ids = List.mapi dims.right ~f:(fun i _ -> Index.Right i) in
-  let output_entries =
-    List.map left_ids ~f:(fun i ->
-      if Set.mem involved i then `Char (label i) else `Broadcast)
+  let left_pos = function
+    | Index.Left i -> i
+    | Index.Right _ -> assert false
   in
+  let right_pos = function
+    | Index.Right i -> i
+    | Index.Left _ -> assert false
+  in
+  (* Label of each right axis in [v]: the right axes of a tie share the label
+     of their representative, so the einsum sums over the diagonal. *)
+  let v_labels = Array.of_list (List.map right_ids ~f:label) in
+  (* Label of each left axis in the output: a free axis keeps its own, the
+     representative of a tie takes the group's right label, a left-only tie
+     member is completed by [tie_left_axes], and an axis involved in nothing
+     is broadcast along at the end. *)
+  let out_labels =
+    Array.of_list
+      (List.map left_ids ~f:(fun id ->
+         if not (Set.mem involved id)
+         then `Broadcast
+         else if List.mem term.free id ~equal:Index.equal
+         then `Char (label id)
+         else `Tied))
+  in
+  let left_ties = ref [] in
+  List.iter term.ties ~f:(fun group ->
+    let rights = List.filter group ~f:Index.is_right in
+    let lefts = List.filter group ~f:Index.is_left in
+    (match rights with
+     | [] -> ()
+     | rep :: rest ->
+       List.iter rest ~f:(fun id -> v_labels.(right_pos id) <- label rep);
+       (match lefts with
+        | [] -> ()
+        | left_rep :: _ -> out_labels.(left_pos left_rep) <- `Char (label rep)));
+    match lefts with
+    | _ :: _ :: _ -> left_ties := lefts :: !left_ties
+    | _ -> ());
   let output_labels =
-    List.filter_map output_entries ~f:(function
+    'z'
+    :: List.filter_map (Array.to_list out_labels) ~f:(function
       | `Char c -> Some c
-      | `Broadcast -> None)
+      | `Broadcast | `Tied -> None)
   in
-  let final_output = 'z' :: output_labels in
-  let input_labels = 'z' :: List.map right_ids ~f:label in
-  let deltas =
-    List.map term.ties ~f:(fun group ->
-      let dim = dim_of (List.hd_exn group) in
-      Delta.tensor ~order:(List.length group) dim, List.map group ~f:label)
-  in
-  let factor_labels =
-    match term.free with
-    | [] -> None
-    | ids -> Some (List.map ids ~f:label)
-  in
-  let output_view_shape =
-    List.mapi output_entries ~f:(fun i -> function
-      | `Char _ -> List.nth_exn dims.left i
-      | `Broadcast -> 1)
+  let output_view =
+    Array.of_list
+      (List.map left_ids ~f:(fun id ->
+         match out_labels.(left_pos id) with
+         | `Char _ -> dim_of id
+         | `Broadcast | `Tied -> 1))
   in
   let output_shape = Array.of_list dims.left in
+  let factor_labels = List.map term.free ~f:label in
+  let v_eq = String.of_char_list ('z' :: Array.to_list v_labels) in
+  let out_eq = String.of_char_list output_labels in
   fun ~factor v ->
-    if Option.is_none factor_labels then assert (is_scalar factor);
-    let t, labels =
-      List.fold deltas ~init:(v, input_labels) ~f:(fun (t, labels) (delta, tie_labels) ->
-        let out =
-          List.filter labels ~f:(fun c -> not (List.mem tie_labels c ~equal:Char.equal))
-          @ List.filter tie_labels ~f:(fun c -> not (List.mem labels c ~equal:Char.equal))
-        in
-        Contract.binary ~labels_a:labels ~labels_b:tie_labels ~out t delta, out)
-    in
     let t =
       match factor_labels with
-      | None ->
+      | [] ->
         (* A term with no free axes carries a scalar factor; it must still
            multiply the contraction. [Nx.mul] broadcasts the scalar, and
            unlike [Nx.item] it stays traceable under [Rune.jit]. *)
         assert (is_scalar factor);
-        Nx.mul (Contract.permute_sum ~labels ~output:final_output t) factor
-      | Some factor_labels ->
-        Contract.binary
-          ~labels_a:factor_labels
-          ~labels_b:labels
-          ~out:final_output
-          factor
-          t
+        Nx.einsum (v_eq ^ "->" ^ out_eq) [| v |] |> Nx.mul factor
+      | factor_labels ->
+        Nx.einsum
+          (String.of_char_list factor_labels ^ "," ^ v_eq ^ "->" ^ out_eq)
+          [| factor; v |]
     in
     let batch = (Nx.shape v).(0) in
-    let r = Nx.reshape (Array.append [| batch |] (Array.of_list output_view_shape)) t in
-    let r = Nx.mul_s r normalizer in
-    Nx.broadcast_to (Array.append [| batch |] output_shape) r
+    let t = Nx.reshape (Array.append [| batch |] output_view) t in
+    let t = List.fold !left_ties ~init:t ~f:(tie_left_axes ~dims) in
+    let t = Nx.mul_s t normalizer in
+    Nx.broadcast_to (Array.append [| batch |] output_shape) t
 
 let compile_apply_component ~dims = function
   | Component.Single term -> compile_apply_term ~dims term

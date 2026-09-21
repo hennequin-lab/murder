@@ -9,7 +9,7 @@ open Base
 open Nx
 open Symo
 
-let print s = Stdio.print_endline (Sexp.to_string_hum s)
+let in_dir = Cmdargs.in_dir "-d"
 
 module RNN = struct
   type 'a t =
@@ -41,7 +41,7 @@ module RNN = struct
   (* The surrogate network the estimator works on: free axes keep their
      dimension, the permuted hidden axis shrinks to 2. It must stay
      non-trivial (>= 2), or the estimated curvature vanishes. *)
-  let surrogate_dim = 3
+  let surrogate_dim = 4
   let ensure_size_invariance = false
 
   let init () =
@@ -82,7 +82,7 @@ let horizon = 100
 let batch = 128
 let input = randn float32 [| horizon; batch; RNN.input_dim |]
 let targets = RNN.forward ~dt teacher ~input
-let _ = Nx_io.save_txt "target" (slice [ A; I 0; A ] targets)
+let _ = Nx_io.save_txt (in_dir "target") (slice [ A; I 0; A ] targets)
 
 let loss (p : Nx.float32_t RNN.t) =
   let pred = RNN.forward ~dt p ~input in
@@ -98,14 +98,14 @@ let grad = value_and_grad_jit student
 
 module S = Symo.Make (RNN)
 
-let _ = print [%message (S.surrogate_dims : int list RNN.t)]
+let uniformise_diag m =
+  let open Infix in
+  let d = recip (sqrt (diag m +$ 1e-12)) in
+  reshape [| -1; 1 |] d * m * reshape [| 1; -1 |] d
 
 let save_cov_for label theta =
   let s2 =
-    Stdio.print_endline "computing second-order factors";
     let factors = S.Second_order.factors_of_pair ~symmetric:true theta theta in
-    let n_factors = RNN.map (Array.map ~f:List.length) factors in
-    print [%message (n_factors : int array RNN.t)];
     S.Second_order.dense_of_factors ~symmetric:true ~full:true factors
   in
   let s2_emp =
@@ -128,8 +128,19 @@ let save_cov_for label theta =
       Infix.(acc + (g *@ transpose g /$ Float.(of_int 10_000))))
   in
   Stdio.print_endline "";
-  Nx_io.save_txt (Printf.sprintf "rnn_%s_s2" label) s2;
-  Nx_io.save_txt (Printf.sprintf "rnn_%s_s2_emp" label) s2_emp
+  let s2 = uniformise_diag s2 in
+  let s2_emp = uniformise_diag s2_emp in
+  Nx_io.save_txt (in_dir (Printf.sprintf "rnn_%s_s2" label)) s2;
+  Nx_io.save_txt (in_dir (Printf.sprintf "rnn_%s_s2_emp" label)) s2_emp;
+  let cmap = Hugin.Cmap.cividis in
+  Hugin.heatmap ~cmap ~data:s2 ~vmin:(-0.7) ~vmax:0.7 ()
+  |> Hugin.xlim 0. 128.
+  |> Hugin.ylim 0. 128.
+  |> Hugin.no_axes
+  |> Hugin.render_png
+       ~width:512.
+       ~height:512.
+       (in_dir (Printf.sprintf "rnn_%s.png" label))
 
 let _ = save_cov_for "params" student
 let _ = save_cov_for "grad" grad

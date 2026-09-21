@@ -21,6 +21,4 @@ type t =
   ; group_axes : Index.t list list
   ; group_ids : int list
   }
-
-let equal (a : t) (b : t) = Poly.equal a b
-let compare (a : t) (b : t) = Poly.compare a b
+[@@deriving equal, compare]

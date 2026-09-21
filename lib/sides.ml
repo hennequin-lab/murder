@@ -15,10 +15,6 @@ type 'a t =
   { left : 'a
   ; right : 'a
   }
+[@@deriving equal, compare]
 
 let map ~f t = { left = f t.left; right = f t.right }
-let equal eq a b = eq a.left b.left && eq a.right b.right
-
-let compare cmp a b =
-  let c = cmp a.left b.left in
-  if Int.equal c 0 then cmp a.right b.right else c

@@ -177,6 +177,15 @@ let test_scalar_factor_two_groups () =
     ~dims:(dims ~left:[ 2; 3 ] ~right:[])
     (spec ~left:[ Symmetry.Perm 0; Symmetry.Perm 1 ] ~right:[ Symmetry.Absent ])
 
+(* A tie that only involves left axes has no operand to repeat a label in,
+   and is completed by a Kronecker identity; the block must still be the
+   diagonal basis tensor. *)
+let test_left_tie () =
+  check_basis
+    ~name:"left-only tie"
+    ~dims:(dims ~left:[ 2; 2 ] ~right:[])
+    (spec ~left:[ Symmetry.Perm 0; Perm 0 ] ~right:[ Symmetry.Absent ])
+
 let test_compile_manual () =
   let d = dims ~left:[ 2; 3 ] ~right:[ 2; 3 ] in
   let s = spec ~left:[ Symmetry.Id; Perm 0 ] ~right:[ Symmetry.Id; Symmetry.Perm 0 ] in
@@ -205,6 +214,7 @@ let tests =
   ; test "symmetric merge" test_symmetric
   ; test "scalar factor" test_scalar_factor
   ; test "scalar factors, two groups" test_scalar_factor_two_groups
+  ; test "left-only tie" test_left_tie
   ; test "manual compilation" test_compile_manual
   ]
 

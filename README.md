@@ -159,7 +159,6 @@ The suites are:
 | `Sides`, `Index`             | the two sides of a commutation equation; axis indices and einsum characters                                            |
 | `Symmetry`                   | `Absent`/`Id`/`Perm i` specs and the surrogate dimension they induce                                                   |
 | `Term`, `Component`, `Basis` | basis terms (ties + free axes), components, and the symbolic basis of the invariant subspace                           |
-| `Delta`, `Contract`          | Kronecker-delta operands and pairwise materialized einsum contractions                                                 |
 | `Compiler`                   | one specification at fixed dimensions → closures for factor estimation, dense blocks and batched block-vector products |
 | `Orbit`                      | lifts the compiler to the whole parameter tree (`First_order`, `Second_order`)                                         |
 | `Solve`                      | the host-side estimator (`svd64`, damped symmetric powers, `H`/`H_inv`)                                                |
@@ -185,9 +184,9 @@ The suites are:
 - **The library contains no model definitions.** Models live in downstream
   code or examples (`examples/student_teacher.ml`); only generic parameter-tree
   machinery is here.
-- The two `Nx.einsum` defects that shaped the tensor layer (repeated-label
-  contraction, non-contiguous intermediates and inputs) are documented in
-  `PLAN.md`, §10.
+- The `Nx.einsum` repeated-label defect that shaped the tensor layer — and
+  its upstream fix, which retired the `Delta`/`Contract` workaround — is
+  documented in `PLAN.md`, §10.
 
 `PLAN.md` is the port's design document and keeps the full milestone history,
 including two corrections found while porting (the surrogate convention above,

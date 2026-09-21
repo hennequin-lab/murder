@@ -8,6 +8,6 @@
 (executable
  (name rnn)
  (modules rnn)
- (libraries base stdio nx nx.core symo hugin rune)
+ (libraries base stdio nx nx.core symo hugin rune cmdargs)
  (preprocess
   (pps ppx_sexp_conv ppx_sexp_message ppx_ptree)))
