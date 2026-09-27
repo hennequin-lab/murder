@@ -27,7 +27,8 @@
 
     - {!sketch}: loss, C and the sketched GGN (curvature observations are
       read);
-    - [Rune.jvp_k] alone: loss and C (observations are inert);
+    - a bare [Rune.vmap] around [Rune.jvp] over the loss: loss and C
+      (observations are inert), the composition the sketch itself drives;
     - [Rune.value_and_grad]: loss and the exact gradient (observations are
       inert).
 
@@ -40,7 +41,7 @@
       let y = predict params x in
       Nx.add (Sofo.mse y target) (Nx.sum (Nx.mul w w))
     in
-    let sk = Sofo.sketch (module Params) ~k:32 loss params in
+    let sk = Sofo.sketch params_ptree ~k:32 loss params in
     (* sk.c, sk.ggn : the sketched gradient and GGN; sk.apply : sketch → params *)
     ]} *)
 
@@ -169,8 +170,9 @@ type 'p sketch =
   ; diagnostics : diagnostics
   }
 
-(** [sketch (module P) ~k loss params] sketches [loss] at [params] along [k]
-    sampled directions.
+(** [sketch structure ~k loss params] sketches [loss] at [params] along [k]
+    sampled directions. [structure] is the parameter structure, the
+    {!Nx.Ptree.instantiate} of the record's module.
 
     [loss] must return a scalar — it is the whole objective, including any
     terms the user accumulates but does not observe. Little losses are marked
@@ -192,27 +194,28 @@ type 'p sketch =
     Check the returned sketch when compiling.
 
     The same loss function runs under the other drivers without changing: the
-    observations are inert to {!Rune.value_and_grad} and to {!Rune.jvp_k} alone.
-    A [Rune.scan] inside the loss folds inside the collector, so a per-step
-    observation fires for every step; a [Rune.vmap] inside the loss batches the
-    trials inside the tangent axis (put batch dimensions there, never outside
-    the sketch — {!Rune.vmap} around [sketch] is a lane error, not a batch of
-    sketches). Inside a [Rune.jit]ed function a sketch is correct but unrolled:
-    the collector claims each scan and its accumulations are traced beside the
-    primal operations, so compile time grows with the horizon where a plain
-    compiled rollout stages the same scan as a loop.
+    observations are inert to {!Rune.value_and_grad} and to a bare
+    [Rune.vmap] around [Rune.jvp] (the composition this function drives). A
+    [Rune.scan] inside the loss folds inside the forward pass, so a per-step
+    observation fires for every step; a [Rune.vmap] inside the loss batches
+    the trials inside the tangent axis, while a {!Rune.vmap} *around* [sketch]
+    is a batch of sketches, one per mapped parameter tree, each along its own
+    lanes. Inside a [Rune.jit]ed function a sketch is correct but
+    unrolled: the forward pass's scan rule runs the fold eagerly, so compile
+    time grows with the horizon where a plain compiled rollout stages the same
+    scan as a loop.
 
     Raises [Invalid_argument] if [k < 1], if [loss] does not return a scalar, or
-    if a marked prediction's tangent is not a [k]-lane batch (marking a loss
-    differentiated with [Rune.jvp] rather than [Rune.jvp_k]). *)
+    if a marked prediction's tangent is not a [k]-lane batch (a bare
+    [Rune.jvp]'s single tangent). *)
 val sketch
-  : (module P : Nx.Ptree.S)
+  :  'p Nx.Ptree.t
   -> k:int
-     -> ?sketch_sampler:(int -> P.t -> P.t)
-     -> ?strict:bool
-     -> (P.t -> ('c, 'd) Nx.t)
-     -> P.t
-     -> P.t sketch
+  -> ?sketch_sampler:(int -> 'p -> 'p)
+  -> ?strict:bool
+  -> ('p -> ('c, 'd) Nx.t)
+  -> 'p
+  -> 'p sketch
 
 (** [check sk] compares the little losses the collector observed with the loss
     the driver returned: [Ok ()] when they agree within a small relative
@@ -243,11 +246,13 @@ val check : 'p sketch -> (unit, string) result
     module O = Sofo.Optim.Compiled (Params) (Aux)
 
     (* traced once, replayed for every step: the compiled half *)
-    let sketch_step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss)
+    let sketch_step = Rune.jit O.signature (O.sketch ~k loss)
 
     (* the loop: one replay, one eager solve, one eager step *)
     let params, state =
-      let out = sketch_step { O.params; key = state.Sofo.Optim.key; aux } in
+      let out =
+        sketch_step { O.bundle = (params, aux); key = state.Sofo.Optim.key }
+      in
       (match O.check out with
        | Error m -> failwith m
        | Ok () -> ());
@@ -274,14 +279,14 @@ module Optim : sig
   (** {2 State} *)
 
   type state =
-    { key : Nx.int32_t (** The stream the directions Θ are drawn from. *)
+    { key : Nx.Rng.t (** The stream the directions Θ are drawn from. *)
     ; step : int (** Iterations completed. *)
     }
 
   (** [init ?key ()] is a fresh state: step 0, and [key] as the stream's root,
       or a subkey of the ambient {!Nx.Rng} scope when [key] is omitted. The
       whole run follows from this key. *)
-  val init : ?key:Nx.Rng.key -> unit -> state
+  val init : ?key:Nx.Rng.t -> unit -> state
 
   (** [next st] is the state of the iteration after [st]: the counter advances
       and the key becomes the subkey the counter indexes, so no two steps share
@@ -292,34 +297,30 @@ module Optim : sig
 
   (** {2 Directions} *)
 
-  (** [directions (module P) ?key ~k params] is Θ: one standard-normal [k]-lane
+  (** [directions structure ?key ~k params] is Θ: one standard-normal [k]-lane
       batch per float leaf, and zero lanes for leaves that cannot carry a
       direction (an RNG key, an index, a counter — they do not participate).
-      A pure function of [key] (or of the ambient scope when [key] is
-      omitted), so the compiled step can draw it from a key that is an input
-      leaf, and a caller can reproduce a step's subspace by name. This is
-      {!sketch}'s own sampler, keyed. *)
-  val directions
-    :  (module Nx.Ptree.S with type t = 'p)
-    -> ?key:Nx.Rng.key
-    -> k:int
-    -> 'p
-    -> 'p
+      [structure] is the parameter structure. A pure function of [key] (or of
+      the ambient scope when [key] is omitted), so the compiled step can draw
+      it from a key that is an input leaf, and a caller can reproduce a step's
+      subspace by name. This is {!sketch}'s own sampler, keyed. *)
+  val directions : 'p Nx.Ptree.t -> ?key:Nx.Rng.t -> k:int -> 'p -> 'p
 
-  (** [apply (module P) ~k thetas z] is Θz: the parameter-space direction the
+  (** [apply structure ~k thetas z] is Θz: the parameter-space direction the
       sketch coordinates [z] denote, each leaf in its parameter's dtype.
-      {!sketch} returns the same function as the [apply] field of its record;
-      this one takes the directions as a value, because a compiled step cannot
-      return a closure. *)
-  val apply : (module Nx.Ptree.S with type t = 'p) -> k:int -> 'p -> Nx.float64_t -> 'p
+      [structure] is the parameter structure. {!sketch} returns the same
+      function as the [apply] field of its record; this one takes the
+      directions as a value, because a compiled step cannot return a closure. *)
+  val apply : 'p Nx.Ptree.t -> k:int -> 'p -> Nx.float64_t -> 'p
 
-  (** [gram (module P) ~k thetas] is ΘΘᵀ — [VᵀV] for [V] the [P×k] matrix of a
+  (** [gram structure ~k thetas] is ΘΘᵀ — [VᵀV] for [V] the [P×k] matrix of a
       tangent batch's components — accumulated leaf by leaf rather than over a
-      materialized matrix. It is the matrix {!coordinates} takes the inverse
-      square root of when it whitens, so it is also how a caller checks or
-      reuses the conditioning of a drawn subspace. Float64 whoever the leaves
-      are; a leaf that cannot carry a direction contributes nothing. *)
-  val gram : (module Nx.Ptree.S with type t = 'p) -> k:int -> 'p -> Nx.float64_t
+      materialized matrix. [structure] is the parameter structure. It is the
+      matrix {!coordinates} takes the inverse square root of when it whitens,
+      so it is also how a caller checks or reuses the conditioning of a drawn
+      subspace. Float64 whoever the leaves are; a leaf that cannot carry a
+      direction contributes nothing. *)
+  val gram : 'p Nx.Ptree.t -> k:int -> 'p -> Nx.float64_t
 
   (** {2 The update} *)
 
@@ -394,17 +395,18 @@ module Optim : sig
     -> Nx.float64_t
     -> Nx.float64_t
 
-  (** [update (module P) ~lr ?damping ?preconditioner sk params] is one SOFO step:
-      [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C], from the sketch [sk] measured at
-      [params]. [lr] defaults to [1.0], which together with no damping is the
-      exact Newton step inside the sketched subspace.
+  (** [update structure ~lr ?damping ?preconditioner sk params] is one SOFO
+      step: [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C], from the sketch [sk]
+      measured at [params]. [structure] is the parameter structure. [lr]
+      defaults to [1.0], which together with no damping is the exact Newton
+      step inside the sketched subspace.
 
       The solve is {!coordinates} with the sketch's own directions: the Gram of
       [sk.dirs] whitens it, so the damping is relative to the curvature of the
       subspace and the parameter step is [Θ (Q z)] — the coordinates {!apply}
       contracts are the whitened solve brought back to the drawn basis. *)
   val update
-    :  (module Nx.Ptree.S with type t = 'p)
+    :  'p Nx.Ptree.t
     -> ?lr:float
     -> ?damping:damping
     -> ?preconditioner:preconditioner
@@ -414,14 +416,15 @@ module Optim : sig
 
   (** {2 One eager step} *)
 
-  (** [step (module P) ~k ~lr ?damping ?preconditioner ?strict st ~loss ~params] sketches
-      [loss] at [params] along directions drawn from [st]'s key, applies the
-      update, and returns the new parameters, the next state and the sketch —
-      the loss, C, G̃ and the diagnostics, for logging or {!check}. One call is
-      one training iteration, eager end to end; use {!Compiled} when the
-      sketching half should be compiled. *)
+  (** [step structure ~k ~lr ?damping ?preconditioner ?strict st ~loss ~params]
+      sketches [loss] at [params] along directions drawn from [st]'s key,
+      applies the update, and returns the new parameters, the next state and
+      the sketch — the loss, C, G̃ and the diagnostics, for logging or
+      {!check}. [structure] is the parameter structure. One call is one
+      training iteration, eager end to end; use {!Compiled} when the sketching
+      half should be compiled. *)
   val step
-    :  (module Nx.Ptree.S with type t = 'p)
+    :  'p Nx.Ptree.t
     -> k:int
     -> lr:float
     -> ?damping:damping
@@ -439,7 +442,7 @@ module Optim : sig
       Wrap it once —
 
       {[
-      let step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss)
+      let step = Rune.jit O.signature (O.sketch ~k loss)
       ]}
 
       — and every later call replays: the shapes of [in_] do not change across
@@ -448,27 +451,36 @@ module Optim : sig
       comes back is everything the update needs and nothing that needs a
       factorization. *)
 
+  (** What {!Compiled} needs of a value's structure: the value type and its
+      tree — the [ptree] the [ptree] deriver writes for a concrete record, or
+      {!Nx.Ptree.instantiate} of a [walk] module. *)
+  module type Structure = sig
+    type t
+
+    val ptree : t Nx.Ptree.t
+  end
+
   (** [No_aux] is the trivial auxiliary input — [t] is [unit], with no leaves —
       for losses that read the parameters and nothing else:
       [Compiled (P) (No_aux)] with a [loss] of the form
       [fun params () -> ...]. *)
-  module No_aux : Nx.Ptree.S with type t = unit
+  module No_aux : Structure with type t = unit
 
-  module Compiled (P : Nx.Ptree.S) (Aux : Nx.Ptree.S) : sig
+  module Compiled (P : Structure) (Aux : Structure) : sig
     type in_ =
       { params : P.t (** The parameters to sketch at. *)
-      ; key : Nx.int32_t (** The state's key: the direction stream. *)
+      ; key : Nx.Rng.t (** The state's key: the direction stream. *)
       ; aux : Aux.t
         (** Everything else the loss reads: the batch, a schedule value, a
-            per-step scale. Auxiliary leaves are data, not parameters —
-            the sketch never differentiates them and {!update} never moves
-            them — but they ride the input tree, so changing them between
-            steps is a new input, not a new trace. *)
+            per-step scale. Auxiliary leaves are data, not parameters — the
+            sketch never differentiates them and {!update} never moves them —
+            but they ride the input tree, so changing them between steps is a
+            new input, not a new trace. *)
       }
 
     (** [In] is [in_] as a parameter tree: one input structure for the whole
         compiled step, parameters, key and aux together. *)
-    module In : Nx.Ptree.S with type t = in_
+    module In : Nx.Ptree.S with type 'a t = in_
 
     type out =
       { loss : Nx.float64_t (** The primal total, as a scalar. *)
@@ -479,7 +491,11 @@ module Optim : sig
       ; observed_c : Nx.float64_t
       }
 
-    module Out : Nx.Ptree.S with type t = out
+    module Out : Nx.Ptree.S with type 'a t = out
+
+    (** The signature {!Rune.jit} compiles: the input record above and the
+        output record, with each tensor leaf at its own dtype. *)
+    val signature : (in_ -> out) Nx.Ptree.fn
 
     (** [sketch ~k loss] draws Θ from [in_.key], sketches [loss] at
         [in_.params] with [in_.aux], and returns the numbers together with the
@@ -487,9 +503,9 @@ module Optim : sig
 
         The loss takes the parameters and the aux, in that order. It is the
         same function the eager entry points take, closed over its aux —
-        [Sofo.sketch (module P) ~k (fun params -> loss params aux) params],
-        and likewise [Optim.step]'s [~loss] — so one objective serves the
-        compiled half and the {!check} pass that precedes it. *)
+        [Sofo.sketch p ~k (fun params -> loss params aux) params], and
+        likewise [Optim.step]'s [~loss] — so one objective serves the compiled
+        half and the {!check} pass that precedes it. *)
     val sketch : k:int -> (P.t -> Aux.t -> ('c, 'd) Nx.t) -> in_ -> out
 
     (** [update ?lr ?damping ?preconditioner st params out] is one SOFO step on

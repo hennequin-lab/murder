@@ -23,22 +23,25 @@ let damping : Sofo.Optim.damping = `Relative_from_top 1e-5
 
 let lorenz_trajs =
   let file = in_dir "data.npy" in
-  try Nx_io.(load_npy file |> to_typed float32) with
+  try Nx.unpack float32 (Nx_io.load_npy file) with
   | _ ->
     let dt = 0.01 in
     let sigma = 10. in
     let rho = 28. in
     let beta = 8. /. 3. in
     let lorenz =
-      Rune.jit' ~device:"CPU" ~donate:true (fun y ->
-        let open Infix in
-        let x = slice [ A; I 0 ] y
-        and yc = slice [ A; I 1 ] y
-        and z = slice [ A; I 2 ] y in
-        let dx = (yc - x) *$ sigma
-        and dy = (x * (-z +$ rho)) - yc
-        and dz = (x * yc) - (z *$ beta) in
-        stack ~axis:1 [ dx; dy; dz ])
+      Rune.jit
+        ~devices:[ Rune.device "CPU" ]
+        Nx.Ptree.(tensor @-> returns tensor)
+        (fun y ->
+          let open Infix in
+          let x = slice [ A; I 0 ] y
+          and yc = slice [ A; I 1 ] y
+          and z = slice [ A; I 2 ] y in
+          let dx = (yc - x) *$ sigma
+          and dy = (x * (-z +$ rho)) - yc
+          and dz = (x * yc) - (z *$ beta) in
+          stack ~axis:1 [ dx; dy; dz ])
     in
     Rng.with_key (Rng.key 42)
     @@ fun () ->
@@ -110,10 +113,7 @@ module Model = struct
     + (relu (concatenate ~axis:1 [ x; ones float32 [| bs; 1 |] ] *@ theta.c) *@ theta.w)
 
   let forward ~horizon (theta : P.t) x0 =
-    Rune.scan
-      (module struct
-        type t = float32_t [@@deriving ptree]
-      end)
+    Rune.scan'
       ~f:(fun x t -> step theta x, t)
       ~init:x0
       (Nx.zeros float32 [| horizon - 1; 1 |])
@@ -135,13 +135,11 @@ let objective params (x0, xf) =
 
 (* JIT compilation machinery for a sketched objective *)
 let sketch_step =
-  Rune.jit2
-    ~device
+  Rune.jit
+    ~devices:[ Rune.device device ]
     ?beam
-    ?beam_parallel
-    ~donate:true
-    (module O.In)
-    (module O.Out)
+    ?parallel:beam_parallel
+    O.signature
     (O.sketch ~k:n_tangents objective)
 
 let rec loop_sofo ~i ~out (params : Model.P.t) (state : Sofo.Optim.state) =
@@ -179,14 +177,13 @@ module Out = struct
 end
 
 let value_and_grad_jit =
-  Rune.jit2
-    ~device
+  Rune.jit
+    ~devices:[ Rune.device device ]
     ?beam
-    ?beam_parallel
-    (module In)
-    (module Out)
+    ?parallel:beam_parallel
+    Nx.Ptree.(In.ptree @-> returns Out.ptree)
     (fun In.{ params; data } ->
-       Rune.value_and_grad (module Model.P) (fun model -> objective model data) params)
+       Rune.value_and_grad Model.P.ptree (fun model -> objective model data) params)
 
 let rec loop_adam ~i ~out (params : Model.P.t) state key =
   if i >= max_iter
@@ -196,14 +193,14 @@ let rec loop_adam ~i ~out (params : Model.P.t) state key =
     let data = minibatch keys.(0) bs in
     let loss_val, grads = value_and_grad_jit { params; data } in
     let params, state =
-      Vega.adam_step (module Model.P) ~lr:(scalar float32 0.0002) state ~params ~grads
+      Vega.adam_step Model.P.ptree ~lr:(scalar float32 0.0002) state ~params ~grads
     in
     let loss = item [] loss_val in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
     if i % 10 = 0 then Nx_io.save_txt ~append:true out (create float32 [| 1 |] [| loss |]);
     loop_adam ~i:(i + 1) ~out params state keys.(1))
 
-let state = Vega.adam_init (module Model.P) params
+let state = Vega.adam_init Model.P.ptree params
 
 (*
    let _ =

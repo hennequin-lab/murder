@@ -107,4 +107,4 @@ let tests =
   ; test "hvp lifts an arbitrary Hessian action" test_hvp
   ]
 
-let () = run "sofo curv" tests
+let () = exit (run "sofo curv" tests)

@@ -13,20 +13,36 @@
    pass, and the observation is inert. So user code is identical under every
    optimizer: [observe] is a no-op unless a collector is installed.
 
-   The payload packs the prediction and the loss value together with the
-   curvature description. Their dtypes are independent (a loss evaluated in a
-   wider type than its prediction is perfectly reasonable), which is why the
-   constructor carries them as two existential pairs rather than one shared
-   type; the collector is polymorphic in both. *)
+   The payload packs the prediction and the loss value together with their
+   tangents and the curvature description. The tangents are read *here*, at the
+   observation site, while the forward mode the sketch installed is still in
+   scope — the query answers the whole [k]-lane batch a {!Rune.vmap} around
+   {!Rune.jvp} produces. The collector then handles the observation outside
+   that map's extent, where the lanes of the batch are ordinary tensor axes
+   again (see collector.ml); reading them there instead would see the map's
+   virtual, lane-less shapes.
 
-type obs = Obs : ('a, 'b) Nx.t * ('c, 'd) Nx.t * Curv.t -> obs
+   The dtypes of the prediction and of the loss are independent (a loss
+   evaluated in a wider type than its prediction is perfectly reasonable),
+   which is why the constructor carries them as two existential pairs rather
+   than one shared type; the collector is polymorphic in both, and each tangent
+   is carried beside the value it belongs to at the value's own dtype. *)
+
+type obs =
+  | Obs :
+      ('a, 'b) Nx.t * ('a, 'b) Nx.t option
+      * ('c, 'd) Nx.t * ('c, 'd) Nx.t option
+      * Curv.t
+      -> obs
+
 type _ Effect.t += E_observe : obs -> unit Effect.t
 
 (* [observe ~y ~curv l] marks [l] as a little loss in [y], with curvature
    [curv]: [l] must be a scalar computed from [y] by differentiable operations.
-   Its tangent is available to the collector because [l]'s operations were
-   tracked, so the user's own arithmetic — not this call — defines both the
-   value and its tangent. *)
+   Its tangent, and [y]'s, are read from the installed forward mode here and
+   travel in the payload, because the collector sits outside the map that
+   batched the forward pass. The user's own arithmetic — not this call —
+   defines both the value and its tangent. *)
 let observe ~y ~curv l =
   if Nx.numel l <> 1
   then
@@ -34,7 +50,8 @@ let observe ~y ~curv l =
       (Printf.sprintf
          "Sofo.observe: the mini loss must be a scalar (one element), got shape [%s]"
          (String.concat "," (Array.to_list (Array.map string_of_int (Nx.shape l)))));
-  match Effect.perform (E_observe (Obs (y, l, curv))) with
+  let dy = Rune.tangent y and dl = Rune.tangent l in
+  match Effect.perform (E_observe (Obs (y, dy, l, dl, curv))) with
   | () -> ()
   | exception Effect.Unhandled _ -> ()
 
@@ -57,7 +74,7 @@ let mse ?w y target =
     | None -> Nx.mean sq, Curv.scale (2.0 /. n)
     | Some w ->
       let w = Nx.cast (Nx.dtype y) w in
-      let two_over_n = Nx_core.Dtype.of_float (Nx.dtype y) (2.0 /. n) in
+      let two_over_n = Nx_dtype.of_float (Nx.dtype y) (2.0 /. n) in
       Nx.mean (Nx.mul w sq), Curv.diag (Nx.mul_s w two_over_n)
   in
   observe ~y ~curv loss;

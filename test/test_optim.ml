@@ -39,6 +39,9 @@ let check_arr ?(eps = 1e-9) ?(rel = 0.0) ~msg expected actual =
 
 let max_abs t = Nx.item [] (Nx.max (Nx.abs t))
 
+(* Keys are private tensors; this is how a test reads one. *)
+let key0 (key : Nx.Rng.t) = Nx.item [ 0 ] (key :> Nx.int32_t)
+
 (* ── fixtures ────────────────────────────────────────────────────────────── *)
 
 (* A parameter structure with a float64 leaf, a float32 one, and an int leaf
@@ -50,18 +53,24 @@ type params =
   }
 
 module Params = struct
+  type _ t = params
+
+  let walk c p =
+    let open Nx.Ptree.Walk in
+    { w = field c "w" tensor p.w
+    ; v = field c "v" tensor p.v
+    ; tag = field c "tag" tensor p.tag
+    }
+end
+
+let params_ptree : params Nx.Ptree.t = Nx.Ptree.instantiate (module Params)
+
+(* [Compiled] takes a value structure — its type and its tree — not a walk
+   module, so the parameter record is wrapped once. *)
+module Params_c = struct
   type t = params
 
-  let map (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) p =
-    { w = f p.w; v = f p.v; tag = f p.tag }
-
-  let map2 (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a b =
-    { w = f a.w b.w; v = f a.v b.v; tag = f a.tag b.tag }
-
-  let iter (f : 'a 'b. ('a, 'b) Nx.t -> unit) p =
-    f p.w;
-    f p.v;
-    f p.tag
+  let ptree = params_ptree
 end
 
 let d = 4
@@ -95,14 +104,14 @@ let loss p =
 
 (* Θ is a pure function of the key, so a fixed key makes every reference below
    use the same subspace as the sketch it checks. *)
-let thetas_of p = Sofo.Optim.directions (module Params) ~key ~k p
-let sampler k p = Sofo.Optim.directions (module Params) ~key ~k p
-let sketch_at p = Sofo.sketch (module Params) ~k ~sketch_sampler:sampler loss p
+let thetas_of p = Sofo.Optim.directions params_ptree ~key ~k p
+let sampler k p = Sofo.Optim.directions params_ptree ~key ~k p
+let sketch_at p = Sofo.sketch params_ptree ~k ~sketch_sampler:sampler loss p
 
 (* The same model without the float32 leaf, for the statements that should sit
    at float64 rounding rather than at the float32 branch's. *)
 let loss64 p = Sofo.mse (Nx.matmul x p.w) targets
-let sketch64 p = Sofo.sketch (module Params) ~k ~sketch_sampler:sampler loss64 p
+let sketch64 p = Sofo.sketch params_ptree ~k ~sketch_sampler:sampler loss64 p
 
 (* ── directions ──────────────────────────────────────────────────────────── *)
 
@@ -117,12 +126,12 @@ let test_directions_shapes_and_non_float_leaves () =
     ~msg:"v keeps its dtype"
     string
     "float32"
-    (Nx_core.Dtype.to_string (Nx.dtype thetas.v));
+    (Nx_dtype.to_string (Nx.dtype thetas.v));
   equal
     ~msg:"w keeps its dtype"
     string
     "float64"
-    (Nx_core.Dtype.to_string (Nx.dtype thetas.w));
+    (Nx_dtype.to_string (Nx.dtype thetas.w));
   equal ~msg:"the tag gets lanes too" int k (Nx.shape thetas.tag).(0);
   check_arr
     ~msg:"a leaf that cannot carry a direction gets zeros"
@@ -134,13 +143,13 @@ let test_directions_are_pure_in_the_key () =
   let a = thetas_of p in
   let b = thetas_of p in
   check_arr ~msg:"same key, same Θ" (to_arr a.w) b.w;
-  let other = Sofo.Optim.directions (module Params) ~key:(Nx.Rng.fold_in key 1) ~k p in
+  let other = Sofo.Optim.directions params_ptree ~key:(Nx.Rng.fold_in key 1) ~k p in
   let same = max_abs (Nx.sub a.w other.w) = 0.0 in
   is_false ~msg:"a different key gives a different subspace" same;
   (* an explicit key is not affected by the ambient scope *)
   let scoped =
     Nx.Rng.with_key (Nx.Rng.key 99) (fun () ->
-      Sofo.Optim.directions (module Params) ~key ~k p)
+      Sofo.Optim.directions params_ptree ~key ~k p)
   in
   check_arr ~msg:"~key pins the draw" (to_arr a.w) scoped.w
 
@@ -153,7 +162,7 @@ let test_apply_picks_lanes () =
        let z =
          Nx.create f64 [| k |] (Array.init k (fun j -> if i = j then 1.0 else 0.0))
        in
-       let step = Sofo.Optim.apply (module Params) ~k thetas z in
+       let step = Sofo.Optim.apply params_ptree ~k thetas z in
        check_arr ~msg:"apply e_i is lane i" (to_arr (Nx.slice [ Nx.I i ] thetas.w)) step.w;
        equal
          ~msg:"the tag leaf gets the zero direction"
@@ -175,7 +184,7 @@ let test_apply_agrees_with_the_sketch () =
   let sk = sketch_at p in
   let z = Nx.create f64 [| k |] [| 0.7; -1.3; 0.4 |] in
   let a = sk.apply z
-  and b = Sofo.Optim.apply (module Params) ~k (thetas_of p) z in
+  and b = Sofo.Optim.apply params_ptree ~k (thetas_of p) z in
   check_arr ~msg:"same direction" (to_arr a.w) b.w;
   check_arr ~msg:"same float32 direction" (to_arr a.v) b.v
 
@@ -268,7 +277,7 @@ let test_update_annihilates_the_sketched_gradient () =
      vanish at the new parameters. *)
   let p = params () in
   let sk = sketch64 p in
-  let p' = Sofo.Optim.update (module Params) ~lr:1.0 ~damping:(`Absolute 0.0) sk p in
+  let p' = Sofo.Optim.update params_ptree ~lr:1.0 ~damping:(`Absolute 0.0) sk p in
   let sk' = sketch64 p' in
   is_true
     ~msg:(Printf.sprintf "|C'| = %.3g at the new parameters" (max_abs sk'.c))
@@ -278,26 +287,26 @@ let test_update_annihilates_the_sketched_gradient () =
 let test_update_respects_the_learning_rate () =
   let p = params () in
   let sk = sketch_at p in
-  let p0 = Sofo.Optim.update (module Params) ~lr:0.0 sk p in
+  let p0 = Sofo.Optim.update params_ptree ~lr:0.0 sk p in
   check_arr ~msg:"lr = 0 moves nothing" (to_arr p.w) p0.w;
   check_arr ~msg:"lr = 0 moves nothing (float32)" (to_arr p.v) p0.v;
-  let p1 = Sofo.Optim.update (module Params) ~lr:1.0 sk p in
+  let p1 = Sofo.Optim.update params_ptree ~lr:1.0 sk p in
   is_true ~msg:"lr = 1 moves something" (max_abs (Nx.sub p1.w p.w) > 0.0)
 
 let test_update_leaves_dtypes_and_non_float_leaves_alone () =
   let p = params () in
   let sk = sketch_at p in
-  let p' = Sofo.Optim.update (module Params) ~lr:1.0 sk p in
+  let p' = Sofo.Optim.update params_ptree ~lr:1.0 sk p in
   equal
     ~msg:"float64 stays float64"
     string
     "float64"
-    (Nx_core.Dtype.to_string (Nx.dtype p'.w));
+    (Nx_dtype.to_string (Nx.dtype p'.w));
   equal
     ~msg:"float32 stays float32"
     string
     "float32"
-    (Nx_core.Dtype.to_string (Nx.dtype p'.v));
+    (Nx_dtype.to_string (Nx.dtype p'.v));
   equal
     ~msg:"a leaf that cannot carry a direction is untouched"
     string
@@ -310,10 +319,10 @@ let test_update_uses_damping () =
   let p = params () in
   let sk = sketch_at p in
   let undamped =
-    Sofo.Optim.update (module Params) ~lr:1.0 ~damping:(`Absolute 0.0) sk p
+    Sofo.Optim.update params_ptree ~lr:1.0 ~damping:(`Absolute 0.0) sk p
   in
   let damped =
-    Sofo.Optim.update (module Params) ~lr:1.0 ~damping:(`Relative_from_top 1.0) sk p
+    Sofo.Optim.update params_ptree ~lr:1.0 ~damping:(`Relative_from_top 1.0) sk p
   in
   is_true
     ~msg:"damped step is shorter"
@@ -334,18 +343,17 @@ let test_gram_of_constant_directions () =
     ; tag = Nx.zeros Nx.int32 [| k; 2 |]
     }
   in
-  let z = Sofo.Optim.gram (module Params) ~k dirs in
+  let z = Sofo.Optim.gram params_ptree ~k dirs in
   check_arr ~msg:"Z = P·J" (Array.make (k * k) (float_of_int ((d * o) + d))) z
 
 (* A per-lane rescaling of a direction tree: the same subspace, in a different
    basis. *)
-let stretch (type q) (module Q : Nx.Ptree.S with type t = q) (s : Nx.float64_t) (t : q)
-  : q
-  =
+let stretch (type q) (structure : q Nx.Ptree.t) (s : Nx.float64_t) (t : q) : q =
   let k = Nx.numel s in
-  Q.map
-    (fun leaf ->
-       if Nx_core.Dtype.is_float (Nx.dtype leaf)
+  Nx.Ptree.map
+    structure
+    (fun _ leaf ->
+       if Nx_dtype.is_float (Nx.dtype leaf)
        then (
          let shape =
            Array.append [| k |] (Array.make (Array.length (Nx.shape leaf) - 1) 1)
@@ -363,20 +371,20 @@ let test_whitening_makes_the_step_independent_of_the_basis () =
      same subspace and differ only in their lanes' lengths. *)
   let p = params () in
   let s = Nx.create f64 [| k |] [| 1.0; 2.0; 4.0 |] in
-  let raw k p = Sofo.Optim.directions (module Params) ~key ~k p in
-  let stretched k p = stretch (module Params) s (raw k p) in
+  let raw k p = Sofo.Optim.directions params_ptree ~key ~k p in
+  let stretched k p = stretch params_ptree s (raw k p) in
   let damping = `Relative_from_top 0.1 in
-  let sk_raw = Sofo.sketch (module Params) ~k ~sketch_sampler:raw loss p in
-  let sk_str = Sofo.sketch (module Params) ~k ~sketch_sampler:stretched loss p in
-  let a = Sofo.Optim.update (module Params) ~lr:1.0 ~damping sk_raw p in
-  let b = Sofo.Optim.update (module Params) ~lr:1.0 ~damping sk_str p in
+  let sk_raw = Sofo.sketch params_ptree ~k ~sketch_sampler:raw loss p in
+  let sk_str = Sofo.sketch params_ptree ~k ~sketch_sampler:stretched loss p in
+  let a = Sofo.Optim.update params_ptree ~lr:1.0 ~damping sk_raw p in
+  let b = Sofo.Optim.update params_ptree ~lr:1.0 ~damping sk_str p in
   check_arr ~eps:1e-9 ~msg:"whitened step, float64 leaf" (to_arr a.w) b.w;
   check_arr ~eps:1e-6 ~msg:"whitened step, float32 leaf" (to_arr a.v) b.v;
   (* and the same two draws without the whitening are two different steps, so
      the assertion above is not passing by accident *)
   let z (sk : params Sofo.sketch) = Sofo.Optim.coordinates ~damping sk.ggn sk.c in
-  let sa = Sofo.Optim.apply (module Params) ~k sk_raw.dirs (z sk_raw) in
-  let sb = Sofo.Optim.apply (module Params) ~k sk_str.dirs (z sk_str) in
+  let sa = Sofo.Optim.apply params_ptree ~k sk_raw.dirs (z sk_raw) in
+  let sb = Sofo.Optim.apply params_ptree ~k sk_str.dirs (z sk_str) in
   is_true
     ~msg:
       (Printf.sprintf
@@ -391,9 +399,9 @@ let test_whitening_needs_k_parameters () =
      had, so the update says so instead of returning infinities. *)
   let p = params () in
   let k = 2 * ((d * o) + d) in
-  let sk = Sofo.sketch (module Params) ~k ~sketch_sampler:sampler loss p in
+  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:sampler loss p in
   raises_match Exn.invalid_arg (fun () ->
-    ignore (Sofo.Optim.update (module Params) ~lr:0.1 sk p))
+    ignore (Sofo.Optim.update params_ptree ~lr:0.1 sk p))
 
 (* ── the state and the eager step ────────────────────────────────────────── *)
 
@@ -404,7 +412,7 @@ let test_next_advances_the_stream () =
   equal ~msg:"one step" int 1 st1.Sofo.Optim.step;
   is_true
     ~msg:"the key moves on"
-    (Nx.item [ 0 ] st1.Sofo.Optim.key <> Nx.item [ 0 ] st.Sofo.Optim.key)
+    (key0 st1.Sofo.Optim.key <> key0 st.Sofo.Optim.key)
 
 let test_step_decreases_the_loss_and_advances () =
   (* A damped subspace Newton step with η = 1 provably decreases a convex loss,
@@ -423,7 +431,7 @@ let test_step_decreases_the_loss_and_advances () =
     else (
       let p, st, sk =
         Sofo.Optim.step
-          (module Params)
+          params_ptree
           ~k:8
           ~lr:1.0
           ~damping:(`Absolute 0.0)
@@ -454,7 +462,7 @@ let test_step_is_reproducible () =
     List.fold_left
       (fun p i ->
          fst
-           (Sofo.Optim.step (module Params) ~k ~lr:1.0 st ~loss ~params:p
+           (Sofo.Optim.step params_ptree ~k ~lr:1.0 st ~loss ~params:p
             |> fun (p, _, _) -> p, i))
       p
       (List.init 3 Fun.id)
@@ -469,11 +477,11 @@ let test_step_strict_reports_an_unobserved_term () =
   let leaky p = Nx.add (loss p) (Nx.mul_s (Nx.sum (Nx.square p.w)) 0.01) in
   raises_match Exn.invalid_arg (fun () ->
     ignore
-      (Sofo.Optim.step (module Params) ~k ~lr:1.0 ~strict:true st ~loss:leaky ~params:p))
+      (Sofo.Optim.step params_ptree ~k ~lr:1.0 ~strict:true st ~loss:leaky ~params:p))
 
 (* ── the compiled half ───────────────────────────────────────────────────── *)
 
-module O = Sofo.Optim.Compiled (Params) (Sofo.Optim.No_aux)
+module O = Sofo.Optim.Compiled (Params_c) (Sofo.Optim.No_aux)
 
 (* The compiled half's loss takes the aux; these tests have nothing beside the
    parameters to put in one. *)
@@ -497,9 +505,9 @@ let test_compiled_sketch_matches_the_eager_one () =
   equal ~msg:"the compiled update advances the state" int 1 st'.Sofo.Optim.step;
   is_true
     ~msg:"and the stream with it"
-    (Nx.item [ 0 ] st'.Sofo.Optim.key <> Nx.item [ 0 ] st.Sofo.Optim.key);
+    (key0 st'.Sofo.Optim.key <> key0 st.Sofo.Optim.key);
   let b =
-    Sofo.Optim.update (module Params) ~lr:0.5 ~damping:(`Relative_from_top 1e-3) sk p
+    Sofo.Optim.update params_ptree ~lr:0.5 ~damping:(`Relative_from_top 1e-3) sk p
   in
   check_arr ~msg:"compiled update" (to_arr a.w) b.w;
   check_arr ~msg:"compiled update (float32)" (to_arr a.v) b.v;
@@ -510,11 +518,11 @@ let test_compiled_sketch_matches_the_eager_one () =
     (Nx.to_string b.tag)
 
 let test_jitted_sketch_matches_eager () =
-  (* The compiled half is what [Rune.jit2] wraps; jit fuses kernels, so the
+  (* The compiled half is what [Rune.jit] wraps; jit fuses kernels, so the
      numbers agree up to floating point, and the check still holds on the
      values it hands back. *)
   let p = params () in
-  let step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss_c) in
+  let step = Rune.jit O.signature (O.sketch ~k loss_c) in
   let eager = O.sketch ~k loss_c { O.params = p; key; aux = () } in
   let jitted = step { O.params = p; key; aux = () } in
   (* jit fuses kernels, so the numbers agree to floating point rather than
@@ -539,7 +547,7 @@ let test_compiled_loop_trains () =
      loss, and a state that never needs to leave the host. *)
   let p = params () in
   let k = 8 in
-  let step = Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k loss_c) in
+  let step = Rune.jit O.signature (O.sketch ~k loss_c) in
   let st = Sofo.Optim.init ~key () in
   let rec go p st i prev best first =
     if i = 0
@@ -569,19 +577,23 @@ let test_compiled_loop_trains () =
    targets. Leaves like this ride the input tree, so a compiled step reads a
    new one as an ordinary input. *)
 module Aux = struct
-  type t = { shift : Nx.float64_t (* [o] *) }
+  type _ t = { shift : Nx.float64_t (* [o] *) }
 
-  let map (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a = { shift = f a.shift }
-
-  let map2 (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a b =
-    { shift = f a.shift b.shift }
-
-  let iter (f : 'a 'b. ('a, 'b) Nx.t -> unit) a = f a.shift
+  let walk c a =
+    let open Nx.Ptree.Walk in
+    { shift = field c "shift" tensor a.shift }
 end
 
-module Oaux = Sofo.Optim.Compiled (Params) (Aux)
+module Aux_c = struct
+  type t = Nx.float64_t Aux.t
 
-let loss_with_aux p (a : Aux.t) = Sofo.mse (Nx.matmul x p.w) (Nx.add targets a.shift)
+  let ptree : t Nx.Ptree.t = Nx.Ptree.instantiate (module Aux)
+end
+
+module Oaux = Sofo.Optim.Compiled (Params_c) (Aux_c)
+
+let loss_with_aux p (a : Nx.float64_t Aux.t) =
+  Sofo.mse (Nx.matmul x p.w) (Nx.add targets a.shift)
 
 let test_compiled_aux_reaches_the_loss () =
   (* The aux is an input, not a parameter: a new one is a new problem for a
@@ -589,16 +601,13 @@ let test_compiled_aux_reaches_the_loss () =
      differentiated — the step still annihilates C. *)
   let p = params () in
   let step =
-    Rune.jit2 (module Oaux.In) (module Oaux.Out) (Oaux.sketch ~k loss_with_aux)
+    Rune.jit Oaux.signature (Oaux.sketch ~k loss_with_aux)
   in
   let aux = { Aux.shift = Nx.create f64 [| o |] [| 1.0; -0.5; 0.25 |] } in
   let out = step { Oaux.params = p; key; aux } in
   (* the same numbers as an eager sketch with the aux closed over *)
   let eager =
-    Sofo.sketch
-      (module Params)
-      ~k
-      ~sketch_sampler:sampler
+    Sofo.sketch params_ptree ~k ~sketch_sampler:sampler
       (fun p -> loss_with_aux p aux)
       p
   in
@@ -606,7 +615,9 @@ let test_compiled_aux_reaches_the_loss () =
   check_arr ~rel:1e-5 ~msg:"C, aux in the tree" (to_arr eager.c) out.Oaux.c;
   check_arr ~rel:1e-5 ~msg:"G̃, aux in the tree" (to_arr eager.ggn) out.Oaux.ggn;
   (* a different aux, same program, same key: a different loss *)
-  let other = step { Oaux.params = p; key; aux = { Aux.shift = Nx.zeros f64 [| o |] } } in
+  let other =
+    step { Oaux.params = p; key; aux = { Aux.shift = Nx.zeros f64 [| o |] } }
+  in
   is_false
     ~msg:"a new aux is a new loss"
     (Float.equal (Nx.item [] other.Oaux.loss) (Nx.item [] out.Oaux.loss));
@@ -616,10 +627,7 @@ let test_compiled_aux_reaches_the_loss () =
     Oaux.update ~lr:1.0 ~damping:(`Absolute 0.0) (Sofo.Optim.init ~key ()) p out
   in
   let after =
-    Sofo.sketch
-      (module Params)
-      ~k
-      ~sketch_sampler:sampler
+    Sofo.sketch params_ptree ~k ~sketch_sampler:sampler
       (fun p -> loss_with_aux p aux)
       p'
   in
@@ -687,4 +695,4 @@ let tests =
       ]
   ]
 
-let () = run "sofo optim" tests
+let () = exit (run "sofo optim" tests)

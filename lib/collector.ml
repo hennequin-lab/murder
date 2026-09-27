@@ -5,8 +5,9 @@
 
 (* The collector: accumulate what a sketch needs, one little loss at a time.
 
-   Installed around the user's loss function, inside the batched forward-mode
-   scope, it intercepts [E_observe] and records, per little loss l = ℓ(y):
+   {!Sketch.run} installs it around the loss function, *outside* the [Rune.vmap]
+   that batches the forward pass; it intercepts [E_observe] and records, per
+   little loss l = ℓ(y):
 
    - its value, into Σ l;
    - its tangent, into Σ ċ — the cross-check against the tangent of the total
@@ -14,6 +15,13 @@
    - the block YᵀHY of the generalized Gauss-Newton matrix, with H the
      curvature description the observation carried and Y the tangent batch of
      y.
+
+   The tangents arrive in the observation payload, read at the observation site
+   while the forward mode was in scope. That placement is what makes the lane
+   axis ordinary arithmetic here: the payload carries the whole [k]-lane batch,
+   and this handler runs where [Nx.shape] reports it (see observe.ml). A
+   collector installed *inside* the map would be handed the same tensors with
+   the map's virtual, lane-less shapes, and could not contract the lanes.
 
    The value and its tangent are recorded even when the prediction is a
    constant of the differentiation (its block is then zero by construction,
@@ -48,10 +56,13 @@ let create ~k =
 
 let shape_string s = String.concat "," (Array.to_list (Array.map string_of_int s))
 
-(* One observation. The curvature block needs the batched tangent of the
-   prediction; a single-tangent forward mode has no such thing, and saying so
-   is more useful than contracting a mismatched shape. *)
-let record (type a b c d) (st : t) ~(y : (a, b) Nx.t) ~(l : (c, d) Nx.t) ~(curv : Curv.t) =
+(* One observation, with the tangents the payload carried. The curvature block
+   needs the batched tangent of the prediction; a plain single-tangent [jvp]
+   has no lane axis, and saying so is more useful than contracting a
+   mismatched shape. *)
+let record (type a b c d) (st : t)
+    ~(y : (a, b) Nx.t) ~(dy : (a, b) Nx.t option)
+    ~(l : (c, d) Nx.t) ~(dl : (c, d) Nx.t option) ~(curv : Curv.t) =
   (* The little loss may itself be packed along an enclosing map's axis — an
      observation performed inside [Rune.vmap], carrying one little loss per
      mapped element. Each of them contributes to the total loss, so the value
@@ -61,26 +72,24 @@ let record (type a b c d) (st : t) ~(y : (a, b) Nx.t) ~(l : (c, d) Nx.t) ~(curv 
      the loss the driver returned: a loss the user reduced with a mean over the
      map's axis disagrees by the batch factor and is reported. *)
   st.loss <- Nx.add st.loss (Nx.reshape [||] (Nx.cast Nx.float64 (Nx.sum l)));
-  (match Rune.tangent l with
+  (match dl with
    | None -> ()
    | Some dl ->
-     (* The tangent's own lane structure mirrors the prediction's below: a
-        tangent without one comes from a single-tangent forward mode, and
-        saying so beats failing inside a reshape. *)
      let n = Nx.numel dl in
      if n mod st.k <> 0
      then
        invalid_arg
          (Printf.sprintf
             "Sofo: a little loss's tangent has %d elements, not a multiple of the \
-             sketch's %d lanes — a tangent of shape [%s] comes from Rune.jvp, which has \
-             no lane axis to contract over; differentiate with Rune.jvp_k"
+             sketch's %d lanes — a tangent of shape [%s] has no lane axis; this sketch \
+             reads the batch a Rune.vmap around Rune.jvp produces, not a bare \
+             Rune.jvp's single tangent"
             n
             st.k
             (shape_string (Nx.shape dl)));
      let lanes = Nx.reshape [| st.k; -1 |] (Nx.contiguous (Nx.cast Nx.float64 dl)) in
      st.c <- Nx.add st.c (Nx.sum lanes ~axes:[ 1 ]));
-  match Rune.tangent y with
+  match dy with
   | None -> st.skipped <- st.skipped + 1
   | Some dy ->
     let shape_y = Nx.shape y in
@@ -91,9 +100,8 @@ let record (type a b c d) (st : t) ~(y : (a, b) Nx.t) ~(l : (c, d) Nx.t) ~(curv 
       invalid_arg
         (Printf.sprintf
            "Sofo: a prediction's tangent has shape [%s], but this sketch contracts the \
-            batched form [%s] of a %d-lane forward mode; a single tangent of shape [%s] \
-            comes from Rune.jvp, which has no lane axis to contract over — differentiate \
-            with Rune.jvp_k"
+            batched form [%s] of a %d-lane forward mode; a tangent of shape [%s] has no \
+            lane axis — differentiate under the sketch's vmap, not a bare Rune.jvp"
            (shape_string shape_dy)
            (shape_string expected)
            st.k
@@ -113,25 +121,16 @@ let rec handler : type r. t -> (r, r) Effect.Deep.handler =
   let effc : type c. c Effect.t -> ((c, _) continuation -> _) option =
     fun eff ->
     match eff with
-    | Observe.E_observe (Observe.Obs (y, l, curv)) ->
+    | Observe.E_observe (Observe.Obs (y, dy, l, dl, curv)) ->
       Some
         (fun k ->
-          record st ~y ~l ~curv;
+          record st ~y ~dy ~l ~dl ~curv;
           continue k ())
-    (* A scan inside the loss must fold *here*. Whichever handler claims the
-       fold runs it, and any handler outside the claimer — an enclosing
-       transformation — would run it beyond this handler's extent, where the
-       little losses performed in the body go unobserved. Claim it, re-install
-       this handler around the eager fold, and answer the staging probe with
-       [false]: a collector cannot stage a loop. (The claim only decides who
-       folds the scan: the operations still flow outward to [jvp_k], which sees
-       an ordinary unrolled loop and tracks every step.) *)
-    | Rune.Scan_claim.E_scan_probe -> Some (fun k -> continue k false)
-    | Rune.Scan_claim.E_scan req ->
-      Some
-        (fun k ->
-          let res = match_with (fun () -> Rune.Scan_claim.eager req) () (handler st) in
-          continue k res)
+    (* Everything else — including a [Rune.scan] inside the loss — falls
+       through. The forward mode claims the fold and runs it in its own
+       extent, and the little losses its body performs still reach this
+       handler: an effect performs outward from the fold's handler, and this
+       collector is outermost. *)
     | _ -> None
   in
   { retc = Fun.id; exnc = raise; effc }

@@ -43,7 +43,9 @@ let minibatch =
     x, y
 
 module Aux = struct
-  type t = Rng.key [@@deriving ptree]
+  type t = Rng.t
+
+  let ptree = Nx.Rng.ptree
 end
 
 module O = Sofo.Optim.Compiled (Model.P) (Aux)
@@ -56,7 +58,8 @@ let objective params key =
 
 (* JIT compilation machinery for a sketched objective *)
 let sketch_step =
-  Rune.jit2 ~device (module O.In) (module O.Out) (O.sketch ~k:n_tangents objective)
+  Rune.jit ~devices:[ Rune.device device ] O.signature
+    (O.sketch ~k:n_tangents objective)
 
 let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter

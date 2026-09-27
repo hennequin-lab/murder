@@ -2,4 +2,4 @@
  (name sofo)
  (public_name sofo)
  (private_modules collector observe optim sketch)
- (libraries nx.core nx rune))
+ (libraries nx.core nx.dtype nx rune))

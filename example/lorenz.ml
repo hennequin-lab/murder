@@ -11,15 +11,14 @@
    The point of the example is that one loss function is driven three ways,
 
    - [value_and_grad] — the exact gradient,
-   - [jvp_k] alone — the first-order subspace method (FGD at K = 1),
+   - [vmap] around [jvp] — the batched forward pass (FGD at K = 1),
    - [Sofo.sketch] — loss, C and the sketched GGN,
 
    and that the sketch is measured against the composition the plan calls its
    reference (a per-lane [vmap ∘ jvp] plus an explicit Σ YᵀHY). It reports
-   wall-clock, a peak-live-tangent count (the O(1)-memory-in-T claim), and what
-   a jitted step can do today: a sketch's scan unrolls into the trace, so a
-   compiled sketch is correct but grows with the horizon, where a plain
-   compiled rollout stages the same scan as a loop.
+   wall-clock and what a jitted step can do today: a sketch's scan unrolls into
+   the trace, so a compiled sketch is correct but grows with the horizon, where
+   a plain compiled rollout stages the same scan as a loop.
 
    The SOFO update rule of Algorithm 1 lives in the library now
    ([Sofo.Optim]); this example still trains first-order, stepping with
@@ -134,22 +133,7 @@ type params =
   ; wt : Nx.float64_t (* Wᵀ, [h;3] *)
   ; b : Nx.float64_t (* [h] *)
   }
-
-module Params = struct
-  type t = params
-
-  let map (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) p =
-    { a = f p.a; ct = f p.ct; wt = f p.wt; b = f p.b }
-
-  let map2 (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) p q =
-    { a = f p.a q.a; ct = f p.ct q.ct; wt = f p.wt q.wt; b = f p.b q.b }
-
-  let iter (f : 'a 'b. ('a, 'b) Nx.t -> unit) p =
-    f p.a;
-    f p.ct;
-    f p.wt;
-    f p.b
-end
+[@@deriving ptree]
 
 (* The number of parameters, for the K/P ratio the paper quotes. *)
 let num_params ~hidden = (3 * 3) + (3 * hidden) + (hidden * 3) + hidden
@@ -165,21 +149,12 @@ let init ~hidden ~seed =
 let step p z =
   Nx.add (Nx.matmul z p.a) (Nx.matmul (Nx.relu (Nx.add (Nx.matmul z p.ct) p.b)) p.wt)
 
-module Single = struct
-  type t = Nx.float64_t
-
-  let map (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) t = f t
-  let map2 (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a b = f a b
-  let iter (f : 'a 'b. ('a, 'b) Nx.t -> unit) t = f t
-end
-
 (* The rollout is written with [Rune.scan] rather than a loop so that a staging
-   [jit] can compile it as a loop: under a sketch the collector claims the scan
-   and it unrolls (below), which is exactly the cost this example reports. *)
+   [jit] can compile it as a loop: under a sketch the forward pass claims the
+   scan and it unrolls (below), which is exactly the cost this example reports. *)
 let rollout p x steps =
   fst
-    (Rune.scan
-       (module Single)
+    (Rune.scan'
        ~f:(fun z _ ->
          let z' = step p z in
          z', z')
@@ -257,60 +232,12 @@ let reference_ggn ~k p thetas =
       ~axis:0
       (List.init k (fun i ->
          snd
-           (Rune.jvp
-              (module Params)
-              preds
-              p
-              (Params.map (fun t -> Nx.slice [ Nx.I i ] t) thetas))))
+           (Rune.jvp ptree_params Nx.Ptree.tensor preds p
+              (Nx.Ptree.map ptree_params (fun _ t -> Nx.slice [ Nx.I i ] t) thetas))))
   in
   let y = Nx.reshape [| k; n |] (Nx.contiguous y) in
   (* the mean-squared little loss has H = (2/n)·I over the batched prediction *)
   Nx.mul_s (Nx.matmul y (Nx.transpose y)) (2.0 /. float_of_int n)
-
-(* ── probes ──────────────────────────────────────────────────────────────── *)
-
-(* Peak live tangent bindings under a sketch, with a major collection before
-   each reading so the number reflects what is reachable rather than what the
-   collector has not got round to. Two shapes of the same recurrence:
-
-   - a plain loop, where each step's intermediates die with the step — this is
-     the plan's O(1)-in-T claim;
-   - [Rune.scan], whose eager fold stacks every step's output before returning
-     it, so the store (and the heap) holds one binding per step for as long as
-     the fold runs. That is the scan's contract, not the differentiation's
-     doing: the activations inside a step never accumulate. *)
-let peak_live_tangents ~config ~scan p =
-  let peak = ref 0 in
-  let targets = Nx.zeros f64 [| config.horizon; 3 |] in
-  let loss p =
-    if scan
-    then (
-      let _, ls =
-        Rune.scan
-          (module Single)
-          ~f:(fun z tgt ->
-            let z' = step p z in
-            Gc.full_major ();
-            peak := max !peak (Rune.live_tangent_entries ());
-            z', Sofo.mse z' tgt)
-          ~init:(Nx.reshape [| 3 |] (Nx.slice [ Nx.I 0 ] !trials))
-          targets
-      in
-      Nx.sum ls)
-    else (
-      let z = ref (Nx.reshape [| 3 |] (Nx.slice [ Nx.I 0 ] !trials)) in
-      let acc = ref (Nx.zeros f64 [||]) in
-      for t = 0 to config.horizon - 1 do
-        let z' = step p !z in
-        Gc.full_major ();
-        peak := max !peak (Rune.live_tangent_entries ());
-        acc := Nx.add !acc (Sofo.mse z' (Nx.slice [ Nx.I t ] targets));
-        z := z'
-      done;
-      !acc)
-  in
-  ignore (Sofo.sketch (module Params) ~k:8 ~sketch_sampler:gaussian_sampler loss p);
-  !peak
 
 (* ── the report ──────────────────────────────────────────────────────────── *)
 
@@ -338,23 +265,29 @@ let run config =
     (100.0 *. float_of_int config.k /. float_of_int parameters)
     config.runs;
   (* the three modes *)
-  let loss_exact, grads = Rune.value_and_grad (module Params) loss p in
-  let loss_fgd, c_fgd = Rune.jvp_k (module Params) loss p thetas in
+  let loss_exact, grads = Rune.value_and_grad ptree_params loss p in
+  let loss_batched, c_batched =
+    Rune.vmap
+      Nx.Ptree.(ptree_params @-> returns (pair tensor tensor))
+      (fun theta -> Rune.jvp ptree_params Nx.Ptree.tensor loss p theta)
+      thetas
+  in
+  let loss_batched = Nx.reshape [||] (Nx.slice [ Nx.I 0 ] loss_batched) in
   let sk =
-    Sofo.sketch (module Params) ~k:config.k ~sketch_sampler:gaussian_sampler loss p
+    Sofo.sketch ptree_params ~k:config.k ~sketch_sampler:gaussian_sampler loss p
   in
   let c_exact = theta_t_cotangent ~k:config.k thetas grads in
   Printf.printf "one loss function, three drivers\n";
   Printf.printf
-    "  loss  exact grad %12.6f   jvp_k %12.6f   sketch %12.6f\n"
+    "  loss  exact grad %12.6f   vmap∘jvp %12.6f   sketch %12.6f\n"
     (Nx.item [] loss_exact)
-    (Nx.item [] loss_fgd)
+    (Nx.item [] loss_batched)
     (Nx.item [] sk.loss);
   let rel a b = max_abs (Nx.sub a b) /. Float.max 1e-30 (max_abs b) in
   Printf.printf "  C vs Θᵀ∇c        : max |Δ| %.3g (relative)\n" (rel sk.c c_exact);
   Printf.printf
-    "  C sketch vs jvp_k: max |Δ| %.3g (relative)\n"
-    (rel sk.c (Nx.reshape [| config.k |] c_fgd));
+    "  C sketch vs vmap∘jvp: max |Δ| %.3g (relative)\n"
+    (rel sk.c (Nx.reshape [| config.k |] c_batched));
   (match Sofo.check sk with
    | Ok () -> Printf.printf "  cross-check      : observed little losses add up\n"
    | Error msg -> Printf.printf "  cross-check      : FAILED — %s\n" msg);
@@ -367,19 +300,23 @@ let run config =
     (Nx.item [] (Nx.max (Nx.diag sk.ggn)));
   (* wall-clock *)
   let t_exact =
-    time_ms ~runs:config.runs (fun () -> Rune.value_and_grad (module Params) loss p)
+    time_ms ~runs:config.runs (fun () -> Rune.value_and_grad ptree_params loss p)
   in
-  let t_fgd =
-    time_ms ~runs:config.runs (fun () -> Rune.jvp_k (module Params) loss p thetas)
+  let t_batched =
+    time_ms ~runs:config.runs (fun () ->
+      Rune.vmap
+        Nx.Ptree.(ptree_params @-> returns tensor)
+        (fun theta -> snd (Rune.jvp ptree_params Nx.Ptree.tensor loss p theta))
+        thetas)
   in
   let t_sofo =
     time_ms ~runs:config.runs (fun () ->
-      Sofo.sketch (module Params) ~k:config.k ~sketch_sampler:gaussian_sampler loss p)
+      Sofo.sketch ptree_params ~k:config.k ~sketch_sampler:gaussian_sampler loss p)
   in
   let t_ref = time_ms ~runs:config.runs (fun () -> reference_ggn ~k:config.k p thetas) in
   Printf.printf "wall-clock (median of %d)\n" config.runs;
   Printf.printf "  exact value_and_grad       %s\n" (fmt_ms t_exact);
-  Printf.printf "  FGD  jvp_k (%d lanes)      %s   (C only)\n" config.k (fmt_ms t_fgd);
+  Printf.printf "  FGD  vmap∘jvp (%d lanes)   %s   (C only)\n" config.k (fmt_ms t_batched);
   Printf.printf
     "  SOFO sketch (%d lanes)     %s   (loss, C, GGN)\n"
     config.k
@@ -389,29 +326,11 @@ let run config =
     (fmt_ms t_ref)
     (t_ref /. t_sofo);
   (* memory *)
-  let long_config = { config with horizon = 4 * config.horizon } in
-  let loop_short = peak_live_tangents ~config ~scan:false p in
-  let loop_long = peak_live_tangents ~config:long_config ~scan:false p in
-  let scan_short = peak_live_tangents ~config ~scan:true p in
-  let scan_long = peak_live_tangents ~config:long_config ~scan:true p in
   Printf.printf "memory\n";
   Printf.printf
     "  dominant tangent batch         %6.2f MiB   (k*M*hidden*8 B, the paper's App. C \
      bound)\n"
     (float_of_int (config.k * config.trials * config.hidden * 8) /. 1048576.0);
-  Printf.printf
-    "  live tangent bindings, peak    %3d (T=%-3d) -> %3d (T=%-3d)  plain loop: O(1) in T\n"
-    loop_short
-    config.horizon
-    loop_long
-    long_config.horizon;
-  Printf.printf
-    "                                 %3d (T=%-3d) -> %3d (T=%-3d)  Rune.scan: one \
-     binding per output it returns\n"
-    scan_short
-    config.horizon
-    scan_long
-    long_config.horizon;
   Printf.printf
     "  held by a sketch               %6.1f KiB   (Theta k*P = %d scalars, plus C k and \
      GGN k*k; the tensor bytes are off-heap)\n\n"
@@ -424,11 +343,13 @@ let run config =
     (* Warm the device and the kernel compiler before timing: the first
        [Rune.jit] in a process pays for both, and would otherwise look like a
        horizon effect. Set JITCACHE=0 for cold compile numbers. *)
-    let _ = Rune.jit (module Params) (fun p -> single_loss p) p in
+    let _ = Rune.jit Nx.Ptree.(ptree_params @-> returns tensor) single_loss p in
     let jit_probe horizon =
       let steps = Nx.zeros f64 [| horizon; 1 |] in
       let single p = Sofo.mse (rollout p starts steps) !labels in
-      let plain = Rune.jit (module Params) (fun p -> single p) in
+      let plain =
+        Rune.jit Nx.Ptree.(ptree_params @-> returns tensor) (fun p -> single p)
+      in
       let t_plain =
         let t0 = Unix.gettimeofday () in
         ignore (plain p);
@@ -437,10 +358,10 @@ let run config =
       let t_replay = time_ms ~runs:5 ~warmup:1 (fun () -> plain p) in
       let sketch =
         Rune.jit
-          (module Params)
+          Nx.Ptree.(ptree_params @-> returns tensor)
           (fun p ->
              (Sofo.sketch
-                (module Params)
+                ptree_params
                 ~k:config.k
                 ~sketch_sampler:constant_sampler
                 (fun p -> Sofo.mse (rollout p starts steps) !labels)
@@ -475,7 +396,7 @@ let run config =
        into the trace — see §13.5/§14.3)\n\n";
     ignore tr2);
   (* FGD: the first-order subspace method the paper compares against. It needs
-     no GGN and no update rule — θ ← θ − η·ΘΘᵀ∇c, with C from jvp_k alone and
+     no GGN and no update rule — θ ← θ − η·ΘΘᵀ∇c, with C from the sketch and
      [apply] turning the coordinates back into a parameter-space direction. *)
   if config.steps > 0
   then (
@@ -488,25 +409,28 @@ let run config =
       then ()
       else (
         let sk =
-          Sofo.sketch (module Params) ~k:config.k ~sketch_sampler:gaussian_sampler loss p
+          Sofo.sketch ptree_params ~k:config.k ~sketch_sampler:gaussian_sampler loss p
         in
         if i = 1 || i mod 5 = 0 || i = config.steps
         then Printf.printf "  step %3d  loss %10.6f\n" i (Nx.item [] sk.loss);
         (* ΘΘᵀ∇c, normalized: with Gaussian directions the projection's length
            scales with k, so an unnormalized step would need η ∼ 1/k. *)
         let dir = sk.apply sk.c in
-        let sum_sq = ref 0.0 in
-        Params.iter
-          (fun d ->
-             sum_sq
-             := !sum_sq
-                +. Nx.item [] (Nx.reshape [||] (Nx.cast f64 (Nx.sum (Nx.square d)))))
-          dir;
-        let scale = config.lr /. Float.max 1e-30 (sqrt !sum_sq) in
+        let sum_sq =
+          Nx.Ptree.fold
+            ptree_params
+            (fun _ d acc ->
+               acc
+               +. Nx.item [] (Nx.reshape [||] (Nx.cast f64 (Nx.sum (Nx.square d)))))
+            dir
+            0.0
+        in
+        let scale = config.lr /. Float.max 1e-30 (sqrt sum_sq) in
         let p' =
-          Params.map2
-            (fun pi d ->
-               Nx.sub pi (Nx.mul_s d (Nx_core.Dtype.of_float (Nx.dtype d) scale)))
+          Nx.Ptree.map2
+            ptree_params
+            (fun _ pi d ->
+               Nx.sub pi (Nx.mul_s d (Nx_dtype.of_float (Nx.dtype d) scale)))
             p
             dir
         in

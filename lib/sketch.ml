@@ -6,26 +6,34 @@
 (* The sketch driver: sample directions, run the loss under batched forward
    mode with a collector installed, and package what an update rule needs.
 
-   Composition is the whole trick, and it needs nothing from rune's internals
-   beyond its public surface: [Rune.jvp_k] installs batched forward mode
-   *outside* the collector, the collector is installed *outside* the user's
-   loss, and the layer order does the rest.
+   Batched forward mode is a composition, and it needs nothing from rune's
+   internals beyond its public surface: {!Rune.vmap} around {!Rune.jvp} pushes
+   the [k] directions through one forward pass — the mapped function runs once
+   and its primal operations, whose operands are constants of the map, are
+   computed once — while each tensor's tangent becomes the whole [k]-lane
+   batch. The collector is installed *outside* that map:
 
-   user code  ⊂  collector  ⊂  jvp_k  ⊂  driver
+   user code  ⊂  jvp  ⊂  vmap  ⊂  collector  ⊂  driver
 
-   - The user's operations reach the collector, which passes them through to
-     [jvp_k]: primals are computed once, tangents in batches of [k].
-   - The user's observations reach the collector, which reads the tangents it
-     needs through [Rune.tangent] (a tangent is not an Nx operation, so
-     [jvp_k] passes the observation through) and accumulates its block.
+   - [jvp] maintains each tensor's tangent; the user's observations read them
+     at the observation site (through the tangent query) and carry them in the
+     effect payload.
+   - [vmap] batches the tangent arithmetic along the lanes; the collector runs
+     beyond its extent, where the payload's lane axis is an ordinary tensor
+     axis it can contract (inside the map, [Nx.shape] would report the map's
+     virtual, lane-less shape).
    - The tangent of the *returned* total loss is the gradient sketch itself:
-     C = Θᵀ∇c, read off the [jvp_k] result. No instrumentation is involved, so
+     C = Θᵀ∇c, read off the [vmap] result. No instrumentation is involved, so
      the gradient sketch cannot drift from the loss's own arithmetic.
 
    Because the collector is a plain effect handler and the tangents are read
    through a query, the same user code also runs — unchanged — under
-   [Rune.jvp_k] alone (observations inert: first-order subspace methods) or
-   under [Rune.value_and_grad] (observations inert: exact gradients). *)
+   [Rune.jvp] alone (observations inert: first-order subspace methods) or under
+   [Rune.value_and_grad] (observations inert: exact gradients).
+
+   A [Rune.vmap] around the whole sketch is a batch of sketches: each mapped
+   parameter tree gets its own lanes, its own directions and its own
+   observations, and the mapped result is the batch of their losses. *)
 
 type diagnostics =
   { observed_loss : Nx.float64_t
@@ -67,11 +75,12 @@ type 'p t =
    RNG key or an index threaded through the parameters, say — cannot carry a
    direction and get zero tangents; their consumers are untracked operations,
    so they simply do not participate. *)
-let sample (type p) (module P : Nx.Ptree.S with type t = p) ~k (params : p) : p =
-  P.map
-    (fun leaf ->
+let sample (type p) (structure : p Nx.Ptree.t) ~k (params : p) : p =
+  Nx.Ptree.map
+    structure
+    (fun _ leaf ->
        let shape = Array.append [| k |] (Nx.shape leaf) in
-       if Nx_core.Dtype.is_float (Nx.dtype leaf)
+       if Nx_dtype.is_float (Nx.dtype leaf)
        then Nx.cast (Nx.dtype leaf) (Nx.randn Nx.float64 shape)
        else Nx.zeros (Nx.dtype leaf) shape)
     params
@@ -130,36 +139,42 @@ let check (sk : 'p t) : (unit, string) result =
     ~observed_c:sk.diagnostics.observed_c
 
 let run
-      (module P : Nx.Ptree.S)
+      (type p c d)
+      (structure : p Nx.Ptree.t)
       ~k
       ?sketch_sampler
       ?(strict = false)
-      (loss : P.t -> ('c, 'd) Nx.t)
-      (params : P.t)
-  : P.t t
+      (loss : p -> (c, d) Nx.t)
+      (params : p)
+  : p t
   =
   if k < 1 then invalid_arg (Printf.sprintf "Sofo.sketch: k must be at least 1, got %d" k);
   let thetas =
     match sketch_sampler with
     | Some sampler -> sampler k params
-    | None -> sample (module P) ~k params
+    | None -> sample structure ~k params
   in
   let st = Collector.create ~k in
-  let y, dy =
-    Rune.jvp_k
-      (module P)
-      (fun params ->
-         Effect.Deep.match_with (fun () -> loss params) () (Collector.handler st))
-      params
-      thetas
+  (* The map runs the whole forward pass once; the collector, installed
+     outside it, handles each observation where the lane axis is physical. *)
+  let loss_lanes, dy =
+    Effect.Deep.match_with
+      (fun () ->
+         Rune.vmap
+           Nx.Ptree.(structure @-> returns (pair tensor tensor))
+           (fun th -> Rune.jvp structure Nx.Ptree.tensor loss params th)
+           thetas)
+      ()
+      (Collector.handler st)
   in
-  if Nx.numel y <> 1
+  if Nx.shape loss_lanes <> [| k |]
   then
     invalid_arg
       "Sofo.sketch: the loss function must return a scalar (a tensor with one element)";
+  let y = Nx.reshape [||] (Nx.cast Nx.float64 (Nx.slice [ Nx.I 0 ] loss_lanes)) in
   let sk =
     { k
-    ; loss = Nx.reshape [||] (Nx.cast Nx.float64 y)
+    ; loss = y
     ; c = Nx.reshape [| k |] (Nx.cast Nx.float64 dy)
     ; ggn = Collector.ggn st
     ; dirs = thetas
@@ -174,7 +189,7 @@ let run
                  (String.concat
                     ","
                     (Array.to_list (Array.map string_of_int (Nx.shape z)))));
-          P.map (fun theta -> contract z theta) thetas)
+          Nx.Ptree.map structure (fun _ theta -> contract z theta) thetas)
     ; diagnostics =
         { observed_loss = st.Collector.loss
         ; observed_c = st.Collector.c

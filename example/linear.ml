@@ -9,7 +9,7 @@
    compile the sketching half  →  solve eagerly  →  step eagerly
 
    [Sofo.Optim.Compiled (Params) (Sofo.Optim.No_aux).sketch] is the sketching
-   computation as a pure function of [(params, key, aux)], which [Rune.jit2]
+   computation as a pure function of [(params, key, aux)], which [Rune.jit]
    compiles once and replays for the whole run: the directions Θ are drawn
    inside it from the key the caller threads, so a fresh random subspace costs
    nothing, and the loss's own inputs ride the same tree as [aux], so a new
@@ -63,17 +63,12 @@ let preconditioner_to_string = function
 
 (* ── the student ─────────────────────────────────────────────────────────── *)
 
-type params = { w : Nx.float64_t (* [dim; out] *) }
+type params = { w : Nx.float64_t (* [dim; out] *) } [@@deriving ptree]
 
 module Params = struct
   type t = params
 
-  let map (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) p = { w = f p.w }
-
-  let map2 (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a b =
-    { w = f a.w b.w }
-
-  let iter (f : 'a 'b. ('a, 'b) Nx.t -> unit) p = f p.w
+  let ptree = ptree_params
 end
 
 (* The two halves, tied to the parameter structure: [O] is the jittable
@@ -118,10 +113,10 @@ let run config =
      little losses with the loss, which a compiled trace must not do. *)
   let sk0 =
     Sofo.sketch
-      (module Params)
+      Params.ptree
       ~k:config.k
       ~sketch_sampler:(fun k p ->
-        Sofo.Optim.directions (module Params) ~key:state.Sofo.Optim.key ~k p)
+        Sofo.Optim.directions Params.ptree ~key:state.Sofo.Optim.key ~k p)
       (fun p -> objective p ())
       student0
   in
@@ -132,9 +127,8 @@ let run config =
      below is this sketch's rather than the process's first jit. Set JITCACHE=0
      for a cold number. *)
   let _ =
-    Rune.jit2
-      (module O.In)
-      (module O.Out)
+    Rune.jit
+      O.signature
       (fun (i : O.in_) ->
          { O.loss = Nx.sum i.O.params.w
          ; c = Nx.zeros f64 [| 1 |]
@@ -147,7 +141,7 @@ let run config =
   in
   (* One trace for the whole run. *)
   let sketch_step =
-    Rune.jit2 (module O.In) (module O.Out) (O.sketch ~k:config.k objective)
+    Rune.jit O.signature (O.sketch ~k:config.k objective)
   in
   let t0 = Unix.gettimeofday () in
   let out0 = sketch_step { O.params = student0; key = state.key; aux = () } in
@@ -185,7 +179,7 @@ let run config =
         coordinates
           ~damping:config.damping
           ~preconditioner:config.preconditioner
-          ~gram:(gram (module Params) ~k:config.k out.O.dirs)
+          ~gram:(gram Params.ptree ~k:config.k out.O.dirs)
           out.O.ggn
           out.O.c
       in
@@ -237,11 +231,11 @@ let run config =
         let open Sofo.Optim in
         let out = sketch_step { O.params; key = state.key; aux = () } in
         (* z = C: the gradient sketch is already a coordinate vector *)
-        let dw = apply (module Params) ~k:config.k out.O.dirs out.O.c in
+        let dw = apply Params.ptree ~k:config.k out.O.dirs out.O.c in
         let scale = config.fgd_lr /. Float.max 1e-30 (l2 dw.w) in
         let params =
-          Params.map2
-            (fun p d -> Nx.sub p (Nx.mul_s d (Nx_core.Dtype.of_float (Nx.dtype d) scale)))
+          Nx.Ptree.map2 Params.ptree
+            (fun _ p d -> Nx.sub p (Nx.mul_s d (Nx_dtype.of_float (Nx.dtype d) scale)))
             params
             dw
         in

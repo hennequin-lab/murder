@@ -10,7 +10,7 @@
    Two halves, and the split is forced by the hardware rather than chosen:
 
    - the *sketching* half is differentiable and compiles, so [Compiled] builds
-     the (params, key) → (c, C, G̃, Θ) structure that [Rune.jit2] wraps;
+     the (params, key) → (c, C, G̃, Θ) structure that [Rune.jit] wraps;
    - the *update* half needs the SVD of the sketched GGN, which does not
      compile, so it runs eagerly on the host at O(k³) — negligible against a
      model with P ≫ k parameters, which is the algorithm's whole premise.
@@ -35,7 +35,7 @@ type preconditioner =
   ]
 
 type state =
-  { key : Nx.int32_t
+  { key : Nx.Rng.t
     (* The stream Θ is drawn from. A tensor, not a host value: it is what a
        compiled sketch step takes as an input, and what makes each replay draw
        fresh directions from one compilation. *)
@@ -56,28 +56,22 @@ let next st = { key = Nx.Rng.fold_in st.key st.step; step = st.step + 1 }
 
 (* ── directions and their contraction ────────────────────────────────────── *)
 
-let directions (type p) (module P : Nx.Ptree.S with type t = p) ?key ~k (params : p) : p =
+let directions (type p) (structure : p Nx.Ptree.t) ?key ~k (params : p) : p =
   let key =
     match key with
     | Some key -> key
     | None -> Nx.Rng.next_key ()
   in
-  Nx.Rng.with_key key (fun () -> Sketch.sample (module P) ~k params)
+  Nx.Rng.with_key key (fun () -> Sketch.sample structure ~k params)
 
-let apply
-      (type p)
-      (module P : Nx.Ptree.S with type t = p)
-      ~k
-      (thetas : p)
-      (z : Nx.float64_t)
-  : p
-  =
+let apply (type p) (structure : p Nx.Ptree.t) ~k (thetas : p) (z : Nx.float64_t) : p =
   let z = Nx.reshape [| k |] (Nx.contiguous z) in
-  P.map
-    (fun theta ->
+  Nx.Ptree.map
+    structure
+    (fun _ theta ->
        (* Leaves that cannot carry a direction — a key, an index, a counter —
           get the zero direction, as they do in the sampler. *)
-       if Nx_core.Dtype.is_float (Nx.dtype theta)
+       if Nx_dtype.is_float (Nx.dtype theta)
        then Sketch.contract z theta
        else
          Nx.zeros
@@ -89,34 +83,36 @@ let apply
    are passed through untouched: their directions are zero, and a parameter
    that cannot carry one is not the optimizer's to move (vega's convention for
    the same leaves). *)
-let shift (type p) (module P : Nx.Ptree.S with type t = p) ~lr (params : p) (dw : p) : p =
-  P.map2
-    (fun p d ->
-       if Nx_core.Dtype.is_float (Nx.dtype p)
-       then Nx.sub p (Nx.mul_s d (Nx_core.Dtype.of_float (Nx.dtype d) lr))
+let shift (type p) (structure : p Nx.Ptree.t) ~lr (params : p) (dw : p) : p =
+  Nx.Ptree.map2
+    structure
+    (fun _ p d ->
+       if Nx_dtype.is_float (Nx.dtype p)
+       then Nx.sub p (Nx.mul_s d (Nx_dtype.of_float (Nx.dtype d) lr))
        else p)
     params
     dw
 
 (* ── whitening the sampled basis ─────────────────────────────────────────── *)
 
-(* [gram (module P) ~k dirs] is Θ Θᵀ: the [k×k] Gram matrix of the tangents,
+(* [gram structure ~k dirs] is Θ Θᵀ: the [k×k] Gram matrix of the tangents,
    accumulated leaf by leaf — each float leaf contributes its own outer product
    rather than a materialized [k×P] matrix. Leaves are promoted to float64
    first, so the matrix does not depend on the model's dtypes, and a leaf that
    cannot carry a direction is zero and contributes nothing. *)
-let gram (type p) (module P : Nx.Ptree.S with type t = p) ~k (dirs : p) : Nx.float64_t =
-  let z = ref (Nx.zeros Nx.float64 [| k; k |]) in
-  P.iter
-    (fun leaf ->
-       if Nx_core.Dtype.is_float (Nx.dtype leaf)
+let gram (type p) (structure : p Nx.Ptree.t) ~k (dirs : p) : Nx.float64_t =
+  Nx.Ptree.fold
+    structure
+    (fun _ leaf z ->
+       if Nx_dtype.is_float (Nx.dtype leaf)
        then (
          let m =
            Nx.reshape [| k; Nx.numel leaf / k |] (Nx.contiguous (Nx.cast Nx.float64 leaf))
          in
-         z := Nx.add !z (Nx.matmul m (Nx.transpose m))))
-    dirs;
-  !z
+         Nx.add z (Nx.matmul m (Nx.transpose m)))
+       else z)
+    dirs
+    (Nx.zeros Nx.float64 [| k; k |])
 
 (* The whitening transform Q = Z^{-1/2} of a Gram matrix, from its SVD: the
    matrix that turns the tangents a sketch was drawn along into an orthonormal
@@ -217,7 +213,7 @@ let coordinates
 
 let update
       (type p)
-      (module P : Nx.Ptree.S with type t = p)
+      (structure : p Nx.Ptree.t)
       ?(lr = 1.0)
       ?damping
       ?preconditioner
@@ -225,15 +221,15 @@ let update
       (params : p)
   : p
   =
-  let g = gram (module P) ~k:sk.k sk.dirs in
+  let g = gram structure ~k:sk.k sk.dirs in
   let dw = sk.apply (coordinates ?damping ?preconditioner ~gram:g sk.ggn sk.c) in
-  shift (module P) ~lr params dw
+  shift structure ~lr params dw
 
 (* ── the eager step ──────────────────────────────────────────────────────── *)
 
 let step
       (type p c d)
-      (module P : Nx.Ptree.S with type t = p)
+      (structure : p Nx.Ptree.t)
       ~k
       ~lr
       ?damping
@@ -244,104 +240,95 @@ let step
       ~(params : p)
   : p * state * p Sketch.t
   =
-  let thetas = directions (module P) ~key:st.key ~k params in
+  let thetas = directions structure ~key:st.key ~k params in
   let sk =
-    Sketch.run (module P) ~k ~sketch_sampler:(fun _ _ -> thetas) ~strict loss params
+    Sketch.run structure ~k ~sketch_sampler:(fun _ _ -> thetas) ~strict loss params
   in
-  let params = update (module P) ~lr ?damping ?preconditioner sk params in
+  let params = update structure ~lr ?damping ?preconditioner sk params in
   params, next st, sk
 
-(* ── the compiled half ───────────────────────────────────────────────────── *)
+(* ── the compiled half ─────────────────────────────────── *)
 
 (* What a jitted step consumes and produces. Both are parameter trees, so a
-   training step is [Rune.jit2 (module In) (module Out) (sketch ~k loss)] and
-   a loop threads [in_] to [out] to the next [in_] without ever retracing. *)
+   training step is [Rune.jit Optim.Compiled.signature (sketch ~k loss)] and
+   a loop threads one input record to the next without ever retracing. *)
+
+(* What the [Compiled] functor needs of a value's structure: its type and its
+   tree, as {!Nx.Ptree.instantiate} of a [walk] module, or the [ptree] the
+   [ptree] deriver writes for a concrete record. *)
+module type Structure = sig
+  type t
+
+  val ptree : t Nx.Ptree.t
+end
 
 (* The trivial auxiliary input: no leaves at all, for a loss that reads the
    parameters and nothing else. *)
 module No_aux = struct
   type t = unit
 
-  let map (_ : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) () = ()
-  let map2 (_ : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) () () = ()
-  let iter (_ : 'a 'b. ('a, 'b) Nx.t -> unit) () = ()
+  let ptree = Nx.Ptree.unit
 end
 
-module Compiled (P : Nx.Ptree.S) (Aux : Nx.Ptree.S) = struct
+module Compiled (P : Structure) (Aux : Structure) = struct
   type in_ =
-    { params : P.t (* the parameters to sketch at *)
-    ; key : Nx.int32_t (* the state's key: the direction stream *)
-    ; aux : Aux.t (* whatever else the loss reads; never differentiated *)
+    { params : P.t
+    ; key : Nx.Rng.t
+    ; aux : Aux.t
     }
 
   module In = struct
-    type t = in_
+    type _ t = in_
 
-    let map (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) i =
-      { params = P.map f i.params; key = f i.key; aux = Aux.map f i.aux }
-
-    let map2 (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a b =
-      { params = P.map2 f a.params b.params
-      ; key = f a.key b.key
-      ; aux = Aux.map2 f a.aux b.aux
-      }
-
-    let iter (f : 'a 'b. ('a, 'b) Nx.t -> unit) i =
-      P.iter f i.params;
-      f i.key;
-      Aux.iter f i.aux
+    let walk c i =
+      let open Nx.Ptree.Walk in
+      let params = field c "params" (structure P.ptree) i.params in
+      let key = field c "key" (structure Nx.Rng.ptree) i.key in
+      let aux = field c "aux" (structure Aux.ptree) i.aux in
+      { params; key; aux }
   end
 
+  let in_ptree = Nx.Ptree.instantiate (module In)
+
   type out =
-    { loss : Nx.float64_t (* c, the primal total *)
-    ; c : Nx.float64_t (* C = Θᵀ∇c, [k] *)
-    ; ggn : Nx.float64_t (* ΘᵀJᵀHJΘ, [k;k] *)
-    ; dirs : P.t (* Θ: the directions the sketch was measured along *)
-    ; observed_loss : Nx.float64_t (* Σ of the observed little losses *)
-    ; observed_c : Nx.float64_t (* Σ of their tangents *)
+    { loss : Nx.float64_t
+    ; c : Nx.float64_t
+    ; ggn : Nx.float64_t
+    ; dirs : P.t
+    ; observed_loss : Nx.float64_t
+    ; observed_c : Nx.float64_t
     }
 
   module Out = struct
-    type t = out
+    type _ t = out
 
-    let map (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t) o =
-      { loss = f o.loss
-      ; c = f o.c
-      ; ggn = f o.ggn
-      ; dirs = P.map f o.dirs
-      ; observed_loss = f o.observed_loss
-      ; observed_c = f o.observed_c
-      }
-
-    let map2 (f : 'a 'b. ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t) a b =
-      { loss = f a.loss b.loss
-      ; c = f a.c b.c
-      ; ggn = f a.ggn b.ggn
-      ; dirs = P.map2 f a.dirs b.dirs
-      ; observed_loss = f a.observed_loss b.observed_loss
-      ; observed_c = f a.observed_c b.observed_c
-      }
-
-    let iter (f : 'a 'b. ('a, 'b) Nx.t -> unit) o =
-      f o.loss;
-      f o.c;
-      f o.ggn;
-      P.iter f o.dirs;
-      f o.observed_loss;
-      f o.observed_c
+    let walk cur o =
+      let open Nx.Ptree.Walk in
+      let loss = field cur "loss" tensor o.loss in
+      let c = field cur "c" tensor o.c in
+      let ggn = field cur "ggn" tensor o.ggn in
+      let dirs = field cur "dirs" (structure P.ptree) o.dirs in
+      let observed_loss = field cur "observed_loss" tensor o.observed_loss in
+      let observed_c = field cur "observed_c" tensor o.observed_c in
+      { loss; c; ggn; dirs; observed_loss; observed_c }
   end
 
+  let out_ptree = Nx.Ptree.instantiate (module Out)
+
+  (* The signature [Rune.jit] takes: an input record of parameters, key and
+     auxiliary data, and the output record above. *)
+  let signature = Nx.Ptree.(in_ptree @-> returns out_ptree)
+
   (* The sketching computation, as a pure function of (params, key, aux).
-     Compile it with [Rune.jit2]; run it as it is for an eager step. The
-     directions are drawn *inside* it, from the carried key, so one
-     compilation serves every iteration, and so is the aux: the loss sees the
-     tree's leaves, so a batch that changes between steps is data, not a new
-     trace. *)
-  let sketch ~k (loss : P.t -> Aux.t -> ('c, 'd) Nx.t) (i : in_) : out =
-    let dirs = directions (module P) ~key:i.key ~k i.params in
+     Compile it with [Rune.jit signature]; run it as it is for an eager step.
+     The directions are drawn *inside* it, from the carried key, so one
+     compilation serves every iteration, and so is the aux: the loss sees its
+     leaves, so a batch that changes between steps is data, not a new trace. *)
+  let sketch ~k (loss : P.t -> Aux.t -> ('c, 'd) Nx.t) i =
+    let dirs = directions P.ptree ~key:i.key ~k i.params in
     let sk =
       Sketch.run
-        (module P)
+        P.ptree
         ~k
         ~sketch_sampler:(fun _ _ -> dirs)
         (fun params -> loss params i.aux)
@@ -358,20 +345,19 @@ module Compiled (P : Nx.Ptree.S) (Aux : Nx.Ptree.S) = struct
   (* The step, and the state that produced it, advanced together: the caller
      threads one state through the loop, so the key the sketch consumed and the
      key the next sketch is drawn from cannot drift apart. *)
-  let update ?(lr = 1.0) ?damping ?preconditioner (st : state) (params : P.t) (o : out)
-    : P.t * state
-    =
+  let update ?(lr = 1.0) ?damping ?preconditioner (st : state) params o =
     let k = (Nx.shape o.c).(0) in
-    let g = gram (module P) ~k o.dirs in
+    let g = gram P.ptree ~k o.dirs in
     let dw =
-      apply (module P) ~k o.dirs (coordinates ?damping ?preconditioner ~gram:g o.ggn o.c)
+      apply P.ptree ~k o.dirs
+        (coordinates ?damping ?preconditioner ~gram:g o.ggn o.c)
     in
-    shift (module P) ~lr params dw, next st
+    shift P.ptree ~lr params dw, next st
 
   (* The consistency check, on the numbers the compiled step handed back: the
      same statement as [Sofo.check], which cannot run inside a trace because it
      reads values. *)
-  let check (o : out) : (unit, string) result =
+  let check o =
     Sketch.check_sums
       ~tol:1e-5
       ~loss:o.loss
