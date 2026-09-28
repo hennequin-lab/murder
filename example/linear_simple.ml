@@ -1,12 +1,14 @@
 open Base
 open Nx
 
-let device = "CPU"
+let device = "CUDA"
 let d_in, d_out = 100, 3
 let batch_size = 512
 let max_iter = 10_000
 let lr = 0.1
 let n_tangents = 128
+let beam = Some 2
+let parallel = Some 8
 let damping : Sofo.Optim.damping = `Absolute 0.
 
 module Model = struct
@@ -58,7 +60,11 @@ let objective params key =
 
 (* JIT compilation machinery for a sketched objective *)
 let sketch_step =
-  Rune.jit ~devices:[ Rune.device device ] O.signature
+  Rune.jit
+    ~devices:[ Rune.device device ]
+    ?beam
+    ?parallel
+    O.signature
     (O.sketch ~k:n_tangents objective)
 
 let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
