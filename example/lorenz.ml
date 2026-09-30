@@ -173,16 +173,16 @@ let horizon = ref 1
    contraction sums over the batch. *)
 let loss p =
   let preds = Rune.vmap' (fun x -> rollout p x !steps_tensor) !trials in
-  Sofo.mse preds !labels
+  Sofo.mse ~target:(!labels) preds
 
 (* A single-trial loss, for the jit section: no vmap, so the scan stands or
    falls on its own claim. *)
-let single_loss p = Sofo.mse (rollout p !trials !steps_tensor) !labels
+let single_loss p = Sofo.mse ~target:(!labels) (rollout p !trials !steps_tensor)
 
 (* Directions: Gaussian, drawn from a named key so that every mode and every
-   run sees the same Θ. (The default sampler of [Sofo.sketch] would do the same
-   under [Nx.Rng.with_key]; naming the key here makes the three drivers
-   comparable by construction.) *)
+   run sees the same Θ. (Drawing them with [Sofo.Optim.directions] instead
+   would make them reproducible under [Nx.Rng.with_key]; naming the key here
+   makes the three drivers comparable by construction.) *)
 let gaussian_sampler k p =
   Nx.Rng.with_key (Nx.Rng.key 2024) (fun () ->
     let draw t =
@@ -274,7 +274,7 @@ let run config =
   in
   let loss_batched = Nx.reshape [||] (Nx.slice [ Nx.I 0 ] loss_batched) in
   let sk =
-    Sofo.sketch ptree_params ~k:config.k ~sketch_sampler:gaussian_sampler loss p
+    Sofo.sketch ptree_params loss p (gaussian_sampler config.k p)
   in
   let c_exact = theta_t_cotangent ~k:config.k thetas grads in
   Printf.printf "one loss function, three drivers\n";
@@ -288,9 +288,6 @@ let run config =
   Printf.printf
     "  C sketch vs vmap∘jvp: max |Δ| %.3g (relative)\n"
     (rel sk.c (Nx.reshape [| config.k |] c_batched));
-  (match Sofo.check sk with
-   | Ok () -> Printf.printf "  cross-check      : observed little losses add up\n"
-   | Error msg -> Printf.printf "  cross-check      : FAILED — %s\n" msg);
   Printf.printf
     "  GGN              : symmetric to %.3g (relative), trace %.6g, diag range      \
      %.3g..%.3g\n\n"
@@ -311,7 +308,7 @@ let run config =
   in
   let t_sofo =
     time_ms ~runs:config.runs (fun () ->
-      Sofo.sketch ptree_params ~k:config.k ~sketch_sampler:gaussian_sampler loss p)
+      Sofo.sketch ptree_params loss p (gaussian_sampler config.k p))
   in
   let t_ref = time_ms ~runs:config.runs (fun () -> reference_ggn ~k:config.k p thetas) in
   Printf.printf "wall-clock (median of %d)\n" config.runs;
@@ -346,7 +343,7 @@ let run config =
     let _ = Rune.jit Nx.Ptree.(ptree_params @-> returns tensor) single_loss p in
     let jit_probe horizon =
       let steps = Nx.zeros f64 [| horizon; 1 |] in
-      let single p = Sofo.mse (rollout p starts steps) !labels in
+      let single p = Sofo.mse ~target:(!labels) (rollout p starts steps) in
       let plain =
         Rune.jit Nx.Ptree.(ptree_params @-> returns tensor) (fun p -> single p)
       in
@@ -362,10 +359,9 @@ let run config =
           (fun p ->
              (Sofo.sketch
                 ptree_params
-                ~k:config.k
-                ~sketch_sampler:constant_sampler
-                (fun p -> Sofo.mse (rollout p starts steps) !labels)
-                p)
+                (fun p -> Sofo.mse ~target:(!labels) (rollout p starts steps))
+                p
+                (constant_sampler config.k p))
                .loss)
       in
       let t_sketch =
@@ -392,8 +388,10 @@ let run config =
       (fmt_ms ts2)
       (2 * config.horizon);
     Printf.printf
-      "  (a scan stages as a loop under jit alone; a sketch claims it, so it unrolls \
-       into the trace — see §13.5/§14.3)\n\n";
+      "  (a scan stages as a loop under jit; a sketch's total rides the loop's carry, so \
+       it stays one loop whatever the horizon — the k×k block travels with the carry \
+       instead of a block per step. The first probe at a horizon also pays the disk \
+       cache's cold compile.)\n\n";
     ignore tr2);
   (* FGD: the first-order subspace method the paper compares against. It needs
      no GGN and no update rule — θ ← θ − η·ΘΘᵀ∇c, with C from the sketch and
@@ -409,7 +407,7 @@ let run config =
       then ()
       else (
         let sk =
-          Sofo.sketch ptree_params ~k:config.k ~sketch_sampler:gaussian_sampler loss p
+          Sofo.sketch ptree_params loss p (gaussian_sampler config.k p)
         in
         if i = 1 || i mod 5 = 0 || i = config.steps
         then Printf.printf "  step %3d  loss %10.6f\n" i (Nx.item [] sk.loss);

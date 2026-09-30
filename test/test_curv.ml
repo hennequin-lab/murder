@@ -6,7 +6,7 @@
 (* Curvature descriptions: every constructor's action is checked against the
    Hessian of the little loss it describes, computed by rune rather than from a
    hand-derived formula. The application takes the lane axis of a tangent
-   batch — the contract the collector relies on — so each check covers both one
+   batch — the contract the mark relies on — so each check covers both one
    lane and several. *)
 
 open Windtrap

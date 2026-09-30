@@ -3,46 +3,50 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-(* Mini losses, and the marker that hands one to a collector.
+(* Mini losses, and the mark that hands a prediction's curvature to a sketch.
 
-   An observation is a semantic marker, and effects are the natural way to
-   express one: the user's graph performs [E_observe] where a little loss is
-   known, and whichever handler encloses the graph decides what to do with it.
-   A collector accumulating sketch quantities intercepts it; every other
-   handler — plain execution, {!Rune.grad}, {!Rune.vmap}, {!Rune.jit} — lets it
-   pass, and the observation is inert. So user code is identical under every
-   optimizer: [observe] is a no-op unless a collector is installed.
+   A mark is a {!Rune.custom_jvp} with a unit result whose rule gathers the
+   sketch's direction lanes and adds the little loss's Gauss-Newton block
+   YᵀHY to a total the sketch driver collects. Nothing else reads it: plain
+   execution runs its [f], which does nothing, and reverse mode runs the same
+   [f] — a unit result has nothing to differentiate — so a marked loss is an
+   ordinary loss under every other optimizer, and the same model trains with
+   {!Rune.value_and_grad} and under a sketch.
 
-   The payload packs the prediction and the loss value together with their
-   tangents and the curvature description. The tangents are read *here*, at the
-   observation site, while the forward mode the sketch installed is still in
-   scope — the query answers the whole [k]-lane batch a {!Rune.vmap} around
-   {!Rune.jvp} produces. The collector then handles the observation outside
-   that map's extent, where the lanes of the batch are ordinary tensor axes
-   again (see collector.ml); reading them there instead would see the map's
-   virtual, lane-less shapes.
+   The rule reads the tangent of the *prediction*, not of the loss: the block
+   is YᵀHY with Y the tangent batch of y and H the curvature description the
+   caller supplied, and the value and tangent of the loss are the caller's own
+   arithmetic, returned to the sketch as the objective itself. A mean or a
+   scale the caller applies to a marked little loss therefore reaches the
+   returned loss and C but not the block: the block enters with weight one
+   (law 6 of RFC 0009), and a mean over trials goes inside each little loss. *)
 
-   The dtypes of the prediction and of the loss are independent (a loss
-   evaluated in a wider type than its prediction is perfectly reasonable),
-   which is why the constructor carries them as two existential pairs rather
-   than one shared type; the collector is polymorphic in both, and each tangent
-   is carried beside the value it belongs to at the value's own dtype. *)
+(* The map the sketch's directions live in, and the total its blocks are added
+   to. The mark and the driver are the only users: a total collects the
+   innermost open scope, so one library-wide total serves every sketch. *)
+let directions = Rune.axis ()
+let curvature : (float, Nx.float64_elt) Rune.Total.t = Rune.Total.make ()
 
-type obs =
-  | Obs :
-      ('a, 'b) Nx.t * ('a, 'b) Nx.t option
-      * ('c, 'd) Nx.t * ('c, 'd) Nx.t option
-      * Curv.t
-      -> obs
+let mark ~curv y =
+  Rune.custom_jvp Nx.Ptree.tensor Nx.Ptree.unit ~f:ignore y ~jvp:(fun _ dy ->
+    let ys = Rune.lanes directions dy in
+    let rows t = Nx.reshape [| Nx.dim 0 t; -1 |] t in
+    let block =
+      Nx.cast Nx.float64 (Nx.matmul (rows ys) (Nx.transpose (rows (Curv.apply curv ys))))
+    in
+    (* Every block is symmetric by construction — YᵀHY with H symmetric — so
+       the accumulator is symmetrized up to floating-point asymmetry, which
+       later decompositions would rather not see. *)
+    let block = Nx.mul_s (Nx.add block (Nx.transpose block)) 0.5 in
+    Rune.Total.add curvature block;
+    (), ())
 
-type _ Effect.t += E_observe : obs -> unit Effect.t
-
-(* [observe ~y ~curv l] marks [l] as a little loss in [y], with curvature
-   [curv]: [l] must be a scalar computed from [y] by differentiable operations.
-   Its tangent, and [y]'s, are read from the installed forward mode here and
-   travel in the payload, because the collector sits outside the map that
-   batched the forward pass. The user's own arithmetic — not this call —
-   defines both the value and its tangent. *)
+(* [observe ~y ~curv l] marks [l] as a little loss in the prediction [y], whose
+   Hessian with respect to [y] is [curv]: under a sketch the block joins the
+   Gauss-Newton matrix, under any other driver the mark is inert. [l] must be a
+   scalar computed from [y] by differentiable operations — the caller's own
+   arithmetic defines both the value and the tangent of the loss the sketch
+   returns. *)
 let observe ~y ~curv l =
   if Nx.numel l <> 1
   then
@@ -50,19 +54,16 @@ let observe ~y ~curv l =
       (Printf.sprintf
          "Sofo.observe: the mini loss must be a scalar (one element), got shape [%s]"
          (String.concat "," (Array.to_list (Array.map string_of_int (Nx.shape l)))));
-  let dy = Rune.tangent y and dl = Rune.tangent l in
-  match Effect.perform (E_observe (Obs (y, dy, l, dl, curv))) with
-  | () -> ()
-  | exception Effect.Unhandled _ -> ()
+  mark ~curv y
 
 (* Packaged little losses: the value is computed with ordinary operations, so
    its tangent comes from the standard rules, and the curvature is derived from
    the same reduction, so the two cannot drift apart. *)
 
 (* [mse ?w y target] is the mean weighted squared error
-   [mean (w * (y - target)²)], whose Hessian with respect to [y] is
+   [mean (w * (y - target)²)], marked with its exact curvature
    [diag (2 w / numel y)] — [Curv.scale (2 / numel y)] without weights. *)
-let mse ?w y target =
+let mse ?w ~target y =
   let shape_y = Nx.shape y in
   if shape_y <> Nx.shape target
   then invalid_arg "Sofo.mse: prediction and target must have the same shape";

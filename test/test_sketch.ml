@@ -62,13 +62,19 @@ let params () =
 (* A linear readout: the squared error is then exactly quadratic in the
    parameters, which makes the second-order model check exact. *)
 let predict p = Nx.add (Nx.matmul x_data p.w) p.b
-let data_loss p = Sofo.mse (predict p) target
+let data_loss p = Sofo.mse ~target (predict p)
 
 (* Two little losses, both observed: the readout's error and a ridge on w. *)
-let loss_all p = Nx.add (Sofo.mse (predict p) target) (Sofo.mse p.w (Nx.zeros_like p.w))
+let loss_all p =
+  Nx.add (Sofo.mse ~target (predict p))
+    (Sofo.mse ~target:(Nx.zeros_like p.w) p.w)
 
 (* Deterministic directions, so every reference uses the same Θ. *)
 let fixed_sampler k p = { w = lanes ~k p.w; b = lanes ~k p.b }
+
+(* [sketch k structure loss p] is [Sofo.sketch] along [fixed_sampler]'s
+   directions. *)
+let sketch k structure loss p = Sofo.sketch structure loss p (fixed_sampler k p)
 
 (* Θᵀ[·] for a parameter structure: each leaf's lane axis contracted against
    the corresponding leaf of the cotangent, summed over leaves. Reimplemented
@@ -90,7 +96,7 @@ let test_c_and_loss () =
   let p = params ()
   and k = 3 in
   let thetas = fixed_sampler k p in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler loss_all p in
+  let sk = sketch k params_ptree loss_all p in
   let y, grads = Rune.value_and_grad params_ptree loss_all p in
   equal ~msg:"loss" (float 1e-10) (Nx.item [] y) (Nx.item [] sk.loss);
   check_arr ~msg:"C = Θᵀ∇c" (to_arr (theta_t_cotangent ~k thetas grads)) sk.c
@@ -100,7 +106,7 @@ let test_quadratic_expansion () =
      for any step: c(θ + εΘz) = c + ε⟨C,z⟩ + ε²/2 zᵀG̃z. *)
   let p = params ()
   and k = 4 in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler loss_all p in
+  let sk = sketch k params_ptree loss_all p in
   let z = vec [| 0.4; -1.1; 0.7; 0.2 |] in
   let eps = 1e-3 in
   let p' =
@@ -125,7 +131,7 @@ let test_ggn_matches_explicit_gram () =
   let p = params ()
   and k = 2 in
   let thetas = fixed_sampler k p in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler loss_all p in
+  let sk = sketch k params_ptree loss_all p in
   let tangent_batch f =
     Rune.vmap
       Nx.Ptree.(params_ptree @-> returns tensor)
@@ -149,14 +155,14 @@ let test_ggn_matches_explicit_gram () =
       (block (tangent_batch predict) y1 h1)
       (block (tangent_batch (fun p -> p.w)) y2 h2)
   in
-  check_arr ~msg:"collector = Σ YᵀHY" (to_arr reference) sk.ggn
+  check_arr ~msg:"the marks = Σ YᵀHY" (to_arr reference) sk.ggn
 
 (* The exact GGN of a single-observation model, from its Jacobian. *)
 let test_ggn_matches_exact_jacobian () =
   let p = params ()
   and k = 3 in
   let thetas = fixed_sampler k p in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler data_loss p in
+  let sk = sketch k params_ptree data_loss p in
   let n = Nx.numel (predict p) in
   let flat w b = Nx.ravel (Nx.add (Nx.matmul x_data w) b) in
   let jw =
@@ -181,7 +187,7 @@ let test_apply_is_the_sampled_directions () =
   let p = params ()
   and k = 3 in
   let thetas = fixed_sampler k p in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler loss_all p in
+  let sk = sketch k params_ptree loss_all p in
   List.iter
     (fun i ->
        let z = vec (Array.init k (fun j -> if i = j then 1.0 else 0.0)) in
@@ -208,7 +214,7 @@ let test_zero_curvature_is_first_order () =
   let p = params ()
   and k = 2 in
   let thetas = fixed_sampler k p in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler loss p in
+  let sk = sketch k params_ptree loss p in
   check_arr ~msg:"no curvature" [| 0.0; 0.0; 0.0; 0.0 |] sk.ggn;
   let _, grads = Rune.value_and_grad params_ptree loss p in
   check_arr
@@ -216,59 +222,56 @@ let test_zero_curvature_is_first_order () =
     (to_arr (theta_t_cotangent ~k thetas grads))
     sk.c
 
-let test_unobserved_term_is_flagged () =
-  (* The ridge is accumulated into the loss but never observed: the sketch's
-     curvature is short one block, and the check says so. *)
+let test_unobserved_term_contributes_no_block () =
+  (* The ridge is accumulated into the loss but never marked: it reaches the
+     loss and C but contributes no block, so the curvature is the observed
+     loss's alone (law 6 of RFC 0009). *)
   let loss p =
-    Nx.add (Sofo.mse (predict p) target) (Nx.mul_s (Nx.sum (Nx.mul p.w p.w)) 0.01)
+    Nx.add (Sofo.mse ~target (predict p)) (Nx.mul_s (Nx.sum (Nx.mul p.w p.w)) 0.01)
   in
   let p = params ()
   and k = 2 in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler loss p in
-  (match Sofo.check sk with
-   | Ok () -> fail "an unobserved loss term was not flagged"
-   | Error _ -> ());
-  raises_match Exn.invalid_arg (fun () ->
-    ignore
-      (Sofo.sketch params_ptree ~k ~strict:true ~sketch_sampler:fixed_sampler loss p))
+  let sk = sketch k params_ptree loss p
+  and observed = sketch k params_ptree data_loss p in
+  check_arr ~msg:"the unobserved ridge contributes no curvature"
+    (to_arr observed.ggn)
+    sk.ggn
 
-let test_fully_observed_passes_the_check () =
+let test_two_losses_contribute_two_blocks () =
+  (* Both little losses are marked, so the curvature is their two blocks: each
+     one's observed-only sketch adds to the other's. *)
   let p = params ()
   and k = 2 in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler loss_all p in
-  (match Sofo.check sk with
-   | Ok () -> ()
-   | Error msg -> fail ("unexpected mismatch: " ^ msg));
-  equal ~msg:"both losses contributed a block" int 2 sk.diagnostics.blocks;
-  equal ~msg:"nothing skipped" int 0 sk.diagnostics.skipped
+  let both = sketch k params_ptree loss_all p
+  and readout = sketch k params_ptree data_loss p
+  and ridge = sketch k params_ptree (fun p -> Sofo.mse ~target:(Nx.zeros_like p.w) p.w) p in
+  check_arr ~msg:"the two blocks add"
+    (to_arr (Nx.add readout.ggn ridge.ggn))
+    both.ggn
 
-let test_constant_prediction_is_skipped () =
-  (* A little loss whose prediction is a constant of the differentiation has a
-     zero block by construction: it is skipped, not accumulated as zeros, and
-     its value still counts towards the loss. *)
+let test_constant_prediction_adds_no_block () =
+  (* A little loss whose prediction is a constant of the differentiation never
+     runs the mark's rule: it contributes its value to the loss and nothing to
+     the curvature. *)
   let loss p =
     let c = Nx.ones_like p.w in
     let l = Nx.mean (Nx.mul c c) in
     Sofo.observe ~y:c ~curv:(Sofo.Curv.scale 2.0) l;
-    Nx.add (Sofo.mse (predict p) target) l
+    Nx.add (Sofo.mse ~target (predict p)) l
   in
   let p = params ()
   and k = 2 in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler loss p in
-  equal ~msg:"one block" int 1 sk.diagnostics.blocks;
-  equal ~msg:"one skip" int 1 sk.diagnostics.skipped;
-  (match Sofo.check sk with
-   | Ok () -> ()
-   | Error msg -> fail ("a constant observation should not break the check: " ^ msg));
-  (* and the skipped term contributes nothing to the curvature *)
-  let sk' = Sofo.sketch params_ptree ~k ~sketch_sampler:fixed_sampler data_loss p in
+  let sk = sketch k params_ptree loss p in
+  let sk' = sketch k params_ptree data_loss p in
   check_arr ~msg:"same GGN as without the constant term" (to_arr sk'.ggn) sk.ggn
 
 let test_reproducible_with_an_rng_key () =
   let p = params ()
   and k = 3 in
   let sketch_under key =
-    Nx.Rng.with_key (Nx.Rng.key key) (fun () -> Sofo.sketch params_ptree ~k loss_all p)
+    Nx.Rng.with_key (Nx.Rng.key key) (fun () ->
+      Sofo.sketch params_ptree loss_all p
+        (Sofo.Optim.directions params_ptree ~k p))
   in
   let a = sketch_under 42
   and b = sketch_under 42
@@ -280,33 +283,23 @@ let test_reproducible_with_an_rng_key () =
 let test_rejects_a_non_scalar_loss () =
   raises_match Exn.invalid_arg (fun () ->
     ignore
-      (Sofo.sketch
-         params_ptree
-         ~k:2
-         ~sketch_sampler:fixed_sampler
-         (fun p -> predict p)
-         (params ())))
+      (sketch 2 params_ptree (fun p -> predict p) (params ())))
 
 let test_rejects_zero_lanes () =
   raises_match Exn.invalid_arg (fun () ->
     ignore
-      (Sofo.sketch
-         params_ptree
-         ~k:0
-         ~sketch_sampler:fixed_sampler
-         data_loss
-         (params ())))
+      (sketch 0 params_ptree data_loss (params ())))
 
 let tests =
   [ test "the loss and C are exact" test_c_and_loss
   ; test "the second-order model is exact for a quadratic loss" test_quadratic_expansion
-  ; test "the collector equals the explicit Σ YᵀHY" test_ggn_matches_explicit_gram
+  ; test "the marks equal the explicit Σ YᵀHY" test_ggn_matches_explicit_gram
   ; test "the GGN equals an exact ΘᵀJᵀHJΘ" test_ggn_matches_exact_jacobian
   ; test "apply is the sampled directions" test_apply_is_the_sampled_directions
   ; test "zero curvature gives the first-order sketch" test_zero_curvature_is_first_order
-  ; test "an unobserved term is flagged" test_unobserved_term_is_flagged
-  ; test "a fully observed loss passes the check" test_fully_observed_passes_the_check
-  ; test "a constant prediction is skipped" test_constant_prediction_is_skipped
+  ; test "an unobserved term contributes no block" test_unobserved_term_contributes_no_block
+  ; test "two losses contribute two blocks" test_two_losses_contribute_two_blocks
+  ; test "a constant prediction adds no block" test_constant_prediction_adds_no_block
   ; test "an RNG key makes the sketch reproducible" test_reproducible_with_an_rng_key
   ; test "a non-scalar loss is rejected" test_rejects_a_non_scalar_loss
   ; test "k = 0 is rejected" test_rejects_zero_lanes

@@ -34,14 +34,14 @@ let lorenz_trajs =
         ~devices:[ Rune.device "CPU" ]
         Nx.Ptree.(tensor @-> returns tensor)
         (fun y ->
-          let open Infix in
-          let x = slice [ A; I 0 ] y
-          and yc = slice [ A; I 1 ] y
-          and z = slice [ A; I 2 ] y in
-          let dx = (yc - x) *$ sigma
-          and dy = (x * (-z +$ rho)) - yc
-          and dz = (x * yc) - (z *$ beta) in
-          stack ~axis:1 [ dx; dy; dz ])
+           let open Infix in
+           let x = slice [ A; I 0 ] y
+           and yc = slice [ A; I 1 ] y
+           and z = slice [ A; I 2 ] y in
+           let dx = (yc - x) *$ sigma
+           and dy = (x * (-z +$ rho)) - yc
+           and dz = (x * yc) - (z *$ beta) in
+           stack ~axis:1 [ dx; dy; dz ])
     in
     Rng.with_key (Rng.key 42)
     @@ fun () ->
@@ -131,7 +131,7 @@ module O = Sofo.Optim.Compiled (Model.P) (Aux)
 let objective params (x0, xf) =
   let open Infix in
   let pred = Model.forward ~horizon params x0 in
-  Sofo.mse ~w:(scalar float32 Float.(1. / of_int horizon)) pred xf
+  Sofo.mse ~w:(scalar float32 Float.(1. / of_int horizon)) ~target:xf pred
 
 (* JIT compilation machinery for a sketched objective *)
 let sketch_step =

@@ -25,21 +25,21 @@
 
     Three modes, one loss function — swap the enclosing driver, not the model:
 
-    - {!sketch}: loss, C and the sketched GGN (curvature observations are
-      read);
-    - a bare [Rune.vmap] around [Rune.jvp] over the loss: loss and C
-      (observations are inert), the composition the sketch itself drives;
-    - [Rune.value_and_grad]: loss and the exact gradient (observations are
+    - {!sketch}: loss, C and the sketched GGN (the marks are collected);
+    - a bare [Rune.vmap] around [Rune.jvp] over the loss: loss and C (the
+      marks are inert), the composition the sketch itself drives;
+    - [Rune.value_and_grad]: loss and the exact gradient (the marks are
       inert).
 
-    Observations are inert by construction: {!observe} performs an effect that
-    only a sketch collector intercepts, and any other handler lets it pass.
-    Marking a little loss therefore costs nothing outside a sketch.
+    Marks are inert by construction: {!observe} runs a unit-result
+    [Rune.custom_jvp] whose rule only a sketch's total collects, and every
+    other driver runs its no-op function and lets the additions drop. Marking
+    a little loss therefore costs nothing outside a sketch.
 
     {[
     let loss params =
       let y = predict params x in
-      Nx.add (Sofo.mse y target) (Nx.sum (Nx.mul w w))
+      Nx.add (Sofo.mse ~target y) (Nx.sum (Nx.mul w w))
     in
     let sk = Sofo.sketch params_ptree ~k:32 loss params in
     (* sk.c, sk.ggn : the sketched gradient and GGN; sk.apply : sketch → params *)
@@ -88,7 +88,7 @@ module Curv : sig
       side-effect free, and [y] fixes the element type [f] is written at, so
       captured tensors need no casting. This is the escape hatch for losses
       with no structured form, and it costs one vectorized translation of [f]
-      per observation. Under an enclosing [Rune.vmap] the direction [f]
+      per mark. Under an enclosing [Rune.vmap] the direction [f]
       receives carries the map's batch axes, like every other curvature here:
       a shape-dependent [f] must accept them, as [Scale], [Diag] and
       [Softmax_ce] do by construction. *)
@@ -96,35 +96,39 @@ module Curv : sig
 end
 
 (** [observe ~y ~curv l] marks the scalar [l] as a little loss in the
-    prediction [y], whose Hessian with respect to [y] is [curv]. A sketch
-    accumulating curvature reads [l]'s tangent and [y]'s tangent batch and adds
-    the block YᵀHY; any other handler lets the mark pass, so calling this is a
-    no-op outside a sketch.
+    prediction [y], whose Hessian with respect to [y] is [curv]. Under a
+    {!sketch}, the rule of a unit-result [Rune.custom_jvp] gathers [y]'s
+    [k]-lane tangent batch and adds the block YᵀHY to the sketch's total; any
+    other driver runs the mark's no-op function and the block is dropped, so
+    calling this is a no-op outside a sketch.
 
     [l] must be a scalar computed from [y] by differentiable operations — the
-    user's own arithmetic defines both the value and its tangent. A little loss
-    that depends on several predictions may be observed once per prediction
-    (the blocks add) or jointly, by observing a concatenation of them with a
-    matching curvature.
+    user's own arithmetic defines both the value and the tangent of the loss
+    the sketch returns. A little loss that depends on several predictions may
+    be observed once per prediction (the blocks add) or jointly, by marking a
+    concatenation of them with a matching curvature.
+
+    {b Law 6.} The sketch is the Gauss-Newton matrix of the returned loss
+    exactly when that loss is the plain sum of its marked little losses plus
+    unmarked terms, because a mark enters with weight one: a mean or a scale
+    the caller applies to a marked little loss reaches the loss and C but not
+    the block. A mean over steps or trials therefore belongs inside each little
+    loss — scale its value and curvature — not on a sum of them.
 
     {b Inside [Rune.vmap].} Everything the mapped function performs happens
-    once, on physically batched tensors, so an observation inside a map carries
-    one little loss per mapped element, packed along the batch axis. The
-    collector sums their values and tangents — each packed little loss
-    contributes to the total, and the single k×k block contracts over the whole
-    batch — so the observation accounts for the batch's contribution to the
-    loss, whatever reduction the user applies outside. A mean over the map's
-    axis is therefore a factor of [M] away from the observations, which
-    {!check} reports (and [strict] refuses): fold the factor into the little
-    loss (scale the value and its curvature by [1/M], and reduce the map's
-    outputs with a sum), or observe the batched prediction after the map. *)
+    once, on physically batched tensors: a mark inside the caller's own map
+    carries one little loss per mapped element, and the block contracts over
+    every element of the packed prediction, so it accounts for the batch's
+    contribution whatever reduction the caller applies outside. A mean over
+    the map's axis is again a factor of [M] the block does not see; scale the
+    little loss and the map's outputs instead. *)
 val observe : y:('a, 'b) Nx.t -> curv:Curv.t -> ('a, 'b) Nx.t -> unit
 
-(** [mse ?w y target] is the mean weighted squared error
-    [mean (w * (y - target)²)], observed with its exact curvature
+(** [mse ?w ~target y] is the mean weighted squared error
+    [mean (w * (y - target)²)], marked with its exact curvature
     (H = diag (2 w / numel y), or [2 / numel y] times the identity without
     weights), and returned as a scalar to accumulate into the loss. *)
-val mse : ?w:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
+val mse : ?w:('a, 'b) Nx.t -> target:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
 
 (** [softmax_ce y labels] is the cross entropy of the last axis of [y] against
     class indices [labels] — which have [y]'s shape without its last axis —
@@ -133,21 +137,6 @@ val mse : ?w:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
     scalar. Labels must lie in [\[0, num_classes)]; the checked cases are the
     user's to validate up front. *)
 val softmax_ce : ('a, 'b) Nx.t -> Nx.int32_t -> ('a, 'b) Nx.t
-
-(** What the collector observed, for diagnosis: {!check} compares the first two
-    with the sketch's own loss and tangent. *)
-type diagnostics =
-  { observed_loss : Nx.float64_t
-    (** Σ l over the observed little losses, as a float64 scalar. *)
-  ; observed_c : Nx.float64_t
-    (** Σ ċ over the observed little losses, shape [k]: the tangent the
-        collector saw where it counts. *)
-  ; blocks : int (** Observations that contributed a curvature block. *)
-  ; skipped : int
-    (** Observations whose prediction was a constant of the differentiation.
-        Y = 0 makes their block zero, so they are skipped rather than
-        accumulated as zeros. *)
-  }
 
 (** A sketch's results. *)
 type 'p sketch =
@@ -167,66 +156,33 @@ type 'p sketch =
   ; apply : Nx.float64_t -> 'p
     (** [apply z] is the parameter-space direction Θz for [z : [k]], each
         leaf in its parameter's dtype. *)
-  ; diagnostics : diagnostics
   }
 
-(** [sketch structure ~k loss params] sketches [loss] at [params] along [k]
-    sampled directions. [structure] is the parameter structure, the
-    {!Nx.Ptree.instantiate} of the record's module.
+(** [sketch structure loss params dirs] sketches [loss] at [params] along the
+    directions [dirs]. [structure] is the parameter structure, the
+    {!Nx.Ptree.instantiate} of the record's module, and [dirs] is a parameter
+    structure whose float leaves stack [k] directions on a leading axis;
+    {!Optim.directions} draws them from a key, and any other sampler returning
+    the same structure serves.
 
     [loss] must return a scalar — it is the whole objective, including any
-    terms the user accumulates but does not observe. Little losses are marked
+    terms the user accumulates but does not mark. Little losses are marked
     with {!observe} or produced by {!mse}/{!softmax_ce}, and every term that
     contributes to the loss should be marked, or the sketch's curvature will
-    only cover the marked ones ({!check} reports the discrepancy).
-
-    Directions are sampled per leaf as standard normal [k]-lane batches from
-    the ambient [Rng] scope, so wrapping the call in [Rune.Rng.with_key] makes
-    them reproducible; non-float leaves get zero directions and do not
-    participate. [sketch_sampler] replaces the default sampler — for
-    Rademacher directions, per-leaf scaling, or a caller-owned RNG — and is
-    given [k] and [params] and must return a parameter structure whose leaves
-    stack [k] directions on a leading axis.
-
-    [strict] (default [false]) runs {!check} and raises [Invalid_argument] on a
-    discrepancy. It reads tensor values, so it concretizes the sketch's
-    numbers: inside a [Rune.jit]ed function it raises [Rune.Jit_error] instead.
-    Check the returned sketch when compiling.
+    only cover the marked ones (law 6, see {!observe}).
 
     The same loss function runs under the other drivers without changing: the
-    observations are inert to {!Rune.value_and_grad} and to a bare
-    [Rune.vmap] around [Rune.jvp] (the composition this function drives). A
-    [Rune.scan] inside the loss folds inside the forward pass, so a per-step
-    observation fires for every step; a [Rune.vmap] inside the loss batches
-    the trials inside the tangent axis, while a {!Rune.vmap} *around* [sketch]
+    marks are inert to {!Rune.value_and_grad} and to a bare [Rune.vmap] around
+    [Rune.jvp] (the composition this function drives). A [Rune.scan] inside
+    the loss is threaded by the total's scope, so a per-step mark fires for
+    every step and a compiled sketch keeps the scan a loop; a [Rune.vmap]
+    inside the loss batches the trials, while a {!Rune.vmap} *around* [sketch]
     is a batch of sketches, one per mapped parameter tree, each along its own
-    lanes. Inside a [Rune.jit]ed function a sketch is correct but
-    unrolled: the forward pass's scan rule runs the fold eagerly, so compile
-    time grows with the horizon where a plain compiled rollout stages the same
-    scan as a loop.
+    lanes.
 
-    Raises [Invalid_argument] if [k < 1], if [loss] does not return a scalar, or
-    if a marked prediction's tangent is not a [k]-lane batch (a bare
-    [Rune.jvp]'s single tangent). *)
-val sketch
-  :  'p Nx.Ptree.t
-  -> k:int
-  -> ?sketch_sampler:(int -> 'p -> 'p)
-  -> ?strict:bool
-  -> ('p -> ('c, 'd) Nx.t)
-  -> 'p
-  -> 'p sketch
-
-(** [check sk] compares the little losses the collector observed with the loss
-    the driver returned: [Ok ()] when they agree within a small relative
-    tolerance, [Error msg] describing the disagreement otherwise. A loss term
-    accumulated into the loss but never marked is absent from the sketch; a term
-    marked but never accumulated is in the sketch but not in the loss.
-
-    Reading the values concretizes them, so call this outside a [Rune.jit]ed
-    function. Skipped observations are not an error: a prediction that is a
-    constant of the differentiation has a zero block by construction. *)
-val check : 'p sketch -> (unit, string) result
+    Raises [Invalid_argument] if [dirs] have no tensor leaf, if the number of
+    lanes [k] is less than 1, or if [loss] does not return a scalar. *)
+val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
 
 (** {1 The optimizer: Algorithm 1's update}
 
@@ -250,12 +206,7 @@ val check : 'p sketch -> (unit, string) result
 
     (* the loop: one replay, one eager solve, one eager step *)
     let params, state =
-      let out =
-        sketch_step { O.bundle = (params, aux); key = state.Sofo.Optim.key }
-      in
-      (match O.check out with
-       | Error m -> failwith m
-       | Ok () -> ());
+      let out = sketch_step { O.params; key = state.Sofo.Optim.key; aux } in
       O.update ~lr ~damping state params out
     ]}
 
@@ -303,7 +254,8 @@ module Optim : sig
       [structure] is the parameter structure. A pure function of [key] (or of
       the ambient scope when [key] is omitted), so the compiled step can draw
       it from a key that is an input leaf, and a caller can reproduce a step's
-      subspace by name. This is {!sketch}'s own sampler, keyed. *)
+      subspace by name. {!sketch} takes these directions as an argument, so
+      this is how a caller draws them. *)
   val directions : 'p Nx.Ptree.t -> ?key:Nx.Rng.t -> k:int -> 'p -> 'p
 
   (** [apply structure ~k thetas z] is Θz: the parameter-space direction the
@@ -416,20 +368,18 @@ module Optim : sig
 
   (** {2 One eager step} *)
 
-  (** [step structure ~k ~lr ?damping ?preconditioner ?strict st ~loss ~params]
+  (** [step structure ~k ~lr ?damping ?preconditioner st ~loss ~params]
       sketches [loss] at [params] along directions drawn from [st]'s key,
       applies the update, and returns the new parameters, the next state and
-      the sketch — the loss, C, G̃ and the diagnostics, for logging or
-      {!check}. [structure] is the parameter structure. One call is one
-      training iteration, eager end to end; use {!Compiled} when the sketching
-      half should be compiled. *)
+      the sketch — the loss, C and G̃, for logging. [structure] is the
+      parameter structure. One call is one training iteration, eager end to
+      end; use {!Compiled} when the sketching half should be compiled. *)
   val step
     :  'p Nx.Ptree.t
     -> k:int
     -> lr:float
     -> ?damping:damping
     -> ?preconditioner:preconditioner
-    -> ?strict:bool
     -> state
     -> loss:('p -> ('c, 'd) Nx.t)
     -> params:'p
@@ -487,8 +437,6 @@ module Optim : sig
       ; c : Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
       ; ggn : Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
       ; dirs : P.t (** Θ, the directions the sketch was measured along. *)
-      ; observed_loss : Nx.float64_t
-      ; observed_c : Nx.float64_t
       }
 
     module Out : Nx.Ptree.S with type 'a t = out
@@ -503,9 +451,9 @@ module Optim : sig
 
         The loss takes the parameters and the aux, in that order. It is the
         same function the eager entry points take, closed over its aux —
-        [Sofo.sketch p ~k (fun params -> loss params aux) params], and
-        likewise [Optim.step]'s [~loss] — so one objective serves the compiled
-        half and the {!check} pass that precedes it. *)
+        [Sofo.sketch p (fun params -> loss params aux) params dirs] for a
+        caller's own directions, and likewise {!Optim.step}'s [~loss] — so one
+        objective serves the compiled half and the eager one. *)
     val sketch : k:int -> (P.t -> Aux.t -> ('c, 'd) Nx.t) -> in_ -> out
 
     (** [update ?lr ?damping ?preconditioner st params out] is one SOFO step on
@@ -533,11 +481,5 @@ module Optim : sig
       -> P.t
       -> out
       -> P.t * state
-
-    (** [check out] is {!check} on a compiled step's output — the same
-        statement about the observed little losses, made where the values are
-        readable. A compiled trace cannot read them, so this is how a
-        compiled deployment keeps the cross-check. *)
-    val check : out -> (unit, string) result
   end
 end

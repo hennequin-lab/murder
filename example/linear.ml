@@ -93,7 +93,7 @@ let run config =
   in
   let student0 = { w = w0 } in
   let y = Nx.matmul x teacher in
-  let objective (p : params) () = Sofo.mse (Nx.matmul x p.w) y in
+  let objective (p : params) () = Sofo.mse ~target:y (Nx.matmul x p.w) in
   let parameters = config.dim * config.out in
   let state = Sofo.Optim.init ~key:k0 () in
   Printf.printf
@@ -109,20 +109,17 @@ let run config =
     config.lr
     (damping_to_string config.damping)
     (preconditioner_to_string config.preconditioner);
-  (* One eager sketch first: Sofo.check reads values to compare the observed
-     little losses with the loss, which a compiled trace must not do. *)
+  (* One eager sketch first, along the same directions the compiled step will
+     draw from the state's key. *)
   let sk0 =
     Sofo.sketch
       Params.ptree
-      ~k:config.k
-      ~sketch_sampler:(fun k p ->
-        Sofo.Optim.directions Params.ptree ~key:state.Sofo.Optim.key ~k p)
       (fun p -> objective p ())
       student0
+      (Sofo.Optim.directions Params.ptree ~key:state.Sofo.Optim.key
+         ~k:config.k student0)
   in
-  (match Sofo.check sk0 with
-   | Ok () -> Printf.printf "cross-check: the observed little losses add up\n"
-   | Error msg -> Printf.printf "cross-check FAILED: %s\n" msg);
+  ignore sk0;
   (* Warm the device and the kernel compiler, so that the compile time reported
      below is this sketch's rather than the process's first jit. Set JITCACHE=0
      for a cold number. *)
@@ -134,8 +131,6 @@ let run config =
          ; c = Nx.zeros f64 [| 1 |]
          ; ggn = Nx.zeros f64 [| 1; 1 |]
          ; dirs = i.O.params
-         ; observed_loss = Nx.zeros f64 [||]
-         ; observed_c = Nx.zeros f64 [||]
          })
       { O.params = student0; key = state.key; aux = () }
   in
@@ -146,9 +141,7 @@ let run config =
   let t0 = Unix.gettimeofday () in
   let out0 = sketch_step { O.params = student0; key = state.key; aux = () } in
   let compile_ms = (Unix.gettimeofday () -. t0) *. 1e3 in
-  (match O.check out0 with
-   | Ok () -> ()
-   | Error msg -> Printf.printf "compiled cross-check FAILED: %s\n" msg);
+  ignore out0;
   (* ── the SOFO loop (Alg. 1) ── *)
   let rec loop params state i (losses, updates, residuals) =
     if i > config.steps

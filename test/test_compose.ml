@@ -13,8 +13,8 @@
    single-tangent [jvp] for a tangent batch, an explicit loop for a [vmap], and
    the loss's own second-order model where the loss is exactly quadratic (which
    needs no reference at all). The one composition the matrix marks ✗ is
-   checked for its error rather than its numbers, and so are the two ways of
-   marking a little loss the collector cannot interpret.
+   checked for its error rather than its numbers, and so is the way a mark
+   enters with weight one where the caller's reduction does not.
 
    Two of the checks are not about numbers: an observation inside [Rune.scan]
    must fire (a claim of the scan, not a coincidence of handler order), and a
@@ -34,6 +34,22 @@ let check_arr ?(eps = 1e-9) ~msg expected actual =
   equal ~msg int (Array.length expected) (Array.length actual);
   Array.iteri
     (fun i e -> equal ~msg:(Printf.sprintf "%s[%d]" msg i) (float eps) e actual.(i))
+    expected
+
+(* [check_rel ~msg expected actual] compares two runs of the same computation
+   that may have been optimized differently: the long rollout's values grow
+   with the horizon, so a fixed absolute tolerance says nothing. *)
+let check_rel ~msg expected actual =
+  let expected = to_arr expected and actual = to_arr actual in
+  equal ~msg int (Array.length expected) (Array.length actual);
+  Array.iteri
+    (fun i e ->
+       let a = actual.(i) in
+       let scale = Float.max (Float.abs e) (Float.abs a) in
+       let scale = if scale = 0.0 then 1.0 else scale in
+       equal
+         ~msg:(Printf.sprintf "%s[%d]" msg i)
+         (float 1e-9) 0.0 (Float.abs (e -. a) /. scale))
     expected
 
 (* [raises_containing ~substring f] checks that [f] fails for the stated
@@ -121,8 +137,7 @@ let sampler k p =
 
 let thetas_for = sampler
 
-let sketch ?(kk = k) loss p =
-  Sofo.sketch params_ptree ~k:kk ~sketch_sampler:sampler loss p
+let sketch ?(kk = k) loss p = Sofo.sketch params_ptree loss p (sampler kk p)
 
 (* The reference tangent batch, computed independently of the lane machinery
    under test: one single-tangent [Rune.jvp] per lane, stacked. *)
@@ -189,26 +204,20 @@ let scan_loss p =
     Rune.scan'
       ~f:(fun z tgt ->
         let z' = step p z in
-        z', Sofo.mse z' tgt)
+        z', Sofo.mse ~target:tgt z')
       ~init:z0
       scan_targets
   in
   Nx.sum ls
 
-let test_scan_folds_inside_the_collector () =
-  (* Rune.scan inside the loss: the forward pass claims the fold, and every
-     step's observation reaches the collector, which encloses the map. The GGN
-     is then the sum of the per-step blocks, each computed here from per-lane
-     single-tangent jvps. *)
+let test_scan_threads_the_total () =
+  (* Rune.scan inside the loss: the total's scope owns the fold, so every
+     step's mark reaches it and the GGN is the sum of the per-step blocks, each
+     computed here from per-lane single-tangent jvps. *)
   let p = params ()
   and kk = 2 in
   let thetas = thetas_for kk p in
-  let sk = Sofo.sketch params_ptree ~k:kk ~sketch_sampler:sampler scan_loss p in
-  equal ~msg:"one observation per step" int scan_steps sk.diagnostics.blocks;
-  equal ~msg:"nothing skipped" int 0 sk.diagnostics.skipped;
-  (match Sofo.check sk with
-   | Ok () -> ()
-   | Error msg -> fail ("the observed steps do not add up to the loss: " ^ msg));
+  let sk = sketch ~kk scan_loss p in
   let reference =
     List.fold_left
       (fun acc t ->
@@ -236,15 +245,16 @@ let endpoints =
 
 (* The endpoint loss, written the natural way: batch the trials with vmap and
    observe the batched prediction. *)
-let vmap_loss p = Sofo.mse (Rune.vmap' (fun x -> roll p x 4) starts) endpoints
+let vmap_loss p =
+  Sofo.mse ~target:endpoints (Rune.vmap' (fun x -> roll p x 4) starts)
 
 (* The same loss with the map written out as a loop. *)
 let loop_loss p =
   Sofo.mse
+    ~target:endpoints
     (Nx.stack
        ~axis:0
        (List.init vmap_trials (fun i -> roll p (Nx.slice [ Nx.I i ] starts) 4)))
-    endpoints
 
 let test_vmap_inside_matches_the_loop () =
   (* vmap inside the loss: vmap re-performs every operation batched, forward
@@ -254,16 +264,11 @@ let test_vmap_inside_matches_the_loop () =
      tangents through an ordinary loop. *)
   let p = params ()
   and kk = 3 in
-  let sk_vmap = Sofo.sketch params_ptree ~k:kk ~sketch_sampler:sampler vmap_loss p in
-  let sk_loop = Sofo.sketch params_ptree ~k:kk ~sketch_sampler:sampler loop_loss p in
-  equal ~msg:"one observation, whatever the map" int 1 sk_vmap.diagnostics.blocks;
-  equal ~msg:"the loop observes once too" int 1 sk_loop.diagnostics.blocks;
+  let sk_vmap = sketch ~kk vmap_loss p in
+  let sk_loop = sketch ~kk loop_loss p in
   check_arr ~msg:"loss" (to_arr sk_loop.loss) sk_vmap.loss;
   check_arr ~msg:"C" (to_arr sk_loop.c) sk_vmap.c;
-  check_arr ~msg:"G̃" (to_arr sk_loop.ggn) sk_vmap.ggn;
-  match Sofo.check sk_vmap with
-  | Ok () -> ()
-  | Error msg -> fail ("the mapped loss does not add up: " ^ msg)
+  check_arr ~msg:"G̃" (to_arr sk_loop.ggn) sk_vmap.ggn
 
 (* Trials as a structure, so that a mapped function can see each trial's target
    alongside its start. *)
@@ -290,8 +295,8 @@ let n_pred = 3.0
    observation: one observation is one term of the total loss, so the value and
    the curvature both carry the 1/M factor the map's reduction would apply
    outside, and the outside reduction is then the sum of those contributions —
-   which is the mean of the unweighted little losses. The collector cannot
-   infer the factor, which is why the cross-check exists. *)
+   which is the mean of the unweighted little losses. A mark enters with
+   weight one, so the factor has to be written at the mark (law 6). *)
 let in_map_loss p =
   Nx.sum
     (Rune.vmap
@@ -311,27 +316,24 @@ let test_observation_inside_a_vmap_scales_by_the_batch () =
      observation are the same thing as M observations of one little loss. *)
   let p = params ()
   and kk = 2 in
-  let sk = Sofo.sketch params_ptree ~k:kk ~sketch_sampler:sampler in_map_loss p in
+  let sk = sketch ~kk in_map_loss p in
   let sk_batched =
-    Sofo.sketch params_ptree ~k:kk ~sketch_sampler:sampler vmap_loss p
+    sketch ~kk vmap_loss p
   in
   (* vmap re-performs the body batched rather than looping it, so the [M]
-     little losses are packed into a single observation — one block, whose
-     contraction sums over the map's axis. *)
-  equal ~msg:"one packed observation" int 1 sk.diagnostics.blocks;
-  (match Sofo.check sk with
-   | Ok () -> ()
-   | Error msg -> fail ("the scaled in-map observation does not add up: " ^ msg));
+     little losses are packed into a single observation whose block contracts
+     over the map's axis. *)
   check_arr ~msg:"loss" (to_arr sk_batched.loss) sk.loss;
   check_arr ~msg:"C" (to_arr sk_batched.c) sk.c;
   check_arr ~msg:"G̃" (to_arr sk_batched.ggn) sk.ggn
 
-let test_unscaled_observation_inside_a_vmap_is_reported () =
-  (* Marking the raw per-trial mean inside the map keeps the loss's own mean
-     outside, so the observations sum to M times the loss they are supposed to
-     account for. The collector cannot read the user's mind about which
-     reduction applies, so it accumulates what it is shown and Sofo.check
-     reports the factor; strict mode refuses to return the sketch at all. *)
+let test_an_unscaled_in_map_mean_overweights_the_block () =
+  (* Law 6: a mark enters with weight one. Marking the raw per-trial mean
+     inside the map and then averaging the map's outputs scales the loss but
+     not the block, so the curvature is M times the loss's Gauss-Newton
+     matrix. Scaling the little loss and its curvature by 1/M instead, as
+     {!test_observation_inside_a_vmap_scales_by_the_batch} does, agrees with
+     observing the batched prediction. *)
   let p = params () in
   let loss p =
     Nx.mean
@@ -339,15 +341,15 @@ let test_unscaled_observation_inside_a_vmap_is_reported () =
          Nx.Ptree.(trial_ptree @-> returns tensor)
          (fun tr ->
             let y = roll p tr.x 4 in
-            Sofo.mse y tr.t)
+            Sofo.mse ~target:tr.t y)
          trials)
   in
   let sk = sketch loss p in
-  (match Sofo.check sk with
-   | Ok () -> fail "an unscaled in-map observation should not add up"
-   | Error _ -> ());
-  raises_containing ~msg:"strict in-map little loss" ~substring:"Sofo.sketch:" (fun () ->
-    ignore (Sofo.sketch params_ptree ~k ~sketch_sampler:sampler ~strict:true loss p))
+  let scaled = sketch ~kk:k in_map_loss p in
+  check_arr ~msg:"the loss is the same" (to_arr scaled.loss) sk.loss;
+  check_arr ~msg:"the block carries the missing factor of M"
+    (to_arr (Nx.mul_s scaled.ggn batch))
+    sk.ggn
 
 let test_vmap_outside_a_sketch_batches_the_sketches () =
   (* A map around a whole sketch: each mapped lane gets its own sketch of its
@@ -377,9 +379,9 @@ let test_vmap_outside_a_sketch_batches_the_sketches () =
 
 let test_grad_outside_a_sketch_is_exact () =
   (* grad of a sketch: reverse mode outside the forward pass. The forward
-     handler's primals are ordinary operations to the tape, and the collector's
-     effects are inert to it, so differentiating the sketch's loss is
-     differentiating the loss. *)
+     handler's primals are ordinary operations to the tape, and the mark is a
+     unit-result custom_jvp whose [f] runs under reverse, so differentiating
+     the sketch's loss is differentiating the loss. *)
   let p = params () in
   let l_sketch, g_sketch =
     Rune.value_and_grad params_ptree (fun p -> (sketch scan_loss p).loss) p
@@ -399,11 +401,11 @@ let test_sketch_of_grad_is_the_batched_hessian () =
      that needs no reference. *)
   let loss p =
     let g = Rune.grad' (fun w -> Nx.sum (Nx.square (Nx.matmul w z0))) p.wt in
-    Sofo.mse g (Nx.zeros_like g)
+    Sofo.mse ~target:(Nx.zeros_like g) g
   in
   let p = params ()
   and kk = 3 in
-  let sk = Sofo.sketch params_ptree ~k:kk ~sketch_sampler:sampler loss p in
+  let sk = sketch ~kk loss p in
   let z = vec [| 0.4; -1.1; 0.7 |] in
   let eps = 1e-4 in
   let p' =
@@ -437,11 +439,6 @@ let test_no_grad_and_detach_are_skipped () =
   in
   let p = params () in
   let sk = sketch loss p in
-  equal ~msg:"no blocks from gated predictions" int 0 sk.diagnostics.blocks;
-  equal ~msg:"two skipped" int 2 sk.diagnostics.skipped;
-  (match Sofo.check sk with
-   | Ok () -> ()
-   | Error msg -> fail ("a gated observation must still count towards the loss: " ^ msg));
   check_arr ~msg:"zero curvature" [| 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0 |] sk.ggn
 
 let test_rng_in_the_graph_is_a_constant () =
@@ -453,17 +450,17 @@ let test_rng_in_the_graph_is_a_constant () =
      differentiation rather than a missing term. *)
   let noisy p =
     let noise = Nx.randn f64 [| 3 |] in
-    Sofo.mse (Nx.add (step p z0) noise) (Nx.zeros f64 [| 3 |])
+    Sofo.mse ~target:(Nx.zeros f64 [| 3 |]) (Nx.add (step p z0) noise)
   in
-  let clean p = Sofo.mse (step p z0) (Nx.zeros f64 [| 3 |]) in
+  let clean p = Sofo.mse ~target:(Nx.zeros f64 [| 3 |]) (step p z0) in
   let p = params ()
   and kk = 2 in
   let thetas = thetas_for kk p in
   let sk_noisy =
     Nx.Rng.with_key (Nx.Rng.key 11) (fun () ->
-      Sofo.sketch params_ptree ~k:kk ~sketch_sampler:sampler noisy p)
+      sketch ~kk noisy p)
   in
-  let sk_clean = Sofo.sketch params_ptree ~k:kk ~sketch_sampler:sampler clean p in
+  let sk_clean = sketch ~kk clean p in
   let _, grads =
     Nx.Rng.with_key (Nx.Rng.key 11) (fun () ->
       Rune.value_and_grad params_ptree noisy p)
@@ -473,9 +470,6 @@ let test_rng_in_the_graph_is_a_constant () =
     (to_arr (theta_t_cotangent ~k:kk thetas grads))
     sk_noisy.c;
   check_arr ~msg:"noise does not move G̃" (to_arr sk_clean.ggn) sk_noisy.ggn;
-  (match Sofo.check sk_noisy with
-   | Ok () -> ()
-   | Error msg -> fail ("a stochastic little loss does not add up: " ^ msg));
   if Nx.item [] sk_noisy.loss = Nx.item [] sk_clean.loss
   then fail "the noise did not reach the loss"
 
@@ -490,7 +484,7 @@ let test_jit_inside_degrades () =
         (Nx.matmul z0 p.a)
         (Nx.matmul (activation (Nx.add (Nx.matmul z0 p.ct) p.b)) p.wt)
     in
-    Sofo.mse z (Nx.zeros f64 [| 3 |])
+    Sofo.mse ~target:(Nx.zeros f64 [| 3 |]) z
   in
   let p = params () in
   let sk_plain = sketch (model inline) p in
@@ -515,20 +509,18 @@ let test_custom_jvp_inside () =
   in
   let loss p =
     Sofo.mse
+      ~target:(Nx.zeros f64 [| 3 |])
       (Nx.add
          (Nx.matmul z0 p.a)
          (Nx.matmul (my_relu (Nx.add (Nx.matmul z0 p.ct) p.b)) p.wt))
-      (Nx.zeros f64 [| 3 |])
   in
   let p = params () in
   let sk = sketch loss p in
   check_arr
     ~msg:"custom rule, same curvature"
-    (to_arr (sketch (fun p -> Sofo.mse (step p z0) (Nx.zeros f64 [| 3 |])) p).ggn)
-    sk.ggn;
-  match Sofo.check sk with
-  | Ok () -> ()
-  | Error msg -> fail ("a custom_jvp does not add up: " ^ msg)
+    (to_arr
+       (sketch (fun p -> Sofo.mse ~target:(Nx.zeros f64 [| 3 |]) (step p z0)) p).ggn)
+    sk.ggn
 
 let test_custom_vjp_raises_and_leaves_the_gate_alone () =
   (* custom_vjp has no forward rule: it raises under any forward mode, and the
@@ -542,52 +534,38 @@ let test_custom_vjp_raises_and_leaves_the_gate_alone () =
         ~bwd:(fun x ct -> Nx.mul ct (Nx.cos x))
         p.b
     in
-    Sofo.mse g (Nx.zeros f64 [| 4 |])
+    Sofo.mse ~target:(Nx.zeros f64 [| 4 |]) g
   in
   let p = params () in
   raises_containing
     ~msg:"custom_vjp under a sketch"
     ~substring:"Rune: a custom_vjp"
     (fun () -> ignore (sketch loss p));
-  let sk = sketch (fun p -> Sofo.mse (step p z0) (Nx.zeros f64 [| 3 |])) p in
-  equal ~msg:"the next sketch still works" int 1 sk.diagnostics.blocks
+  ignore (sketch (fun p -> Sofo.mse ~target:(Nx.zeros f64 [| 3 |]) (step p z0)) p)
 
 (* ── the ✗ rows in a jitted step ────────────────────────────────────────── *)
 
 let test_jitted_sketch_matches_eager () =
-  (* §14.3: with jit outermost the collector's effect is handled at trace time
-     and its accumulations are traced beside the primal ones, so a jitted
-     sketch is correct — but unrolled, and its check cannot read values. *)
+  (* With jit outermost the total's scope is traced with the primal ones, so a
+     jitted sketch is correct: it draws its directions from a key carried as an
+     input leaf, and the scan inside the loss stays a loop. *)
   let p = params () in
+  let dirs = sampler k p in
   let bundle (sk : params Sofo.sketch) =
     Nx.concatenate ~axis:0 [ Nx.ravel sk.loss; Nx.ravel sk.c; Nx.ravel sk.ggn ]
   in
-  let eager =
-    bundle (Sofo.sketch params_ptree ~k ~sketch_sampler:sampler vmap_loss p)
-  in
+  let eager = bundle (Sofo.sketch params_ptree vmap_loss p dirs) in
   let jitted =
     Rune.jit
       Nx.Ptree.(params_ptree @-> returns tensor)
-      (fun p ->
-         bundle (Sofo.sketch params_ptree ~k ~sketch_sampler:sampler vmap_loss p))
+      (fun p -> bundle (Sofo.sketch params_ptree vmap_loss p dirs))
   in
   check_arr ~msg:"a jitted sketch replays identically" (to_arr (jitted p)) (jitted p);
-  check_arr ~msg:"jitted sketch (loss, C, G̃)" (to_arr eager) (jitted p);
-  (* and the strict check, which reads values, refuses at trace time *)
-  match
-    Rune.jit
-      Nx.Ptree.(params_ptree @-> returns tensor)
-      (fun p ->
-         (Sofo.sketch params_ptree ~k ~sketch_sampler:sampler ~strict:true vmap_loss p)
-           .loss)
-      p
-  with
-  | _ -> fail "a strict sketch inside jit should have raised"
-  | exception Rune.Jit_error _ -> ()
+  check_arr ~msg:"jitted sketch (loss, C, G̃)" (to_arr eager) (jitted p)
 
-let test_scan_observes_every_step () =
-  (* A long horizon must keep the collector's O(k²) state; with the tangent
-     store private, the readable statement is that every step is observed. *)
+let test_a_long_scan_compiles () =
+  (* A long horizon: the scope's total rides the staged loop, so a compiled
+     sketch over many steps equals the eager one. *)
   let steps = 120 in
   let targets = Nx.zeros f64 [| steps; 3 |] in
   let loss p =
@@ -595,18 +573,24 @@ let test_scan_observes_every_step () =
       Rune.scan'
         ~f:(fun z tgt ->
           let z' = step p z in
-          z', Sofo.mse z' tgt)
+          z', Sofo.mse ~target:tgt z')
         ~init:z0
         targets
     in
     Nx.sum ls
   in
   let p = params () in
-  let sk =
-    Sofo.sketch params_ptree ~k:4 ~sketch_sampler:sampler ~strict:false loss p
+  let dirs = sampler 4 p in
+  let bundle (sk : params Sofo.sketch) =
+    Nx.concatenate ~axis:0 [ Nx.ravel sk.loss; Nx.ravel sk.c; Nx.ravel sk.ggn ]
   in
-  equal ~msg:"a block per step" int steps sk.diagnostics.blocks;
-  if Nx.item [] sk.loss = 0.0 then fail "the loss collapsed"
+  let eager = bundle (Sofo.sketch params_ptree loss p dirs) in
+  let jitted =
+    Rune.jit
+      Nx.Ptree.(params_ptree @-> returns tensor)
+      (fun p -> bundle (Sofo.sketch params_ptree loss p dirs))
+  in
+  check_rel ~msg:"a long compiled sketch equals the eager one" eager (jitted p)
 
 let test_control_flow_is_inherited () =
   (* Control flow that depends on host values rather than on θ differentiates
@@ -628,27 +612,24 @@ let test_control_flow_is_inherited () =
         ~init:z0
         scan_targets
     in
-    Sofo.mse (Nx.mul zs mask) (Nx.mul scan_targets mask)
+    Sofo.mse ~target:(Nx.mul scan_targets mask) (Nx.mul zs mask)
   in
   let branch = Nx.item [] (Nx.sum p.b) > 0.0 in
-  let loss p = if branch then masked p else Sofo.mse (roll p z0 3) endpoints in
+  let loss p = if branch then masked p else Sofo.mse ~target:endpoints (roll p z0 3) in
   let sk = sketch loss p in
   let _, grads = Rune.value_and_grad params_ptree loss p in
   let thetas = thetas_for k p in
   check_arr
     ~msg:"C = Θᵀ∇c under host control flow"
     (to_arr (theta_t_cotangent ~k thetas grads))
-    sk.c;
-  match Sofo.check sk with
-  | Ok () -> ()
-  | Error msg -> fail ("a masked loss does not add up: " ^ msg)
+    sk.c
 
 let tests =
   [ group
       "the ✓ rows"
       [ test
-          "the forward pass folds a scan inside the collector"
-          test_scan_folds_inside_the_collector
+          "the total threads a scan inside the loss"
+          test_scan_threads_the_total
       ; test "vmap inside the loss matches the loop oracle" test_vmap_inside_matches_the_loop
       ; test
           "an observation inside a vmap scales by the batch"
@@ -669,16 +650,16 @@ let tests =
   ; group
       "the ✗ rows"
       [ test
-          "an unscaled in-map observation is reported"
-          test_unscaled_observation_inside_a_vmap_is_reported
+          "an unscaled in-map mean overweights the block"
+          test_an_unscaled_in_map_mean_overweights_the_block
       ; test
           "custom_vjp raises and leaves the gate alone"
           test_custom_vjp_raises_and_leaves_the_gate_alone
       ]
   ; group
       "a jitted sketch"
-      [ test "matches eager, and strict refuses to trace" test_jitted_sketch_matches_eager
-      ; test "a long scan observes every step" test_scan_observes_every_step
+      [ test "matches eager" test_jitted_sketch_matches_eager
+      ; test "a long scan compiles" test_a_long_scan_compiles
       ]
   ]
 

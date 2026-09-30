@@ -98,20 +98,20 @@ let params () =
 (* Two little losses, one per float leaf, the second evaluated in float32 —
    exactly quadratic overall, so the sketch's model is exact. *)
 let loss p =
-  let l1 = Sofo.mse (Nx.matmul x p.w) targets in
-  let l2 = Sofo.mse (Nx.matmul xv p.v) yv in
+  let l1 = Sofo.mse ~target:targets (Nx.matmul x p.w) in
+  let l2 = Sofo.mse ~target:yv (Nx.matmul xv p.v) in
   Nx.add l1 (Nx.cast f64 l2)
 
 (* Θ is a pure function of the key, so a fixed key makes every reference below
    use the same subspace as the sketch it checks. *)
 let thetas_of p = Sofo.Optim.directions params_ptree ~key ~k p
 let sampler k p = Sofo.Optim.directions params_ptree ~key ~k p
-let sketch_at p = Sofo.sketch params_ptree ~k ~sketch_sampler:sampler loss p
+let sketch_at p = Sofo.sketch params_ptree loss p (thetas_of p)
 
 (* The same model without the float32 leaf, for the statements that should sit
    at float64 rounding rather than at the float32 branch's. *)
-let loss64 p = Sofo.mse (Nx.matmul x p.w) targets
-let sketch64 p = Sofo.sketch params_ptree ~k ~sketch_sampler:sampler loss64 p
+let loss64 p = Sofo.mse ~target:targets (Nx.matmul x p.w)
+let sketch64 p = Sofo.sketch params_ptree loss64 p (thetas_of p)
 
 (* ── directions ──────────────────────────────────────────────────────────── *)
 
@@ -374,8 +374,8 @@ let test_whitening_makes_the_step_independent_of_the_basis () =
   let raw k p = Sofo.Optim.directions params_ptree ~key ~k p in
   let stretched k p = stretch params_ptree s (raw k p) in
   let damping = `Relative_from_top 0.1 in
-  let sk_raw = Sofo.sketch params_ptree ~k ~sketch_sampler:raw loss p in
-  let sk_str = Sofo.sketch params_ptree ~k ~sketch_sampler:stretched loss p in
+  let sk_raw = Sofo.sketch params_ptree loss p (raw k p) in
+  let sk_str = Sofo.sketch params_ptree loss p (stretched k p) in
   let a = Sofo.Optim.update params_ptree ~lr:1.0 ~damping sk_raw p in
   let b = Sofo.Optim.update params_ptree ~lr:1.0 ~damping sk_str p in
   check_arr ~eps:1e-9 ~msg:"whitened step, float64 leaf" (to_arr a.w) b.w;
@@ -399,7 +399,7 @@ let test_whitening_needs_k_parameters () =
      had, so the update says so instead of returning infinities. *)
   let p = params () in
   let k = 2 * ((d * o) + d) in
-  let sk = Sofo.sketch params_ptree ~k ~sketch_sampler:sampler loss p in
+  let sk = Sofo.sketch params_ptree loss p (sampler k p) in
   raises_match Exn.invalid_arg (fun () ->
     ignore (Sofo.Optim.update params_ptree ~lr:0.1 sk p))
 
@@ -439,9 +439,6 @@ let test_step_decreases_the_loss_and_advances () =
           ~loss
           ~params:p
       in
-      (match Sofo.check sk with
-       | Ok () -> ()
-       | Error msg -> fail ("a step's sketch does not add up: " ^ msg));
       let l = Nx.item [] sk.loss in
       is_true
         ~msg:(Printf.sprintf "step %d decreases the loss (%.8g < %.8g)" (11 - i) l prev)
@@ -471,13 +468,24 @@ let test_step_is_reproducible () =
   and b = run () in
   check_arr ~msg:"the same key replays the same run" (to_arr a.w) b.w
 
-let test_step_strict_reports_an_unobserved_term () =
+let test_step_ignores_an_unobserved_term () =
+  (* Law 6 again, here through a step: an unmarked term reaches the loss and C
+     but adds no block, so the sketch the step returns has the marked loss's
+     curvature. *)
   let p = params () in
   let st = Sofo.Optim.init ~key () in
   let leaky p = Nx.add (loss p) (Nx.mul_s (Nx.sum (Nx.square p.w)) 0.01) in
-  raises_match Exn.invalid_arg (fun () ->
-    ignore
-      (Sofo.Optim.step params_ptree ~k ~lr:1.0 ~strict:true st ~loss:leaky ~params:p))
+  let _, _, sk =
+    Sofo.Optim.step params_ptree ~k ~lr:1.0 st ~loss:leaky ~params:p
+  in
+  let _, _, clean =
+    Sofo.Optim.step params_ptree ~k ~lr:1.0 st ~loss ~params:p
+  in
+  check_arr ~msg:"the unobserved ridge contributes no curvature"
+    (to_arr clean.ggn) sk.ggn;
+  is_false
+    ~msg:"but it does reach the loss"
+    (Float.equal (Nx.item [] sk.loss) (Nx.item [] clean.loss))
 
 (* ── the compiled half ───────────────────────────────────────────────────── *)
 
@@ -495,9 +503,6 @@ let test_compiled_sketch_matches_the_eager_one () =
   check_arr ~msg:"C" (to_arr out.O.c) sk.c;
   check_arr ~msg:"G̃" (to_arr out.O.ggn) sk.ggn;
   check_arr ~msg:"Θ is the same subspace" (to_arr out.O.dirs.w) (thetas_of p).w;
-  (match O.check out with
-   | Ok () -> ()
-   | Error msg -> fail ("the compiled sketch does not add up: " ^ msg));
   (* and with damping, the update is the same map; it also advances the state
      it was given, so the next step's sketch cannot reuse this one's subspace *)
   let st = Sofo.Optim.init ~key () in
@@ -532,9 +537,6 @@ let test_jitted_sketch_matches_eager () =
   check_arr ~rel:1e-5 ~msg:"C" (to_arr eager.O.c) jitted.O.c;
   check_arr ~rel:1e-5 ~msg:"G̃" (to_arr eager.O.ggn) jitted.O.ggn;
   check_arr ~eps:1e-12 ~msg:"Θ" (to_arr eager.O.dirs.w) jitted.O.dirs.w;
-  (match O.check jitted with
-   | Ok () -> ()
-   | Error msg -> fail ("the jitted sketch does not add up: " ^ msg));
   (* one compilation, fresh subspaces: a different key is a different Θ from
      the same program *)
   let other = step { O.params = p; key = Nx.Rng.fold_in key 1; aux = () } in
@@ -554,9 +556,6 @@ let test_compiled_loop_trains () =
     then best, first
     else (
       let out = step { O.params = p; key = st.Sofo.Optim.key; aux = () } in
-      (match O.check out with
-       | Ok () -> ()
-       | Error msg -> fail ("compiled check: " ^ msg));
       let l = Nx.item [] out.O.loss in
       is_true
         ~msg:(Printf.sprintf "step %d decreases the loss (%.8g < %.8g)" (9 - i) l prev)
@@ -593,7 +592,7 @@ end
 module Oaux = Sofo.Optim.Compiled (Params_c) (Aux_c)
 
 let loss_with_aux p (a : Nx.float64_t Aux.t) =
-  Sofo.mse (Nx.matmul x p.w) (Nx.add targets a.shift)
+  Sofo.mse ~target:(Nx.add targets a.shift) (Nx.matmul x p.w)
 
 let test_compiled_aux_reaches_the_loss () =
   (* The aux is an input, not a parameter: a new one is a new problem for a
@@ -607,9 +606,7 @@ let test_compiled_aux_reaches_the_loss () =
   let out = step { Oaux.params = p; key; aux } in
   (* the same numbers as an eager sketch with the aux closed over *)
   let eager =
-    Sofo.sketch params_ptree ~k ~sketch_sampler:sampler
-      (fun p -> loss_with_aux p aux)
-      p
+    Sofo.sketch params_ptree (fun p -> loss_with_aux p aux) p (sampler k p)
   in
   check_arr ~eps:1e-6 ~msg:"loss, aux in the tree" (to_arr eager.loss) out.Oaux.loss;
   check_arr ~rel:1e-5 ~msg:"C, aux in the tree" (to_arr eager.c) out.Oaux.c;
@@ -627,9 +624,7 @@ let test_compiled_aux_reaches_the_loss () =
     Oaux.update ~lr:1.0 ~damping:(`Absolute 0.0) (Sofo.Optim.init ~key ()) p out
   in
   let after =
-    Sofo.sketch params_ptree ~k ~sketch_sampler:sampler
-      (fun p -> loss_with_aux p aux)
-      p'
+    Sofo.sketch params_ptree (fun p -> loss_with_aux p aux) p' (sampler k p)
   in
   is_true
     ~msg:(Printf.sprintf "|C'| = %.3g at the new parameters" (max_abs after.c))
@@ -681,8 +676,8 @@ let tests =
           test_step_decreases_the_loss_and_advances
       ; test "step is reproducible" test_step_is_reproducible
       ; test
-          "strict mode reports an unobserved term"
-          test_step_strict_reports_an_unobserved_term
+          "an unobserved term adds no block to a step"
+          test_step_ignores_an_unobserved_term
       ]
   ; group
       "the compiled half"

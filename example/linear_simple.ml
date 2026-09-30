@@ -56,7 +56,7 @@ let objective params key =
   let open Infix in
   let x, y = minibatch ~key batch_size in
   let y' = Model.forward params x in
-  Sofo.mse y' y
+  Sofo.mse ~target:y y'
 
 (* JIT compilation machinery for a sketched objective *)
 let sketch_step =

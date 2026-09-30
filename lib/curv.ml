@@ -22,14 +22,10 @@
    hand: the suite checks every constructor against [Rune.hessian'] of the
    corresponding mini loss as a function of a free [y]. *)
 
-(* A tensor whose dtype is hidden; the describing constructors accept tensors
-   at any element type and [apply] casts them to the tangent's. *)
-type packed = Packed : ('a, 'b) Nx.t -> packed
-
 type t =
   | Scale of float
   | Diag : ('a, 'b) Nx.t -> t
-  | Softmax_ce : float * packed -> t
+  | Softmax_ce : float * Nx.packed -> t
   | Hvp : (('a, 'b) Nx.t -> ('a, 'b) Nx.t) * ('a, 'b) Nx_dtype.t -> t
 
 (* [apply t v] is H v for a tangent batch [v] of the prediction's shape: one
@@ -39,7 +35,7 @@ let apply : type c d. t -> (c, d) Nx.t -> (c, d) Nx.t =
   match t with
   | Scale s -> Nx.mul_s v (Nx_dtype.of_float (Nx.dtype v) s)
   | Diag w -> Nx.mul v (Nx.cast (Nx.dtype v) w)
-  | Softmax_ce (scale, Packed p) ->
+  | Softmax_ce (scale, Nx.P p) ->
     (* p⊙v − p (p·v), contracted per row over the class axis. *)
     let p = Nx.cast (Nx.dtype v) p in
     let pv = Nx.sum (Nx.mul p v) ~axes:[ -1 ] ~keepdims:true in
@@ -66,7 +62,7 @@ let diag w = Diag w
    H v = p⊙v − p (p·v), contracted per row, times [scale] (a loss averaged over
    rows contributes 1/rows). [p] is the probability tensor of the little loss,
    so the value and the curvature describing it cannot disagree. *)
-let softmax_ce ?(scale = 1.0) p = Softmax_ce (scale, Packed p)
+let softmax_ce ?(scale = 1.0) p = Softmax_ce (scale, Nx.P p)
 
 (* An escape hatch for curvatures with no structured form: [f] is the Hessian
    action on a single direction of the prediction's shape, and the library lifts

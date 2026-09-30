@@ -234,16 +234,13 @@ let step
       ~lr
       ?damping
       ?preconditioner
-      ?(strict = false)
       (st : state)
       ~(loss : p -> (c, d) Nx.t)
       ~(params : p)
   : p * state * p Sketch.t
   =
   let thetas = directions structure ~key:st.key ~k params in
-  let sk =
-    Sketch.run structure ~k ~sketch_sampler:(fun _ _ -> thetas) ~strict loss params
-  in
+  let sk = Sketch.run structure loss params thetas in
   let params = update structure ~lr ?damping ?preconditioner sk params in
   params, next st, sk
 
@@ -295,8 +292,6 @@ module Compiled (P : Structure) (Aux : Structure) = struct
     ; c : Nx.float64_t
     ; ggn : Nx.float64_t
     ; dirs : P.t
-    ; observed_loss : Nx.float64_t
-    ; observed_c : Nx.float64_t
     }
 
   module Out = struct
@@ -308,9 +303,7 @@ module Compiled (P : Structure) (Aux : Structure) = struct
       let c = field cur "c" tensor o.c in
       let ggn = field cur "ggn" tensor o.ggn in
       let dirs = field cur "dirs" (structure P.ptree) o.dirs in
-      let observed_loss = field cur "observed_loss" tensor o.observed_loss in
-      let observed_c = field cur "observed_c" tensor o.observed_c in
-      { loss; c; ggn; dirs; observed_loss; observed_c }
+      { loss; c; ggn; dirs }
   end
 
   let out_ptree = Nx.Ptree.instantiate (module Out)
@@ -326,21 +319,8 @@ module Compiled (P : Structure) (Aux : Structure) = struct
      leaves, so a batch that changes between steps is data, not a new trace. *)
   let sketch ~k (loss : P.t -> Aux.t -> ('c, 'd) Nx.t) i =
     let dirs = directions P.ptree ~key:i.key ~k i.params in
-    let sk =
-      Sketch.run
-        P.ptree
-        ~k
-        ~sketch_sampler:(fun _ _ -> dirs)
-        (fun params -> loss params i.aux)
-        i.params
-    in
-    { loss = sk.loss
-    ; c = sk.c
-    ; ggn = sk.ggn
-    ; dirs
-    ; observed_loss = sk.diagnostics.observed_loss
-    ; observed_c = sk.diagnostics.observed_c
-    }
+    let sk = Sketch.run P.ptree (fun params -> loss params i.aux) i.params dirs in
+    { loss = sk.loss; c = sk.c; ggn = sk.ggn; dirs }
 
   (* The step, and the state that produced it, advanced together: the caller
      threads one state through the loop, so the key the sketch consumed and the
@@ -349,19 +329,7 @@ module Compiled (P : Structure) (Aux : Structure) = struct
     let k = (Nx.shape o.c).(0) in
     let g = gram P.ptree ~k o.dirs in
     let dw =
-      apply P.ptree ~k o.dirs
-        (coordinates ?damping ?preconditioner ~gram:g o.ggn o.c)
+      apply P.ptree ~k o.dirs (coordinates ?damping ?preconditioner ~gram:g o.ggn o.c)
     in
     shift P.ptree ~lr params dw, next st
-
-  (* The consistency check, on the numbers the compiled step handed back: the
-     same statement as [Sofo.check], which cannot run inside a trace because it
-     reads values. *)
-  let check o =
-    Sketch.check_sums
-      ~tol:1e-5
-      ~loss:o.loss
-      ~c:o.c
-      ~observed_loss:o.observed_loss
-      ~observed_c:o.observed_c
 end
