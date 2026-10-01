@@ -130,6 +130,12 @@ val observe : y:('a, 'b) Nx.t -> curv:Curv.t -> ('a, 'b) Nx.t -> unit
     weights), and returned as a scalar to accumulate into the loss. *)
 val mse : ?w:('a, 'b) Nx.t -> target:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
 
+(** [sum ?w ~target y] is the sum (optionally weighted) squared error
+    [sum (w * (y - target)²)], marked with its exact curvature
+    (H = diag (2 w), or [2] times the identity without weights),
+    and returned as a scalar to accumulate into the loss. *)
+val sum : ?w:('a, 'b) Nx.t -> target:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
+
 (** [softmax_ce y labels] is the cross entropy of the last axis of [y] against
     class indices [labels] — which have [y]'s shape without its last axis —
     averaged over the leading axes, observed with its exact curvature

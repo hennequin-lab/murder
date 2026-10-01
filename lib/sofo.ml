@@ -11,6 +11,7 @@ module Curv = Curv
 
 let observe = Observe.observe
 let mse = Observe.mse
+let sum = Observe.sum
 let softmax_ce = Observe.softmax_ce
 
 type 'p sketch = 'p Sketch.t =

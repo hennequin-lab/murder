@@ -81,6 +81,23 @@ let mse ?w ~target y =
   observe ~y ~curv loss;
   loss
 
+let sum ?w ~target y =
+  let shape_y = Nx.shape y in
+  if shape_y <> Nx.shape target
+  then invalid_arg "Sofo.mse: prediction and target must have the same shape";
+  let d = Nx.sub y target in
+  let sq = Nx.mul d d in
+  let loss, curv =
+    match w with
+    | None -> Nx.sum sq, Curv.scale 2.0
+    | Some w ->
+      let w = Nx.cast (Nx.dtype y) w in
+      let two_over_n = Nx_dtype.of_float (Nx.dtype y) 2.0 in
+      Nx.sum (Nx.mul w sq), Curv.diag (Nx.mul_s w two_over_n)
+  in
+  observe ~y ~curv loss;
+  loss
+
 (* [softmax_ce y labels] is the cross entropy of the last axis of [y] against
    [labels], averaged over the leading (row) axes: [labels] has [y]'s shape
    without its last axis, and holds class indices in [0, num_classes). Its
