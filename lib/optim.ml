@@ -132,7 +132,7 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
 
   let init ~config theta =
     { State.theta
-    ; g_avg = P.map (module M) (fun _ x -> Nx.zeros Nx.float32 (Nx.shape x)) theta
+    ; g_avg = P.map (module M) (fun _ x -> Nx.zeros_like x) theta
     ; sigma_g_avg = Nx.zeros Nx.float32 [| dense_size; dense_size |]
     ; beta_1_t = Nx.scalar Nx.float32 config.beta_1
     ; beta_2_t = Nx.scalar Nx.float32 config.beta_2
