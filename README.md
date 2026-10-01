@@ -179,7 +179,7 @@ The suites are:
 - **float32 tensors, float64 factorizations.** Parameters, factors, blocks and
   the runtime solves are float32; only the compile-time Cholesky and the
   host-side estimator SVDs run in float64.
-- **No global RNG.** Everything that draws takes an explicit `Nx.Rng.key`, so
+- **No global RNG.** Everything that draws takes an explicit `Nx.Rng.t`, so
   tests and runs replay exactly; the optimizer step itself is deterministic.
 - **The library contains no model definitions.** Models live in downstream
   code or examples (`examples/student_teacher.ml`); only generic parameter-tree

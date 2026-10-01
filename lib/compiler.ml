@@ -28,7 +28,7 @@ type t =
   ; estimate_factors :
       [ `Full of Nx.float32_t | `Outer_product of Nx.float32_t * Nx.float32_t ]
       -> Nx.float32_t list
-  ; transform : perms:Nx.int32_t list -> Nx.float32_t -> Nx.float32_t
+  ; transform : perms:Nx.int64_t list -> Nx.float32_t -> Nx.float32_t
   }
 
 let is_scalar t = Array.length (Nx.shape t) = 0

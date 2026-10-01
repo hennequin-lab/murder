@@ -94,7 +94,7 @@ let permutations n =
   List.map
     (go [] (List.range 0 n))
     ~f:(fun p ->
-      Nx.create Nx.int32 [| n |] (Array.of_list (List.map p ~f:Int32.of_int_trunc)))
+      Nx.create Nx.int64 [| n |] (Array.of_list (List.map p ~f:Int64.of_int)))
 
 let cartesian xss =
   List.fold xss ~init:[ [] ] ~f:(fun acc xs ->
@@ -166,32 +166,33 @@ let exact_r2 (c : Compiler.t) x =
 let check_leaf ~msg ~tol expected got =
   equal ~msg (array (float tol)) (Nx.to_array expected) (Nx.to_array got)
 
-(* Structural index of each leaf, to rebuild trees from flat arrays. *)
-let indices tree =
-  let paths = Single.fold (fun path acc _ -> path :: acc) [] tree |> List.rev in
-  let table = Hashtbl.create (module String) in
-  List.iteri paths ~f:(fun i path -> Hashtbl.set table ~key:path ~data:i);
-  Single.map (fun path -> Hashtbl.find_exn table path) (Single.names tree)
-
 let check_single
       ~msg
       ~tol
       (expected : Nx.float32_t Single.t)
       (got : Nx.float32_t Single.t)
   =
-  ignore (Single.map2 (fun e g -> check_leaf ~msg ~tol e g) expected got : unit Single.t)
+  ignore
+    (Nx.Ptree.Payload.map2
+       (module Single)
+       (fun _ e g -> check_leaf ~msg ~tol e g)
+       expected
+       got
+     : unit Single.t)
 
 let multi_leaves t =
-  Multi.fold (fun _ acc x -> x :: acc) [] t |> List.rev |> Array.of_list
-
-let multi_indices tree =
-  let paths = Multi.fold (fun path acc _ -> path :: acc) [] tree |> List.rev in
-  let table = Hashtbl.create (module String) in
-  List.iteri paths ~f:(fun i path -> Hashtbl.set table ~key:path ~data:i);
-  Multi.map (fun path -> Hashtbl.find_exn table path) (Multi.names tree)
+  Nx.Ptree.Payload.fold (module Multi) (fun _ x acc -> x :: acc) t []
+  |> List.rev
+  |> Array.of_list
 
 let check_multi ~msg ~tol (expected : Nx.float32_t Multi.t) (got : Nx.float32_t Multi.t) =
-  ignore (Multi.map2 (fun e g -> check_leaf ~msg ~tol e g) expected got : unit Multi.t)
+  ignore
+    (Nx.Ptree.Payload.map2
+       (module Multi)
+       (fun _ e g -> check_leaf ~msg ~tol e g)
+       expected
+       got
+     : unit Multi.t)
 
 (* ------------------------------------------------------------------------
    Tests
@@ -268,8 +269,9 @@ let multi_assignments = List.map multi_global_elements ~f:Array.of_list
 let exact_multi_r1 (x : Nx.float32_t Multi.t) =
   let n = List.length multi_assignments in
   let acc =
-    Multi.map2
-      (fun c x ->
+    Nx.Ptree.Payload.map2
+      (module Multi)
+      (fun _ c x ->
          let shape = Array.of_list c.Compiler.dims.left in
          List.fold
            multi_assignments
@@ -279,13 +281,11 @@ let exact_multi_r1 (x : Nx.float32_t Multi.t) =
       OM.First_order.large
       x
   in
-  Multi.map (fun a -> Nx.mul_s a (1. /. Float.of_int n)) acc
+  Nx.Ptree.Payload.map (module Multi) (fun _ a -> Nx.mul_s a (1. /. Float.of_int n)) acc
 
 let exact_multi_r2_apply (x : Nx.float32_t Multi.t) (v : Nx.float32_t Multi.t) =
   let rows = OM.Second_order.large () in
-  let row_arr =
-    Multi.fold (fun _ acc r -> r :: acc) [] rows |> List.rev |> Array.of_list
-  in
+  let row_arr = multi_leaves rows in
   let xs = multi_leaves x in
   let vs = multi_leaves v in
   let n = Array.length row_arr in
@@ -313,8 +313,13 @@ let exact_multi_r2_apply (x : Nx.float32_t Multi.t) (v : Nx.float32_t Multi.t) =
       done;
       !acc)
   in
-  let idx = multi_indices OM.First_order.large in
-  Multi.map2 (fun i _ -> result.(i)) idx OM.First_order.large
+  let next = ref (-1) in
+  Nx.Ptree.Payload.map
+    (module Multi)
+    (fun _ _ ->
+       Int.incr next;
+       result.(!next))
+    OM.First_order.large
 
 let test_multi_leaf () =
   let x =
@@ -365,7 +370,11 @@ let test_multi_leaf_invariance () =
       (List.map [ 3; 3 ] ~f:(fun dim -> Nx.Rng.permutation (Nx.Rng.key 55) dim))
   in
   let transform_tree t =
-    Multi.map2 (fun c x -> c.Compiler.transform ~perms:(perms_of_ids c assignment) x) c t
+    Nx.Ptree.Payload.map2
+      (module Multi)
+      (fun _ c x -> c.Compiler.transform ~perms:(perms_of_ids c assignment) x)
+      c
+      t
   in
   check_multi
     ~msg:"operator commutes with the group"
@@ -378,11 +387,14 @@ let test_multi_leaf_invariance () =
    ------------------------------------------------------------------------ *)
 
 let shared_equal a b =
-  Shared.fold2
-    (fun _ acc x y -> acc && Array.equal Float.equal (Nx.to_array x) (Nx.to_array y))
-    true
-    a
-    b
+  let equal =
+    Nx.Ptree.Payload.map2
+      (module Shared)
+      (fun _ x y -> Array.equal Float.equal (Nx.to_array x) (Nx.to_array y))
+      a
+      b
+  in
+  Nx.Ptree.Payload.fold (module Shared) (fun _ e acc -> acc && e) equal true
 
 (* The images of [x] under the six global group elements, by enumeration. *)
 let shared_images x =
@@ -390,8 +402,9 @@ let shared_images x =
   List.map
     (List.map (permutations 3) ~f:(fun p -> [| p |]))
     ~f:(fun assignment ->
-      Shared.map2
-        (fun c x -> c.Compiler.transform ~perms:(perms_of_ids c assignment) x)
+      Nx.Ptree.Payload.map2
+        (module Shared)
+        (fun _ c x -> c.Compiler.transform ~perms:(perms_of_ids c assignment) x)
         c
         x)
 
@@ -450,4 +463,4 @@ let tests =
   ; test "random group element is global" test_random_transform_shared
   ]
 
-let () = run "symo orbit" tests
+let () = Stdlib.exit (run "symo orbit" tests)

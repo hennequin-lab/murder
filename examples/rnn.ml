@@ -60,10 +60,7 @@ module RNN = struct
     (* input = horizon x bs x input_dim *)
     let bs = dim 1 input in
     let open Infix in
-    Rune.scan
-      (module struct
-        type t = float32_t [@@deriving ptree]
-      end)
+    Rune.scan'
       ~f:(fun x u ->
         let o = tanh x in
         let x =
@@ -90,7 +87,7 @@ let loss (p : Nx.float32_t RNN.t) =
 
 let value_and_grad_jit =
   let ptree = Ptree.instantiate (module RNN) in
-  Rune.jit2 ~device:"CPU" ptree ptree (fun params ->
+  Rune.jit Ptree.(ptree @-> returns ptree) (fun params ->
     let _, grad = Rune.value_and_grad ptree loss params in
     grad)
 
@@ -111,15 +108,9 @@ let save_cov_for label theta =
   let s2_emp =
     let key = Rng.key 1985 in
     let flatten x =
-      RNN.fold
-        (fun _ acc x ->
-           let x = reshape [| -1; 1 |] x in
-           match acc with
-           | None -> Some x
-           | Some a -> Some (concatenate ~axis:0 [ a; x ]))
-        None
-        x
-      |> Option.value_exn
+      Ptree.Payload.fold (module RNN) (fun _ x acc -> reshape [| -1; 1 |] x :: acc) x []
+      |> List.rev
+      |> concatenate ~axis:0
     in
     List.range 0 10_000
     |> List.fold ~init:(scalar float32 0.) ~f:(fun acc i ->

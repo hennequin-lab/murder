@@ -69,7 +69,7 @@
     traceable: [prepare] (momentum, orbit averages, dense [S_w]/[S_g], EMA
     and bias counters) and [finish] (factors of [H_inv], apply to the
     momentum, shift the parameters). {!Optim.Make.Compiled} wraps the two
-    halves in [Rune.jit2] with the whole state threaded through input and
+    halves in [Rune.jit] with the whole state threaded through input and
     output leaves, so a training loop traces once and then replays:
 
     {[
@@ -178,7 +178,7 @@ module Optim : module type of Optim
     permuted axes take at surrogate size. *)
 module Make (M : Orbit.Model) : sig
   (** The packed traversal of the parameter tree. *)
-  val ptree : (module Nx.Ptree.S with type t = Nx.float32_t M.t)
+  val ptree : Nx.float32_t M.t Nx.Ptree.t
 
   include Orbit.S with type 'a t := 'a M.t
 

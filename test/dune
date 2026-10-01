@@ -2,19 +2,19 @@
  (name test_term)
  (modules test_term support)
  (package symo)
- (libraries base stdio nx nx.core symo windtrap))
+ (libraries base stdio nx symo windtrap))
 
 (test
  (name test_compiler)
  (modules test_compiler support)
  (package symo)
- (libraries base stdio nx nx.core symo windtrap))
+ (libraries base stdio nx symo windtrap))
 
 (test
  (name test_orbit)
  (modules test_orbit support)
  (package symo)
- (libraries base stdio nx nx.core symo windtrap)
+ (libraries base stdio nx symo windtrap)
  (preprocess
   (pps ppx_ptree)))
 
@@ -22,7 +22,7 @@
  (name test_optim)
  (modules test_optim)
  (package symo)
- (libraries base stdio nx nx.core symo windtrap rune)
+ (libraries base stdio nx symo windtrap rune)
  (preprocess
   (pps ppx_ptree)))
 
@@ -30,6 +30,6 @@
  (name test_jit)
  (modules test_jit)
  (package symo)
- (libraries base stdio nx nx.core symo windtrap rune unix)
+ (libraries base stdio nx symo windtrap rune unix)
  (preprocess
   (pps ppx_ptree)))
