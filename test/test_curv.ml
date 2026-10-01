@@ -29,7 +29,7 @@ let v3 () = vec [| 0.3; -0.6; 0.8 |]
 let hessian_action (loss : Nx.float64_t -> Nx.float64_t) y v =
   Nx.matmul (Rune.jacfwd' (Rune.grad' loss) y) v
 
-let one_lane t = Nx.reshape (Array.append [| 1 |] (Nx.shape t)) (Nx.contiguous t)
+let one_lane t = Nx.unsqueeze ~axes:[ 0 ] t
 let lane batch i = Nx.slice [ Nx.I i ] batch
 
 (* A deterministic lane batch [k; shape t]. *)

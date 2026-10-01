@@ -153,9 +153,7 @@ let lane_tangents ~k (f : params -> Nx.float64_t) p thetas =
 let theta_t_cotangent ~k thetas g =
   let leaf theta g =
     let n = Nx.numel g in
-    Nx.matmul
-      (Nx.reshape [| k; n |] (Nx.contiguous theta))
-      (Nx.reshape [| n; 1 |] (Nx.contiguous g))
+    Nx.matmul (Nx.reshape [| k; n |] theta) (Nx.reshape [| n; 1 |] g)
   in
   Nx.reshape
     [| k |]
@@ -167,7 +165,7 @@ let theta_t_cotangent ~k thetas g =
    [h] times the identity: Σ Yᵀ(h I)Y = h·Y Yᵀ. *)
 let gram_block ~k ~h f p thetas =
   let n = Nx.numel (f p) in
-  let ys = Nx.reshape [| k; n |] (Nx.contiguous (lane_tangents ~k f p thetas)) in
+  let ys = Nx.reshape [| k; n |] (lane_tangents ~k f p thetas) in
   Nx.mul_s (Nx.matmul ys (Nx.transpose ys)) h
 
 (* ── the ✓ rows ─────────────────────────────────────────────────────────── *)

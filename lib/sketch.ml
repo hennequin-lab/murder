@@ -80,7 +80,7 @@ let sample (type p) (structure : p Nx.Ptree.t) ~k (params : p) : p =
 let contract z theta =
   let s = Nx.shape theta in
   let lead = Array.make (Array.length s - 1) 1 in
-  let zr = Nx.reshape (Array.concat [ [| Nx.numel z |]; lead ]) (Nx.contiguous z) in
+  let zr = Nx.reshape (Array.concat [ [| Nx.numel z |]; lead ]) z in
   Nx.sum (Nx.mul (Nx.cast (Nx.dtype theta) zr) theta) ~axes:[ 0 ]
 
 (* The number of lanes: the leading length of the first tensor leaf of

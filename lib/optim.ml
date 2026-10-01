@@ -203,7 +203,7 @@ let coordinates
     | `Inverse -> damped
     | `Inverse_sqrt -> Nx.sqrt damped
   in
-  let rhs = Nx.matmul vt (Nx.reshape [| k; 1 |] (Nx.contiguous c)) in
+  let rhs = Nx.matmul vt (Nx.reshape [| k; 1 |] c) in
   let z = Nx.reshape [| k |] (Nx.matmul u (Nx.div rhs (Nx.reshape [| k; 1 |] scale))) in
   (* Back to the sketch's own coordinates, where [apply] contracts them: the
      step is Θ (Q z). *)

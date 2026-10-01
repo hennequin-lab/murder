@@ -206,9 +206,7 @@ let constant_sampler k p =
 let theta_t_cotangent ~k thetas g =
   let leaf theta g =
     let n = Nx.numel g in
-    Nx.matmul
-      (Nx.reshape [| k; n |] (Nx.contiguous theta))
-      (Nx.reshape [| n; 1 |] (Nx.contiguous g))
+    Nx.matmul (Nx.reshape [| k; n |] theta) (Nx.reshape [| n; 1 |] g)
   in
   Nx.reshape
     [| k |]
@@ -235,7 +233,7 @@ let reference_ggn ~k p thetas =
            (Rune.jvp ptree_params Nx.Ptree.tensor preds p
               (Nx.Ptree.map ptree_params (fun _ t -> Nx.slice [ Nx.I i ] t) thetas))))
   in
-  let y = Nx.reshape [| k; n |] (Nx.contiguous y) in
+  let y = Nx.reshape [| k; n |] y in
   (* the mean-squared little loss has H = (2/n)·I over the batched prediction *)
   Nx.mul_s (Nx.matmul y (Nx.transpose y)) (2.0 /. float_of_int n)
 

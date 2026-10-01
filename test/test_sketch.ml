@@ -85,9 +85,7 @@ let sketch k structure loss p = Sofo.sketch structure loss p (fixed_sampler k p)
 let theta_t_cotangent ~k thetas g =
   let leaf theta g =
     let n = Nx.numel g in
-    Nx.matmul
-      (Nx.reshape [| k; n |] (Nx.contiguous theta))
-      (Nx.reshape [| n; 1 |] (Nx.contiguous g))
+    Nx.matmul (Nx.reshape [| k; n |] theta) (Nx.reshape [| n; 1 |] g)
   in
   Nx.reshape [| k |] (Nx.add (leaf thetas.w g.w) (leaf thetas.b g.b))
 
@@ -173,7 +171,7 @@ let test_ggn_matches_exact_jacobian () =
   let j = Nx.concatenate ~axis:1 [ jw; jb ] in
   (* the mean-squared loss has H = (2/n)·I *)
   let h = Nx.mul_s (Nx.eye f64 n) (2.0 /. float_of_int n) in
-  let flatten_theta t = Nx.reshape [| k; Nx.numel t / k |] (Nx.contiguous t) in
+  let flatten_theta t = Nx.reshape [| k; Nx.numel t / k |] t in
   let theta = Nx.concatenate ~axis:1 [ flatten_theta thetas.w; flatten_theta thetas.b ] in
   let reference =
     Nx.matmul
