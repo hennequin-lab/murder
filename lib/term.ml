@@ -179,5 +179,4 @@ let coefficient ~(dims : int list Sides.t) term =
          | `Right -> Nx.einsum split_equation [| x_right |] |> Nx.mul x_left
          | `Both -> Nx.einsum split_equation [| x_left; x_right |])
     in
-    let result = Nx.contiguous result in
     Nx.Infix.(result *$ normalizer) |> Nx.reshape free_shape

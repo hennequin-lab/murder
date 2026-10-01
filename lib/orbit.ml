@@ -354,7 +354,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
                  let z = c.Compiler.apply_block ~factors:f vj in
                  j + 1, Nx.add acc (Nx.reshape (Array.of_list c.Compiler.dims.left) z))
            in
-           Nx.contiguous acc)
+           acc)
         cs
         leaf_index
   end
