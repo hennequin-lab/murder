@@ -350,7 +350,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
                ~init:(0, Nx.scalar Nx.float32 0.0)
                ~f:(fun (j, acc) c f ->
                  let vj = v_arr.(j) in
-                 let vj = Nx.reshape (Array.append [| 1 |] (Nx.shape vj)) vj in
+                 let vj = Nx.unsqueeze ~axes:[ 0 ] vj in
                  let z = c.Compiler.apply_block ~factors:f vj in
                  j + 1, Nx.add acc (Nx.reshape (Array.of_list c.Compiler.dims.left) z))
            in

@@ -218,10 +218,8 @@ let compile_estimate_factors ~(dims : int list Sides.t) components =
   let estimator = build_estimator (Component.design_matrix ~dims components) n in
   fun data ->
     let b =
-      List.map components ~f:(fun c ->
-        Component.coefficient ~dims c data
-        |> fun x -> Nx.reshape (Array.append [| 1 |] (Nx.shape x)) x)
-      |> Nx.concatenate ~axis:0
+      List.map components ~f:(fun c -> Component.coefficient ~dims c data)
+      |> Nx.stack ~axis:0
     in
     let factor_shape =
       Array.sub (Nx.shape b) ~pos:1 ~len:(Array.length (Nx.shape b) - 1)
