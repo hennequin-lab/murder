@@ -75,7 +75,6 @@ module type S = sig
   val solve : damping:float -> mid -> Nx.float32_t
   val finish : config:config -> mid:mid -> Nx.float32_t -> state
   val step : config:config -> state:state -> grads:Nx.float32_t tree -> state
-  val debug_save : string -> Nx.float32_t -> unit
 
   module Compiled : sig
     type t
@@ -197,9 +196,6 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     let mid = prepare ~config ~state ~grads in
     let hessian_inv = solve ~damping:config.damping mid in
     finish ~config ~mid hessian_inv
-
-  (* Debug dumps of the dense surrogates and the estimator, opt-in. *)
-  let debug_save path x = Nx_io.save_npy path x
 
   (* ------------------------------------------------------------------------
      JIT
