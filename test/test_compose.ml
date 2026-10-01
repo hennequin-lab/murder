@@ -27,10 +27,9 @@ open Windtrap
 let f64 = Nx.float64
 let vec xs = Nx.create f64 [| Array.length xs |] xs
 let mat r c xs = Nx.create f64 [| r; c |] xs
-let to_arr t = Nx.to_array (Nx.reshape [| -1 |] (Nx.contiguous t))
 
 let check_arr ?(eps = 1e-9) ~msg expected actual =
-  let actual = to_arr actual in
+  let actual = Nx.to_array actual in
   equal ~msg int (Array.length expected) (Array.length actual);
   Array.iteri
     (fun i e -> equal ~msg:(Printf.sprintf "%s[%d]" msg i) (float eps) e actual.(i))
@@ -40,7 +39,7 @@ let check_arr ?(eps = 1e-9) ~msg expected actual =
    that may have been optimized differently: the long rollout's values grow
    with the horizon, so a fixed absolute tolerance says nothing. *)
 let check_rel ~msg expected actual =
-  let expected = to_arr expected and actual = to_arr actual in
+  let expected = Nx.to_array expected and actual = Nx.to_array actual in
   equal ~msg int (Array.length expected) (Array.length actual);
   Array.iteri
     (fun i e ->
@@ -227,7 +226,7 @@ let test_scan_threads_the_total () =
       (Nx.zeros f64 [| kk; kk |])
       (List.init scan_steps Fun.id)
   in
-  check_arr ~msg:"Σ_t Y_tᵀ H Y_t" (to_arr reference) sk.ggn
+  check_arr ~msg:"Σ_t Y_tᵀ H Y_t" (Nx.to_array reference) sk.ggn
 
 let vmap_trials = 5
 
@@ -266,9 +265,9 @@ let test_vmap_inside_matches_the_loop () =
   and kk = 3 in
   let sk_vmap = sketch ~kk vmap_loss p in
   let sk_loop = sketch ~kk loop_loss p in
-  check_arr ~msg:"loss" (to_arr sk_loop.loss) sk_vmap.loss;
-  check_arr ~msg:"C" (to_arr sk_loop.c) sk_vmap.c;
-  check_arr ~msg:"G̃" (to_arr sk_loop.ggn) sk_vmap.ggn
+  check_arr ~msg:"loss" (Nx.to_array sk_loop.loss) sk_vmap.loss;
+  check_arr ~msg:"C" (Nx.to_array sk_loop.c) sk_vmap.c;
+  check_arr ~msg:"G̃" (Nx.to_array sk_loop.ggn) sk_vmap.ggn
 
 (* Trials as a structure, so that a mapped function can see each trial's target
    alongside its start. *)
@@ -323,9 +322,9 @@ let test_observation_inside_a_vmap_scales_by_the_batch () =
   (* vmap re-performs the body batched rather than looping it, so the [M]
      little losses are packed into a single observation whose block contracts
      over the map's axis. *)
-  check_arr ~msg:"loss" (to_arr sk_batched.loss) sk.loss;
-  check_arr ~msg:"C" (to_arr sk_batched.c) sk.c;
-  check_arr ~msg:"G̃" (to_arr sk_batched.ggn) sk.ggn
+  check_arr ~msg:"loss" (Nx.to_array sk_batched.loss) sk.loss;
+  check_arr ~msg:"C" (Nx.to_array sk_batched.c) sk.c;
+  check_arr ~msg:"G̃" (Nx.to_array sk_batched.ggn) sk.ggn
 
 let test_an_unscaled_in_map_mean_overweights_the_block () =
   (* Law 6: a mark enters with weight one. Marking the raw per-trial mean
@@ -346,9 +345,9 @@ let test_an_unscaled_in_map_mean_overweights_the_block () =
   in
   let sk = sketch loss p in
   let scaled = sketch ~kk:k in_map_loss p in
-  check_arr ~msg:"the loss is the same" (to_arr scaled.loss) sk.loss;
+  check_arr ~msg:"the loss is the same" (Nx.to_array scaled.loss) sk.loss;
   check_arr ~msg:"the block carries the missing factor of M"
-    (to_arr (Nx.mul_s scaled.ggn batch))
+    (Nx.to_array (Nx.mul_s scaled.ggn batch))
     sk.ggn
 
 let test_vmap_outside_a_sketch_batches_the_sketches () =
@@ -375,7 +374,10 @@ let test_vmap_outside_a_sketch_batches_the_sketches () =
       (fun p -> bundle (sketch vmap_loss p))
       batched
   in
-  check_arr ~msg:"a map outside the sketch batches the sketches" (to_arr expected) got
+  check_arr
+    ~msg:"a map outside the sketch batches the sketches"
+    (Nx.to_array expected)
+    got
 
 let test_grad_outside_a_sketch_is_exact () =
   (* grad of a sketch: reverse mode outside the forward pass. The forward
@@ -387,11 +389,11 @@ let test_grad_outside_a_sketch_is_exact () =
     Rune.value_and_grad params_ptree (fun p -> (sketch scan_loss p).loss) p
   in
   let l_plain, g_plain = Rune.value_and_grad params_ptree scan_loss p in
-  check_arr ~msg:"loss" (to_arr l_plain) l_sketch;
-  check_arr ~msg:"gradient (a)" (to_arr g_plain.a) g_sketch.a;
-  check_arr ~msg:"gradient (ct)" (to_arr g_plain.ct) g_sketch.ct;
-  check_arr ~msg:"gradient (wt)" (to_arr g_plain.wt) g_sketch.wt;
-  check_arr ~msg:"gradient (b)" (to_arr g_plain.b) g_sketch.b
+  check_arr ~msg:"loss" (Nx.to_array l_plain) l_sketch;
+  check_arr ~msg:"gradient (a)" (Nx.to_array g_plain.a) g_sketch.a;
+  check_arr ~msg:"gradient (ct)" (Nx.to_array g_plain.ct) g_sketch.ct;
+  check_arr ~msg:"gradient (wt)" (Nx.to_array g_plain.wt) g_sketch.wt;
+  check_arr ~msg:"gradient (b)" (Nx.to_array g_plain.b) g_sketch.b
 
 let test_sketch_of_grad_is_the_batched_hessian () =
   (* a sketch of grad (the matrix's bonus row): the prediction is itself a
@@ -464,9 +466,9 @@ let test_rng_in_the_graph_is_a_constant () =
   in
   check_arr
     ~msg:"C = Θᵀ∇c of the noisy loss"
-    (to_arr (theta_t_cotangent ~k:kk thetas grads))
+    (Nx.to_array (theta_t_cotangent ~k:kk thetas grads))
     sk_noisy.c;
-  check_arr ~msg:"noise does not move G̃" (to_arr sk_clean.ggn) sk_noisy.ggn;
+  check_arr ~msg:"noise does not move G̃" (Nx.to_array sk_clean.ggn) sk_noisy.ggn;
   if Nx.item [] sk_noisy.loss = Nx.item [] sk_clean.loss
   then fail "the noise did not reach the loss"
 
@@ -486,9 +488,12 @@ let test_jit_inside_degrades () =
   let p = params () in
   let sk_plain = sketch (model inline) p in
   let sk_jit = sketch (model jitted_activation) p in
-  check_arr ~msg:"loss" (to_arr sk_plain.loss) sk_jit.loss;
-  check_arr ~msg:"C" (to_arr sk_plain.c) sk_jit.c;
-  check_arr ~msg:"jit inside does not change the sketch" (to_arr sk_plain.ggn) sk_jit.ggn
+  check_arr ~msg:"loss" (Nx.to_array sk_plain.loss) sk_jit.loss;
+  check_arr ~msg:"C" (Nx.to_array sk_plain.c) sk_jit.c;
+  check_arr
+    ~msg:"jit inside does not change the sketch"
+    (Nx.to_array sk_plain.ggn)
+    sk_jit.ggn
 
 let test_custom_jvp_inside () =
   (* A custom rule is written for a single tangent, so the batched handler
@@ -514,7 +519,7 @@ let test_custom_jvp_inside () =
   let sk = sketch loss p in
   check_arr
     ~msg:"custom rule, same curvature"
-    (to_arr
+    (Nx.to_array
        (sketch (fun p -> Sofo.mse ~target:(Nx.zeros f64 [| 3 |]) (step p z0)) p).ggn)
     sk.ggn
 
@@ -555,8 +560,11 @@ let test_jitted_sketch_matches_eager () =
       Nx.Ptree.(params_ptree @-> returns tensor)
       (fun p -> bundle (Sofo.sketch params_ptree vmap_loss p dirs))
   in
-  check_arr ~msg:"a jitted sketch replays identically" (to_arr (jitted p)) (jitted p);
-  check_arr ~msg:"jitted sketch (loss, C, G̃)" (to_arr eager) (jitted p)
+  check_arr
+    ~msg:"a jitted sketch replays identically"
+    (Nx.to_array (jitted p))
+    (jitted p);
+  check_arr ~msg:"jitted sketch (loss, C, G̃)" (Nx.to_array eager) (jitted p)
 
 let test_a_long_scan_compiles () =
   (* A long horizon: the scope's total rides the staged loop, so a compiled
@@ -616,7 +624,7 @@ let test_control_flow_is_inherited () =
   let thetas = thetas_for k p in
   check_arr
     ~msg:"C = Θᵀ∇c under host control flow"
-    (to_arr (theta_t_cotangent ~k thetas grads))
+    (Nx.to_array (theta_t_cotangent ~k thetas grads))
     sk.c
 
 let tests =

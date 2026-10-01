@@ -13,10 +13,9 @@ open Windtrap
 
 let f64 = Nx.float64
 let vec xs = Nx.create f64 [| Array.length xs |] xs
-let to_arr t = Nx.to_array (Nx.reshape [| -1 |] (Nx.contiguous t))
 
 let check_arr ?(eps = 1e-9) ~msg expected actual =
-  let actual = to_arr actual in
+  let actual = Nx.to_array actual in
   equal ~msg int (Array.length expected) (Array.length actual);
   Array.iteri
     (fun i e -> equal ~msg:(Printf.sprintf "%s[%d]" msg i) (float eps) e actual.(i))
@@ -58,13 +57,13 @@ let check_curv
   =
   check_arr
     ~msg:(msg ^ " (one lane)")
-    (to_arr (one_lane (hessian_action loss y v)))
+    (Nx.to_array (one_lane (hessian_action loss y v)))
     (Sofo.Curv.apply curv (one_lane v));
   let batch = lanes ~k y in
   let expected =
     Nx.stack ~axis:0 (List.init k (fun i -> hessian_action loss y (lane batch i)))
   in
-  check_arr ~msg:(msg ^ " (batched)") (to_arr expected) (Sofo.Curv.apply curv batch)
+  check_arr ~msg:(msg ^ " (batched)") (Nx.to_array expected) (Sofo.Curv.apply curv batch)
 
 let test_scale () =
   let s = 1.7 in
