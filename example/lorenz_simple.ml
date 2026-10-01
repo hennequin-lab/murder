@@ -72,15 +72,9 @@ let lorenz_trajs =
 let _ = print [%message (shape lorenz_trajs : int array)]
 
 let minibatch key bs =
-  let perm =
-    Rng.permutation key total_bs
-    |> to_array
-    |> Array.map ~f:Int64.to_int_exn
-    |> Array.to_list
-  in
-  let ids = List.take perm bs in
-  let x0 = slice [ I 0; L ids; A ] lorenz_trajs in
-  let xT = slice [ I (horizon - 1); L ids; A ] lorenz_trajs in
+  let indices = Rng.permutation key total_bs |> slice [ R (0, bs) ] in
+  let x0 = take ~axis:0 ~indices (slice [ I 0 ] lorenz_trajs) in
+  let xT = take ~axis:0 ~indices (slice [ I (horizon - 1) ] lorenz_trajs) in
   x0, xT
 
 (* Model specifications *)
