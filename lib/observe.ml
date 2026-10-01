@@ -50,9 +50,10 @@ let observe ~y ~curv l =
   if Nx.numel l <> 1
   then
     invalid_arg
-      (Printf.sprintf
-         "Sofo.observe: the mini loss must be a scalar (one element), got shape [%s]"
-         (String.concat "," (Array.to_list (Array.map string_of_int (Nx.shape l)))));
+      (Format.asprintf
+         "Sofo.observe: the mini loss must be a scalar (one element), got shape %a"
+         Nx.pp_shape
+         (Nx.shape l));
   mark ~curv y
 
 (* Packaged little losses: the value is computed with ordinary operations, so

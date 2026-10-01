@@ -133,9 +133,10 @@ let run
         if Nx.shape z <> [| k |]
         then
           invalid_arg
-            (Printf.sprintf
-               "Sofo.sketch: apply takes a k-vector (shape [%d]), got shape [%s]"
+            (Format.asprintf
+               "Sofo.sketch: apply takes a k-vector (shape [%d]), got shape %a"
                k
-               (String.concat "," (Array.to_list (Array.map string_of_int (Nx.shape z)))));
+               Nx.pp_shape
+               (Nx.shape z));
         Nx.Ptree.map structure (fun _ theta -> contract z theta) dirs)
   }
