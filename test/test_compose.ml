@@ -380,8 +380,8 @@ let test_vmap_outside_a_sketch_batches_the_sketches () =
 let test_grad_outside_a_sketch_is_exact () =
   (* grad of a sketch: reverse mode outside the forward pass. The forward
      handler's primals are ordinary operations to the tape, and the mark is a
-     unit-result custom_jvp whose [f] runs under reverse, so differentiating
-     the sketch's loss is differentiating the loss. *)
+     unit-result custom_jvp whose tangent map reverse mode never applies, so
+     differentiating the sketch's loss is differentiating the loss. *)
   let p = params () in
   let l_sketch, g_sketch =
     Rune.value_and_grad params_ptree (fun p -> (sketch scan_loss p).loss) p
@@ -424,18 +424,15 @@ let test_sketch_of_grad_is_the_batched_hessian () =
     (c0 +. (eps *. linear) +. (eps *. eps /. 2.0 *. quad))
     c1
 
-let test_no_grad_and_detach_are_skipped () =
-  (* The gate is honored in both directions: a prediction that is a constant of
-     the differentiation has no tangent, so its block is skipped (not
-     accumulated as zeros), while its value still counts towards the loss. *)
+let test_detach_is_skipped () =
+  (* A prediction that is a constant of the differentiation has no tangent, so
+     its block is skipped (not accumulated as zeros), while its value still
+     counts towards the loss. *)
   let loss p =
     let gated = Rune.detach (step p z0) in
-    let l1 = Nx.mean (Nx.square gated) in
-    Sofo.observe ~y:gated ~curv:(Sofo.Curv.scale 2.0) l1;
-    let frozen = Rune.no_grad (fun () -> step p z0) in
-    let l2 = Nx.mean (Nx.square frozen) in
-    Sofo.observe ~y:frozen ~curv:(Sofo.Curv.scale 2.0) l2;
-    Nx.add l1 l2
+    let l = Nx.mean (Nx.square gated) in
+    Sofo.observe ~y:gated ~curv:(Sofo.Curv.scale 2.0) l;
+    l
   in
   let p = params () in
   let sk = sketch loss p in
@@ -501,10 +498,9 @@ let test_custom_jvp_inside () =
     Rune.custom_jvp
       Nx.Ptree.tensor
       Nx.Ptree.tensor
-      ~f:Nx.relu
-      ~jvp:(fun x dx ->
-        let d = Nx.where (Nx.greater x (Nx.zeros_like x)) dx (Nx.zeros_like dx) in
-        Nx.relu x, d)
+      (fun x ->
+        ( Nx.relu x
+        , fun dx -> Nx.where (Nx.greater x (Nx.zeros_like x)) dx (Nx.zeros_like dx) ))
       x
   in
   let loss p =
@@ -530,8 +526,7 @@ let test_custom_vjp_raises_and_leaves_the_gate_alone () =
       Rune.custom_vjp
         Nx.Ptree.tensor
         Nx.Ptree.tensor
-        ~fwd:(fun x -> Nx.sin x, x)
-        ~bwd:(fun x ct -> Nx.mul ct (Nx.cos x))
+        (fun x -> Nx.sin x, fun ct -> Nx.mul ct (Nx.cos x))
         p.b
     in
     Sofo.mse ~target:(Nx.zeros f64 [| 4 |]) g
@@ -539,7 +534,7 @@ let test_custom_vjp_raises_and_leaves_the_gate_alone () =
   let p = params () in
   raises_containing
     ~msg:"custom_vjp under a sketch"
-    ~substring:"Rune: a custom_vjp"
+    ~substring:"Rune.jvp: a custom_vjp rule has no forward derivative"
     (fun () -> ignore (sketch loss p));
   ignore (sketch (fun p -> Sofo.mse ~target:(Nx.zeros f64 [| 3 |]) (step p z0)) p)
 
@@ -638,7 +633,7 @@ let tests =
       ; test
           "a sketch of grad is the batched Hessian"
           test_sketch_of_grad_is_the_batched_hessian
-      ; test "no_grad and detach are skipped" test_no_grad_and_detach_are_skipped
+      ; test "detach is skipped" test_detach_is_skipped
       ; test "RNG in the graph is a constant" test_rng_in_the_graph_is_a_constant
       ; test "jit inside degrades to eager" test_jit_inside_degrades
       ; test "custom_jvp is lifted over the lanes" test_custom_jvp_inside

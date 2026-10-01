@@ -1,7 +1,6 @@
 open Base
 open Nx
 
-let device = "CUDA"
 let d_in, d_out = 100, 3
 let batch_size = 512
 let max_iter = 10_000
@@ -61,7 +60,6 @@ let objective params key =
 (* JIT compilation machinery for a sketched objective *)
 let sketch_step =
   Rune.jit
-    ~devices:[ Rune.device device ]
     ?beam
     ?parallel
     O.signature

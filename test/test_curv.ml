@@ -28,7 +28,7 @@ let v3 () = vec [| 0.3; -0.6; 0.8 |]
 (* The Hessian action, taken from rune's Hessian of [loss] as a function of a
    free [y]. *)
 let hessian_action (loss : Nx.float64_t -> Nx.float64_t) y v =
-  Nx.matmul (Rune.hessian' loss y) v
+  Nx.matmul (Rune.jacfwd' (Rune.grad' loss) y) v
 
 let one_lane t = Nx.reshape (Array.append [| 1 |] (Nx.shape t)) (Nx.contiguous t)
 let lane batch i = Nx.slice [ Nx.I i ] batch

@@ -6,7 +6,6 @@ let print s = Stdio.print_endline (Sexp.to_string_hum s)
 
 (* Parameters *)
 
-let device = "CUDA"
 let beam = Some 2
 let beam_parallel = Some 8
 let total_bs = 4000
@@ -31,7 +30,6 @@ let lorenz_trajs =
     let beta = 8. /. 3. in
     let lorenz =
       Rune.jit
-        ~devices:[ Rune.device "CPU" ]
         Nx.Ptree.(tensor @-> returns tensor)
         (fun y ->
            let open Infix in
@@ -77,7 +75,7 @@ let minibatch key bs =
   let perm =
     Rng.permutation key total_bs
     |> to_array
-    |> Array.map ~f:Int32.to_int_exn
+    |> Array.map ~f:Int64.to_int_exn
     |> Array.to_list
   in
   let ids = List.take perm bs in
@@ -136,7 +134,6 @@ let objective params (x0, xf) =
 (* JIT compilation machinery for a sketched objective *)
 let sketch_step =
   Rune.jit
-    ~devices:[ Rune.device device ]
     ?beam
     ?parallel:beam_parallel
     O.signature
@@ -178,7 +175,6 @@ end
 
 let value_and_grad_jit =
   Rune.jit
-    ~devices:[ Rune.device device ]
     ?beam
     ?parallel:beam_parallel
     Nx.Ptree.(In.ptree @-> returns Out.ptree)

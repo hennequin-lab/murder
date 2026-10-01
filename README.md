@@ -198,8 +198,8 @@ dune exec example/linear_simple.exe
 
 `test/test_sketch.ml` checks the frontend (including the batched-AD path),
 `test/test_curv.ml` checks every curvature description against
-`Rune.hessian'`, `test/test_compose.ml` checks composition with scans, maps and
-reverse mode, and `test/test_optim.ml` checks the solve, the step and the
+`Rune.jacfwd' (Rune.grad' f)`, `test/test_compose.ml` checks composition with
+scans, maps and reverse mode, and `test/test_optim.ml` checks the solve, the step and the
 compiled half — mostly reference-free, since a loss that is exactly quadratic
 makes the sketch's second-order model exact.
 

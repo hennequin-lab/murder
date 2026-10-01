@@ -19,8 +19,9 @@
    element type may differ from the prediction's, since a loss can be evaluated
    in a wider type than the model — happens in exactly one place, [apply],
    instead of at every construction site. Nothing here derives a Hessian by
-   hand: the suite checks every constructor against [Rune.hessian'] of the
-   corresponding mini loss as a function of a free [y]. *)
+   hand: the suite checks every constructor against the Hessian
+   [Rune.jacfwd' (Rune.grad' f)] of the corresponding mini loss [f] as a
+   function of a free [y]. *)
 
 type t =
   | Scale of float

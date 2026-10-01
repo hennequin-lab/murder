@@ -28,8 +28,8 @@
      the gradient sketch cannot drift from the loss's own arithmetic.
 
    Because a mark is a unit-result {!Rune.custom_jvp}, the same loss also runs
-   unchanged under [Rune.value_and_grad] (the mark's [f] is a no-op there) and
-   under a bare [Rune.jvp] (the rule runs; there is no scope, and the
+   unchanged under [Rune.value_and_grad] (the mark's tangent map is not applied
+   there) and under a bare [Rune.jvp] (the map runs; there is no scope, and the
    additions are dropped).
 
    The total's scope owns the accumulation: it threads it through a [scan]

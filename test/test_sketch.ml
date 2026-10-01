@@ -147,9 +147,11 @@ let test_ggn_matches_explicit_gram () =
   let y1 = predict p
   and y2 = p.w in
   let h1 =
-    Rune.hessian' (fun y -> Nx.mean (Nx.mul (Nx.sub y target) (Nx.sub y target))) y1
+    Rune.jacfwd'
+      (Rune.grad' (fun y -> Nx.mean (Nx.mul (Nx.sub y target) (Nx.sub y target))))
+      y1
   in
-  let h2 = Rune.hessian' (fun y -> Nx.mean (Nx.mul y y)) y2 in
+  let h2 = Rune.jacfwd' (Rune.grad' (fun y -> Nx.mean (Nx.mul y y))) y2 in
   let reference =
     Nx.add
       (block (tangent_batch predict) y1 h1)
