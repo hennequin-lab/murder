@@ -178,7 +178,7 @@ let pseudo_inverse m =
   let inv_s =
     Nx.where
       (Nx.greater s (Nx.scalar Nx.float64 (1e-12 *. Nx.item [ 0 ] s)))
-      (Nx.div (Nx.ones Nx.float64 [| n |]) s)
+      (Nx.recip s)
       (Nx.zeros Nx.float64 [| n |])
   in
   Nx.matmul (Nx.mul u (Nx.reshape [| 1; n |] inv_s)) (Nx.transpose u)
