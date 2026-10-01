@@ -81,7 +81,7 @@ let mse ?w ~target y =
   observe ~y ~curv loss;
   loss
 
-let sum ?w ~target y =
+let sse ?w ~target y =
   let shape_y = Nx.shape y in
   if shape_y <> Nx.shape target
   then invalid_arg "Sofo.mse: prediction and target must have the same shape";
