@@ -6,8 +6,6 @@ let print s = Stdio.print_endline (Sexp.to_string_hum s)
 
 (* Parameters *)
 
-let beam = Some 2
-let beam_parallel = Some 8
 let total_bs = 4000
 let bs = 256
 let horizon = 32
@@ -16,6 +14,11 @@ let max_iter = 10_000
 let lr = 0.3
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Relative_from_top 1e-5
+
+(* [--device] lists the devices to try, in order, as [Devices.first] reads
+   them: "cpu" (the default), "cuda", "cuda:1", "cuda,cpu". The sketch
+   accumulates in float64, which Metal cannot compute. *)
+let device = Devices.first Cmdargs.(get_string "--device" |> default "cpu")
 
 (* Data generation: simulate the Lorenz attractor for a very long time using RK4,
    and chop the resulting sequence into [total_bs] chunks *)
@@ -112,7 +115,9 @@ module Model = struct
     |> fst
 end
 
-let params = Rng.with_key (Rng.key 42) @@ fun () -> Model.init ~d ~d_hidden
+let params =
+  Rng.with_key (Rng.key 42) (fun () -> Model.init ~d ~d_hidden)
+  |> Nx.Ptree.place Model.P.ptree (Nx.Placement.on device)
 
 module Aux = struct
   type t = float32_t * float32_t [@@deriving ptree]
@@ -125,13 +130,9 @@ let objective params (x0, xf) =
   let pred = Model.forward ~horizon params x0 in
   Sofo.mse ~w:(scalar float32 Float.(1. / of_int horizon)) ~target:xf pred
 
-(* JIT compilation machinery for a sketched objective *)
-let sketch_step =
-  Rune.jit
-    ?beam
-    ?parallel:beam_parallel
-    O.signature
-    (O.sketch ~k:n_tangents objective)
+(* The sketch compiles for the device the parameters are placed on; the
+   minibatch and the keys are host values that join them on each call. *)
+let sketch_step = Rune.jit O.signature (O.sketch ~k:n_tangents objective)
 
 let rec loop_sofo ~i ~out (params : Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
@@ -149,6 +150,7 @@ let rec loop_sofo ~i ~out (params : Model.P.t) (state : Sofo.Optim.state) =
 let state = Sofo.Optim.init ~key:(Rng.key 1985) ()
 
 let _ =
+  Stdio.printf "device: %s\n%!" (Nx.Device.name device);
   let out = in_dir "loss" in
   let () = Bos.Cmd.(v "rm" % "-f" % out) |> Bos.OS.Cmd.run |> ignore in
   loop_sofo ~i:0 ~out params state
@@ -169,8 +171,6 @@ end
 
 let value_and_grad_jit =
   Rune.jit
-    ?beam
-    ?parallel:beam_parallel
     Nx.Ptree.(In.ptree @-> returns Out.ptree)
     (fun In.{ params; data } ->
        Rune.value_and_grad Model.P.ptree (fun model -> objective model data) params)

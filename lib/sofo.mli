@@ -199,11 +199,11 @@ val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
     differentiable belongs to the sketch.
 
     Two halves, split by what compiles rather than by taste. The sketching half
-    is differentiable and jits ({!Compiled}), while the update needs the SVD of
-    the sketched GGN, which does not compile: it runs eagerly on the host at
-    O(k³), negligible beside a model with P ≫ k parameters — the premise of
-    the algorithm. A deployment therefore compiles one program and keeps the
-    update outside it:
+    is differentiable and jits ({!Compiled}), while the update needs the
+    eigendecomposition of the sketched GGN, which does not compile: it runs
+    eagerly on the host at O(k³), negligible beside a model with P ≫ k
+    parameters — the premise of the algorithm. A deployment therefore compiles
+    the sketch and keeps the solve outside it:
 
     {[
     module O = Sofo.Optim.Compiled (Params) (Aux)
@@ -211,7 +211,7 @@ val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
     (* traced once, replayed for every step: the compiled half *)
     let sketch_step = Rune.jit O.signature (O.sketch ~k loss)
 
-    (* the loop: one replay, one eager solve, one eager step *)
+    (* the loop: one replay, one host solve, one compiled step *)
     let params, state =
       let out = sketch_step { O.params; key = state.Sofo.Optim.key; aux } in
       O.update ~lr ~damping state params out
@@ -323,8 +323,9 @@ module Optim : sig
     ]
 
   (** [coordinates ?damping ?preconditioner ?gram ggn c] is the damped sketched
-      solve [U (S + γ·I)^{-p} Vᵀ c] of the sketched normal equations
-      [ggn·z = c], from the SVD of [ggn] — Algorithm 1, lines 10–12 — with [γ]
+      solve [U (S + γ·I)^{-p} Uᵀ c] of the sketched normal equations
+      [ggn·z = c], from the eigendecomposition [ggn = U S Uᵀ] of the
+      symmetric [ggn], which is its SVD — Algorithm 1, lines 10–12 — with [γ]
       from [damping] and [p] from [preconditioner] (default [`Inverse]).
       The solve is eager and O(k³), and it is the one place the library needs a
       factorization.
@@ -338,9 +339,9 @@ module Optim : sig
       properties of the curvature rather than of the draw. Omit [gram] to solve
       in the sketch's own basis, unconsidered directions and all.
 
-      {b Note.} Neither SVD — of the Gram, nor of the sketched GGN — is
-      differentiable or compiles, so this is for the host side of a step, not
-      inside a [Rune.jit]ed program.
+      {b Note.} Neither eigendecomposition — of the Gram, nor of the sketched
+      GGN — compiles, so this is for the host side of a step, not inside a
+      [Rune.jit]ed program. Its arguments must be on the host.
 
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
       smallest singular value is 0, and for a [gram] that is rank-deficient:
@@ -443,6 +444,7 @@ module Optim : sig
       { loss : Nx.float64_t (** The primal total, as a scalar. *)
       ; c : Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
       ; ggn : Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
+      ; gram : Nx.float64_t (** ΘΘᵀ, shape [k;k]: {!gram} of [dirs]. *)
       ; dirs : P.t (** Θ, the directions the sketch was measured along. *)
       }
 
@@ -477,6 +479,10 @@ module Optim : sig
         {[
         let params, state = O.update ~lr ~damping state params out in
         ]}
+
+        The solve runs on the host, from [out]'s [k]-sized [c], [ggn] and
+        [gram]. The step on the parameters is compiled and runs where [params]
+        and [out.dirs] live, so parameters placed on a GPU stay there.
 
         {!Optim.update} is the same step without the state, for callers that
         hold a sketch and nothing else. *)

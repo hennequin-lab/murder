@@ -516,8 +516,10 @@ let test_compiled_sketch_matches_the_eager_one () =
   let b =
     Sofo.Optim.update params_ptree ~lr:0.5 ~damping:(`Relative_from_top 1e-3) sk p
   in
+  (* The compiled update's step on the parameters is a compiled program, so
+     its float32 leaf agrees with the eager one up to float32 rounding. *)
   check_arr ~msg:"compiled update" (Nx.to_array a.w) b.w;
-  check_arr ~msg:"compiled update (float32)" (Nx.to_array a.v) b.v;
+  check_arr ~rel:1e-6 ~msg:"compiled update (float32)" (Nx.to_array a.v) b.v;
   equal
     ~msg:"compiled update leaves the tag"
     string

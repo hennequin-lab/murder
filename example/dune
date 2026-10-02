@@ -1,4 +1,20 @@
 (executables
  (names lorenz lorenz_simple linear linear_simple)
- (libraries sofo nx rune vega base laguz nx.io stdio bos cmdliner cmdargs unix)
+ (libraries
+  sofo
+  nx
+  nx.metal
+  nx.cuda
+  nx.nv
+  nx.amd
+  rune
+  vega
+  base
+  laguz
+  nx.io
+  stdio
+  bos
+  cmdliner
+  cmdargs
+  unix)
  (preprocess (pps ppx_sexp_message ppx_ptree)))

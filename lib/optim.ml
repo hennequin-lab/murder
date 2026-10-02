@@ -11,9 +11,11 @@
 
    - the *sketching* half is differentiable and compiles, so [Compiled] builds
      the (params, key) → (c, C, G̃, Θ) structure that [Rune.jit] wraps;
-   - the *update* half needs the SVD of the sketched GGN, which does not
-     compile, so it runs eagerly on the host at O(k³) — negligible against a
-     model with P ≫ k parameters, which is the algorithm's whole premise.
+   - the *update* half needs the eigendecomposition of the sketched GGN,
+     which does not compile, so it runs eagerly on the host at O(k³) —
+     negligible against a model with P ≫ k parameters, which is the
+     algorithm's whole premise. Only k-sized matrices cross to the host: the
+     step on the parameters is compiled again, where they live.
 
    Everything here is a pure function of values. The only state is [state]: the
    key the directions are drawn from, carried as an int32 tensor so it can ride
@@ -79,16 +81,19 @@ let apply (type p) (structure : p Nx.Ptree.t) ~k (thetas : p) (z : Nx.float64_t)
            (Array.sub (Nx.shape theta) 1 (Array.length (Nx.shape theta) - 1)))
     thetas
 
-(* [params - lr * dw], leafwise, in each leaf's own dtype. Non-float leaves
-   are passed through untouched: their directions are zero, and a parameter
-   that cannot carry one is not the optimizer's to move (vega's convention for
-   the same leaves). *)
-let shift (type p) (structure : p Nx.Ptree.t) ~lr (params : p) (dw : p) : p =
+(* [params - lr * dw], leafwise, in each leaf's own dtype, for a scalar
+   tensor [lr]: a tensor, so a compiled step takes a new rate as data. Non-float
+   leaves are passed through untouched: their directions are zero, and a
+   parameter that cannot carry one is not the optimizer's to move (vega's
+   convention for the same leaves). *)
+let shift (type p) (structure : p Nx.Ptree.t) ~(lr : Nx.float64_t) (params : p) (dw : p)
+  : p
+  =
   Nx.Ptree.map2
     structure
     (fun _ p d ->
        if Nx_dtype.is_float (Nx.dtype p)
-       then Nx.sub p (Nx.mul_s d (Nx_dtype.of_float (Nx.dtype d) lr))
+       then Nx.sub p (Nx.mul d (Nx.cast (Nx.dtype d) lr))
        else p)
     params
     dw
@@ -114,24 +119,30 @@ let gram (type p) (structure : p Nx.Ptree.t) ~k (dirs : p) : Nx.float64_t =
     dirs
     (Nx.zeros Nx.float64 [| k; k |])
 
-(* The whitening transform Q = Z^{-1/2} of a Gram matrix, from its SVD: the
-   matrix that turns the tangents a sketch was drawn along into an orthonormal
-   basis. [Nx.svd] may return a [vt] that is not [u]'s transpose even though Z
-   is symmetric — the singular vectors of a degenerate spectrum are defined
-   only up to a rotation within it — so the second factor is [u]'s own
-   transpose, and Q is the symmetric inverse square root: [Q G̃ Qᵀ] and the
-   step's [Θ (Q z)] are then the same change of basis, which they would not be
-   for [u·s^{-1/2}·vt]. [coordinates] makes the same choice for the same
-   reason.
+(* [spectrum z] is [(u, s, smax, smin)] for a symmetric matrix [z]: [z]'s
+   singular vectors [u] and values [s], with the largest and smallest of [s].
+   A symmetric matrix's singular values are its eigenvalues' magnitudes and its
+   singular vectors are its eigenvectors, so [Nx.eigh] gives the factorization
+   [Nx.svd] would, [z = u diag(±s) uᵀ], at about half the cost. Taking
+   magnitudes keeps the SVD's semantics where rounding leaves an eigenvalue of
+   a positive semi-definite matrix slightly negative. *)
+let spectrum (z : Nx.float64_t) =
+  let w, u = Nx.eigh z in
+  let s = Nx.abs w in
+  u, s, Nx.item [] (Nx.max s), Nx.item [] (Nx.min s)
+
+(* The whitening transform Q = Z^{-1/2} of a Gram matrix: the matrix that turns
+   the tangents a sketch was drawn along into an orthonormal basis. Q is the
+   symmetric inverse square root [u s^{-1/2} uᵀ], so [Q G̃ Qᵀ] and the step's
+   [Θ (Q z)] are the same change of basis. [coordinates] makes the same choice
+   for the same reason.
 
    A rank-deficient Gram has no inverse square root and no arithmetic will
    produce one: some drawn lanes span nothing, which is a statement about [k]
    against the number of parameters, so it raises. *)
 let inverse_sqrt (z : Nx.float64_t) : Nx.float64_t =
   let k = (Nx.shape z).(0) in
-  let u, s, _ = Nx.svd z in
-  let smin = Nx.item [ k - 1 ] s
-  and smax = Nx.item [ 0 ] s in
+  let u, s, smax, smin = spectrum z in
   if smin <= 1e-12 *. smax
   then
     invalid_arg
@@ -147,11 +158,11 @@ let inverse_sqrt (z : Nx.float64_t) : Nx.float64_t =
 
 (* ── the update (Alg. 1, lines 10–12) ────────────────────────────────────── *)
 
-(* z = U (S + γ I)^{-p} Vᵀ C, from the SVD of the sketched GGN, with γ set by
-   the damping mode and p by the preconditioner (1, Alg. 1's; or 1/2, which
+(* z = U (S + γ I)^{-p} Uᵀ C, from the spectrum of the sketched GGN, with γ set
+   by the damping mode and p by the preconditioner (1, Alg. 1's; or 1/2, which
    caps what a poorly resolved direction can contribute). G̃ is symmetric
-   positive semi-definite, so V = U up to signs and an eigendecomposition would
-   do; the SVD is what the algorithm prescribes and what is used here.
+   positive semi-definite, so Algorithm 1's SVD is its eigendecomposition
+   ([spectrum]).
 
    [gram] whitens before it solves. The sketched GGN is the curvature of the
    sampled subspace expressed in whatever basis the draw happened to produce,
@@ -181,14 +192,13 @@ let coordinates
     | None -> c
     | Some q -> Nx.matmul q c
   in
-  let u, s, _ = Nx.svd ggn in
+  let u, s, smax, smin = spectrum ggn in
   let vt = Nx.transpose u in
   let gamma =
     match damping with
     | `Absolute value -> value
-    | `Relative_from_top factor -> factor *. Nx.item [ 0 ] s (* singular values descend *)
+    | `Relative_from_top factor -> factor *. smax
     | `Relative_from_bottom factor ->
-      let smin = Nx.item [ k - 1 ] s in
       if smin <= 0.0
       then
         invalid_arg
@@ -223,7 +233,7 @@ let update
   =
   let g = gram structure ~k:sk.k sk.dirs in
   let dw = sk.apply (coordinates ?damping ?preconditioner ~gram:g sk.ggn sk.c) in
-  shift structure ~lr params dw
+  shift structure ~lr:(Nx.scalar Nx.float64 lr) params dw
 
 (* ── the eager step ──────────────────────────────────────────────────────── *)
 
@@ -291,6 +301,7 @@ module Compiled (P : Structure) (Aux : Structure) = struct
     { loss : Nx.float64_t
     ; c : Nx.float64_t
     ; ggn : Nx.float64_t
+    ; gram : Nx.float64_t
     ; dirs : P.t
     }
 
@@ -302,8 +313,9 @@ module Compiled (P : Structure) (Aux : Structure) = struct
       let loss = field cur "loss" tensor o.loss in
       let c = field cur "c" tensor o.c in
       let ggn = field cur "ggn" tensor o.ggn in
+      let gram = field cur "gram" tensor o.gram in
       let dirs = field cur "dirs" (structure P.ptree) o.dirs in
-      { loss; c; ggn; dirs }
+      { loss; c; ggn; gram; dirs }
   end
 
   let out_ptree = Nx.Ptree.instantiate (module Out)
@@ -316,20 +328,31 @@ module Compiled (P : Structure) (Aux : Structure) = struct
      Compile it with [Rune.jit signature]; run it as it is for an eager step.
      The directions are drawn *inside* it, from the carried key, so one
      compilation serves every iteration, and so is the aux: the loss sees its
-     leaves, so a batch that changes between steps is data, not a new trace. *)
+     leaves, so a batch that changes between steps is data, not a new trace.
+     The Gram ΘΘᵀ is formed here too, next to the directions, so the host
+     solve reads k×k matrices and never the k×P directions. *)
   let sketch ~k (loss : P.t -> Aux.t -> ('c, 'd) Nx.t) i =
     let dirs = directions P.ptree ~key:i.key ~k i.params in
     let sk = Sketch.run P.ptree (fun params -> loss params i.aux) i.params dirs in
-    { loss = sk.loss; c = sk.c; ggn = sk.ggn; dirs }
+    { loss = sk.loss; c = sk.c; ggn = sk.ggn; gram = gram P.ptree ~k dirs; dirs }
+
+  (* [params - lr * Θ z], compiled, so it runs where the parameters and the
+     directions live. [z] and [lr] are host values that join them per call. *)
+  let shift_by =
+    Rune.jit
+      Nx.Ptree.(P.ptree @-> P.ptree @-> tensor @-> tensor @-> returns P.ptree)
+      (fun params dirs (z : Nx.float64_t) lr ->
+         shift P.ptree ~lr params (apply P.ptree ~k:(Nx.shape z).(0) dirs z))
 
   (* The step, and the state that produced it, advanced together: the caller
      threads one state through the loop, so the key the sketch consumed and the
-     key the next sketch is drawn from cannot drift apart. *)
+     key the next sketch is drawn from cannot drift apart. The solve runs on
+     the host, which copies three k-sized tensors when the sketch ran on a
+     GPU. *)
   let update ?(lr = 1.0) ?damping ?preconditioner (st : state) params o =
-    let k = (Nx.shape o.c).(0) in
-    let g = gram P.ptree ~k o.dirs in
-    let dw =
-      apply P.ptree ~k o.dirs (coordinates ?damping ?preconditioner ~gram:g o.ggn o.c)
+    let host = Nx.place Nx.Placement.host in
+    let z =
+      coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
     in
-    shift P.ptree ~lr params dw, next st
+    shift_by params o.dirs z (Nx.scalar Nx.float64 lr), next st
 end

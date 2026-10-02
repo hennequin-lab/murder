@@ -14,7 +14,7 @@
    inside it from the key the caller threads, so a fresh random subspace costs
    nothing, and the loss's own inputs ride the same tree as [aux], so a new
    batch is a new input to a program already compiled. (This loss reads only
-   the parameters, hence [No_aux].) The update needs the SVD
+   the parameters, hence [No_aux].) The update needs the eigendecomposition
    of the sketched GGN, which does not compile, so it runs on the host where
    eager CPU linalg is the right tool anyway — G̃ is K×K and Alg. 1's whole
    point is that inverting it costs O(K³) against a model with P ≫ K
@@ -28,7 +28,7 @@
    is exact. The example checks it after every step: that validates C, G̃, the
    sampled Θ and the update jointly, with no reference implementation. A
    first-order control then replays the *same* compiled sketch with z = C and
-   no SVD, which is the comparison the GGN is supposed to win. *)
+   no solve, which is the comparison the GGN is supposed to win. *)
 
 let f64 = Nx.float64
 
@@ -130,6 +130,7 @@ let run config =
          { O.loss = Nx.sum i.O.params.w
          ; c = Nx.zeros f64 [| 1 |]
          ; ggn = Nx.zeros f64 [| 1; 1 |]
+         ; gram = Nx.zeros f64 [| 1; 1 |]
          ; dirs = i.O.params
          })
       { O.params = student0; key = state.key; aux = () }
@@ -212,7 +213,7 @@ let run config =
     (List.fold_left Float.max 0.0 residuals)
     (List.length residuals);
   (* ── first-order control: the same compiled step, C straight into the step ──
-     [ΘΘᵀ∇c] with no curvature and no SVD — the first-order subspace method the
+     [ΘΘᵀ∇c] with no curvature and no solve — the first-order subspace method the
      paper compares against. The sketch still computes G̃; the control ignores
      it, which is the point: the compiled half is shared. *)
   if config.compare
@@ -264,7 +265,7 @@ let run config =
     "  compiled sketch: replay                              %8.1f ms\n"
     (median times);
   Printf.printf
-    "  host update: SVD of %d×%d, solve, step                 %8.1f ms\n"
+    "  update: eigh of %d×%d, solve, compiled step            %8.1f ms\n"
     config.k
     config.k
     (median update_ms);
