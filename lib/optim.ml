@@ -10,6 +10,9 @@
    momentum, orbit averages,    ->   damped symmetric   ->  factors of H_inv,
    dense S_w/S_g, EMA, betas         powers, eigh           apply to g_avg, shift
 
+   The solve reads the two small dense surrogates on the host, wherever the
+   parameters live, and its result joins them in [finish].
+
    [prepare] and [finish] touch neither [Nx.item] of a traced value nor a
    data-dependent branch, so [Compiled] can wrap them in [Rune.jit] with the
    whole state threaded through input/output leaves. *)
@@ -174,7 +177,9 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     ; beta_2_t = bump_tensor state.State.beta_2_t config.beta_2
     }
 
-  let solve ~damping mid = Solve.hessian_inverse ~damping mid.Mid.sigma_w mid.Mid.sigma_g
+  let solve ~damping mid =
+    let host = Nx.place Nx.Placement.host in
+    Solve.hessian_inverse ~damping (host mid.Mid.sigma_w) (host mid.Mid.sigma_g)
 
   let finish ~config ~mid hessian_inv =
     let factors = O.Second_order.factors_of_dense hessian_inv in
