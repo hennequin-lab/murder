@@ -12,15 +12,9 @@ open Symo
 let print s = Stdio.print_endline (Sexp.to_string_hum s)
 let in_dir = Cmdargs.in_dir "-d"
 
-(* [--device] lists the devices to try, in order, as [Nx.Device.of_string]
-   reads them: "cpu" (the default), "gpu", "cuda:1", "gpu,cpu". *)
-let device =
-  match Nx.Device.of_string Cmdargs.(get_string "--device" |> default "cpu") with
-  | Ok wants -> Nx.Device.first wants
-  | Error msg ->
-    Stdio.prerr_endline msg;
-    Stdlib.exit 2
-
+(* [--device] lists the devices to try, in order, as [Devices.first] reads
+   them: "cpu" (the default), "cuda", "cuda:1", "metal", "cuda,cpu". *)
+let device = Devices.first Cmdargs.(get_string "--device" |> default "cpu")
 let on_device = Nx.Placement.on device
 
 module RNN = struct

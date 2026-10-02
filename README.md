@@ -132,11 +132,11 @@ student-teacher MLP: 32 hidden units, 8 inputs, 128 examples
 ```
 
 `tutorial/rnn.ml` trains an RNN with `S.Compiled`, its parameters and data
-placed on the device `--device` names (`cpu` by default, or `gpu`, `cuda:1`,
+placed on the device `--device` names (`cpu` by default, or `cuda`, `cuda:1`,
 `metal`):
 
 ```sh
-dune exec tutorial/rnn.exe -- -d /tmp --device gpu
+dune exec tutorial/rnn.exe -- -d /tmp --device cuda
 ```
 
 ## Building and testing
