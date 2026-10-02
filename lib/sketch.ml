@@ -28,8 +28,8 @@
      the gradient sketch cannot drift from the loss's own arithmetic.
 
    Because a mark is a unit-result {!Rune.custom_jvp}, the same loss also runs
-   unchanged under [Rune.value_and_grad] (the mark's [f] is a no-op there) and
-   under a bare [Rune.jvp] (the rule runs; there is no scope, and the
+   unchanged under [Rune.value_and_grad] (the mark's tangent map is not applied
+   there) and under a bare [Rune.jvp] (the map runs; there is no scope, and the
    additions are dropped).
 
    The total's scope owns the accumulation: it threads it through a [scan]
@@ -80,7 +80,7 @@ let sample (type p) (structure : p Nx.Ptree.t) ~k (params : p) : p =
 let contract z theta =
   let s = Nx.shape theta in
   let lead = Array.make (Array.length s - 1) 1 in
-  let zr = Nx.reshape (Array.concat [ [| Nx.numel z |]; lead ]) (Nx.contiguous z) in
+  let zr = Nx.reshape (Array.concat [ [| Nx.numel z |]; lead ]) z in
   Nx.sum (Nx.mul (Nx.cast (Nx.dtype theta) zr) theta) ~axes:[ 0 ]
 
 (* The number of lanes: the leading length of the first tensor leaf of
@@ -133,9 +133,10 @@ let run
         if Nx.shape z <> [| k |]
         then
           invalid_arg
-            (Printf.sprintf
-               "Sofo.sketch: apply takes a k-vector (shape [%d]), got shape [%s]"
+            (Format.asprintf
+               "Sofo.sketch: apply takes a k-vector (shape [%d]), got shape %a"
                k
-               (String.concat "," (Array.to_list (Array.map string_of_int (Nx.shape z)))));
+               Nx.pp_shape
+               (Nx.shape z));
         Nx.Ptree.map structure (fun _ theta -> contract z theta) dirs)
   }

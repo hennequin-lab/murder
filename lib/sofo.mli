@@ -55,8 +55,9 @@ module Curv : sig
       constructor does in one batched pass over the lanes.
 
       Every constructor's linearity is what makes the batched application
-      sound, and each is checked in the test suite against [Rune.hessian'] of
-      the corresponding loss rather than against a hand-derived formula. *)
+      sound, and each is checked in the test suite against the Hessian
+      [Rune.jacfwd' (Rune.grad' f)] of the corresponding loss [f] rather than
+      against a hand-derived formula. *)
 
   type t
 
@@ -142,7 +143,7 @@ val sse : ?w:('a, 'b) Nx.t -> target:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) 
     ([diag p − p pᵀ] per row, divided by the number of rows) and returned as a
     scalar. Labels must lie in [\[0, num_classes)]; the checked cases are the
     user's to validate up front. *)
-val softmax_ce : ('a, 'b) Nx.t -> Nx.int32_t -> ('a, 'b) Nx.t
+val softmax_ce : ('a, 'b) Nx.t -> Nx.int64_t -> ('a, 'b) Nx.t
 
 (** A sketch's results. *)
 type 'p sketch =

@@ -8,10 +8,10 @@
    A mark is a {!Rune.custom_jvp} with a unit result whose rule gathers the
    sketch's direction lanes and adds the little loss's Gauss-Newton block
    YᵀHY to a total the sketch driver collects. Nothing else reads it: plain
-   execution runs its [f], which does nothing, and reverse mode runs the same
-   [f] — a unit result has nothing to differentiate — so a marked loss is an
-   ordinary loss under every other optimizer, and the same model trains with
-   {!Rune.value_and_grad} and under a sketch.
+   execution and reverse mode never apply its tangent map — a unit result has
+   nothing to differentiate — so a marked loss is an ordinary loss under every
+   other optimizer, and the same model trains with {!Rune.value_and_grad} and
+   under a sketch.
 
    The rule reads the tangent of the *prediction*, not of the loss: the block
    is YᵀHY with Y the tangent batch of y and H the curvature description the
@@ -28,7 +28,7 @@ let directions = Rune.axis ()
 let curvature : (float, Nx.float64_elt) Rune.Total.t = Rune.Total.make ()
 
 let mark ~curv y =
-  Rune.custom_jvp Nx.Ptree.tensor Nx.Ptree.unit ~f:ignore y ~jvp:(fun _ dy ->
+  Rune.custom_jvp Nx.Ptree.tensor Nx.Ptree.unit (fun _ -> (), fun dy ->
     let ys = Rune.lanes directions dy in
     let rows t = Nx.reshape [| Nx.dim 0 t; -1 |] t in
     let block =
@@ -38,8 +38,7 @@ let mark ~curv y =
        the accumulator is symmetrized up to floating-point asymmetry, which
        later decompositions would rather not see. *)
     let block = Nx.mul_s (Nx.add block (Nx.transpose block)) 0.5 in
-    Rune.Total.add curvature block;
-    (), ())
+    Rune.Total.add curvature block) y
 
 (* [observe ~y ~curv l] marks [l] as a little loss in the prediction [y], whose
    Hessian with respect to [y] is [curv]: under a sketch the block joins the
@@ -51,9 +50,10 @@ let observe ~y ~curv l =
   if Nx.numel l <> 1
   then
     invalid_arg
-      (Printf.sprintf
-         "Sofo.observe: the mini loss must be a scalar (one element), got shape [%s]"
-         (String.concat "," (Array.to_list (Array.map string_of_int (Nx.shape l)))));
+      (Format.asprintf
+         "Sofo.observe: the mini loss must be a scalar (one element), got shape %a"
+         Nx.pp_shape
+         (Nx.shape l));
   mark ~curv y
 
 (* Packaged little losses: the value is computed with ordinary operations, so

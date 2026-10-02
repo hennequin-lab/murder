@@ -17,10 +17,9 @@ open Windtrap
 let f64 = Nx.float64
 let vec xs = Nx.create f64 [| Array.length xs |] xs
 let mat r c xs = Nx.create f64 [| r; c |] xs
-let to_arr t = Nx.to_array (Nx.reshape [| -1 |] (Nx.contiguous t))
 
 let check_arr ?(eps = 1e-8) ~msg expected actual =
-  let actual = to_arr actual in
+  let actual = Nx.to_array actual in
   equal ~msg int (Array.length expected) (Array.length actual);
   Array.iteri
     (fun i e -> equal ~msg:(Printf.sprintf "%s[%d]" msg i) (float eps) e actual.(i))
@@ -86,9 +85,7 @@ let sketch k structure loss p = Sofo.sketch structure loss p (fixed_sampler k p)
 let theta_t_cotangent ~k thetas g =
   let leaf theta g =
     let n = Nx.numel g in
-    Nx.matmul
-      (Nx.reshape [| k; n |] (Nx.contiguous theta))
-      (Nx.reshape [| n; 1 |] (Nx.contiguous g))
+    Nx.matmul (Nx.reshape [| k; n |] theta) (Nx.reshape [| n; 1 |] g)
   in
   Nx.reshape [| k |] (Nx.add (leaf thetas.w g.w) (leaf thetas.b g.b))
 
@@ -99,7 +96,7 @@ let test_c_and_loss () =
   let sk = sketch k params_ptree loss_all p in
   let y, grads = Rune.value_and_grad params_ptree loss_all p in
   equal ~msg:"loss" (float 1e-10) (Nx.item [] y) (Nx.item [] sk.loss);
-  check_arr ~msg:"C = Θᵀ∇c" (to_arr (theta_t_cotangent ~k thetas grads)) sk.c
+  check_arr ~msg:"C = Θᵀ∇c" (Nx.to_array (theta_t_cotangent ~k thetas grads)) sk.c
 
 let test_quadratic_expansion () =
   (* c is exactly quadratic in the parameters, so the sketch's model is exact
@@ -147,15 +144,17 @@ let test_ggn_matches_explicit_gram () =
   let y1 = predict p
   and y2 = p.w in
   let h1 =
-    Rune.hessian' (fun y -> Nx.mean (Nx.mul (Nx.sub y target) (Nx.sub y target))) y1
+    Rune.jacfwd'
+      (Rune.grad' (fun y -> Nx.mean (Nx.mul (Nx.sub y target) (Nx.sub y target))))
+      y1
   in
-  let h2 = Rune.hessian' (fun y -> Nx.mean (Nx.mul y y)) y2 in
+  let h2 = Rune.jacfwd' (Rune.grad' (fun y -> Nx.mean (Nx.mul y y))) y2 in
   let reference =
     Nx.add
       (block (tangent_batch predict) y1 h1)
       (block (tangent_batch (fun p -> p.w)) y2 h2)
   in
-  check_arr ~msg:"the marks = Σ YᵀHY" (to_arr reference) sk.ggn
+  check_arr ~msg:"the marks = Σ YᵀHY" (Nx.to_array reference) sk.ggn
 
 (* The exact GGN of a single-observation model, from its Jacobian. *)
 let test_ggn_matches_exact_jacobian () =
@@ -172,14 +171,14 @@ let test_ggn_matches_exact_jacobian () =
   let j = Nx.concatenate ~axis:1 [ jw; jb ] in
   (* the mean-squared loss has H = (2/n)·I *)
   let h = Nx.mul_s (Nx.eye f64 n) (2.0 /. float_of_int n) in
-  let flatten_theta t = Nx.reshape [| k; Nx.numel t / k |] (Nx.contiguous t) in
+  let flatten_theta t = Nx.reshape [| k; Nx.numel t / k |] t in
   let theta = Nx.concatenate ~axis:1 [ flatten_theta thetas.w; flatten_theta thetas.b ] in
   let reference =
     Nx.matmul
       (Nx.matmul theta (Nx.matmul (Nx.matmul (Nx.transpose j) h) j))
       (Nx.transpose theta)
   in
-  check_arr ~msg:"G̃ = ΘᵀJᵀHJΘ" (to_arr reference) sk.ggn
+  check_arr ~msg:"G̃ = ΘᵀJᵀHJΘ" (Nx.to_array reference) sk.ggn
 
 let test_apply_is_the_sampled_directions () =
   (* apply is Θ, so it must return the sampled lanes themselves: the basis
@@ -194,11 +193,11 @@ let test_apply_is_the_sampled_directions () =
        let step = sk.apply z in
        check_arr
          ~msg:"apply e_i is lane i (w)"
-         (to_arr (Nx.slice [ Nx.I i ] thetas.w))
+         (Nx.to_array (Nx.slice [ Nx.I i ] thetas.w))
          step.w;
        check_arr
          ~msg:"apply e_i is lane i (b)"
-         (to_arr (Nx.slice [ Nx.I i ] thetas.b))
+         (Nx.to_array (Nx.slice [ Nx.I i ] thetas.b))
          step.b)
     [ 0; 1; 2 ]
 
@@ -219,7 +218,7 @@ let test_zero_curvature_is_first_order () =
   let _, grads = Rune.value_and_grad params_ptree loss p in
   check_arr
     ~msg:"C still the gradient sketch"
-    (to_arr (theta_t_cotangent ~k thetas grads))
+    (Nx.to_array (theta_t_cotangent ~k thetas grads))
     sk.c
 
 let test_unobserved_term_contributes_no_block () =
@@ -234,7 +233,7 @@ let test_unobserved_term_contributes_no_block () =
   let sk = sketch k params_ptree loss p
   and observed = sketch k params_ptree data_loss p in
   check_arr ~msg:"the unobserved ridge contributes no curvature"
-    (to_arr observed.ggn)
+    (Nx.to_array observed.ggn)
     sk.ggn
 
 let test_two_losses_contribute_two_blocks () =
@@ -246,7 +245,7 @@ let test_two_losses_contribute_two_blocks () =
   and readout = sketch k params_ptree data_loss p
   and ridge = sketch k params_ptree (fun p -> Sofo.mse ~target:(Nx.zeros_like p.w) p.w) p in
   check_arr ~msg:"the two blocks add"
-    (to_arr (Nx.add readout.ggn ridge.ggn))
+    (Nx.to_array (Nx.add readout.ggn ridge.ggn))
     both.ggn
 
 let test_constant_prediction_adds_no_block () =
@@ -263,7 +262,7 @@ let test_constant_prediction_adds_no_block () =
   and k = 2 in
   let sk = sketch k params_ptree loss p in
   let sk' = sketch k params_ptree data_loss p in
-  check_arr ~msg:"same GGN as without the constant term" (to_arr sk'.ggn) sk.ggn
+  check_arr ~msg:"same GGN as without the constant term" (Nx.to_array sk'.ggn) sk.ggn
 
 let test_reproducible_with_an_rng_key () =
   let p = params ()
@@ -276,9 +275,10 @@ let test_reproducible_with_an_rng_key () =
   let a = sketch_under 42
   and b = sketch_under 42
   and c = sketch_under 7 in
-  check_arr ~msg:"same C" (to_arr a.c) b.c;
-  check_arr ~msg:"same GGN" (to_arr a.ggn) b.ggn;
-  if to_arr c.ggn = to_arr a.ggn then fail "a different key gave the same sketch"
+  check_arr ~msg:"same C" (Nx.to_array a.c) b.c;
+  check_arr ~msg:"same GGN" (Nx.to_array a.ggn) b.ggn;
+  if Nx.to_array c.ggn = Nx.to_array a.ggn
+  then fail "a different key gave the same sketch"
 
 let test_rejects_a_non_scalar_loss () =
   raises_match Exn.invalid_arg (fun () ->

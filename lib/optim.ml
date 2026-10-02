@@ -142,7 +142,7 @@ let inverse_sqrt (z : Nx.float64_t) : Nx.float64_t =
           a direction as there are lanes."
          (if smax = 0.0 then 0.0 else smin /. smax)
          k);
-  let inv_sqrt = Nx.div (Nx.ones_like s) (Nx.sqrt s) in
+  let inv_sqrt = Nx.rsqrt s in
   Nx.matmul (Nx.mul u (Nx.reshape [| 1; k |] inv_sqrt)) (Nx.transpose u)
 
 (* ── the update (Alg. 1, lines 10–12) ────────────────────────────────────── *)
@@ -203,7 +203,7 @@ let coordinates
     | `Inverse -> damped
     | `Inverse_sqrt -> Nx.sqrt damped
   in
-  let rhs = Nx.matmul vt (Nx.reshape [| k; 1 |] (Nx.contiguous c)) in
+  let rhs = Nx.matmul vt (Nx.reshape [| k; 1 |] c) in
   let z = Nx.reshape [| k |] (Nx.matmul u (Nx.div rhs (Nx.reshape [| k; 1 |] scale))) in
   (* Back to the sketch's own coordinates, where [apply] contracts them: the
      step is Θ (Q z). *)

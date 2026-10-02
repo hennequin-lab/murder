@@ -23,10 +23,9 @@ open Windtrap
 
 let f64 = Nx.float64
 let f32 = Nx.float32
-let to_arr t = Nx.to_array (Nx.reshape [| -1 |] (Nx.contiguous t))
 
 let check_arr ?(eps = 1e-9) ?(rel = 0.0) ~msg expected actual =
-  let actual = to_arr actual in
+  let actual = Nx.to_array actual in
   equal ~msg int (Array.length expected) (Array.length actual);
   Array.iteri
     (fun i e ->
@@ -142,7 +141,7 @@ let test_directions_are_pure_in_the_key () =
   let p = params () in
   let a = thetas_of p in
   let b = thetas_of p in
-  check_arr ~msg:"same key, same Θ" (to_arr a.w) b.w;
+  check_arr ~msg:"same key, same Θ" (Nx.to_array a.w) b.w;
   let other = Sofo.Optim.directions params_ptree ~key:(Nx.Rng.fold_in key 1) ~k p in
   let same = max_abs (Nx.sub a.w other.w) = 0.0 in
   is_false ~msg:"a different key gives a different subspace" same;
@@ -151,7 +150,7 @@ let test_directions_are_pure_in_the_key () =
     Nx.Rng.with_key (Nx.Rng.key 99) (fun () ->
       Sofo.Optim.directions params_ptree ~key ~k p)
   in
-  check_arr ~msg:"~key pins the draw" (to_arr a.w) scoped.w
+  check_arr ~msg:"~key pins the draw" (Nx.to_array a.w) scoped.w
 
 let test_apply_picks_lanes () =
   let p = params () in
@@ -163,7 +162,10 @@ let test_apply_picks_lanes () =
          Nx.create f64 [| k |] (Array.init k (fun j -> if i = j then 1.0 else 0.0))
        in
        let step = Sofo.Optim.apply params_ptree ~k thetas z in
-       check_arr ~msg:"apply e_i is lane i" (to_arr (Nx.slice [ Nx.I i ] thetas.w)) step.w;
+       check_arr
+         ~msg:"apply e_i is lane i"
+         (Nx.to_array (Nx.slice [ Nx.I i ] thetas.w))
+         step.w;
        equal
          ~msg:"the tag leaf gets the zero direction"
          string
@@ -185,15 +187,15 @@ let test_apply_agrees_with_the_sketch () =
   let z = Nx.create f64 [| k |] [| 0.7; -1.3; 0.4 |] in
   let a = sk.apply z
   and b = Sofo.Optim.apply params_ptree ~k (thetas_of p) z in
-  check_arr ~msg:"same direction" (to_arr a.w) b.w;
-  check_arr ~msg:"same float32 direction" (to_arr a.v) b.v
+  check_arr ~msg:"same direction" (Nx.to_array a.w) b.w;
+  check_arr ~msg:"same float32 direction" (Nx.to_array a.v) b.v
 
 (* ── the solve ───────────────────────────────────────────────────────────── *)
 
 let test_coordinates_identity () =
   let c = Nx.create f64 [| k |] [| 1.0; -2.0; 3.5 |] in
   let z = Sofo.Optim.coordinates ~damping:(`Absolute 0.0) (Nx.eye f64 k) c in
-  check_arr ~msg:"G̃ = I: z = C" (to_arr c) z;
+  check_arr ~msg:"G̃ = I: z = C" (Nx.to_array c) z;
   let z = Sofo.Optim.coordinates ~damping:(`Relative_from_top 0.5) (Nx.eye f64 k) c in
   check_arr ~msg:"G̃ = I, λ = 0.5: z = C / 1.5" [| 1.0 /. 1.5; -2.0 /. 1.5; 3.5 /. 1.5 |] z
 
@@ -234,9 +236,9 @@ let test_coordinates_diagonal () =
   (* and the defaults are Algorithm 1's: relative to the top, inverted *)
   let d = Sofo.Optim.coordinates ggn c in
   let t = Sofo.Optim.coordinates ~damping:(`Relative_from_top 1e-6) ggn c in
-  check_arr ~msg:"the default is `Relative_from_top 1e-6" (to_arr d) t;
+  check_arr ~msg:"the default is `Relative_from_top 1e-6" (Nx.to_array d) t;
   let i = Sofo.Optim.coordinates ~preconditioner:`Inverse ggn c in
-  check_arr ~msg:"the default preconditioner is `Inverse" (to_arr d) i
+  check_arr ~msg:"the default preconditioner is `Inverse" (Nx.to_array d) i
 
 let test_coordinates_survives_a_singular_direction () =
   (* A rank-deficient sketch (a lane the data does not excite) is exactly what
@@ -248,7 +250,7 @@ let test_coordinates_survives_a_singular_direction () =
      null direction is resolved with magnitude |c|/(λ·s_max), finite but large
      when λ is small, and suppressed as λ grows. *)
   let z = Sofo.Optim.coordinates ~damping:(`Relative_from_top 1e-3) ggn c in
-  is_true ~msg:"finite" (Array.for_all Float.is_finite (to_arr z));
+  is_true ~msg:"finite" (Array.for_all Float.is_finite (Nx.to_array z));
   check_arr
     ~msg:"the damped diagonal formula"
     [| 1.0 /. 2.002; 1.0 /. 0.002; 1.0 /. 0.002 |]
@@ -288,8 +290,8 @@ let test_update_respects_the_learning_rate () =
   let p = params () in
   let sk = sketch_at p in
   let p0 = Sofo.Optim.update params_ptree ~lr:0.0 sk p in
-  check_arr ~msg:"lr = 0 moves nothing" (to_arr p.w) p0.w;
-  check_arr ~msg:"lr = 0 moves nothing (float32)" (to_arr p.v) p0.v;
+  check_arr ~msg:"lr = 0 moves nothing" (Nx.to_array p.w) p0.w;
+  check_arr ~msg:"lr = 0 moves nothing (float32)" (Nx.to_array p.v) p0.v;
   let p1 = Sofo.Optim.update params_ptree ~lr:1.0 sk p in
   is_true ~msg:"lr = 1 moves something" (max_abs (Nx.sub p1.w p.w) > 0.0)
 
@@ -378,8 +380,8 @@ let test_whitening_makes_the_step_independent_of_the_basis () =
   let sk_str = Sofo.sketch params_ptree loss p (stretched k p) in
   let a = Sofo.Optim.update params_ptree ~lr:1.0 ~damping sk_raw p in
   let b = Sofo.Optim.update params_ptree ~lr:1.0 ~damping sk_str p in
-  check_arr ~eps:1e-9 ~msg:"whitened step, float64 leaf" (to_arr a.w) b.w;
-  check_arr ~eps:1e-6 ~msg:"whitened step, float32 leaf" (to_arr a.v) b.v;
+  check_arr ~eps:1e-9 ~msg:"whitened step, float64 leaf" (Nx.to_array a.w) b.w;
+  check_arr ~eps:1e-6 ~msg:"whitened step, float32 leaf" (Nx.to_array a.v) b.v;
   (* and the same two draws without the whitening are two different steps, so
      the assertion above is not passing by accident *)
   let z (sk : params Sofo.sketch) = Sofo.Optim.coordinates ~damping sk.ggn sk.c in
@@ -466,7 +468,7 @@ let test_step_is_reproducible () =
   in
   let a = run ()
   and b = run () in
-  check_arr ~msg:"the same key replays the same run" (to_arr a.w) b.w
+  check_arr ~msg:"the same key replays the same run" (Nx.to_array a.w) b.w
 
 let test_step_ignores_an_unobserved_term () =
   (* Law 6 again, here through a step: an unmarked term reaches the loss and C
@@ -482,7 +484,7 @@ let test_step_ignores_an_unobserved_term () =
     Sofo.Optim.step params_ptree ~k ~lr:1.0 st ~loss ~params:p
   in
   check_arr ~msg:"the unobserved ridge contributes no curvature"
-    (to_arr clean.ggn) sk.ggn;
+    (Nx.to_array clean.ggn) sk.ggn;
   is_false
     ~msg:"but it does reach the loss"
     (Float.equal (Nx.item [] sk.loss) (Nx.item [] clean.loss))
@@ -499,10 +501,10 @@ let test_compiled_sketch_matches_the_eager_one () =
   let p = params () in
   let out = O.sketch ~k loss_c { O.params = p; key; aux = () } in
   let sk = sketch_at p in
-  check_arr ~msg:"loss" (to_arr out.O.loss) sk.loss;
-  check_arr ~msg:"C" (to_arr out.O.c) sk.c;
-  check_arr ~msg:"G̃" (to_arr out.O.ggn) sk.ggn;
-  check_arr ~msg:"Θ is the same subspace" (to_arr out.O.dirs.w) (thetas_of p).w;
+  check_arr ~msg:"loss" (Nx.to_array out.O.loss) sk.loss;
+  check_arr ~msg:"C" (Nx.to_array out.O.c) sk.c;
+  check_arr ~msg:"G̃" (Nx.to_array out.O.ggn) sk.ggn;
+  check_arr ~msg:"Θ is the same subspace" (Nx.to_array out.O.dirs.w) (thetas_of p).w;
   (* and with damping, the update is the same map; it also advances the state
      it was given, so the next step's sketch cannot reuse this one's subspace *)
   let st = Sofo.Optim.init ~key () in
@@ -514,8 +516,8 @@ let test_compiled_sketch_matches_the_eager_one () =
   let b =
     Sofo.Optim.update params_ptree ~lr:0.5 ~damping:(`Relative_from_top 1e-3) sk p
   in
-  check_arr ~msg:"compiled update" (to_arr a.w) b.w;
-  check_arr ~msg:"compiled update (float32)" (to_arr a.v) b.v;
+  check_arr ~msg:"compiled update" (Nx.to_array a.w) b.w;
+  check_arr ~msg:"compiled update (float32)" (Nx.to_array a.v) b.v;
   equal
     ~msg:"compiled update leaves the tag"
     string
@@ -533,10 +535,10 @@ let test_jitted_sketch_matches_eager () =
   (* jit fuses kernels, so the numbers agree to floating point rather than
      exactly — and the float32 leaf in this loss sits at ~1e-7. The subspace
      itself is drawn by the same generator, so it agrees to rounding. *)
-  check_arr ~eps:1e-6 ~msg:"loss" (to_arr eager.O.loss) jitted.O.loss;
-  check_arr ~rel:1e-5 ~msg:"C" (to_arr eager.O.c) jitted.O.c;
-  check_arr ~rel:1e-5 ~msg:"G̃" (to_arr eager.O.ggn) jitted.O.ggn;
-  check_arr ~eps:1e-12 ~msg:"Θ" (to_arr eager.O.dirs.w) jitted.O.dirs.w;
+  check_arr ~eps:1e-6 ~msg:"loss" (Nx.to_array eager.O.loss) jitted.O.loss;
+  check_arr ~rel:1e-5 ~msg:"C" (Nx.to_array eager.O.c) jitted.O.c;
+  check_arr ~rel:1e-5 ~msg:"G̃" (Nx.to_array eager.O.ggn) jitted.O.ggn;
+  check_arr ~eps:1e-12 ~msg:"Θ" (Nx.to_array eager.O.dirs.w) jitted.O.dirs.w;
   (* one compilation, fresh subspaces: a different key is a different Θ from
      the same program *)
   let other = step { O.params = p; key = Nx.Rng.fold_in key 1; aux = () } in
@@ -608,9 +610,9 @@ let test_compiled_aux_reaches_the_loss () =
   let eager =
     Sofo.sketch params_ptree (fun p -> loss_with_aux p aux) p (sampler k p)
   in
-  check_arr ~eps:1e-6 ~msg:"loss, aux in the tree" (to_arr eager.loss) out.Oaux.loss;
-  check_arr ~rel:1e-5 ~msg:"C, aux in the tree" (to_arr eager.c) out.Oaux.c;
-  check_arr ~rel:1e-5 ~msg:"G̃, aux in the tree" (to_arr eager.ggn) out.Oaux.ggn;
+  check_arr ~eps:1e-6 ~msg:"loss, aux in the tree" (Nx.to_array eager.loss) out.Oaux.loss;
+  check_arr ~rel:1e-5 ~msg:"C, aux in the tree" (Nx.to_array eager.c) out.Oaux.c;
+  check_arr ~rel:1e-5 ~msg:"G̃, aux in the tree" (Nx.to_array eager.ggn) out.Oaux.ggn;
   (* a different aux, same program, same key: a different loss *)
   let other =
     step { Oaux.params = p; key; aux = { Aux.shift = Nx.zeros f64 [| o |] } }
