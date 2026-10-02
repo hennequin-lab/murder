@@ -38,9 +38,9 @@ under `Sofo.sketch` — swap the driver, not the model.
 
 Student–teacher linear regression with ill-conditioned inputs: draw a teacher
 `W*`, a student `W`, and minibatches `y = x·W*`, then train the student with
-the SOFO update. This is the whole example (run it with
-`dune exec example/linear_simple.exe`, and add `-- --device gpu` to run it on
-a CUDA GPU):
+the SOFO update. This is the whole example, with `--device` read by
+`example/devices.ml` (run it with `dune exec example/linear_simple.exe`, and
+add `-- --device cuda` to run it on a CUDA GPU):
 
 ```ocaml
 open Base
@@ -53,15 +53,10 @@ let lr = 0.1
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Absolute 0.
 
-(* [--device] lists the devices to try, in order, as [Nx.Device.of_string]
-   reads them: "cpu" (the default), "gpu", "cuda:1", "gpu,cpu". The sketch
+(* [--device] lists the devices to try, in order, as [Devices.first] reads
+   them: "cpu" (the default), "cuda", "cuda:1", "cuda,cpu". The sketch
    accumulates in float64, which Metal cannot compute. *)
-let device =
-  match Nx.Device.of_string Cmdargs.(get_string "--device" |> default "cpu") with
-  | Ok wants -> Nx.Device.first wants
-  | Error msg ->
-    Stdio.prerr_endline msg;
-    Stdlib.exit 2
+let device = Devices.first Cmdargs.(get_string "--device" |> default "cpu")
 
 module Model = struct
   module P = struct
@@ -197,9 +192,9 @@ implementation notes, including what each milestone settled.
 | `example/lorenz.ml`        | The composition study: one loss driven by `value_and_grad`, `jvp_k` and `sketch`, with memory and jit-staging numbers.                                    |
 
 ```bash
-dune exec example/linear_simple.exe -- --device gpu
+dune exec example/linear_simple.exe -- --device cuda
 dune exec example/linear.exe -- --steps 40 --lanes 32
-dune exec example/lorenz_simple.exe -- -d /tmp --device gpu
+dune exec example/lorenz_simple.exe -- -d /tmp --device cuda
 dune exec example/lorenz.exe
 ```
 

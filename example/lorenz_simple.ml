@@ -15,15 +15,10 @@ let lr = 0.3
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Relative_from_top 1e-5
 
-(* [--device] lists the devices to try, in order, as [Nx.Device.of_string]
-   reads them: "cpu" (the default), "gpu", "cuda:1", "gpu,cpu". The sketch
+(* [--device] lists the devices to try, in order, as [Devices.first] reads
+   them: "cpu" (the default), "cuda", "cuda:1", "cuda,cpu". The sketch
    accumulates in float64, which Metal cannot compute. *)
-let device =
-  match Nx.Device.of_string Cmdargs.(get_string "--device" |> default "cpu") with
-  | Ok wants -> Nx.Device.first wants
-  | Error msg ->
-    Stdio.prerr_endline msg;
-    Stdlib.exit 2
+let device = Devices.first Cmdargs.(get_string "--device" |> default "cpu")
 
 (* Data generation: simulate the Lorenz attractor for a very long time using RK4,
    and chop the resulting sequence into [total_bs] chunks *)
