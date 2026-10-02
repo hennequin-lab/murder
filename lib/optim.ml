@@ -8,7 +8,7 @@
    The step is split so that only the estimator solve is not traceable:
    prepare (traceable)               solve (host)          finish (traceable)
    momentum, orbit averages,    ->   damped symmetric   ->  factors of H_inv,
-   dense S_w/S_g, EMA, betas         powers, svd64          apply to g_avg, shift
+   dense S_w/S_g, EMA, betas         powers, eigh           apply to g_avg, shift
 
    [prepare] and [finish] touch neither [Nx.item] of a traced value nor a
    data-dependent branch, so [Compiled] can wrap them in [Rune.jit] with the

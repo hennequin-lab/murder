@@ -104,7 +104,7 @@ only the estimator solve is host-side:
 
 ```text
 prepare (jitted)                solve (host)              finish (jitted)
-momentum, orbit averages,  →    svd64 + damped       →    factors of H_inv,
+momentum, orbit averages,  →    eigh + damped        →    factors of H_inv,
 dense S_w/S_g, EMA, betas       symmetric powers          apply to ḡ, shift θ
 ```
 
@@ -173,12 +173,12 @@ The suites are:
   degenerates and the estimated curvature vanishes (the step is zero/NaN). The
   paper uses 2.
 - **The design matrix is factorized once, at compile time**, by Cholesky in
-  float64 (with a jittered retry and an SVD pseudo-inverse fallback for
-  degenerate bases). The per-call factor estimation is two small triangular
-  solves, which stay traceable under `Rune.jit`.
+  float64 (with a jittered retry and an eigendecomposition pseudo-inverse
+  fallback for degenerate bases). The per-call factor estimation is two small
+  triangular solves, which stay traceable under `Rune.jit`.
 - **float32 tensors, float64 factorizations.** Parameters, factors, blocks and
   the runtime solves are float32; only the compile-time Cholesky and the
-  host-side estimator SVDs run in float64.
+  host-side estimator eigendecompositions run in float64.
 - **No global RNG.** Everything that draws takes an explicit `Nx.Rng.t`, so
   tests and runs replay exactly; the optimizer step itself is deterministic.
 - **The library contains no model definitions.** Models live in downstream
