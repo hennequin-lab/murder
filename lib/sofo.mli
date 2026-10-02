@@ -409,90 +409,61 @@ module Optim : sig
       comes back is everything the update needs and nothing that needs a
       factorization. *)
 
-  (** What {!Compiled} needs of a value's structure: the value type and its
-      tree — the [ptree] the [ptree] deriver writes for a concrete record, or
-      {!Nx.Ptree.instantiate} of a [walk] module. *)
-  module type Structure = sig
-    type t
+  type 'p step_info =
+    { loss : Nx.float64_t (** The primal total, as a scalar. *)
+    ; c : Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
+    ; ggn : Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
+    ; gram : Nx.float64_t (** ΘΘᵀ, shape [k;k]: {!gram} of [dirs]. *)
+    ; dirs : 'p (** Θ, the directions the sketch was measured along. *)
+    }
 
-    val ptree : t Nx.Ptree.t
-  end
+  (** [sketch ~k loss] draws Θ from [in_.key], sketches [loss] at
+      [in_.params] with [in_.aux], and returns the numbers together with the
+      directions. Pure, differentiable in nothing, and safe to compile.
 
-  (** [No_aux] is the trivial auxiliary input — [t] is [unit], with no leaves —
-      for losses that read the parameters and nothing else:
-      [Compiled (P) (No_aux)] with a [loss] of the form
-      [fun params () -> ...]. *)
-  module No_aux : Structure with type t = unit
+      The loss takes the parameters and the aux, in that order. It is the
+      same function the eager entry points take, closed over its aux —
+      [Sofo.sketch p (fun params -> loss params aux) params dirs] for a
+      caller's own directions, and likewise {!Optim.step}'s [~loss] — so one
+      objective serves the compiled half and the eager one. *)
+  val sketch_jit
+    :  k:int
+    -> 'p Nx.Ptree.t
+    -> 'aux Nx.Ptree.t
+    -> ('p -> 'aux -> ('a, 'b) Nx.t)
+    -> key:Nx.Rng.t
+    -> aux:'aux
+    -> 'p
+    -> 'p step_info
 
-  module Compiled (P : Structure) (Aux : Structure) : sig
-    type in_ =
-      { params : P.t (** The parameters to sketch at. *)
-      ; key : Nx.Rng.t (** The state's key: the direction stream. *)
-      ; aux : Aux.t
-        (** Everything else the loss reads: the batch, a schedule value, a
-            per-step scale. Auxiliary leaves are data, not parameters — the
-            sketch never differentiates them and {!update} never moves them —
-            but they ride the input tree, so changing them between steps is a
-            new input, not a new trace. *)
-      }
+  (** [update ?lr ?damping ?preconditioner st params out] is one SOFO step on
+      a compiled sketch: [θ ← θ − η·Θ U (S + γ·I)⁻¹ Vᵀ C] from the output
+      [out] sketched at [params], together with [st]'s successor. [lr]
+      defaults to [1.0], which together with no damping is the exact Newton
+      step inside the sketched subspace.
 
-    (** [In] is [in_] as a parameter tree: one input structure for the whole
-        compiled step, parameters, key and aux together. *)
-    module In : Nx.Ptree.S with type 'a t = in_
+      [st] is the state whose key produced [out] — the one the compiled step
+      consumed — so a call advances the parameters and the direction stream
+      together and the next iteration is guaranteed a fresh subspace. Pass
+      the state the sketch was drawn from, and thread the one you get back:
 
-    type out =
-      { loss : Nx.float64_t (** The primal total, as a scalar. *)
-      ; c : Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
-      ; ggn : Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
-      ; gram : Nx.float64_t (** ΘΘᵀ, shape [k;k]: {!gram} of [dirs]. *)
-      ; dirs : P.t (** Θ, the directions the sketch was measured along. *)
-      }
+      {[
+      let params, state = O.update ~lr ~damping state params out in
+      ]}
 
-    module Out : Nx.Ptree.S with type 'a t = out
+      The solve runs on the host, from [out]'s [k]-sized [c], [ggn] and
+      [gram]. The step on the parameters is compiled and runs where [params]
+      and [out.dirs] live, so parameters placed on a GPU stay there.
 
-    (** The signature {!Rune.jit} compiles: the input record above and the
-        output record, with each tensor leaf at its own dtype. *)
-    val signature : (in_ -> out) Nx.Ptree.fn
-
-    (** [sketch ~k loss] draws Θ from [in_.key], sketches [loss] at
-        [in_.params] with [in_.aux], and returns the numbers together with the
-        directions. Pure, differentiable in nothing, and safe to compile.
-
-        The loss takes the parameters and the aux, in that order. It is the
-        same function the eager entry points take, closed over its aux —
-        [Sofo.sketch p (fun params -> loss params aux) params dirs] for a
-        caller's own directions, and likewise {!Optim.step}'s [~loss] — so one
-        objective serves the compiled half and the eager one. *)
-    val sketch : k:int -> (P.t -> Aux.t -> ('c, 'd) Nx.t) -> in_ -> out
-
-    (** [update ?lr ?damping ?preconditioner st params out] is one SOFO step on
-        a compiled sketch: [θ ← θ − η·Θ U (S + γ·I)⁻¹ Vᵀ C] from the output
-        [out] sketched at [params], together with [st]'s successor. [lr]
-        defaults to [1.0], which together with no damping is the exact Newton
-        step inside the sketched subspace.
-
-        [st] is the state whose key produced [out] — the one the compiled step
-        consumed — so a call advances the parameters and the direction stream
-        together and the next iteration is guaranteed a fresh subspace. Pass
-        the state the sketch was drawn from, and thread the one you get back:
-
-        {[
-        let params, state = O.update ~lr ~damping state params out in
-        ]}
-
-        The solve runs on the host, from [out]'s [k]-sized [c], [ggn] and
-        [gram]. The step on the parameters is compiled and runs where [params]
-        and [out.dirs] live, so parameters placed on a GPU stay there.
-
-        {!Optim.update} is the same step without the state, for callers that
-        hold a sketch and nothing else. *)
-    val update
-      :  ?lr:float
-      -> ?damping:damping
-      -> ?preconditioner:preconditioner
-      -> state
-      -> P.t
-      -> out
-      -> P.t * state
-  end
+      {!Optim.update} is the same step without the state, for callers that
+      hold a sketch and nothing else. *)
+  val update
+    :  ?lr:float
+    -> ?damping:damping
+    -> ?preconditioner:preconditioner
+    -> 'p Nx.Ptree.t
+    -> state
+    -> 'p
+    -> 'p step_info
+    -> 'p * state
 end

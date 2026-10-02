@@ -256,103 +256,53 @@ let step
 
 (* ── the compiled half ─────────────────────────────────── *)
 
-(* What a jitted step consumes and produces. Both are parameter trees, so a
-   training step is [Rune.jit Optim.Compiled.signature (sketch ~k loss)] and
-   a loop threads one input record to the next without ever retracing. *)
+type 'p step_info =
+  { loss : Nx.float64_t
+  ; c : Nx.float64_t
+  ; ggn : Nx.float64_t
+  ; gram : Nx.float64_t
+  ; dirs : 'p
+  }
 
-(* What the [Compiled] functor needs of a value's structure: its type and its
-   tree, as {!Nx.Ptree.instantiate} of a [walk] module, or the [ptree] the
-   [ptree] deriver writes for a concrete record. *)
-module type Structure = sig
-  type t
-
-  val ptree : t Nx.Ptree.t
-end
-
-(* The trivial auxiliary input: no leaves at all, for a loss that reads the
-   parameters and nothing else. *)
-module No_aux = struct
-  type t = unit
-
-  let ptree = Nx.Ptree.unit
-end
-
-module Compiled (P : Structure) (Aux : Structure) = struct
-  type in_ =
-    { params : P.t
-    ; key : Nx.Rng.t
-    ; aux : Aux.t
-    }
-
-  module In = struct
-    type _ t = in_
-
-    let walk c i =
-      let open Nx.Ptree.Walk in
-      let params = field c "params" (structure P.ptree) i.params in
-      let key = field c "key" (structure Nx.Rng.ptree) i.key in
-      let aux = field c "aux" (structure Aux.ptree) i.aux in
-      { params; key; aux }
+let sketch_jit ~k (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptree.t) loss =
+  let module Out = struct
+    type t =
+      { loss : Nx.float64_t
+      ; c : Nx.float64_t
+      ; ggn : Nx.float64_t
+      ; gram : Nx.float64_t
+      }
+    [@@deriving ptree]
   end
+  in
+  let sketch key aux params =
+    let dirs = directions p ~key ~k params in
+    let sk = Sketch.run p (fun params -> loss params aux) params dirs in
+    Out.{ loss = sk.loss; c = sk.c; ggn = sk.ggn; gram = gram p ~k dirs }, dirs
+  in
+  let f =
+    Rune.jit Nx.Ptree.(Nx.Rng.ptree @-> a @-> p @-> returns (pair Out.ptree p)) sketch
+  in
+  fun ~key ~aux params ->
+    let out, dirs = f key aux params in
+    { loss = out.loss; c = out.c; ggn = out.ggn; gram = out.gram; dirs }
 
-  let in_ptree = Nx.Ptree.instantiate (module In)
+(* [params - lr * Θ z], compiled, so it runs where the parameters and the
+   directions live. [z] and [lr] are host values that join them per call. *)
+let shift_by p =
+  Rune.jit
+    Nx.Ptree.(p @-> p @-> tensor @-> tensor @-> returns p)
+    (fun params dirs (z : Nx.float64_t) lr ->
+       shift p ~lr params (apply p ~k:(Nx.shape z).(0) dirs z))
 
-  type out =
-    { loss : Nx.float64_t
-    ; c : Nx.float64_t
-    ; ggn : Nx.float64_t
-    ; gram : Nx.float64_t
-    ; dirs : P.t
-    }
-
-  module Out = struct
-    type _ t = out
-
-    let walk cur o =
-      let open Nx.Ptree.Walk in
-      let loss = field cur "loss" tensor o.loss in
-      let c = field cur "c" tensor o.c in
-      let ggn = field cur "ggn" tensor o.ggn in
-      let gram = field cur "gram" tensor o.gram in
-      let dirs = field cur "dirs" (structure P.ptree) o.dirs in
-      { loss; c; ggn; gram; dirs }
-  end
-
-  let out_ptree = Nx.Ptree.instantiate (module Out)
-
-  (* The signature [Rune.jit] takes: an input record of parameters, key and
-     auxiliary data, and the output record above. *)
-  let signature = Nx.Ptree.(in_ptree @-> returns out_ptree)
-
-  (* The sketching computation, as a pure function of (params, key, aux).
-     Compile it with [Rune.jit signature]; run it as it is for an eager step.
-     The directions are drawn *inside* it, from the carried key, so one
-     compilation serves every iteration, and so is the aux: the loss sees its
-     leaves, so a batch that changes between steps is data, not a new trace.
-     The Gram ΘΘᵀ is formed here too, next to the directions, so the host
-     solve reads k×k matrices and never the k×P directions. *)
-  let sketch ~k (loss : P.t -> Aux.t -> ('c, 'd) Nx.t) i =
-    let dirs = directions P.ptree ~key:i.key ~k i.params in
-    let sk = Sketch.run P.ptree (fun params -> loss params i.aux) i.params dirs in
-    { loss = sk.loss; c = sk.c; ggn = sk.ggn; gram = gram P.ptree ~k dirs; dirs }
-
-  (* [params - lr * Θ z], compiled, so it runs where the parameters and the
-     directions live. [z] and [lr] are host values that join them per call. *)
-  let shift_by =
-    Rune.jit
-      Nx.Ptree.(P.ptree @-> P.ptree @-> tensor @-> tensor @-> returns P.ptree)
-      (fun params dirs (z : Nx.float64_t) lr ->
-         shift P.ptree ~lr params (apply P.ptree ~k:(Nx.shape z).(0) dirs z))
-
-  (* The step, and the state that produced it, advanced together: the caller
-     threads one state through the loop, so the key the sketch consumed and the
-     key the next sketch is drawn from cannot drift apart. The solve runs on
-     the host, which copies three k-sized tensors when the sketch ran on a
-     GPU. *)
-  let update ?(lr = 1.0) ?damping ?preconditioner (st : state) params o =
-    let host = Nx.place Nx.Placement.host in
-    let z =
-      coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
-    in
-    shift_by params o.dirs z (Nx.scalar Nx.float64 lr), next st
-end
+(* The step, and the state that produced it, advanced together: the caller
+   threads one state through the loop, so the key the sketch consumed and the
+   key the next sketch is drawn from cannot drift apart. The solve runs on
+   the host, which copies three k-sized tensors when the sketch ran on a
+   GPU. *)
+let update ?(lr = 1.0) ?damping ?preconditioner p (st : state) params o =
+  let host = Nx.place Nx.Placement.host in
+  let z =
+    coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
+  in
+  shift_by p params o.dirs z (Nx.scalar Nx.float64 lr), next st

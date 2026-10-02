@@ -1,5 +1,5 @@
 (executables
- (names lorenz lorenz_simple linear linear_simple)
+ (names lorenz linear)
  (libraries
   sofo
   nx

@@ -1,386 +1,75 @@
-(*---------------------------------------------------------------------------
-  Copyright (c) 2026 The SOFO authors. All rights reserved.
-  SPDX-License-Identifier: ISC
-  ---------------------------------------------------------------------------*)
+open Base
+open Nx
 
-(* Student-teacher linear regression, trained with [Sofo.Optim] — Algorithm 1's
-   update — on the deployment the library's two halves describe:
+let d_in, d_out = 100, 3
+let batch_size = 512
+let max_iter = 10_000
+let lr = 0.1
+let n_tangents = 128
+let damping : Sofo.Optim.damping = `Absolute 0.
 
-   compile the sketching half  →  solve eagerly  →  step eagerly
+(* [--device] lists the devices to try, in order, as [Devices.first] reads
+   them: "cpu" (the default), "cuda", "cuda:1", "cuda,cpu". The sketch
+   accumulates in float64, which Metal cannot compute. *)
+let device = Devices.first Cmdargs.(get_string "--device" |> default "cpu")
 
-   [Sofo.Optim.Compiled (Params) (Sofo.Optim.No_aux).sketch] is the sketching
-   computation as a pure function of [(params, key, aux)], which [Rune.jit]
-   compiles once and replays for the whole run: the directions Θ are drawn
-   inside it from the key the caller threads, so a fresh random subspace costs
-   nothing, and the loss's own inputs ride the same tree as [aux], so a new
-   batch is a new input to a program already compiled. (This loss reads only
-   the parameters, hence [No_aux].) The update needs the eigendecomposition
-   of the sketched GGN, which does not compile, so it runs on the host where
-   eager CPU linalg is the right tool anyway — G̃ is K×K and Alg. 1's whole
-   point is that inverting it costs O(K³) against a model with P ≫ K
-   parameters.
+module Model = struct
+  module P = struct
+    type t = float32_t [@@deriving ptree]
+  end
 
-   The task is small enough that the loss is exactly quadratic in the
-   parameters, so the sketch's second-order model
+  let init ~d_in ~d_out =
+    let open Infix in
+    randn float32 [| d_in; d_out |] /$ Float.(sqrt (of_int d_in))
 
-   c(θ − η·Θz) = c − η·⟨C, z⟩ + (η²/2)·zᵀG̃z
-
-   is exact. The example checks it after every step: that validates C, G̃, the
-   sampled Θ and the update jointly, with no reference implementation. A
-   first-order control then replays the *same* compiled sketch with z = C and
-   no solve, which is the comparison the GGN is supposed to win. *)
-
-let f64 = Nx.float64
-
-(* ── configuration ───────────────────────────────────────────────────────── *)
-
-type config =
-  { dim : int (* input dimension *)
-  ; out : int (* output dimension *)
-  ; samples : int
-  ; k : int (* subspace dimension *)
-  ; steps : int
-  ; lr : float
-  ; damping : Sofo.Optim.damping (* how γ is scaled; see Sofo.Optim *)
-  ; preconditioner : Sofo.Optim.preconditioner
-  ; fgd_lr : float
-  ; compare : bool
-  ; seed : int
-  }
-
-let median xs =
-  let xs = List.sort compare xs in
-  List.nth xs (List.length xs / 2)
-
-let damping_to_string = function
-  | `Absolute value -> Printf.sprintf "absolute %.3g" value
-  | `Relative_from_top factor -> Printf.sprintf "%.3g x s_max" factor
-  | `Relative_from_bottom factor -> Printf.sprintf "%.3g x s_min" factor
-
-let preconditioner_to_string = function
-  | `Inverse -> "(S+γI)⁻¹"
-  | `Inverse_sqrt -> "(S+γI)^-1/2"
-
-(* ── the student ─────────────────────────────────────────────────────────── *)
-
-type params = { w : Nx.float64_t (* [dim; out] *) } [@@deriving ptree]
-
-module Params = struct
-  type t = params
-
-  let ptree = ptree_params
+  let forward (w : P.t) x =
+    let open Infix in
+    x *@ w
 end
 
-(* The two halves, tied to the parameter structure: [O] is the jittable
-   sketching step, [Sofo.Optim] the eager update. This loss reads nothing but
-   the parameters, so the aux is the trivial one. *)
-module O = Sofo.Optim.Compiled (Params) (Sofo.Optim.No_aux)
+let student =
+  Model.init ~d_in ~d_out |> Nx.Ptree.place Model.P.ptree (Nx.Placement.on device)
 
-let max_abs t = Nx.item [] (Nx.max (Nx.abs t))
-let l2 t = Nx.item [] (Nx.sqrt (Nx.sum (Nx.square t)))
-
-(* ── the run ─────────────────────────────────────────────────────────────── *)
-
-let run config =
-  let k0 = Nx.Rng.key config.seed in
-  let x = Nx.Rng.normal k0 f64 [| config.samples; config.dim |] in
-  let scale = 1.0 /. sqrt (float_of_int config.dim) in
-  let teacher =
-    Nx.mul_s (Nx.Rng.normal (Nx.Rng.fold_in k0 1) f64 [| config.dim; config.out |]) scale
-  in
-  let w0 =
-    Nx.mul_s (Nx.Rng.normal (Nx.Rng.fold_in k0 2) f64 [| config.dim; config.out |]) scale
-  in
-  let student0 = { w = w0 } in
-  let y = Nx.matmul x teacher in
-  let objective (p : params) () = Sofo.mse ~target:y (Nx.matmul x p.w) in
-  let parameters = config.dim * config.out in
-  let state = Sofo.Optim.init ~key:k0 () in
-  Printf.printf
-    "student-teacher linear regression: y = x·W*, %d samples, x:[%d], W:[%d;%d]\n\
-     P = %d parameters, K = %d (%.1f%%), eta = %g, damping %s, preconditioner %s\n\n"
-    config.samples
-    config.dim
-    config.dim
-    config.out
-    parameters
-    config.k
-    (100.0 *. float_of_int config.k /. float_of_int parameters)
-    config.lr
-    (damping_to_string config.damping)
-    (preconditioner_to_string config.preconditioner);
-  (* One eager sketch first, along the same directions the compiled step will
-     draw from the state's key. *)
-  let sk0 =
-    Sofo.sketch
-      Params.ptree
-      (fun p -> objective p ())
-      student0
-      (Sofo.Optim.directions Params.ptree ~key:state.Sofo.Optim.key
-         ~k:config.k student0)
-  in
-  ignore sk0;
-  (* Warm the device and the kernel compiler, so that the compile time reported
-     below is this sketch's rather than the process's first jit. Set JITCACHE=0
-     for a cold number. *)
-  let _ =
-    Rune.jit
-      O.signature
-      (fun (i : O.in_) ->
-         { O.loss = Nx.sum i.O.params.w
-         ; c = Nx.zeros f64 [| 1 |]
-         ; ggn = Nx.zeros f64 [| 1; 1 |]
-         ; gram = Nx.zeros f64 [| 1; 1 |]
-         ; dirs = i.O.params
-         })
-      { O.params = student0; key = state.key; aux = () }
-  in
-  (* One trace for the whole run. *)
-  let sketch_step =
-    Rune.jit O.signature (O.sketch ~k:config.k objective)
-  in
-  let t0 = Unix.gettimeofday () in
-  let out0 = sketch_step { O.params = student0; key = state.key; aux = () } in
-  let compile_ms = (Unix.gettimeofday () -. t0) *. 1e3 in
-  ignore out0;
-  (* ── the SOFO loop (Alg. 1) ── *)
-  let rec loop params state i (losses, updates, residuals) =
-    if i > config.steps
-    then params, state, List.rev losses, List.rev updates, List.rev residuals
-    else
-      let open Sofo.Optim in
-      let out = sketch_step { O.params; key = state.key; aux = () } in
-      let l = Nx.item [] out.O.loss in
-      (* the host's half: solve, then step. Everything inside the clock is
-         eager, host-side, and O(K³). *)
-      let t0 = Unix.gettimeofday () in
-      let params, state =
-        O.update
-          ~lr:config.lr
-          ~damping:config.damping
-          ~preconditioner:config.preconditioner
-          state
-          params
-          out
-      in
-      let update_ms = (Unix.gettimeofday () -. t0) *. 1e3 in
-      (* the sketch's second-order model of the step just taken; exact for this
-         loss, so the residual should sit at rounding. Re-solving for the
-         coordinates outside the clock keeps the timed region to one solve, and
-         the Gram is what makes this the step the update took: the solve is the
-         whitened one, and [O.update] whitens with the same matrix. *)
-      let z =
-        coordinates
-          ~damping:config.damping
-          ~preconditioner:config.preconditioner
-          ~gram:(gram Params.ptree ~k:config.k out.O.dirs)
-          out.O.ggn
-          out.O.c
-      in
-      let linear = Nx.item [] (Nx.sum (Nx.mul out.O.c z)) in
-      let quad = Nx.item [] (Nx.sum (Nx.mul z (Nx.matmul out.O.ggn z))) in
-      let after = Nx.item [] (objective params ()) in
-      let predicted =
-        l -. (config.lr *. linear) +. (config.lr *. config.lr /. 2.0 *. quad)
-      in
-      let residual =
-        Float.abs (after -. predicted) /. Float.max 1e-30 (Float.abs after)
-      in
-      if i = 1 || i mod 5 = 0 || i = config.steps
-      then
-        Printf.printf
-          "  step %3d  loss %12.6g  |W-W*|max %10.4g  model residual %.2e\n"
-          i
-          l
-          (max_abs (Nx.sub params.w teacher))
-          residual;
-      loop params state (i + 1) (l :: losses, update_ms :: updates, residual :: residuals)
-  in
-  let params, state, losses, update_ms, residuals = loop student0 state 1 ([], [], []) in
-  let final = Nx.item [] (objective params ()) in
-  let initial = Nx.item [] sk0.loss in
-  Printf.printf
-    "\nSOFO: loss %.6g → %.6g (%.1e× smaller) in %d steps; |W - W*|max %.4g → %.4g\n"
-    initial
-    final
-    (initial /. Float.max 1e-30 final)
-    config.steps
-    (max_abs (Nx.sub student0.w teacher))
-    (max_abs (Nx.sub params.w teacher));
-  Printf.printf
-    "  second-order model residual: max %.2e over %d steps (the loss is exactly \
-     quadratic, so this is rounding)\n"
-    (List.fold_left Float.max 0.0 residuals)
-    (List.length residuals);
-  (* ── first-order control: the same compiled step, C straight into the step ──
-     [ΘΘᵀ∇c] with no curvature and no solve — the first-order subspace method the
-     paper compares against. The sketch still computes G̃; the control ignores
-     it, which is the point: the compiled half is shared. *)
-  if config.compare
-  then (
-    let rec fgd state params i =
-      if i > config.steps
-      then params
-      else
-        let open Sofo.Optim in
-        let out = sketch_step { O.params; key = state.key; aux = () } in
-        (* z = C: the gradient sketch is already a coordinate vector *)
-        let dw = apply Params.ptree ~k:config.k out.O.dirs out.O.c in
-        let scale = config.fgd_lr /. Float.max 1e-30 (l2 dw.w) in
-        let params =
-          Nx.Ptree.map2 Params.ptree
-            (fun _ p d -> Nx.sub p (Nx.mul_s d (Nx_dtype.of_float (Nx.dtype d) scale)))
-            params
-            dw
-        in
-        fgd (next state) params (i + 1)
+let minibatch =
+  let open Infix in
+  let teacher = Model.init ~d_in ~d_out in
+  (* draw inputs from an ill-conditioned Gaussian;
+     this covariance is the GGN (and also the Hessian in this case)! *)
+  let input_cov_sqrt =
+    let u, _ = qr (randn float32 [| d_in; d_in |]) in
+    let lambda =
+      Array.init d_in ~f:(fun i -> Float.(1. / (1. + square (of_int Int.(i + 1)))))
+      |> create float32 [| d_in; 1 |]
+      |> fun x -> x / mean x
     in
-    let fgd_params = fgd state student0 1 in
-    let fgd_final = Nx.item [] (objective fgd_params ()) in
-    Printf.printf
-      "\n\
-       first-order control (same sketch, z = C, normalized, eta = %g): loss %.6g → %.6g\n"
-      config.fgd_lr
-      initial
-      fgd_final);
-  (* ── timings ── *)
-  let times =
-    List.map
-      (fun i ->
-         let state = Sofo.Optim.next state in
-         let t0 = Unix.gettimeofday () in
-         let out = sketch_step { O.params; key = state.Sofo.Optim.key; aux = () } in
-         ignore i;
-         ignore (Nx.item [] out.O.loss);
-         (Unix.gettimeofday () -. t0) *. 1e3)
-      (List.init 7 Fun.id)
+    sqrt lambda * u
   in
-  Printf.printf "\ntimings\n";
-  Printf.printf
-    "  compiled sketch: first call (trace + compile + run)  %8.1f ms\n"
-    compile_ms;
-  Printf.printf
-    "    (kernel compilation is cached on disk; JITCACHE=0 measures it cold)\n";
-  Printf.printf
-    "  compiled sketch: replay                              %8.1f ms\n"
-    (median times);
-  Printf.printf
-    "  update: eigh of %d×%d, solve, compiled step            %8.1f ms\n"
-    config.k
-    config.k
-    (median update_ms);
-  ignore losses
+  fun ~key bs ->
+    let x = Rng.normal key float32 [| bs; d_in |] *@ input_cov_sqrt in
+    let y = Model.forward teacher x in
+    x, y
 
-(* ── command line ────────────────────────────────────────────────────────── *)
+let objective params key =
+  let open Infix in
+  let x, y = minibatch ~key batch_size in
+  let y' = Model.forward params x in
+  Sofo.mse ~target:y y'
 
-let make_config
-      dim
-      out
-      samples
-      k
-      steps
-      lr
-      damping
-      damping_mode
-      preconditioner
-      fgd_lr
-      compare
-      seed
-  =
-  let damping =
-    match damping_mode with
-    | `Top -> `Relative_from_top damping
-    | `Bottom -> `Relative_from_bottom damping
-    | `Absolute -> `Absolute damping
-  in
-  { dim; out; samples; k; steps; lr; damping; preconditioner; fgd_lr; compare; seed }
+(* The sketch compiles for the device the parameters are placed on; the
+   keys are host values that join them on each call. *)
+let sketch_step = Sofo.Optim.sketch_jit ~k:n_tangents Model.P.ptree Rng.ptree objective
 
-let config_term =
-  let open Cmdliner in
-  let dim =
-    Arg.(value & opt int 32 & info [ "dim"; "d" ] ~docv:"D" ~doc:"Input dimension.")
-  in
-  let out =
-    Arg.(value & opt int 8 & info [ "out"; "o" ] ~docv:"O" ~doc:"Output dimension.")
-  in
-  let samples =
-    Arg.(value & opt int 512 & info [ "samples"; "n" ] ~docv:"N" ~doc:"Training samples.")
-  in
-  let k =
-    Arg.(value & opt int 32 & info [ "lanes"; "k" ] ~docv:"K" ~doc:"Subspace dimension.")
-  in
-  let steps =
-    Arg.(value & opt int 40 & info [ "steps" ] ~docv:"T" ~doc:"Training iterations.")
-  in
-  let lr =
-    Arg.(
-      value & opt float 1.0 & info [ "lr"; "l" ] ~docv:"eta" ~doc:"SOFO learning rate.")
-  in
-  let damping =
-    Arg.(
-      value
-      & opt float 1e-6
-      & info [ "damping"; "r" ] ~docv:"lambda" ~doc:"Damping factor.")
-  in
-  let damping_mode =
-    Arg.(
-      value
-      & opt (enum [ "top", `Top; "bottom", `Bottom; "absolute", `Absolute ]) `Top
-      & info
-          [ "damping-mode" ]
-          ~docv:"MODE"
-          ~doc:
-            "What lambda is relative to: $(b,top) (default, Algorithm 1's lambda*s_max), \
-             $(b,bottom) (lambda*s_min), or $(b,absolute) (lambda itself).")
-  in
-  let preconditioner =
-    Arg.(
-      value
-      & opt (enum [ "inverse", `Inverse; "sqrt", `Inverse_sqrt ]) `Inverse
-      & info
-          [ "preconditioner"; "p" ]
-          ~docv:"KIND"
-          ~doc:
-            "$(b,inverse) (default, Algorithm 1's (S+γI)⁻¹) or $(b,sqrt) ((S+γI)^-1/2: \
-             scale-sensitive, so it usually wants its own $(b,--lr)).")
-  in
-  let fgd_lr =
-    Arg.(
-      value
-      & opt float 0.05
-      & info
-          [ "fgd-lr"; "g" ]
-          ~docv:"eta1"
-          ~doc:"First-order control's step (a unit direction).")
-  in
-  let compare =
-    Arg.(
-      value
-      & opt bool true
-      & info
-          [ "compare"; "c" ]
-          ~docv:"BOOL"
-          ~doc:"Also train the first-order control (default true).")
-  in
-  let seed = Arg.(value & opt int 0 & info [ "seed"; "s" ] ~docv:"S" ~doc:"Seed.") in
-  Term.(
-    const make_config
-    $ dim
-    $ out
-    $ samples
-    $ k
-    $ steps
-    $ lr
-    $ damping
-    $ damping_mode
-    $ preconditioner
-    $ fgd_lr
-    $ compare
-    $ seed)
+let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
+  if i >= max_iter
+  then params
+  else (
+    let aux = Rng.fold_in state.key 0 in
+    let out = sketch_step ~key:state.key ~aux params in
+    let params, state = Sofo.Optim.update ~lr ~damping Model.P.ptree state params out in
+    let loss = item [] out.loss in
+    Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
+    loop ~i:(i + 1) params state)
 
-let main config = Nx.Rng.with_key (Nx.Rng.key config.seed) (fun () -> run config)
-
-let () =
-  let doc = "Student-teacher linear regression with the SOFO update (Alg. 1)." in
-  let info = Cmdliner.Cmd.info "linear" ~doc in
-  exit (Cmdliner.Cmd.eval (Cmdliner.Cmd.v info Cmdliner.Term.(const main $ config_term)))
+let state = Sofo.Optim.init ~key:(Rng.key 1985) ()
+let () = Stdio.printf "device: %s\n%!" (Nx.Device.name device)
+let _ = loop ~i:0 student state
