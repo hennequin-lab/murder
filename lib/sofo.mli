@@ -199,11 +199,11 @@ val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
     differentiable belongs to the sketch.
 
     Two halves, split by what compiles rather than by taste. The sketching half
-    is differentiable and jits ({!Compiled}), while the update needs the SVD of
-    the sketched GGN, which does not compile: it runs eagerly on the host at
-    O(k³), negligible beside a model with P ≫ k parameters — the premise of
-    the algorithm. A deployment therefore compiles one program and keeps the
-    update outside it:
+    is differentiable and jits ({!Compiled}), while the update needs the
+    eigendecomposition of the sketched GGN, which does not compile: it runs
+    eagerly on the host at O(k³), negligible beside a model with P ≫ k
+    parameters — the premise of the algorithm. A deployment therefore compiles
+    one program and keeps the update outside it:
 
     {[
     module O = Sofo.Optim.Compiled (Params) (Aux)
@@ -323,8 +323,9 @@ module Optim : sig
     ]
 
   (** [coordinates ?damping ?preconditioner ?gram ggn c] is the damped sketched
-      solve [U (S + γ·I)^{-p} Vᵀ c] of the sketched normal equations
-      [ggn·z = c], from the SVD of [ggn] — Algorithm 1, lines 10–12 — with [γ]
+      solve [U (S + γ·I)^{-p} Uᵀ c] of the sketched normal equations
+      [ggn·z = c], from the eigendecomposition [ggn = U S Uᵀ] of the
+      symmetric [ggn], which is its SVD — Algorithm 1, lines 10–12 — with [γ]
       from [damping] and [p] from [preconditioner] (default [`Inverse]).
       The solve is eager and O(k³), and it is the one place the library needs a
       factorization.
@@ -338,9 +339,9 @@ module Optim : sig
       properties of the curvature rather than of the draw. Omit [gram] to solve
       in the sketch's own basis, unconsidered directions and all.
 
-      {b Note.} Neither SVD — of the Gram, nor of the sketched GGN — is
-      differentiable or compiles, so this is for the host side of a step, not
-      inside a [Rune.jit]ed program.
+      {b Note.} Neither eigendecomposition — of the Gram, nor of the sketched
+      GGN — compiles, so this is for the host side of a step, not inside a
+      [Rune.jit]ed program.
 
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
       smallest singular value is 0, and for a [gram] that is rank-deficient:

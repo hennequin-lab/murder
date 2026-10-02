@@ -11,9 +11,10 @@
 
    - the *sketching* half is differentiable and compiles, so [Compiled] builds
      the (params, key) → (c, C, G̃, Θ) structure that [Rune.jit] wraps;
-   - the *update* half needs the SVD of the sketched GGN, which does not
-     compile, so it runs eagerly on the host at O(k³) — negligible against a
-     model with P ≫ k parameters, which is the algorithm's whole premise.
+   - the *update* half needs the eigendecomposition of the sketched GGN,
+     which does not compile, so it runs eagerly on the host at O(k³) —
+     negligible against a model with P ≫ k parameters, which is the
+     algorithm's whole premise.
 
    Everything here is a pure function of values. The only state is [state]: the
    key the directions are drawn from, carried as an int32 tensor so it can ride
@@ -114,24 +115,30 @@ let gram (type p) (structure : p Nx.Ptree.t) ~k (dirs : p) : Nx.float64_t =
     dirs
     (Nx.zeros Nx.float64 [| k; k |])
 
-(* The whitening transform Q = Z^{-1/2} of a Gram matrix, from its SVD: the
-   matrix that turns the tangents a sketch was drawn along into an orthonormal
-   basis. [Nx.svd] may return a [vt] that is not [u]'s transpose even though Z
-   is symmetric — the singular vectors of a degenerate spectrum are defined
-   only up to a rotation within it — so the second factor is [u]'s own
-   transpose, and Q is the symmetric inverse square root: [Q G̃ Qᵀ] and the
-   step's [Θ (Q z)] are then the same change of basis, which they would not be
-   for [u·s^{-1/2}·vt]. [coordinates] makes the same choice for the same
-   reason.
+(* [spectrum z] is [(u, s, smax, smin)] for a symmetric matrix [z]: [z]'s
+   singular vectors [u] and values [s], with the largest and smallest of [s].
+   A symmetric matrix's singular values are its eigenvalues' magnitudes and its
+   singular vectors are its eigenvectors, so [Nx.eigh] gives the factorization
+   [Nx.svd] would, [z = u diag(±s) uᵀ], at about half the cost. Taking
+   magnitudes keeps the SVD's semantics where rounding leaves an eigenvalue of
+   a positive semi-definite matrix slightly negative. *)
+let spectrum (z : Nx.float64_t) =
+  let w, u = Nx.eigh z in
+  let s = Nx.abs w in
+  u, s, Nx.item [] (Nx.max s), Nx.item [] (Nx.min s)
+
+(* The whitening transform Q = Z^{-1/2} of a Gram matrix: the matrix that turns
+   the tangents a sketch was drawn along into an orthonormal basis. Q is the
+   symmetric inverse square root [u s^{-1/2} uᵀ], so [Q G̃ Qᵀ] and the step's
+   [Θ (Q z)] are the same change of basis. [coordinates] makes the same choice
+   for the same reason.
 
    A rank-deficient Gram has no inverse square root and no arithmetic will
    produce one: some drawn lanes span nothing, which is a statement about [k]
    against the number of parameters, so it raises. *)
 let inverse_sqrt (z : Nx.float64_t) : Nx.float64_t =
   let k = (Nx.shape z).(0) in
-  let u, s, _ = Nx.svd z in
-  let smin = Nx.item [ k - 1 ] s
-  and smax = Nx.item [ 0 ] s in
+  let u, s, smax, smin = spectrum z in
   if smin <= 1e-12 *. smax
   then
     invalid_arg
@@ -147,11 +154,11 @@ let inverse_sqrt (z : Nx.float64_t) : Nx.float64_t =
 
 (* ── the update (Alg. 1, lines 10–12) ────────────────────────────────────── *)
 
-(* z = U (S + γ I)^{-p} Vᵀ C, from the SVD of the sketched GGN, with γ set by
-   the damping mode and p by the preconditioner (1, Alg. 1's; or 1/2, which
+(* z = U (S + γ I)^{-p} Uᵀ C, from the spectrum of the sketched GGN, with γ set
+   by the damping mode and p by the preconditioner (1, Alg. 1's; or 1/2, which
    caps what a poorly resolved direction can contribute). G̃ is symmetric
-   positive semi-definite, so V = U up to signs and an eigendecomposition would
-   do; the SVD is what the algorithm prescribes and what is used here.
+   positive semi-definite, so Algorithm 1's SVD is its eigendecomposition
+   ([spectrum]).
 
    [gram] whitens before it solves. The sketched GGN is the curvature of the
    sampled subspace expressed in whatever basis the draw happened to produce,
@@ -181,14 +188,13 @@ let coordinates
     | None -> c
     | Some q -> Nx.matmul q c
   in
-  let u, s, _ = Nx.svd ggn in
+  let u, s, smax, smin = spectrum ggn in
   let vt = Nx.transpose u in
   let gamma =
     match damping with
     | `Absolute value -> value
-    | `Relative_from_top factor -> factor *. Nx.item [ 0 ] s (* singular values descend *)
+    | `Relative_from_top factor -> factor *. smax
     | `Relative_from_bottom factor ->
-      let smin = Nx.item [ k - 1 ] s in
       if smin <= 0.0
       then
         invalid_arg

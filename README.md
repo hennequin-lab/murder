@@ -23,9 +23,10 @@ The library splits along what can be compiled:
   gradient sketch `C = Θᵀ∇c`, `G̃`, and the sampled directions `Θ`. This half
   differentiates, and it jits (`Sofo.Optim.Compiled`).
 - **Updating** (`Sofo.Optim`) — Algorithm 1's damped subspace solve
-  `θ ← θ − η·Θ·U(S + γI)⁻¹VᵀC`, and the shift. It needs an SVD, which neither
-  differentiates nor compiles, so it runs eagerly on the host at O(k³) — the
-  cheap part, against a model with P ≫ k parameters.
+  `θ ← θ − η·Θ·U(S + γI)⁻¹UᵀC`, and the shift. The solve needs the
+  eigendecomposition of the symmetric `G̃`, which does not compile, so it runs
+  eagerly on the host at O(k³) — the cheap part, against a model with P ≫ k
+  parameters.
 
 A loss is ordinary OCaml either way. `Sofo.observe` is an effect that only a
 sketch collector intercepts; every other Rune handler lets it pass. The same
