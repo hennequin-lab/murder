@@ -130,6 +130,7 @@ let run config =
          { O.loss = Nx.sum i.O.params.w
          ; c = Nx.zeros f64 [| 1 |]
          ; ggn = Nx.zeros f64 [| 1; 1 |]
+         ; gram = Nx.zeros f64 [| 1; 1 |]
          ; dirs = i.O.params
          })
       { O.params = student0; key = state.key; aux = () }
@@ -264,7 +265,7 @@ let run config =
     "  compiled sketch: replay                              %8.1f ms\n"
     (median times);
   Printf.printf
-    "  host update: eigh of %d×%d, solve, step                %8.1f ms\n"
+    "  update: eigh of %d×%d, solve, compiled step            %8.1f ms\n"
     config.k
     config.k
     (median update_ms);

@@ -203,7 +203,7 @@ val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
     eigendecomposition of the sketched GGN, which does not compile: it runs
     eagerly on the host at O(k³), negligible beside a model with P ≫ k
     parameters — the premise of the algorithm. A deployment therefore compiles
-    one program and keeps the update outside it:
+    the sketch and keeps the solve outside it:
 
     {[
     module O = Sofo.Optim.Compiled (Params) (Aux)
@@ -211,7 +211,7 @@ val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
     (* traced once, replayed for every step: the compiled half *)
     let sketch_step = Rune.jit O.signature (O.sketch ~k loss)
 
-    (* the loop: one replay, one eager solve, one eager step *)
+    (* the loop: one replay, one host solve, one compiled step *)
     let params, state =
       let out = sketch_step { O.params; key = state.Sofo.Optim.key; aux } in
       O.update ~lr ~damping state params out
@@ -341,7 +341,7 @@ module Optim : sig
 
       {b Note.} Neither eigendecomposition — of the Gram, nor of the sketched
       GGN — compiles, so this is for the host side of a step, not inside a
-      [Rune.jit]ed program.
+      [Rune.jit]ed program. Its arguments must be on the host.
 
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
       smallest singular value is 0, and for a [gram] that is rank-deficient:
@@ -444,6 +444,7 @@ module Optim : sig
       { loss : Nx.float64_t (** The primal total, as a scalar. *)
       ; c : Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
       ; ggn : Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
+      ; gram : Nx.float64_t (** ΘΘᵀ, shape [k;k]: {!gram} of [dirs]. *)
       ; dirs : P.t (** Θ, the directions the sketch was measured along. *)
       }
 
@@ -478,6 +479,10 @@ module Optim : sig
         {[
         let params, state = O.update ~lr ~damping state params out in
         ]}
+
+        The solve runs on the host, from [out]'s [k]-sized [c], [ggn] and
+        [gram]. The step on the parameters is compiled and runs where [params]
+        and [out.dirs] live, so parameters placed on a GPU stay there.
 
         {!Optim.update} is the same step without the state, for callers that
         hold a sketch and nothing else. *)

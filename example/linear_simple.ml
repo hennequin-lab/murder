@@ -6,9 +6,17 @@ let batch_size = 512
 let max_iter = 10_000
 let lr = 0.1
 let n_tangents = 128
-let beam = Some 2
-let parallel = Some 8
 let damping : Sofo.Optim.damping = `Absolute 0.
+
+(* [--device] lists the devices to try, in order, as [Nx.Device.of_string]
+   reads them: "cpu" (the default), "gpu", "cuda:1", "gpu,cpu". The sketch
+   accumulates in float64, which Metal cannot compute. *)
+let device =
+  match Nx.Device.of_string Cmdargs.(get_string "--device" |> default "cpu") with
+  | Ok wants -> Nx.Device.first wants
+  | Error msg ->
+    Stdio.prerr_endline msg;
+    Stdlib.exit 2
 
 module Model = struct
   module P = struct
@@ -24,11 +32,14 @@ module Model = struct
     x *@ w
 end
 
-let student = Model.init ~d_in ~d_out
+let student =
+  Model.init ~d_in ~d_out |> Nx.Ptree.place Model.P.ptree (Nx.Placement.on device)
 
 let minibatch =
   let open Infix in
   let teacher = Model.init ~d_in ~d_out in
+  (* draw inputs from an ill-conditioned Gaussian;
+     this covariance is the GGN (and also the Hessian in this case)! *)
   let input_cov_sqrt =
     let u, _ = qr (randn float32 [| d_in; d_in |]) in
     let lambda =
@@ -57,13 +68,9 @@ let objective params key =
   let y' = Model.forward params x in
   Sofo.mse ~target:y y'
 
-(* JIT compilation machinery for a sketched objective *)
-let sketch_step =
-  Rune.jit
-    ?beam
-    ?parallel
-    O.signature
-    (O.sketch ~k:n_tangents objective)
+(* The sketch compiles for the device the parameters are placed on; the
+   keys are host values that join them on each call. *)
+let sketch_step = Rune.jit O.signature (O.sketch ~k:n_tangents objective)
 
 let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
@@ -77,4 +84,5 @@ let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
     loop ~i:(i + 1) params state)
 
 let state = Sofo.Optim.init ~key:(Rng.key 1985) ()
+let () = Stdio.printf "device: %s\n%!" (Nx.Device.name device)
 let _ = loop ~i:0 student state

@@ -14,7 +14,8 @@
    - the *update* half needs the eigendecomposition of the sketched GGN,
      which does not compile, so it runs eagerly on the host at O(k³) —
      negligible against a model with P ≫ k parameters, which is the
-     algorithm's whole premise.
+     algorithm's whole premise. Only k-sized matrices cross to the host: the
+     step on the parameters is compiled again, where they live.
 
    Everything here is a pure function of values. The only state is [state]: the
    key the directions are drawn from, carried as an int32 tensor so it can ride
@@ -80,16 +81,19 @@ let apply (type p) (structure : p Nx.Ptree.t) ~k (thetas : p) (z : Nx.float64_t)
            (Array.sub (Nx.shape theta) 1 (Array.length (Nx.shape theta) - 1)))
     thetas
 
-(* [params - lr * dw], leafwise, in each leaf's own dtype. Non-float leaves
-   are passed through untouched: their directions are zero, and a parameter
-   that cannot carry one is not the optimizer's to move (vega's convention for
-   the same leaves). *)
-let shift (type p) (structure : p Nx.Ptree.t) ~lr (params : p) (dw : p) : p =
+(* [params - lr * dw], leafwise, in each leaf's own dtype, for a scalar
+   tensor [lr]: a tensor, so a compiled step takes a new rate as data. Non-float
+   leaves are passed through untouched: their directions are zero, and a
+   parameter that cannot carry one is not the optimizer's to move (vega's
+   convention for the same leaves). *)
+let shift (type p) (structure : p Nx.Ptree.t) ~(lr : Nx.float64_t) (params : p) (dw : p)
+  : p
+  =
   Nx.Ptree.map2
     structure
     (fun _ p d ->
        if Nx_dtype.is_float (Nx.dtype p)
-       then Nx.sub p (Nx.mul_s d (Nx_dtype.of_float (Nx.dtype d) lr))
+       then Nx.sub p (Nx.mul d (Nx.cast (Nx.dtype d) lr))
        else p)
     params
     dw
@@ -229,7 +233,7 @@ let update
   =
   let g = gram structure ~k:sk.k sk.dirs in
   let dw = sk.apply (coordinates ?damping ?preconditioner ~gram:g sk.ggn sk.c) in
-  shift structure ~lr params dw
+  shift structure ~lr:(Nx.scalar Nx.float64 lr) params dw
 
 (* ── the eager step ──────────────────────────────────────────────────────── *)
 
@@ -297,6 +301,7 @@ module Compiled (P : Structure) (Aux : Structure) = struct
     { loss : Nx.float64_t
     ; c : Nx.float64_t
     ; ggn : Nx.float64_t
+    ; gram : Nx.float64_t
     ; dirs : P.t
     }
 
@@ -308,8 +313,9 @@ module Compiled (P : Structure) (Aux : Structure) = struct
       let loss = field cur "loss" tensor o.loss in
       let c = field cur "c" tensor o.c in
       let ggn = field cur "ggn" tensor o.ggn in
+      let gram = field cur "gram" tensor o.gram in
       let dirs = field cur "dirs" (structure P.ptree) o.dirs in
-      { loss; c; ggn; dirs }
+      { loss; c; ggn; gram; dirs }
   end
 
   let out_ptree = Nx.Ptree.instantiate (module Out)
@@ -322,20 +328,31 @@ module Compiled (P : Structure) (Aux : Structure) = struct
      Compile it with [Rune.jit signature]; run it as it is for an eager step.
      The directions are drawn *inside* it, from the carried key, so one
      compilation serves every iteration, and so is the aux: the loss sees its
-     leaves, so a batch that changes between steps is data, not a new trace. *)
+     leaves, so a batch that changes between steps is data, not a new trace.
+     The Gram ΘΘᵀ is formed here too, next to the directions, so the host
+     solve reads k×k matrices and never the k×P directions. *)
   let sketch ~k (loss : P.t -> Aux.t -> ('c, 'd) Nx.t) i =
     let dirs = directions P.ptree ~key:i.key ~k i.params in
     let sk = Sketch.run P.ptree (fun params -> loss params i.aux) i.params dirs in
-    { loss = sk.loss; c = sk.c; ggn = sk.ggn; dirs }
+    { loss = sk.loss; c = sk.c; ggn = sk.ggn; gram = gram P.ptree ~k dirs; dirs }
+
+  (* [params - lr * Θ z], compiled, so it runs where the parameters and the
+     directions live. [z] and [lr] are host values that join them per call. *)
+  let shift_by =
+    Rune.jit
+      Nx.Ptree.(P.ptree @-> P.ptree @-> tensor @-> tensor @-> returns P.ptree)
+      (fun params dirs (z : Nx.float64_t) lr ->
+         shift P.ptree ~lr params (apply P.ptree ~k:(Nx.shape z).(0) dirs z))
 
   (* The step, and the state that produced it, advanced together: the caller
      threads one state through the loop, so the key the sketch consumed and the
-     key the next sketch is drawn from cannot drift apart. *)
+     key the next sketch is drawn from cannot drift apart. The solve runs on
+     the host, which copies three k-sized tensors when the sketch ran on a
+     GPU. *)
   let update ?(lr = 1.0) ?damping ?preconditioner (st : state) params o =
-    let k = (Nx.shape o.c).(0) in
-    let g = gram P.ptree ~k o.dirs in
-    let dw =
-      apply P.ptree ~k o.dirs (coordinates ?damping ?preconditioner ~gram:g o.ggn o.c)
+    let host = Nx.place Nx.Placement.host in
+    let z =
+      coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
     in
-    shift P.ptree ~lr params dw, next st
+    shift_by params o.dirs z (Nx.scalar Nx.float64 lr), next st
 end

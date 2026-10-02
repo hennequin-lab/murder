@@ -26,7 +26,7 @@ The library splits along what can be compiled:
   `θ ← θ − η·Θ·U(S + γI)⁻¹UᵀC`, and the shift. The solve needs the
   eigendecomposition of the symmetric `G̃`, which does not compile, so it runs
   eagerly on the host at O(k³) — the cheap part, against a model with P ≫ k
-  parameters.
+  parameters. The shift compiles, and runs where the parameters live.
 
 A loss is ordinary OCaml either way. `Sofo.observe` is an effect that only a
 sketch collector intercepts; every other Rune handler lets it pass. The same
@@ -39,19 +39,29 @@ under `Sofo.sketch` — swap the driver, not the model.
 Student–teacher linear regression with ill-conditioned inputs: draw a teacher
 `W*`, a student `W`, and minibatches `y = x·W*`, then train the student with
 the SOFO update. This is the whole example (run it with
-`dune exec example/linear_simple.exe`):
+`dune exec example/linear_simple.exe`, and add `-- --device gpu` to run it on
+a CUDA GPU):
 
 ```ocaml
 open Base
 open Nx
 
-let device = "CPU"
 let d_in, d_out = 100, 3
 let batch_size = 512
 let max_iter = 10_000
 let lr = 0.1
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Absolute 0.
+
+(* [--device] lists the devices to try, in order, as [Nx.Device.of_string]
+   reads them: "cpu" (the default), "gpu", "cuda:1", "gpu,cpu". The sketch
+   accumulates in float64, which Metal cannot compute. *)
+let device =
+  match Nx.Device.of_string Cmdargs.(get_string "--device" |> default "cpu") with
+  | Ok wants -> Nx.Device.first wants
+  | Error msg ->
+    Stdio.prerr_endline msg;
+    Stdlib.exit 2
 
 module Model = struct
   module P = struct
@@ -67,7 +77,8 @@ module Model = struct
     x *@ w
 end
 
-let student = Model.init ~d_in ~d_out
+let student =
+  Model.init ~d_in ~d_out |> Nx.Ptree.place Model.P.ptree (Nx.Placement.on device)
 
 let minibatch =
   let open Infix in
@@ -89,7 +100,9 @@ let minibatch =
     x, y
 
 module Aux = struct
-  type t = Rng.key [@@deriving ptree]
+  type t = Rng.t
+
+  let ptree = Nx.Rng.ptree
 end
 
 module O = Sofo.Optim.Compiled (Model.P) (Aux)
@@ -98,10 +111,11 @@ let objective params key =
   let open Infix in
   let x, y = minibatch ~key batch_size in
   let y' = Model.forward params x in
-  Sofo.mse y' y
+  Sofo.mse ~target:y y'
 
-let sketch_step =
-  Rune.jit2 ~device (module O.In) (module O.Out) (O.sketch ~k:n_tangents objective)
+(* The sketch compiles for the device the parameters are placed on; the
+   keys are host values that join them on each call. *)
+let sketch_step = Rune.jit O.signature (O.sketch ~k:n_tangents objective)
 
 let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
@@ -115,6 +129,7 @@ let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
     loop ~i:(i + 1) params state)
 
 let state = Sofo.Optim.init ~key:(Rng.key 1985) ()
+let () = Stdio.printf "device: %s\n%!" (Nx.Device.name device)
 let _ = loop ~i:0 student state
 ```
 
@@ -137,14 +152,17 @@ How to read it:
    not correlate.
 4. **The sketching half is compiled once.** `O = Sofo.Optim.Compiled (Model.P) (Aux)`
    ties the sketching computation to the parameter and aux structures, and
-   `Rune.jit2 ... (O.sketch ~k:n_tangents objective)` traces it as a pure
+   `Rune.jit O.signature (O.sketch ~k:n_tangents objective)` traces it as a pure
    function of `{ params; key; aux }`. The directions Θ are drawn _inside_ it,
    from the key leaf, so replaying it each step samples a fresh 128-dimensional
    subspace without retracing.
 5. **The loop replays, solves, steps.** One compiled call produces the loss, `C`,
-   `G̃` and Θ; `O.update` runs the eager host-side solve and parameter shift, and
+   `G̃`, the Gram ΘΘᵀ and Θ; `O.update` solves on the host from the k-sized
+   numbers, shifts the parameters in a compiled step where they live, and
    advances the direction stream with the parameters, so the next iteration
-   cannot reuse the subspace it just measured. `damping = \`Absolute 0.`and`lr = 0.1` make it a scaled Newton step inside the subspace.
+   cannot reuse the subspace it just measured. The parameters are placed on the
+   `--device` (`Nx.Ptree.place`), and everything that touches them is
+   compiled for it. `damping = \`Absolute 0.`and`lr = 0.1` make it a scaled Newton step inside the subspace.
 
 For the full deployment — an eager `Sofo.check` cross-check, a compiled
 cross-check, the exact second-order model residual, a first-order control
@@ -155,7 +173,7 @@ replaying the _same_ compiled sketch, and timings — see `example/linear.ml`.
 | What you want                                      | Entry point                                                         |
 | -------------------------------------------------- | ------------------------------------------------------------------- |
 | Measure loss, `C`, `G̃` at `params`, eagerly        | `Sofo.sketch (module P) ~k loss params` → `'p sketch`               |
-| Compile the measurement for a training run         | `Sofo.Optim.Compiled (P) (Aux).sketch` with `Rune.jit2`             |
+| Compile the measurement for a training run         | `Sofo.Optim.Compiled (P) (Aux).sketch` with `Rune.jit`              |
 | Cross-check that the observed little losses add up | `Sofo.check sk`, `O.check out`, `Sofo.diagnostics`                  |
 | Describe a little loss's curvature                 | `Curv.scale`, `Curv.diag`, `Curv.softmax_ce`, `Curv.hvp`            |
 | Mark a little loss by hand                         | `Sofo.observe ~y ~curv l`                                           |
@@ -179,9 +197,9 @@ implementation notes, including what each milestone settled.
 | `example/lorenz.ml`        | The composition study: one loss driven by `value_and_grad`, `jvp_k` and `sketch`, with memory and jit-staging numbers.                                    |
 
 ```bash
-dune exec example/linear_simple.exe
+dune exec example/linear_simple.exe -- --device gpu
 dune exec example/linear.exe -- --steps 40 --lanes 32
-dune exec example/lorenz_simple.exe
+dune exec example/lorenz_simple.exe -- -d /tmp --device gpu
 dune exec example/lorenz.exe
 ```
 
