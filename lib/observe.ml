@@ -28,17 +28,25 @@ let directions = Rune.axis ()
 let curvature : (float, Nx.float64_elt) Rune.Total.t = Rune.Total.make ()
 
 let mark ~curv y =
-  Rune.custom_jvp Nx.Ptree.tensor Nx.Ptree.unit (fun _ -> (), fun dy ->
-    let ys = Rune.lanes directions dy in
-    let rows t = Nx.reshape [| Nx.dim 0 t; -1 |] t in
-    let block =
-      Nx.cast Nx.float64 (Nx.matmul (rows ys) (Nx.transpose (rows (Curv.apply curv ys))))
-    in
-    (* Every block is symmetric by construction — YᵀHY with H symmetric — so
-       the accumulator is symmetrized up to floating-point asymmetry, which
-       later decompositions would rather not see. *)
-    let block = Nx.mul_s (Nx.add block (Nx.transpose block)) 0.5 in
-    Rune.Total.add curvature block) y
+  Rune.custom_jvp
+    Nx.Ptree.tensor
+    Nx.Ptree.unit
+    (fun _ ->
+       ( ()
+       , fun dy ->
+           let ys = Rune.lanes directions dy in
+           let rows t = Nx.reshape [| Nx.dim 0 t; -1 |] t in
+           let block =
+             Nx.cast
+               Nx.float64
+               (Nx.matmul (rows ys) (Nx.transpose (rows (Curv.apply curv ys))))
+           in
+           (* Every block is symmetric by construction — YᵀHY with H symmetric — so
+              the accumulator is symmetrized up to floating-point asymmetry, which
+              later decompositions would rather not see. *)
+           let block = Nx.mul_s (Nx.add block (Nx.transpose block)) 0.5 in
+           Rune.Total.add curvature block ))
+    y
 
 (* [observe ~y ~curv l] marks [l] as a little loss in the prediction [y], whose
    Hessian with respect to [y] is [curv]: under a sketch the block joins the

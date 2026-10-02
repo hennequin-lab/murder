@@ -39,7 +39,8 @@ let check_arr ?(eps = 1e-9) ~msg expected actual =
    that may have been optimized differently: the long rollout's values grow
    with the horizon, so a fixed absolute tolerance says nothing. *)
 let check_rel ~msg expected actual =
-  let expected = Nx.to_array expected and actual = Nx.to_array actual in
+  let expected = Nx.to_array expected
+  and actual = Nx.to_array actual in
   equal ~msg int (Array.length expected) (Array.length actual);
   Array.iteri
     (fun i e ->
@@ -48,7 +49,9 @@ let check_rel ~msg expected actual =
        let scale = if scale = 0.0 then 1.0 else scale in
        equal
          ~msg:(Printf.sprintf "%s[%d]" msg i)
-         (float 1e-9) 0.0 (Float.abs (e -. a) /. scale))
+         (float 1e-9)
+         0.0
+         (Float.abs (e -. a) /. scale))
     expected
 
 (* [raises_containing ~substring f] checks that [f] fails for the stated
@@ -135,7 +138,6 @@ let sampler k p =
   }
 
 let thetas_for = sampler
-
 let sketch ?(kk = k) loss p = Sofo.sketch params_ptree loss p (sampler kk p)
 
 (* The reference tangent batch, computed independently of the lane machinery
@@ -145,7 +147,11 @@ let lane_tangents ~k (f : params -> Nx.float64_t) p thetas =
     ~axis:0
     (List.init k (fun i ->
        snd
-         (Rune.jvp params_ptree Nx.Ptree.tensor f p
+         (Rune.jvp
+            params_ptree
+            Nx.Ptree.tensor
+            f
+            p
             (Nx.Ptree.map params_ptree (fun _ t -> Nx.slice [ Nx.I i ] t) thetas))))
 
 (* Θᵀ[·] for the whole parameter record: each leaf's lane axis contracted
@@ -242,8 +248,7 @@ let endpoints =
 
 (* The endpoint loss, written the natural way: batch the trials with vmap and
    observe the batched prediction. *)
-let vmap_loss p =
-  Sofo.mse ~target:endpoints (Rune.vmap' (fun x -> roll p x 4) starts)
+let vmap_loss p = Sofo.mse ~target:endpoints (Rune.vmap' (fun x -> roll p x 4) starts)
 
 (* The same loss with the map written out as a loop. *)
 let loop_loss p =
@@ -283,7 +288,6 @@ module Trial = struct
 end
 
 let trial_ptree : trial Nx.Ptree.t = Nx.Ptree.instantiate (module Trial)
-
 let trials = { x = starts; t = endpoints }
 let batch = float_of_int vmap_trials
 let n_pred = 3.0
@@ -314,9 +318,7 @@ let test_observation_inside_a_vmap_scales_by_the_batch () =
   let p = params ()
   and kk = 2 in
   let sk = sketch ~kk in_map_loss p in
-  let sk_batched =
-    sketch ~kk vmap_loss p
-  in
+  let sk_batched = sketch ~kk vmap_loss p in
   (* vmap re-performs the body batched rather than looping it, so the [M]
      little losses are packed into a single observation whose block contracts
      over the map's axis. *)
@@ -344,7 +346,8 @@ let test_an_unscaled_in_map_mean_overweights_the_block () =
   let sk = sketch loss p in
   let scaled = sketch ~kk:k in_map_loss p in
   check_arr ~msg:"the loss is the same" (Nx.to_array scaled.loss) sk.loss;
-  check_arr ~msg:"the block carries the missing factor of M"
+  check_arr
+    ~msg:"the block carries the missing factor of M"
     (Nx.to_array (Nx.mul_s scaled.ggn batch))
     sk.ggn
 
@@ -409,7 +412,8 @@ let test_sketch_of_grad_is_the_batched_hessian () =
   let z = vec [| 0.4; -1.1; 0.7 |] in
   let eps = 1e-4 in
   let p' =
-    Nx.Ptree.map2 params_ptree
+    Nx.Ptree.map2
+      params_ptree
       (fun _ leaf d -> Nx.add leaf (Nx.mul_s d (Nx_dtype.of_float (Nx.dtype d) eps)))
       p
       (sk.apply z)
@@ -453,14 +457,10 @@ let test_rng_in_the_graph_is_a_constant () =
   let p = params ()
   and kk = 2 in
   let thetas = thetas_for kk p in
-  let sk_noisy =
-    Nx.Rng.with_key (Nx.Rng.key 11) (fun () ->
-      sketch ~kk noisy p)
-  in
+  let sk_noisy = Nx.Rng.with_key (Nx.Rng.key 11) (fun () -> sketch ~kk noisy p) in
   let sk_clean = sketch ~kk clean p in
   let _, grads =
-    Nx.Rng.with_key (Nx.Rng.key 11) (fun () ->
-      Rune.value_and_grad params_ptree noisy p)
+    Nx.Rng.with_key (Nx.Rng.key 11) (fun () -> Rune.value_and_grad params_ptree noisy p)
   in
   check_arr
     ~msg:"C = Θᵀ∇c of the noisy loss"
@@ -502,8 +502,8 @@ let test_custom_jvp_inside () =
       Nx.Ptree.tensor
       Nx.Ptree.tensor
       (fun x ->
-        ( Nx.relu x
-        , fun dx -> Nx.where (Nx.greater x (Nx.zeros_like x)) dx (Nx.zeros_like dx) ))
+         ( Nx.relu x
+         , fun dx -> Nx.where (Nx.greater x (Nx.zeros_like x)) dx (Nx.zeros_like dx) ))
       x
   in
   let loss p =
@@ -558,10 +558,7 @@ let test_jitted_sketch_matches_eager () =
       Nx.Ptree.(params_ptree @-> returns tensor)
       (fun p -> bundle (Sofo.sketch params_ptree vmap_loss p dirs))
   in
-  check_arr
-    ~msg:"a jitted sketch replays identically"
-    (Nx.to_array (jitted p))
-    (jitted p);
+  check_arr ~msg:"a jitted sketch replays identically" (Nx.to_array (jitted p)) (jitted p);
   check_arr ~msg:"jitted sketch (loss, C, G̃)" (Nx.to_array eager) (jitted p)
 
 let test_a_long_scan_compiles () =
@@ -628,10 +625,10 @@ let test_control_flow_is_inherited () =
 let tests =
   [ group
       "the ✓ rows"
-      [ test
-          "the total threads a scan inside the loss"
-          test_scan_threads_the_total
-      ; test "vmap inside the loss matches the loop oracle" test_vmap_inside_matches_the_loop
+      [ test "the total threads a scan inside the loss" test_scan_threads_the_total
+      ; test
+          "vmap inside the loss matches the loop oracle"
+          test_vmap_inside_matches_the_loop
       ; test
           "an observation inside a vmap scales by the batch"
           test_observation_inside_a_vmap_scales_by_the_batch

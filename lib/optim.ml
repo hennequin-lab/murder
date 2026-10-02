@@ -9,8 +9,9 @@
 
    Two halves, and the split is forced by the hardware rather than chosen:
 
-   - the *sketching* half is differentiable and compiles, so [Compiled] builds
-     the (params, key) → (c, C, G̃, Θ) structure that [Rune.jit] wraps;
+   - the *sketching* half is differentiable and compiles, so [sketch_jit]
+     wraps the (key, aux, params) → (loss, c, C, G̃, Θ, gram) computation in
+     [Rune.jit];
    - the *update* half needs the eigendecomposition of the sketched GGN,
      which does not compile, so it runs eagerly on the host at O(k³) —
      negligible against a model with P ≫ k parameters, which is the
@@ -22,8 +23,8 @@
    a compiled step as an ordinary input leaf, and the iteration counter, which
    stays on the host because it only ever feeds key derivation and schedules.
    An iteration consumes that state and produces its successor, so [step] and
-   [Compiled.update] return the two together and a loop threads one state
-   rather than remembering to derive the next one. *)
+   [update] return the two together and a loop threads one state rather than
+   remembering to derive the next one. *)
 
 type damping =
   [ `Absolute of float
@@ -221,7 +222,7 @@ let coordinates
   | None -> z
   | Some q -> Nx.matmul (Nx.transpose q) z
 
-let update
+let update_sketch
       (type p)
       (structure : p Nx.Ptree.t)
       ?(lr = 1.0)
@@ -251,7 +252,7 @@ let step
   =
   let thetas = directions structure ~key:st.key ~k params in
   let sk = Sketch.run structure loss params thetas in
-  let params = update structure ~lr ?damping ?preconditioner sk params in
+  let params = update_sketch structure ~lr ?damping ?preconditioner sk params in
   params, next st, sk
 
 (* ── the compiled half ─────────────────────────────────── *)

@@ -51,7 +51,6 @@ module Params = struct
 end
 
 let params_ptree : params Nx.Ptree.t = Nx.Ptree.instantiate (module Params)
-
 let x_data = mat 4 3 [| 0.2; -0.4; 0.6; 0.1; -0.7; 0.5; 0.3; 0.9; -0.2; 0.8; 0.4; -0.1 |]
 let target = mat 4 2 [| 0.5; -0.2; -0.3; 0.8; 0.6; 0.1; -0.9; 0.4 |]
 
@@ -65,8 +64,7 @@ let data_loss p = Sofo.mse ~target (predict p)
 
 (* Two little losses, both observed: the readout's error and a ridge on w. *)
 let loss_all p =
-  Nx.add (Sofo.mse ~target (predict p))
-    (Sofo.mse ~target:(Nx.zeros_like p.w) p.w)
+  Nx.add (Sofo.mse ~target (predict p)) (Sofo.mse ~target:(Nx.zeros_like p.w) p.w)
 
 (* Deterministic directions, so every reference uses the same Θ. *)
 let fixed_sampler k p = { w = lanes ~k p.w; b = lanes ~k p.b }
@@ -107,7 +105,8 @@ let test_quadratic_expansion () =
   let z = vec [| 0.4; -1.1; 0.7; 0.2 |] in
   let eps = 1e-3 in
   let p' =
-    Nx.Ptree.map2 params_ptree
+    Nx.Ptree.map2
+      params_ptree
       (fun _ pl dp -> Nx.add pl (Nx.mul_s dp (Nx_dtype.of_float (Nx.dtype dp) eps)))
       p
       (sk.apply z)
@@ -232,7 +231,8 @@ let test_unobserved_term_contributes_no_block () =
   and k = 2 in
   let sk = sketch k params_ptree loss p
   and observed = sketch k params_ptree data_loss p in
-  check_arr ~msg:"the unobserved ridge contributes no curvature"
+  check_arr
+    ~msg:"the unobserved ridge contributes no curvature"
     (Nx.to_array observed.ggn)
     sk.ggn
 
@@ -243,8 +243,11 @@ let test_two_losses_contribute_two_blocks () =
   and k = 2 in
   let both = sketch k params_ptree loss_all p
   and readout = sketch k params_ptree data_loss p
-  and ridge = sketch k params_ptree (fun p -> Sofo.mse ~target:(Nx.zeros_like p.w) p.w) p in
-  check_arr ~msg:"the two blocks add"
+  and ridge =
+    sketch k params_ptree (fun p -> Sofo.mse ~target:(Nx.zeros_like p.w) p.w) p
+  in
+  check_arr
+    ~msg:"the two blocks add"
     (Nx.to_array (Nx.add readout.ggn ridge.ggn))
     both.ggn
 
@@ -269,8 +272,7 @@ let test_reproducible_with_an_rng_key () =
   and k = 3 in
   let sketch_under key =
     Nx.Rng.with_key (Nx.Rng.key key) (fun () ->
-      Sofo.sketch params_ptree loss_all p
-        (Sofo.Optim.directions params_ptree ~k p))
+      Sofo.sketch params_ptree loss_all p (Sofo.Optim.directions params_ptree ~k p))
   in
   let a = sketch_under 42
   and b = sketch_under 42
@@ -282,13 +284,11 @@ let test_reproducible_with_an_rng_key () =
 
 let test_rejects_a_non_scalar_loss () =
   raises_match Exn.invalid_arg (fun () ->
-    ignore
-      (sketch 2 params_ptree (fun p -> predict p) (params ())))
+    ignore (sketch 2 params_ptree (fun p -> predict p) (params ())))
 
 let test_rejects_zero_lanes () =
   raises_match Exn.invalid_arg (fun () ->
-    ignore
-      (sketch 0 params_ptree data_loss (params ())))
+    ignore (sketch 0 params_ptree data_loss (params ())))
 
 let tests =
   [ test "the loss and C are exact" test_c_and_loss
@@ -297,7 +297,9 @@ let tests =
   ; test "the GGN equals an exact ΘᵀJᵀHJΘ" test_ggn_matches_exact_jacobian
   ; test "apply is the sampled directions" test_apply_is_the_sampled_directions
   ; test "zero curvature gives the first-order sketch" test_zero_curvature_is_first_order
-  ; test "an unobserved term contributes no block" test_unobserved_term_contributes_no_block
+  ; test
+      "an unobserved term contributes no block"
+      test_unobserved_term_contributes_no_block
   ; test "two losses contribute two blocks" test_two_losses_contribute_two_blocks
   ; test "a constant prediction adds no block" test_constant_prediction_adds_no_block
   ; test "an RNG key makes the sketch reproducible" test_reproducible_with_an_rng_key

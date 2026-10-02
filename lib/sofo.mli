@@ -41,7 +41,8 @@
       let y = predict params x in
       Nx.add (Sofo.mse ~target y) (Nx.sum (Nx.mul w w))
     in
-    let sk = Sofo.sketch params_ptree ~k:32 loss params in
+    let dirs = Sofo.Optim.directions params_ptree ~key ~k:32 params in
+    let sk = Sofo.sketch params_ptree loss params dirs in
     (* sk.c, sk.ggn : the sketched gradient and GGN; sk.apply : sketch → params *)
     ]} *)
 
@@ -199,39 +200,39 @@ val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
     differentiable belongs to the sketch.
 
     Two halves, split by what compiles rather than by taste. The sketching half
-    is differentiable and jits ({!Compiled}), while the update needs the
-    eigendecomposition of the sketched GGN, which does not compile: it runs
+    is differentiable and jits ({!Optim.sketch_jit}), while the update needs
+    the eigendecomposition of the sketched GGN, which does not compile: it runs
     eagerly on the host at O(k³), negligible beside a model with P ≫ k
     parameters — the premise of the algorithm. A deployment therefore compiles
     the sketch and keeps the solve outside it:
 
     {[
-    module O = Sofo.Optim.Compiled (Params) (Aux)
-
-    (* traced once, replayed for every step: the compiled half *)
-    let sketch_step = Rune.jit O.signature (O.sketch ~k loss)
+    (* build the compiled half once; it jits on first call *)
+    let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss in
 
     (* the loop: one replay, one host solve, one compiled step *)
     let params, state =
-      let out = sketch_step { O.params; key = state.Sofo.Optim.key; aux } in
-      O.update ~lr ~damping state params out
+      let out = sketch_step ~key:state.Sofo.Optim.key ~aux params in
+      Sofo.Optim.update ~lr ~damping Params.ptree state params out
     ]}
 
     The state is only the direction stream — a key carried as a tensor, so it
     rides the compiled step as an ordinary input leaf and one compilation
     serves the whole run — and an iteration counter. Directions are drawn
     inside the compiled step, from that key, so every replay starts from a fresh
-    random subspace without a retrace. {!Compiled.update} takes that state and
+    random subspace without a retrace. {!Optim.update} takes that state and
     returns its successor with the new parameters, so the stream and the
     parameters advance together and a loop cannot replay the subspace it just
-    measured.
+    measured. {!Optim.update_sketch} is the same step for a sketch measured
+    eagerly, and {!Optim.step} is a complete eager iteration.
 
     The third kind of input, [Aux], is the loss's own: the batch, a schedule
     value, whatever the caller has that the parameters do not. It is not a
     parameter — the sketch does not differentiate it and the update does not
     move it — but it rides the same input tree, so a new batch is a new input
-    to a program already compiled, and {!No_aux} covers the losses that need
-    none. *)
+    to a program already compiled. A loss that reads nothing but the
+    parameters writes its aux tree as [Nx.Ptree.unit] and is called with
+    [~aux:()]. *)
 
 module Optim : sig
   (** {2 State} *)
@@ -248,9 +249,9 @@ module Optim : sig
 
   (** [next st] is the state of the iteration after [st]: the counter advances
       and the key becomes the subkey the counter indexes, so no two steps share
-      a direction draw. {!step} and {!Compiled.update} advance the state
-      themselves and hand it back; this is for a loop that draws sketches
-      without updating — a first-order control, or a run that only measures. *)
+      a direction draw. {!step} and {!update} advance the state themselves and
+      hand it back; this is for a loop that draws sketches without updating — a
+      first-order control, or a run that only measures. *)
   val next : state -> state
 
   (** {2 Directions} *)
@@ -355,17 +356,19 @@ module Optim : sig
     -> Nx.float64_t
     -> Nx.float64_t
 
-  (** [update structure ~lr ?damping ?preconditioner sk params] is one SOFO
-      step: [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C], from the sketch [sk]
-      measured at [params]. [structure] is the parameter structure. [lr]
-      defaults to [1.0], which together with no damping is the exact Newton
-      step inside the sketched subspace.
+  (** [update_sketch structure ~lr ?damping ?preconditioner sk params] is one
+      SOFO step on an eager sketch: [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C],
+      from the sketch [sk] measured at [params]. [structure] is the parameter
+      structure. [lr] defaults to [1.0], which together with no damping is the
+      exact Newton step inside the sketched subspace.
 
       The solve is {!coordinates} with the sketch's own directions: the Gram of
       [sk.dirs] whitens it, so the damping is relative to the curvature of the
       subspace and the parameter step is [Θ (Q z)] — the coordinates {!apply}
-      contracts are the whitened solve brought back to the drawn basis. *)
-  val update
+      contracts are the whitened solve brought back to the drawn basis. Use
+      {!step} to draw the directions and sketch as well, and {!update} for the
+      state-threaded step on a {!sketch_jit} output. *)
+  val update_sketch
     :  'p Nx.Ptree.t
     -> ?lr:float
     -> ?damping:damping
@@ -381,7 +384,8 @@ module Optim : sig
       applies the update, and returns the new parameters, the next state and
       the sketch — the loss, C and G̃, for logging. [structure] is the
       parameter structure. One call is one training iteration, eager end to
-      end; use {!Compiled} when the sketching half should be compiled. *)
+      end; use {!sketch_jit} with {!update} when the sketching half should be
+      compiled. *)
   val step
     :  'p Nx.Ptree.t
     -> k:int
@@ -395,19 +399,18 @@ module Optim : sig
 
   (** {2 The compiled half}
 
-      [Compiled (P) (Aux)] is the sketching computation as a pure function of
-      [(params, key, aux)], with the structure types a compiled step needs.
-      Wrap it once —
+      {!sketch_jit} is the sketching computation as a pure function of
+      [(key, aux, params)], compiled by [Rune.jit]. Build it once —
 
       {[
-      let step = Rune.jit O.signature (O.sketch ~k loss)
+      let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss
       ]}
 
-      — and every later call replays: the shapes of [in_] do not change across
-      a training run, the directions come from the key the caller threads, and
-      so does the aux, so a fresh subspace or a new batch costs nothing. What
-      comes back is everything the update needs and nothing that needs a
-      factorization. *)
+      — and every later call replays: the shapes of the inputs do not change
+      across a training run, the directions come from the key the caller
+      threads, and so does the aux, so a fresh subspace or a new batch costs
+      nothing. What comes back is everything the update needs and nothing that
+      needs a factorization. *)
 
   type 'p step_info =
     { loss : Nx.float64_t (** The primal total, as a scalar. *)
@@ -417,14 +420,17 @@ module Optim : sig
     ; dirs : 'p (** Θ, the directions the sketch was measured along. *)
     }
 
-  (** [sketch ~k loss] draws Θ from [in_.key], sketches [loss] at
-      [in_.params] with [in_.aux], and returns the numbers together with the
-      directions. Pure, differentiable in nothing, and safe to compile.
+  (** [sketch_jit ~k structure aux_structure loss] draws Θ from [key],
+      sketches [loss] at [params] with [aux], and returns the numbers together
+      with the directions. It is the whole computation — [Rune.jit] over the
+      key, the aux and the parameters — so the function it returns compiles on
+      its first call, replays on every later one, and is pure and
+      differentiable in nothing.
 
-      The loss takes the parameters and the aux, in that order. It is the
-      same function the eager entry points take, closed over its aux —
-      [Sofo.sketch p (fun params -> loss params aux) params dirs] for a
-      caller's own directions, and likewise {!Optim.step}'s [~loss] — so one
+      [loss] takes the parameters and the aux, in that order. It is the same
+      function the eager entry points take, closed over its aux —
+      [Sofo.sketch structure (fun params -> loss params aux) params dirs] for a
+      caller's own directions, and likewise {!step}'s [~loss] — so one
       objective serves the compiled half and the eager one. *)
   val sketch_jit
     :  k:int
@@ -448,15 +454,15 @@ module Optim : sig
       the state the sketch was drawn from, and thread the one you get back:
 
       {[
-      let params, state = O.update ~lr ~damping state params out in
+      let params, state = Sofo.Optim.update ~lr ~damping p state params out in
       ]}
 
       The solve runs on the host, from [out]'s [k]-sized [c], [ggn] and
       [gram]. The step on the parameters is compiled and runs where [params]
       and [out.dirs] live, so parameters placed on a GPU stay there.
 
-      {!Optim.update} is the same step without the state, for callers that
-      hold a sketch and nothing else. *)
+      {!update_sketch} is the same step for a sketch measured eagerly, which
+      threads no state. *)
   val update
     :  ?lr:float
     -> ?damping:damping

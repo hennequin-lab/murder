@@ -17,4 +17,5 @@
   cmdliner
   cmdargs
   unix)
- (preprocess (pps ppx_sexp_message ppx_ptree)))
+ (preprocess
+  (pps ppx_sexp_message ppx_ptree)))
