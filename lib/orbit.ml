@@ -24,7 +24,7 @@
 open Base
 
 module type Model = sig
-  include Nx.Ptree.Uniform
+  include Nx.Ptree.S
 
   val dims : int list t
 
@@ -61,7 +61,7 @@ module type S = sig
       {!Nx.Rng.fold_in}, so the function is pure and traces under
       [Rune.jit] — pass the key as an input leaf there, as [Rune.jit] rejects
       a captured key. *)
-  val random_transform : key:Nx.Rng.key -> Nx.float32_t t -> Nx.float32_t t
+  val random_transform : key:Nx.Rng.t -> Nx.float32_t t -> Nx.float32_t t
 
   module First_order : sig
     type factors = Nx.float32_t list t
@@ -113,6 +113,8 @@ let split_flat starts dense =
   |> Array.of_list
 
 module Make (M : Model) : S with type 'a t = 'a M.t = struct
+  module P = Nx.Ptree.Payload
+
   type 'a t = 'a M.t
 
   let dims = M.dims
@@ -122,8 +124,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
   (* The surrogate keeps [Id] axes at full size and shrinks permuted axes to
      the model's non-trivial mock dimension (see {!Symmetry.surrogate_dims}). *)
   let surrogate_dims =
-    M.map2
-      (fun specs dims ->
+    P.map2
+      (module M)
+      (fun _ specs dims ->
          Symmetry.surrogate_dims ~surrogate_dim:M.surrogate_dim specs dims)
       M.symmetries
       M.dims
@@ -131,31 +134,36 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
   (* Dense surrogate layout: leaves are concatenated in traversal order; the
      [i]-th leaf occupies [starts.(i) ..] for its own [small_sizes.(i)]
      coordinates. *)
-  let small_sizes = M.map product surrogate_dims
-  let dense_size = M.fold (fun _ acc size -> acc + size) 0 small_sizes
-  let starts = offsets (M.fold (fun _ acc size -> size :: acc) [] small_sizes |> List.rev)
-
-  (* The traversal index of every leaf, threaded through the tree so that
-     splits and reconstructions line up with [fold]'s order. *)
-  let leaf_index =
-    let paths = M.fold (fun path acc _ -> path :: acc) [] surrogate_dims |> List.rev in
-    let table = Hashtbl.create (module String) in
-    List.iteri paths ~f:(fun i path -> Hashtbl.set table ~key:path ~data:i);
-    M.map (fun path -> Hashtbl.find_exn table path) (M.names surrogate_dims)
+  let small_sizes = P.map (module M) (fun _ dims -> product dims) surrogate_dims
 
   (* The leaves in traversal order. *)
-  let to_array t = M.fold (fun _ acc x -> x :: acc) [] t |> List.rev |> Array.of_list
+  let to_list t = P.fold (module M) (fun _ x acc -> x :: acc) t [] |> List.rev
+  let to_array t = Array.of_list (to_list t)
+  let dense_size = List.sum (module Int) (to_list small_sizes) ~f:Fn.id
+  let starts = offsets (to_list small_sizes)
+
+  (* The traversal index of every leaf, so that splits and reconstructions
+     line up with [to_array]'s order. *)
+  let leaf_index =
+    let next = ref (-1) in
+    P.map
+      (module M)
+      (fun _ _ ->
+         Int.incr next;
+         !next)
+      surrogate_dims
 
   let split_dense dense =
     let pieces = split_flat starts dense in
-    M.map (fun i -> pieces.(i)) leaf_index
+    P.map (module M) (fun _ i -> pieces.(i)) leaf_index
 
   module First_order = struct
     type factors = Nx.float32_t list t
 
     let compile d =
-      M.map2
-        (fun specs dims ->
+      P.map2
+        (module M)
+        (fun _ specs dims ->
            Compiler.compile
              ~ensure_size_invariance
              ~dims:{ Sides.left = dims; right = [] }
@@ -167,26 +175,32 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
     let small = compile surrogate_dims
 
     let factors_of_params x =
-      M.map2
-        (fun c x ->
+      P.map2
+        (module M)
+        (fun _ c x ->
            c.Compiler.estimate_factors (`Outer_product (x, Nx.scalar Nx.float32 1.0)))
         large
         x
 
     let dense_of_factors ?(full = false) factors =
       let compiled = if full then large else small in
-      M.map2 (fun c f -> c.Compiler.dense_block ~factors:f) compiled factors
-      |> fun blocks ->
-      M.fold (fun _ acc b -> b :: acc) [] blocks |> List.rev |> Nx.concatenate ~axis:0
+      P.map2 (module M) (fun _ c f -> c.Compiler.dense_block ~factors:f) compiled factors
+      |> to_list
+      |> Nx.concatenate ~axis:0
 
     let factors_of_dense dense =
       let pieces = split_dense dense in
-      M.map2 (fun c piece -> c.Compiler.estimate_factors (`Full piece)) small pieces
+      P.map2
+        (module M)
+        (fun _ c piece -> c.Compiler.estimate_factors (`Full piece))
+        small
+        pieces
 
     let params_of_dense dense =
       let factors = factors_of_dense dense in
-      M.map2
-        (fun c f ->
+      P.map2
+        (module M)
+        (fun _ c f ->
            c.Compiler.apply_block ~factors:f (Nx.ones Nx.float32 [| 1 |])
            |> Nx.reshape (Array.of_list c.Compiler.dims.left))
         large
@@ -199,15 +213,13 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
      transformed by the same group element, so its dimension must be the same
      in every leaf. [group_dims] is the ascending list of [(id, dim)] pairs. *)
   let group_dims =
-    M.fold2
-      (fun _ acc specs leaf_dims ->
-         List.fold2_exn specs leaf_dims ~init:acc ~f:(fun acc spec dim ->
-           match spec with
-           | Symmetry.Perm id -> (id, dim) :: acc
-           | Symmetry.Id | Symmetry.Absent -> acc))
-      []
-      symmetries
-      dims
+    P.map2 (module M) (fun _ specs dims -> List.zip_exn specs dims) symmetries dims
+    |> to_list
+    |> List.concat
+    |> List.rev_filter_map ~f:(fun (spec, dim) ->
+      match spec with
+      | Symmetry.Perm id -> Some (id, dim)
+      | Symmetry.Id | Symmetry.Absent -> None)
     |> List.fold ~init:[] ~f:(fun acc (id, dim) ->
       match List.Assoc.find acc id ~equal:Int.equal with
       | None -> (id, dim) :: acc
@@ -240,8 +252,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       List.map group_dims ~f:(fun (id, dim) ->
         id, random_permutation ~key:(Nx.Rng.fold_in key id) dim)
     in
-    M.map2
-      (fun c x ->
+    P.map2
+      (module M)
+      (fun _ c x ->
          let perms =
            List.map c.Compiler.basis.group_ids ~f:(fun id ->
              List.Assoc.find_exn perms id ~equal:Int.equal)
@@ -257,8 +270,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let dims_arr = to_array d in
       let symms_arr = to_array symmetries in
       let n = Array.length dims_arr in
-      M.map2
-        (fun _ i ->
+      P.map2
+        (module M)
+        (fun _ _ i ->
            Array.init n ~f:(fun j ->
              Compiler.compile
                ~ensure_size_invariance
@@ -279,8 +293,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let cs = large ~symmetric () in
       let a_arr = to_array a in
       let b_arr = to_array b in
-      M.map2
-        (fun row i ->
+      P.map2
+        (module M)
+        (fun _ row i ->
            Array.mapi row ~f:(fun j c ->
              c.Compiler.estimate_factors (`Outer_product (a_arr.(i), b_arr.(j)))))
         cs
@@ -289,14 +304,15 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
     let dense_of_factors ?(symmetric = true) ?(full = false) factors =
       let cs = (if full then large else small) ~symmetric () in
       let rows =
-        M.map2
-          (fun row fs ->
+        P.map2
+          (module M)
+          (fun _ row fs ->
              Array.map2_exn row fs ~f:(fun c f -> c.Compiler.dense_block ~factors:f)
              |> Array.to_list
              |> Nx.concatenate ~axis:1)
           cs
           factors
-        |> fun rows -> M.fold (fun _ acc r -> r :: acc) [] rows |> List.rev
+        |> to_list
       in
       let dense = Nx.concatenate ~axis:0 rows in
       if symmetric then Nx.mul_s (Nx.add dense (Nx.transpose dense)) 0.5 else dense
@@ -304,8 +320,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
     let factors_of_dense ?(symmetric = true) dense =
       let cs = small ~symmetric () in
       let row_pieces = split_flat starts dense in
-      M.map2
-        (fun compilers i ->
+      P.map2
+        (module M)
+        (fun _ compilers i ->
            let dense_row = row_pieces.(i) in
            let col_pieces =
              Nx.array_split
@@ -323,8 +340,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let cs = large ~symmetric () in
       let f_arr = to_array factors in
       let v_arr = to_array v in
-      M.map2
-        (fun row i ->
+      P.map2
+        (module M)
+        (fun _ row i ->
            let _, acc =
              Array.fold2_exn
                row
@@ -332,11 +350,11 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
                ~init:(0, Nx.scalar Nx.float32 0.0)
                ~f:(fun (j, acc) c f ->
                  let vj = v_arr.(j) in
-                 let vj = Nx.reshape (Array.append [| 1 |] (Nx.shape vj)) vj in
+                 let vj = Nx.unsqueeze ~axes:[ 0 ] vj in
                  let z = c.Compiler.apply_block ~factors:f vj in
                  j + 1, Nx.add acc (Nx.reshape (Array.of_list c.Compiler.dims.left) z))
            in
-           Nx.contiguous acc)
+           acc)
         cs
         leaf_index
   end

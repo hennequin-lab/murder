@@ -218,4 +218,4 @@ let tests =
   ; test "manual compilation" test_compile_manual
   ]
 
-let () = run "symo compiler" tests
+let () = Stdlib.exit (run "symo compiler" tests)

@@ -113,4 +113,4 @@ let tests =
   ; test "component inner product" test_component_inner_product
   ]
 
-let () = run "symo front end" tests
+let () = Stdlib.exit (run "symo front end" tests)

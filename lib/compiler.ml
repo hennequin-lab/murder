@@ -28,7 +28,7 @@ type t =
   ; estimate_factors :
       [ `Full of Nx.float32_t | `Outer_product of Nx.float32_t * Nx.float32_t ]
       -> Nx.float32_t list
-  ; transform : perms:Nx.int32_t list -> Nx.float32_t -> Nx.float32_t
+  ; transform : perms:Nx.int64_t list -> Nx.float32_t -> Nx.float32_t
   }
 
 let is_scalar t = Array.length (Nx.shape t) = 0
@@ -178,8 +178,8 @@ let pseudo_inverse m =
   let inv_s =
     Nx.where
       (Nx.greater s (Nx.scalar Nx.float64 (1e-12 *. Nx.item [ 0 ] s)))
-      (Nx.div (Nx.ones Nx.float64 [| n |]) s)
-      (Nx.zeros Nx.float64 [| n |])
+      (Nx.recip s)
+      (Nx.zeros_like s)
   in
   Nx.matmul (Nx.mul u (Nx.reshape [| 1; n |] inv_s)) (Nx.transpose u)
 
@@ -218,10 +218,8 @@ let compile_estimate_factors ~(dims : int list Sides.t) components =
   let estimator = build_estimator (Component.design_matrix ~dims components) n in
   fun data ->
     let b =
-      List.map components ~f:(fun c ->
-        Component.coefficient ~dims c data
-        |> fun x -> Nx.reshape (Array.append [| 1 |] (Nx.shape x)) x)
-      |> Nx.concatenate ~axis:0
+      List.map components ~f:(fun c -> Component.coefficient ~dims c data)
+      |> Nx.stack ~axis:0
     in
     let factor_shape =
       Array.sub (Nx.shape b) ~pos:1 ~len:(Array.length (Nx.shape b) - 1)

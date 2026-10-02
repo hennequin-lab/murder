@@ -5,7 +5,7 @@
 
 (* The compiled (jitted) step against the eager one.
 
-   [Compiled.create] wraps [prepare] and [finish] in [Rune.jit2] with the whole
+   [Compiled.create] wraps [prepare] and [finish] in [Rune.jit] with the whole
    state, the gradients and the estimator threaded through input/output
    leaves, so a training loop traces once and replays. The only host call
    between the two halves is the estimator solve. *)
@@ -55,10 +55,11 @@ let check_leaf ~msg ~tol (a : Nx.float32_t) (b : Nx.float32_t) =
   equal ~msg (array (float tol)) (Nx.to_array a) (Nx.to_array b)
 
 let check_tree ~msg ~tol (a : Nx.float32_t Mlp.t) (b : Nx.float32_t Mlp.t) =
-  Mlp.map2 (fun x y -> check_leaf ~msg ~tol x y) a b |> ignore
+  Nx.Ptree.Payload.map2 (module Mlp) (fun _ x y -> check_leaf ~msg ~tol x y) a b |> ignore
 
 let check_state ~msg ~tol (a : M.state) (b : M.state) =
-  M.State.map2 (fun x y -> check_leaf ~msg ~tol x y) a b |> ignore
+  Nx.Ptree.Payload.map2 (module M.State) (fun _ x y -> check_leaf ~msg ~tol x y) a b
+  |> ignore
 
 let run_steps ~steps ~step =
   let state = ref (M.init ~config (params ())) in
@@ -114,24 +115,19 @@ let test_no_retrace () =
 
 (* [random_transform] samples its permutations inside the trace from a key,
    so it compiles: the key is an input leaf and the same draws replay. *)
-module Key = struct
-  type 'a t = { key : 'a } [@@deriving ptree]
-end
-
 let test_random_transform_jit () =
   let theta = params () in
   let jitted =
-    Rune.jit2
-      (Nx.Ptree.instantiate (module Key))
-      (Nx.Ptree.instantiate (module Mlp))
-      (fun { Key.key } -> M.random_transform ~key theta)
+    Rune.jit
+      Nx.Ptree.(Nx.Rng.ptree @-> returns M.ptree)
+      (fun key -> M.random_transform ~key theta)
   in
   List.iter (List.range 0 5) ~f:(fun seed ->
     let key = Nx.Rng.key (200 + seed) in
     check_tree
       ~msg:"jitted random transform"
       ~tol:1e-9
-      (jitted { Key.key })
+      (jitted key)
       (M.random_transform ~key theta))
 
 let tests =
@@ -141,4 +137,4 @@ let tests =
   ; test "jitted random group element" test_random_transform_jit
   ]
 
-let () = run "symo jit" tests
+let () = Stdlib.exit (run "symo jit" tests)

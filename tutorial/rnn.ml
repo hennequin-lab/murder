@@ -64,10 +64,7 @@ module RNN = struct
     (* input = horizon x bs x input_dim *)
     let bs = dim 1 input in
     let open Infix in
-    Rune.scan
-      (module struct
-        type t = float32_t [@@deriving ptree]
-      end)
+    Rune.scan'
       ~f:(fun x u ->
         let o = tanh x in
         let x = (x *$ Float.(1. - P.dt)) + (((o *@ p.w) + (u *@ p.b) + p.bias) *$ P.dt) in
@@ -76,14 +73,12 @@ module RNN = struct
       input
     |> snd
 
+  let ptree = Ptree.instantiate (module P)
+
   let forward_jit =
     Rune.jit
-      (module struct
-        type t = float32_t P.t * float32_t [@@deriving ptree]
-      end)
+      Ptree.(pair ptree tensor @-> returns tensor)
       (fun (params, input) -> forward params ~input)
-
-  let ptree = Ptree.instantiate (module P)
 end
 
 let teacher, student = Rng.with_key (Rng.key 42) @@ fun () -> RNN.P.init (), RNN.P.init ()
@@ -115,14 +110,8 @@ let loss (input, target) (p : Nx.float32_t RNN.P.t) =
   mean (square Infix.(pred - target))
 
 let value_and_grad_jit =
-  Rune.jit2
-    ~device:"CPU"
-    (module struct
-      type t = float32_t RNN.P.t * Rng.key [@@deriving ptree]
-    end)
-    (module struct
-      type t = float32_t * float32_t RNN.P.t [@@deriving ptree]
-    end)
+  Rune.jit
+    Ptree.(pair RNN.ptree Rng.ptree @-> returns (pair tensor RNN.ptree))
     (fun (params, key) ->
        let data = minibatch key batch in
        Rune.value_and_grad RNN.ptree (loss data) params)

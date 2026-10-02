@@ -205,4 +205,4 @@ let tests =
   ; test "end-to-end MLP training" test_end_to_end
   ]
 
-let () = run "symo optim" tests
+let () = Stdlib.exit (run "symo optim" tests)

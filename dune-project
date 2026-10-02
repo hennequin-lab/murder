@@ -22,4 +22,5 @@
   rune
   stdio
   ppx_compare
-  ppx_sexp_conv))
+  ppx_sexp_conv
+  ppx_sexp_message))

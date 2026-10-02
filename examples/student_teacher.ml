@@ -14,7 +14,7 @@
    The optimizer works on the parameter tree itself: gradients come from
    [Rune.value_and_grad] over the packed [S.ptree] traversal, and each step is
    the compiled [S.Compiled.step] (the eager [S.step] is the same three
-   phases — prepare, host solve, finish — without [Rune.jit2]). *)
+   phases — prepare, host solve, finish — without [Rune.jit]). *)
 
 open Base
 open Symo
