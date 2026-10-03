@@ -265,7 +265,7 @@ type 'p step_info =
   ; dirs : 'p
   }
 
-let sketch_jit ~k (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptree.t) loss =
+let sketch_jit ?beam ?parallel ~k (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptree.t) loss =
   let module Out = struct
     type t =
       { loss : Nx.float64_t
@@ -282,7 +282,11 @@ let sketch_jit ~k (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptree.t) loss =
     Out.{ loss = sk.loss; c = sk.c; ggn = sk.ggn; gram = gram p ~k dirs }, dirs
   in
   let f =
-    Rune.jit Nx.Ptree.(Nx.Rng.ptree @-> a @-> p @-> returns (pair Out.ptree p)) sketch
+    Rune.jit
+      ?beam
+      ?parallel
+      Nx.Ptree.(Nx.Rng.ptree @-> a @-> p @-> returns (pair Out.ptree p))
+      sketch
   in
   fun ~key ~aux params ->
     let out, dirs = f key aux params in

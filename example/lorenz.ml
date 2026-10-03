@@ -18,7 +18,7 @@ let damping : Sofo.Optim.damping = `Relative_from_top 1e-5
 (* [--device] lists the devices to try, in order, as [Devices.first] reads
    them: "cpu" (the default), "cuda", "cuda:1", "cuda,cpu". The sketch
    accumulates in float64, which Metal cannot compute. *)
-let device = Devices.first Cmdargs.(get_string "--device" |> default "cpu")
+let device = Devices.first Cmdargs.(get_string "-device" |> default "cpu")
 
 (* Data generation: simulate the Lorenz attractor for a very long time using RK4,
    and chop the resulting sequence into [total_bs] chunks *)
@@ -128,7 +128,14 @@ let objective params (x0, xf) =
 
 (* The sketch compiles for the device the parameters are placed on; the
    minibatch and the keys are host values that join them on each call. *)
-let sketch_step = Sofo.Optim.sketch_jit ~k:n_tangents Model.P.ptree data_ptree objective
+let sketch_step =
+  Sofo.Optim.sketch_jit
+    ~beam:2
+    ~parallel:8
+    ~k:n_tangents
+    Model.P.ptree
+    data_ptree
+    objective
 
 let rec loop_sofo ~i ~out (params : Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter

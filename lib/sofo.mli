@@ -433,7 +433,9 @@ module Optim : sig
       caller's own directions, and likewise {!step}'s [~loss] — so one
       objective serves the compiled half and the eager one. *)
   val sketch_jit
-    :  k:int
+    :  ?beam:int
+    -> ?parallel:int
+    -> k:int
     -> 'p Nx.Ptree.t
     -> 'aux Nx.Ptree.t
     -> ('p -> 'aux -> ('a, 'b) Nx.t)
