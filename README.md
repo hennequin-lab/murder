@@ -16,6 +16,13 @@ pass is the adjoint system of the local LQR QP, solved by the same Riccati
 machinery as the forward pass, then chained back to the problem parameters
 with a nested `Rune.grad`.
 
+This machinery is what makes iLQR usable as an *inference engine* and not just
+a controller: in iLQR-VAE ([Schimel et al., 2022](#references)), iLQR infers
+the latent inputs and state trajectory that best explain neural population
+activity inside an input-driven sequential generative model, and the solve is
+differentiated to fit the model end to end. Dilqr provides that solver core on
+the modern Raven stack.
+
 Everything below the solve level is a pure tensor computation with static
 control flow, and every time loop is a `Rune.scan`. One traced step therefore
 stands for the whole horizon, which `Rune.jit` compiles as a loop: a compiled
@@ -264,6 +271,13 @@ integrator: cost decrease and control stationarity, checked with independent
 autodiff), nonlinear convergence (pendulum), implicit gradients against
 central finite differences, the fixed solve's competitiveness with the
 adaptive one, and JIT round-trips of both the solve and its gradient.
+
+## References
+
+- Marine Schimel, Ta-Chu Kao, Kristopher T. Jensen and Guillaume Hennequin.
+  *iLQR-VAE: control-based learning of input-driven dynamics with applications
+  to neural data.* ICLR 2022 (Oral).
+  <https://cbl.eng.cam.ac.uk/hennequin/publications/schimel-iclr-2022/>
 
 ## Status
 
