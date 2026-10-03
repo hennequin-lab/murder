@@ -51,9 +51,9 @@ program's size grows with the iteration count, **not with the horizon**.
 
 ## Quick start
 
-A problem is a `Dilqr.Ctx`: dimensions, dtype, dynamics, running and final
-losses, plus a structure of parameters. Here is a double integrator, written
-in a module so the functor application stays readable:
+A problem is a `Dilqr.Problem.t` record: dimensions, dtype, dynamics, running
+and final losses, plus a structure of parameters. Here is a double
+integrator:
 
 ```ocaml
 (* problem.ml *)
@@ -61,41 +61,41 @@ open Base
 module Nx = Nx
 
 module Integrator = struct
-  module Ctx = struct
-    type 'a params = { mass : 'a } [@@deriving ptree]
-
-    module Params = struct
-      type 'a t = 'a params
-
-      let walk = walk_params
-    end
-
-    type w = Nx.float64_elt
-    type value = (float, w) Nx.t
-
-    let dtype = Nx.float64
-    let n = 2
-    let m = 1
-    let horizon = 20
-    let verbose = false
-    let dt = 0.1
-
-    let dynamics { mass } ~k:_ ~x ~u =
-      let pos = Nx.slice [ R (0, 1) ] x
-      and vel = Nx.slice [ R (1, 2) ] x in
-      let force = Nx.div u mass in
-      Nx.concatenate
-        ~axis:0
-        [ Nx.add pos (Nx.mul_s vel dt); Nx.add vel (Nx.mul_s force dt) ]
-
-    let running_loss _ ~k:_ ~x ~u =
-      Nx.sum
-        (Nx.add (Nx.mul_s (Nx.sum (Nx.mul x x)) 0.5) (Nx.mul_s (Nx.mul u u) 0.05))
-
-    let final_loss _ ~x = Nx.mul_s (Nx.sum (Nx.mul x x)) 5.0
+  module Params = struct
+    type 'a t = { mass : 'a } [@@deriving ptree]
   end
 
-  module D = Dilqr.Make (Ctx)
+  let dt = 0.1
+  let n = 2
+  let m = 1
+  let horizon = 20
+  let verbose = false
+
+  let dynamics { Params.mass } ~k:_ ~x ~u =
+    let pos = Nx.slice [ R (0, 1) ] x
+    and vel = Nx.slice [ R (1, 2) ] x in
+    let force = Nx.div u mass in
+    Nx.concatenate
+      ~axis:0
+      [ Nx.add pos (Nx.mul_s vel dt); Nx.add vel (Nx.mul_s force dt) ]
+
+  let running_loss _ ~k:_ ~x ~u =
+    Nx.sum
+      (Nx.add (Nx.mul_s (Nx.sum (Nx.mul x x)) 0.5) (Nx.mul_s (Nx.mul u u) 0.05))
+
+  let final_loss _ ~x = Nx.mul_s (Nx.sum (Nx.mul x x)) 5.0
+
+  let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
+    { dtype = Nx.float64
+    ; n
+    ; m
+    ; horizon
+    ; verbose
+    ; params = Nx.Ptree.instantiate (module Params)
+    ; dynamics
+    ; running_loss
+    ; final_loss
+    }
 end
 ```
 
@@ -112,33 +112,35 @@ module Nx = Nx
 let vec64 a = Nx.create Nx.float64 [| Array.length a |] a
 let scalar64 v = Nx.scalar Nx.float64 v
 
-let theta : Integrator.Ctx.value Integrator.Ctx.Params.t = { mass = scalar64 1.0 }
+let theta : Nx.float64_t Integrator.Params.t = { mass = scalar64 1.0 }
 let x0 = vec64 [| 1.0; 0.0 |]
 
 let us0 =
-  Array.init Integrator.Ctx.horizon ~f:(fun _ -> Nx.create Nx.float64 [| 1 |] [| 0.0 |])
+  Array.init Integrator.horizon ~f:(fun _ -> Nx.create Nx.float64 [| 1 |] [| 0.0 |])
 
-let inputs : Integrator.D.value Integrator.D.Inputs.t =
-  { Integrator.D.Inputs.theta; x0; us0 }
+let inputs : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+  { Dilqr.Inputs.theta; x0; us0 }
 
 (* 1. Adaptive solve, eager. *)
-let sol = Integrator.D.Solver.solve theta x0 us0
+let sol = Dilqr.Solver.solve Integrator.problem theta x0 us0
 let () = printf "cost: %g\n%!" (Nx.item [] sol.cost)
 
 (* 2. Differentiable solve: any scalar loss of the trajectory gets its
    implicit gradient in (theta, x0). *)
-let objective (inputs : Integrator.D.value Integrator.D.Inputs.t) =
-  Integrator.D.loss_of_taus
-    inputs.Integrator.D.Inputs.theta
-    (Integrator.D.solve_ilqr_fixed ~iters:5 inputs)
+let objective (inputs : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t) =
+  Dilqr.loss_of_taus
+    Integrator.problem
+    inputs.Dilqr.Inputs.theta
+    (Dilqr.solve_ilqr_fixed Integrator.problem ~iters:5 inputs)
 
-let grads = Rune.grad Integrator.D.inputs_ptree objective inputs
+let inputs_ptree = Dilqr.inputs Integrator.problem
+let grads = Rune.grad inputs_ptree objective inputs
 
 (* 3. The same thing compiled: solve and implicit VJP in one program. *)
 let grads_compiled =
   Rune.jit
-    Nx.Ptree.(Integrator.D.inputs_ptree @-> returns Integrator.D.inputs_ptree)
-    (fun i -> Rune.grad Integrator.D.inputs_ptree objective i)
+    Nx.Ptree.(inputs_ptree @-> returns inputs_ptree)
+    (fun i -> Rune.grad inputs_ptree objective i)
     inputs
 ```
 
@@ -165,11 +167,19 @@ A few things worth knowing:
 
 ## API tour
 
-Everything lives under `Dilqr`, with `Dilqr.Make (C)` as the entry point.
+Everything lives under `Dilqr`. A problem is a `Dilqr.Problem.t` value, and
+every solver and helper takes it as its first argument.
 
-- **`Dilqr.Make (C)`** — the problem functor. `C : Dilqr.Ctx` fixes `n`, `m`,
-  `horizon`, the dtype, `dynamics`, `running_loss`, `final_loss` and the
-  parameter structure `Params`.
+- **`Dilqr.Problem.t`** — the problem as a value: `dtype`, `n`, `m`,
+  `horizon`, `verbose`, the parameter structure `params : 'p Nx.Ptree.t`, and
+  the functions `dynamics`, `running_loss` and `final_loss`. The structure
+  is built with `Nx.Ptree.instantiate (module Params)`. Being a record,
+  problems can be stored, passed and chosen at runtime.
+
+- **`Dilqr.inputs`** — the structure of the solve inputs (`theta`, `x0`,
+  `us0`), built by walking the problem's parameter structure: what
+  `Rune.grad`, `Rune.custom_vjp` and `Rune.jit` take. `Dilqr.Inputs.t` is the
+  corresponding record.
 
 - **`Solver.solve`** — adaptive iLQR. Defaults: `max_iter = 20`,
   `conv_threshold = 1e-6`, `c1 = 1e-2`, `ls_depth = 8`, seeded
@@ -190,11 +200,7 @@ Everything lives under `Dilqr`, with `Dilqr.Make (C)` as the entry point.
 - **`solve_ilqr`, `solve_ilqr_fixed`** — the differentiable solves: a solve
   wrapped in `Rune.custom_vjp` whose backward pass is the implicit VJP.
   `split_taus`, `taus_of` and `loss_of_taus` are the trajectory helpers they
-  work with.
-
-- **`Inputs` / `inputs_ptree`** — the solve inputs (`theta`, `x0`, `us0`) as a
-  structure of tensors and its `Nx.Ptree.t`: the signature that `Rune.grad`,
-  `Rune.custom_vjp` and `Rune.jit` take.
+  work with, each taking the problem first.
 
 - **`Dilqr.Lqr`** — the tensor core: `Rows`, `tape`, `gains`, `lin`,
   `lin_of_tape`, `riccati_step`, `backward`, `rollout`, `rollout_linearized`.

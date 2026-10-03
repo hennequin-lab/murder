@@ -18,15 +18,16 @@
     system of the local QP, and a nested [Rune.grad] chains the resulting
     block cotangents back to the problem parameters.
 
-    Structure: everything below the solve level — {!module-type:Lqr.Ctx},
-    {!Lqr.tape}, {!Lqr.backward}, the rollouts — is a pure tensor computation
-    with static control flow, and every time loop is a {!Rune.scan}: one
-    traced step stands for the whole horizon, which [Rune.jit] compiles as a
-    loop. A fixed-iteration solve and its implicit gradient therefore trace
-    and compile with [Rune.jit] on CPU or GPU in a program whose size grows
-    with the iteration count, not with the horizon. The adaptive solver
-    ({!Make.val-solve}) uses host-side control flow (regularization retries,
-    Armijo backtracking) and runs eagerly only. *)
+    A problem is a value ({!Problem.t}): its dtype, dimensions, horizon,
+    dynamics and losses are record fields, and its parameter structure is an
+    [Nx.Ptree.t]. Everything below the solve level is a pure tensor
+    computation with static control flow, and every time loop is a
+    {!Rune.scan}: one traced step stands for the whole horizon, which
+    [Rune.jit] compiles as a loop. A fixed-iteration solve and its implicit
+    gradient therefore trace and compile with [Rune.jit] on CPU or GPU in a
+    program whose size grows with the iteration count, not with the horizon.
+    The adaptive solver ({!Solver.solve}) uses host-side control flow
+    (regularization retries, Armijo backtracking) and runs eagerly only. *)
 
 (** Levenberg-Marquardt regularization schedule. *)
 module Regularisation : module type of Regularisation
@@ -35,126 +36,143 @@ module Regularisation : module type of Regularisation
 module Linesearch : module type of Linesearch
 
 (** Tensor-math core: the linearization tape, the Riccati backward pass, gain
-    rollouts, and the problem signature {!module-type:Lqr.Ctx}. *)
+    rollouts, and the perturbed sweeps used by the implicit gradient. *)
 include module type of Lqr
 
 module Lqr : module type of Lqr
 
-module Make (C : Ctx) : sig
-  type value = C.value
+(** The problem description, as a value. *)
+module Problem : module type of Problem
 
-  module Solver : sig
-    type t =
-      { xs : value array (** states, length [horizon + 1] *)
-      ; us : value array (** controls, length [horizon] *)
-      ; cost : value (** scalar tensor: running + final loss *)
-      }
+(** The solve inputs as a structure of tensors. *)
+module Inputs = Problem.Inputs
 
-    (** [rollout theta x0 us] integrates the dynamics from [x0] under [us] and
-        returns the state path and total cost. *)
-    val rollout : value C.Params.t -> value -> value array -> value array * value
+(** [inputs problem] is the structure of the solve inputs: the problem's
+    parameters at [theta], the initial state [x0], and every control of the
+    initial guess [us0]. It is what {!Rune.grad}, {!Rune.custom_vjp} and
+    {!Rune.jit} take. *)
+val inputs : ('w, 'p) Problem.t -> ('p, 'w Problem.value) Inputs.t Nx.Ptree.t
 
-    (** [blocks theta xs us] linearizes dynamics and losses along the
-        trajectory. *)
-    val blocks : value C.Params.t -> value array -> value array -> (float, C.w) Lqr.tape
+(** [taus_of problem xs us] stacks the trajectory into a [(K+1); n+m] tensor:
+    row k is (x_k; u_k) for k < K, row K is (x_K; 0). *)
+val taus_of
+  :  ('w, 'p) Problem.t
+  -> 'w Problem.value array
+  -> 'w Problem.value array
+  -> 'w Problem.value
 
-    (** Adaptive iLQR. Host-side control flow: eager only, do not jit.
-        Defaults: [max_iter = 20], [conv_threshold = 1e-6], [c1 = 1e-2],
-        [ls_depth = 8]. Fails when no step can be regularized into descent. *)
-    val solve
-      :  ?max_iter:int
-      -> ?conv_threshold:float
-      -> ?c1:float
-      -> ?ls_depth:int
-      -> ?reg:Regularisation.t
-      -> value C.Params.t
-      -> value
-      -> value array
-      -> t
+(** [split_taus problem taus] is ([xs], [us]). *)
+val split_taus
+  :  ('w, 'p) Problem.t
+  -> 'w Problem.value
+  -> 'w Problem.value array * 'w Problem.value array
 
-    (** Fixed-iteration iLQR with tensor-only control flow: traceable and
-        JIT-compilable. Every time loop is a [Rune.scan], compiled as a loop,
-        so a program costs its iterations, not its horizon times its
-        iterations. [alphas] is the trial schedule (default [1; 1/2; …], 8
-        trials); the line search is a masked argmin over the trials, evaluated
-        in-graph. [mu] fixes the regularization (default none). *)
-    val solve_fixed
-      :  ?alphas:float list
-      -> ?mu:float
-      -> ?c1:float
-      -> iters:int
-      -> value C.Params.t
-      -> value
-      -> value array
-      -> t
-  end
+(** [loss_of_taus problem theta taus] evaluates the problem's own running +
+    final losses along the trajectory. Differentiable, traceable. *)
+val loss_of_taus : ('w, 'p) Problem.t -> 'p -> 'w Problem.value -> 'w Problem.value
 
-  (** The solve inputs as a structure of tensors. *)
-  module Inputs : sig
-    type 'a t =
-      { theta : 'a C.Params.t (** problem parameters *)
-      ; x0 : 'a (** initial state *)
-      ; us0 : 'a array (** initial control guess, length [horizon] *)
-      }
+(** The iLQR solvers. *)
+module Solver : sig
+  type 'a t =
+    { xs : 'a array (** states, length [horizon + 1] *)
+    ; us : 'a array (** controls, length [horizon] *)
+    ; cost : 'a (** scalar tensor: running + final loss *)
+    }
 
-    (** The structure of the solve inputs: the tensors of [theta], [x0] and of
-        every control of [us0] are leaves, and [us0]'s length is reported. *)
-    val walk : ('a, 'b) Nx.Ptree.Walk.cursor -> 'a t -> 'b t
-  end
+  (** [rollout problem theta x0 us] integrates the dynamics from [x0] under
+      [us] and returns the state path and total cost. *)
+  val rollout
+    :  ('w, 'p) Problem.t
+    -> 'p
+    -> 'w Problem.value
+    -> 'w Problem.value array
+    -> 'w Problem.value array * 'w Problem.value
 
-  (** {!Inputs} at [value]: the structure [Rune.grad], [Rune.custom_vjp] and
-      [Rune.jit] take. *)
-  val inputs_ptree : value Inputs.t Nx.Ptree.t
+  (** [blocks problem theta xs us] linearizes dynamics and losses along the
+      trajectory. *)
+  val blocks
+    :  ('w, 'p) Problem.t
+    -> 'p
+    -> 'w Problem.value array
+    -> 'w Problem.value array
+    -> (float, 'w) Lqr.tape
 
-  (** Opaque data the solve's forward pass hands to its backward pass. *)
-  type residual
-
-  (** [taus_of xs us] stacks the trajectory into a [(K+1); n+m] tensor: row k
-      is (x_k; u_k) for k < K, row K is (x_K; 0). *)
-  val taus_of : value array -> value array -> value
-
-  (** [split_taus taus] is ([xs], [us]). *)
-  val split_taus : value -> value array * value array
-
-  (** [loss_of_taus theta taus] evaluates the problem's own running + final
-      losses along the trajectory. Differentiable, traceable. *)
-  val loss_of_taus : value C.Params.t -> value -> value
-
-  (** The implicit VJP: cotangent on the stacked trajectory in, gradients on
-      the solve inputs out. *)
-  val bwd : residual -> value -> value Inputs.t
-
-  (** [solve_ilqr inputs] runs the adaptive solve and returns the stacked
-      trajectory, with the implicit gradient attached through a custom VJP.
-      Eager only — under [Rune.grad] the backward pass computes the implicit
-      gradient; do not jit (use {!val-solve_ilqr_fixed}). *)
-  val solve_ilqr
-    :  ?max_iter:int
+  (** Adaptive iLQR. Host-side control flow: eager only, do not jit.
+      Defaults: [max_iter = 20], [conv_threshold = 1e-6], [c1 = 1e-2],
+      [ls_depth = 8]. Fails when no step can be regularized into descent. *)
+  val solve
+    :  ('w, 'p) Problem.t
+    -> ?max_iter:int
     -> ?conv_threshold:float
     -> ?c1:float
     -> ?ls_depth:int
-    -> ?reg0:Regularisation.t
-    -> value Inputs.t
-    -> value
+    -> ?reg:Regularisation.t
+    -> 'p
+    -> 'w Problem.value
+    -> 'w Problem.value array
+    -> 'w Problem.value t
 
-  (** The traceable solve with its implicit gradient. Put inside [Rune.jit]
-      with a [Rune.grad] inside:
-
-      {[
-      let step =
-        Rune.jit
-          Nx.Ptree.(inputs_ptree @-> returns Nx.Ptree.tensor)
-          (fun inputs ->
-             Rune.grad
-               inputs_ptree
-               (fun inputs -> loss (solve_ilqr_fixed ~iters:3 inputs))
-               inputs)
-      ]} *)
-  val solve_ilqr_fixed
-    :  iters:int
+  (** Fixed-iteration iLQR with tensor-only control flow: traceable and
+      JIT-compilable. Every time loop is a [Rune.scan], compiled as a loop,
+      so a program costs its iterations, not its horizon times its
+      iterations. [alphas] is the trial schedule (default [1; 1/2; …], 8
+      trials); the line search is a masked argmin over the trials, evaluated
+      in-graph. [mu] fixes the regularization (default none). *)
+  val solve_fixed
+    :  ('w, 'p) Problem.t
     -> ?alphas:float list
     -> ?mu:float
     -> ?c1:float
-    -> value Inputs.t
-    -> value
+    -> iters:int
+    -> 'p
+    -> 'w Problem.value
+    -> 'w Problem.value array
+    -> 'w Problem.value t
 end
+
+(** Opaque data the solve's forward pass hands to its backward pass. *)
+type ('p, 'a) residual
+
+(** The implicit VJP: cotangent on the stacked trajectory in, gradients on
+    the solve inputs out. *)
+val bwd
+  :  ('w, 'p) Problem.t
+  -> ('p, 'w Problem.value) residual
+  -> 'w Problem.value
+  -> ('p, 'w Problem.value) Inputs.t
+
+(** [solve_ilqr problem inputs] runs the adaptive solve and returns the
+    stacked trajectory, with the implicit gradient attached through a custom
+    VJP. Eager only — under [Rune.grad] the backward pass computes the
+    implicit gradient; do not jit (use {!solve_ilqr_fixed}). *)
+val solve_ilqr
+  :  ('w, 'p) Problem.t
+  -> ?max_iter:int
+  -> ?conv_threshold:float
+  -> ?c1:float
+  -> ?ls_depth:int
+  -> ?reg0:Regularisation.t
+  -> ('p, 'w Problem.value) Inputs.t
+  -> 'w Problem.value
+
+(** The traceable solve with its implicit gradient. Put inside [Rune.jit]
+    with a [Rune.grad] inside:
+
+    {[
+    let step =
+      Rune.jit
+        Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
+        (fun inputs ->
+           Rune.grad
+             (inputs problem)
+             (fun inputs -> loss (solve_ilqr_fixed problem ~iters:3 inputs))
+             inputs)
+    ]} *)
+val solve_ilqr_fixed
+  :  ('w, 'p) Problem.t
+  -> iters:int
+  -> ?alphas:float list
+  -> ?mu:float
+  -> ?c1:float
+  -> ('p, 'w Problem.value) Inputs.t
+  -> 'w Problem.value

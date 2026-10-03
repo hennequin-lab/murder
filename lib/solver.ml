@@ -15,326 +15,347 @@
      schedule. There is no data-dependent control flow and no host read of a
      traced tensor, and every time loop is a [Rune.scan], so the whole solve
      is a pure tensor computation that Rune.jit can trace and compile into
-     loops: one step is traced whatever the horizon. *)
+     loops: one step is traced whatever the horizon.
+
+   Every function takes the problem as a value, and works at any dtype: the
+   dtype phantom is a type parameter, never a module member. *)
 
 open Base
 
-module Make (C : Lqr.Ctx) = struct
-  type value = C.value
+type 'a t =
+  { xs : 'a array (** states, length [horizon + 1] *)
+  ; us : 'a array (** controls, length [horizon] *)
+  ; cost : 'a (** scalar tensor: running + final loss *)
+  }
 
-  type t =
-    { xs : value array (** states, length [horizon + 1] *)
-    ; us : value array (** controls, length [horizon] *)
-    ; cost : value (** scalar tensor: running + final loss *)
+(* [stack ts] is the array [ts] as one tensor with its length leading. *)
+let stack (ts : ('a, 'b) Nx.t array) : ('a, 'b) Nx.t = Nx.stack ~axis:0 (Array.to_list ts)
+
+(* [unstack len t] is the rows of [t], as views. *)
+let unstack len (t : ('a, 'b) Nx.t) : ('a, 'b) Nx.t array =
+  Array.init len ~f:(fun k -> Nx.slice [ I k ] t)
+
+(* [ks p] is the step index of each step, a scalar row per step. *)
+let ks p = Nx.arange p.Problem.dtype 0 p.Problem.horizon 1
+let dyn p theta ~k x u = p.Problem.dynamics theta ~k ~x ~u
+
+(* [states p theta x0 us] integrates the dynamics over the controls [us]
+   ([horizon; m]), returning the state path ([horizon + 1; n]) as one scan. *)
+let states p theta (x0 : 'w Problem.value) (us : 'w Problem.value) : 'w Problem.value =
+  let _, x =
+    Rune.scan
+      Nx.Ptree.tensor
+      Nx.Ptree.(pair tensor tensor)
+      Nx.Ptree.tensor
+      ~f:(fun x (u, k) ->
+        let x' = dyn p theta ~k x u in
+        x', x')
+      ~init:x0
+      (us, ks p)
+  in
+  Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] x0; x ]
+
+(* [cost_of p theta xs us] is the running + final loss along the trajectory
+   ([horizon + 1; n]) under the controls ([horizon; m]), as one scan. *)
+let cost_of p theta (xs : 'w Problem.value) (us : 'w Problem.value) : 'w Problem.value =
+  let _, losses =
+    Rune.scan
+      Nx.Ptree.unit
+      Nx.Ptree.(pair (pair tensor tensor) tensor)
+      Nx.Ptree.tensor
+      ~f:(fun () ((x, u), k) -> (), p.Problem.running_loss theta ~k ~x ~u)
+      ~init:()
+      ((Nx.slice [ R (0, p.Problem.horizon) ] xs, us), ks p)
+  in
+  Nx.add
+    (p.Problem.final_loss theta ~x:(Nx.slice [ I p.Problem.horizon ] xs))
+    (Nx.sum losses)
+
+(* [rollout p theta x0 us] integrates the dynamics, returning the state path
+   and the total cost (running + final, a scalar tensor). *)
+let rollout p theta (x0 : 'w Problem.value) (us : 'w Problem.value array)
+  : 'w Problem.value array * 'w Problem.value
+  =
+  let us = stack us in
+  let xs = states p theta x0 us in
+  unstack (p.Problem.horizon + 1) xs, cost_of p theta xs us
+
+(* The rows of one step's linearization: the state, the control and the step
+   index. *)
+module Step_rows = struct
+  type 'a t =
+    { x : 'a
+    ; u : 'a
+    ; k : 'a
     }
 
-  let horizon = C.horizon
-  let dyn theta ~k x u = C.dynamics theta ~k ~x ~u
+  let walk c { x; u; k } =
+    let open Nx.Ptree.Walk in
+    let x = field c "x" leaf x in
+    let u = field c "u" leaf u in
+    let k = field c "k" leaf k in
+    { x; u; k }
+end
 
-  (* [ks ()] is the step index of each step, a scalar row per step. *)
-  let ks () = Nx.arange C.dtype 0 horizon 1
+(* Functions, not values: a structure built with [instantiate] is an
+   application, so a top-level binding of one is weakly polymorphic and would
+   pin this module to the first dtype it is used at. *)
+let step_rows () = Nx.Ptree.instantiate (module Step_rows)
+let block_rows () = Nx.Ptree.instantiate (module Lqr.Rows)
 
-  (* [stack ts] is the array [ts] as one tensor with its length leading. *)
-  let stack (ts : value array) : value = Nx.stack ~axis:0 (Array.to_list ts)
+(* [step_blocks p theta row] linearizes dynamics and losses at one step, one
+   [jacfwd'] or [grad'] pass per block. *)
+let step_blocks p theta (row : 'w Problem.value Step_rows.t) : 'w Problem.value Lqr.Rows.t
+  =
+  let x = row.x
+  and u = row.u
+  and k = row.k in
+  let a = Rune.jacfwd' (fun x -> dyn p theta ~k x u) x in
+  let b = Rune.jacfwd' (fun u -> dyn p theta ~k x u) u in
+  let lx = Rune.grad' (fun x -> p.Problem.running_loss theta ~k ~x ~u) x in
+  let lu = Rune.grad' (fun u -> p.Problem.running_loss theta ~k ~x ~u) u in
+  let lxx =
+    Rune.jacfwd'
+      (fun x -> Rune.grad' (fun y -> p.Problem.running_loss theta ~k ~x:y ~u) x)
+      x
+  in
+  let luu =
+    Rune.jacfwd'
+      (fun u -> Rune.grad' (fun v -> p.Problem.running_loss theta ~k ~x ~u:v) u)
+      u
+  in
+  let lux =
+    Rune.jacfwd'
+      (fun x -> Rune.grad' (fun u -> p.Problem.running_loss theta ~k ~x ~u) u)
+      x
+  in
+  { Lqr.Rows.a
+  ; Lqr.Rows.b
+  ; Lqr.Rows.lx
+  ; Lqr.Rows.lu
+  ; Lqr.Rows.lxx
+  ; Lqr.Rows.luu
+  ; Lqr.Rows.lux
+  }
 
-  (* [unstack len t] is the rows of [t], as views. *)
-  let unstack len (t : value) : value array =
-    Array.init len ~f:(fun k -> Nx.slice [ I k ] t)
+(* [blocks_t p theta xs us] computes the linearization of dynamics and losses
+   along the trajectory ([horizon + 1; n]) under the controls ([horizon; m]),
+   as one scan. *)
+let blocks_t p theta (xs : 'w Problem.value) (us : 'w Problem.value)
+  : (float, 'w) Lqr.tape
+  =
+  let rows =
+    { Step_rows.x = Nx.slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p }
+  in
+  let _, blocks =
+    Rune.scan
+      Nx.Ptree.unit
+      (step_rows ())
+      (block_rows ())
+      ~f:(fun () row -> (), step_blocks p theta row)
+      ~init:()
+      rows
+  in
+  let xf = Nx.slice [ I p.Problem.horizon ] xs in
+  let fx = Rune.grad' (fun x -> p.Problem.final_loss theta ~x) xf in
+  let fxx =
+    Rune.jacfwd' (fun x -> Rune.grad' (fun y -> p.Problem.final_loss theta ~x:y) x) xf
+  in
+  { Lqr.blocks; fx; fxx }
 
-  (* [states theta x0 us] integrates the dynamics over the controls [us]
-     ([horizon; m]), returning the state path ([horizon + 1; n]) as one scan. *)
-  let states theta (x0 : value) (us : value) : value =
-    let _, x =
-      Rune.scan
-        Nx.Ptree.tensor
-        Nx.Ptree.(pair tensor tensor)
-        Nx.Ptree.tensor
-        ~f:(fun x (u, k) ->
-          let x' = dyn theta ~k x u in
-          x', x')
-        ~init:x0
-        (us, ks ())
-    in
-    Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] x0; x ]
+(* [blocks p theta xs us] linearizes dynamics and losses along the trajectory,
+   from per-step arrays. *)
+let blocks p theta (xs : 'w Problem.value array) (us : 'w Problem.value array)
+  : (float, 'w) Lqr.tape
+  =
+  blocks_t p theta (stack xs) (stack us)
 
-  (* [cost_of theta xs us] is the running + final loss along the trajectory
-     ([horizon + 1; n]) under the controls ([horizon; m]), as one scan. *)
-  let cost_of theta (xs : value) (us : value) : value =
-    let _, losses =
-      Rune.scan
-        Nx.Ptree.unit
-        Nx.Ptree.(pair (pair tensor tensor) tensor)
-        Nx.Ptree.tensor
-        ~f:(fun () ((x, u), k) -> (), C.running_loss theta ~k ~x ~u)
-        ~init:()
-        ((Nx.slice [ R (0, horizon) ] xs, us), ks ())
-    in
-    Nx.add (C.final_loss theta ~x:(Nx.slice [ I horizon ] xs)) (Nx.sum losses)
+(* [pick ~w ~batched] selects one slice along axis 0 of a batched trajectory
+   with a one-hot weight vector [w]. Pure tensor ops. *)
+let pick ~w ~(batched : ('a, 'b) Nx.t) : ('a, 'b) Nx.t =
+  let extra =
+    Array.create ~len:(Array.length (Nx.shape batched) - Array.length (Nx.shape w)) 1
+  in
+  let w = Nx.reshape (Array.append (Nx.shape w) extra) w in
+  Nx.sum ~axes:[ 0 ] (Nx.mul batched w)
 
-  (* [rollout theta x0 us] integrates the dynamics, returning the state path
-     and the total cost (running + final, a scalar tensor). *)
-  let rollout theta (x0 : value) (us : value array) : value array * value =
-    let us = stack us in
-    let xs = states theta x0 us in
-    unstack (horizon + 1) xs, cost_of theta xs us
+(* Scalar-read helper for the adaptive solver. *)
+let item_f t = Nx.item [] t
 
-  (* The rows of one step's linearization: the state, the control and the step
-     index. *)
-  module Step_rows = struct
-    type 'a t =
-      { x : 'a
-      ; u : 'a
-      ; k : 'a
-      }
+let log p (fmt : ('a, Stdlib.Format.formatter, unit) format) : 'a =
+  if p.Problem.verbose
+  then Stdlib.Format.printf (Stdlib.( ^^ ) (Stdlib.( ^^ ) "dilqr: " fmt) "\n%!")
+  else Stdlib.Format.ifprintf Stdlib.Format.err_formatter fmt
 
-    let walk c { x; u; k } =
-      let open Nx.Ptree.Walk in
-      let x = field c "x" leaf x in
-      let u = field c "u" leaf u in
-      let k = field c "k" leaf k in
-      { x; u; k }
-  end
-
-  let step_rows = Nx.Ptree.instantiate (module Step_rows)
-  let block_rows = Nx.Ptree.instantiate (module Lqr.Rows)
-
-  (* [step_blocks theta row] linearizes dynamics and losses at one step, one
-     [jacfwd'] or [grad'] pass per block. *)
-  let step_blocks theta (row : value Step_rows.t) : value Lqr.Rows.t =
-    let x = row.x
-    and u = row.u
-    and k = row.k in
-    let a = Rune.jacfwd' (fun x -> dyn theta ~k x u) x in
-    let b = Rune.jacfwd' (fun u -> dyn theta ~k x u) u in
-    let lx = Rune.grad' (fun x -> C.running_loss theta ~k ~x ~u) x in
-    let lu = Rune.grad' (fun u -> C.running_loss theta ~k ~x ~u) u in
-    let lxx =
-      Rune.jacfwd' (fun x -> Rune.grad' (fun y -> C.running_loss theta ~k ~x:y ~u) x) x
-    in
-    let luu =
-      Rune.jacfwd' (fun u -> Rune.grad' (fun v -> C.running_loss theta ~k ~x ~u:v) u) u
-    in
-    let lux =
-      Rune.jacfwd' (fun x -> Rune.grad' (fun u -> C.running_loss theta ~k ~x ~u) u) x
-    in
-    { Lqr.Rows.a
-    ; Lqr.Rows.b
-    ; Lqr.Rows.lx
-    ; Lqr.Rows.lu
-    ; Lqr.Rows.lxx
-    ; Lqr.Rows.luu
-    ; Lqr.Rows.lux
-    }
-
-  (* [blocks_t theta xs us] computes the linearization of dynamics and losses
-     along the trajectory ([horizon + 1; n]) under the controls
-     ([horizon; m]), as one scan. *)
-  let blocks_t theta (xs : value) (us : value) : (float, C.w) Lqr.tape =
-    let rows = { Step_rows.x = Nx.slice [ R (0, horizon) ] xs; u = us; k = ks () } in
-    let _, blocks =
-      Rune.scan
-        Nx.Ptree.unit
-        step_rows
-        block_rows
-        ~f:(fun () row -> (), step_blocks theta row)
-        ~init:()
-        rows
-    in
-    let xf = Nx.slice [ I horizon ] xs in
-    let fx = Rune.grad' (fun x -> C.final_loss theta ~x) xf in
-    let fxx =
-      Rune.jacfwd' (fun x -> Rune.grad' (fun y -> C.final_loss theta ~x:y) x) xf
-    in
-    { Lqr.blocks; fx; fxx }
-
-  (* [blocks theta xs us] linearizes dynamics and losses along the trajectory,
-     from per-step arrays. *)
-  let blocks theta (xs : value array) (us : value array) : (float, C.w) Lqr.tape =
-    blocks_t theta (stack xs) (stack us)
-
-  (* [pick ~w ~batched] selects one slice along axis 0 of a batched
-     trajectory with a one-hot weight vector [w]. Pure tensor ops. *)
-  let pick ~w ~(batched : value) : value =
-    let extra =
-      Array.create ~len:(Array.length (Nx.shape batched) - Array.length (Nx.shape w)) 1
-    in
-    let w = Nx.reshape (Array.append (Nx.shape w) extra) w in
-    Nx.sum ~axes:[ 0 ] (Nx.mul batched w)
-
-  (* Scalar-read helper for the adaptive solver. *)
-  let item_f t = Nx.item [] t
-
-  let log (fmt : ('a, Stdlib.Format.formatter, unit) format) : 'a =
-    if C.verbose
-    then Stdlib.Format.printf (Stdlib.( ^^ ) (Stdlib.( ^^ ) "dilqr: " fmt) "\n%!")
-    else Stdlib.Format.ifprintf Stdlib.Format.err_formatter fmt
-
-  (* The traceable, fixed-iteration solve. [alphas] is the host-side trial
-     schedule (e.g. [1.; 0.5; ...]); the acceptance test over trials is
-     realized with tensor ops, so the result never depends on host reads.
-     A non-PD regularized [Quu] surfaces as NaNs, which the acceptance mask
-     rejects. *)
-  let solve_fixed
-        ?(alphas = Linesearch.schedule ~n:8 ())
-        ?(mu = 0.0)
-        ?(c1 = 1e-2)
-        ~(iters : int)
-        (theta : value C.Params.t)
-        (x0 : value)
-        (us0 : value array)
-    : t
-    =
-    let alphas = Array.of_list alphas in
-    let us = ref (stack us0) in
-    let xs = ref (states theta x0 !us) in
-    let cost = ref (cost_of theta !xs !us) in
-    for _ = 1 to iters do
-      let tape = blocks_t theta !xs !us in
-      let gains, d1, d2 = Lqr.backward ~mu ~tape ~lin:(Lqr.lin_of_tape tape) in
-      let n_alpha = Array.length alphas in
-      (* Placeholders, every element is written below. *)
-      let us_trials = Array.create ~len:n_alpha x0 in
-      let xs_trials = Array.create ~len:n_alpha x0 in
-      let costs = Array.create ~len:n_alpha !cost in
-      for i = 0 to n_alpha - 1 do
-        let xs_t, us_t =
-          Lqr.rollout ~dyn:(dyn theta) ~x0 ~xs:!xs ~us:!us ~gains ~alpha:alphas.(i)
-        in
-        us_trials.(i) <- us_t;
-        xs_trials.(i) <- xs_t;
-        costs.(i) <- cost_of theta xs_t us_t
-      done;
-      let us_all = Nx.stack ~axis:0 (Array.to_list us_trials) in
-      let xs_all = Nx.stack ~axis:0 (Array.to_list xs_trials) in
-      let costs = Nx.stack ~axis:0 (Array.to_list costs) in
-      (* Modelled cost change: alpha*d1 + 0.5*alpha^2*d2, <= 0 for useful
-         trials. Accept trials that beat [cost + c1 * model]. *)
-      let alphas_t =
-        Nx.stack ~axis:0 (Array.to_list (Array.map ~f:(Nx.scalar_like !cost) alphas))
+(* The traceable, fixed-iteration solve. [alphas] is the host-side trial
+   schedule (e.g. [1.; 0.5; ...]); the acceptance test over trials is
+   realized with tensor ops, so the result never depends on host reads.
+   A non-PD regularized [Quu] surfaces as NaNs, which the acceptance mask
+   rejects. *)
+let solve_fixed
+      p
+      ?(alphas = Linesearch.schedule ~n:8 ())
+      ?(mu = 0.0)
+      ?(c1 = 1e-2)
+      ~(iters : int)
+      (theta : 'p)
+      (x0 : 'w Problem.value)
+      (us0 : 'w Problem.value array)
+  : 'w Problem.value t
+  =
+  let alphas = Array.of_list alphas in
+  let us = ref (stack us0) in
+  let xs = ref (states p theta x0 !us) in
+  let cost = ref (cost_of p theta !xs !us) in
+  for _ = 1 to iters do
+    let tape = blocks_t p theta !xs !us in
+    let gains, d1, d2 = Lqr.backward ~mu ~tape ~lin:(Lqr.lin_of_tape tape) in
+    let n_alpha = Array.length alphas in
+    (* Placeholders, every element is written below. *)
+    let us_trials = Array.create ~len:n_alpha x0 in
+    let xs_trials = Array.create ~len:n_alpha x0 in
+    let costs = Array.create ~len:n_alpha !cost in
+    for i = 0 to n_alpha - 1 do
+      let xs_t, us_t =
+        Lqr.rollout ~dyn:(dyn p theta) ~x0 ~xs:!xs ~us:!us ~gains ~alpha:alphas.(i)
       in
-      let pred =
-        Nx.add
-          (Nx.mul alphas_t d1)
-          (Nx.mul (Nx.mul_s (Nx.mul alphas_t alphas_t) (0.5 *. c1)) d2)
-      in
-      let accept = Nx.less_equal costs (Nx.add !cost (Nx.mul_s pred c1)) in
-      let scores = Nx.where accept costs (Nx.full_like costs Float.infinity) in
-      let best = Nx.cast Nx.int32 (Nx.argmin ~axis:0 scores) in
-      let w = Nx.cast (Nx.dtype !cost) (Nx.equal (Nx.arange Nx.int32 0 n_alpha 1) best) in
-      let any = Nx.greater (Nx.sum w) (Nx.scalar_like !cost 0.5) in
-      let us_sel = pick ~w ~batched:us_all in
-      let xs_sel = pick ~w ~batched:xs_all in
-      let cost_sel = Nx.sum (Nx.mul costs w) in
-      let us' = Nx.where any us_sel !us in
-      let xs' = Nx.where any xs_sel !xs in
-      let cost' = Nx.where any cost_sel !cost in
-      us := us';
-      xs := xs';
-      cost := cost'
+      us_trials.(i) <- us_t;
+      xs_trials.(i) <- xs_t;
+      costs.(i) <- cost_of p theta xs_t us_t
     done;
-    { xs = unstack (horizon + 1) !xs; us = unstack horizon !us; cost = !cost }
+    let us_all = Nx.stack ~axis:0 (Array.to_list us_trials) in
+    let xs_all = Nx.stack ~axis:0 (Array.to_list xs_trials) in
+    let costs = Nx.stack ~axis:0 (Array.to_list costs) in
+    (* Modelled cost change: alpha*d1 + 0.5*alpha^2*d2, <= 0 for useful
+       trials. Accept trials that beat [cost + c1 * model]. *)
+    let alphas_t =
+      Nx.stack ~axis:0 (Array.to_list (Array.map ~f:(Nx.scalar_like !cost) alphas))
+    in
+    let pred =
+      Nx.add
+        (Nx.mul alphas_t d1)
+        (Nx.mul (Nx.mul_s (Nx.mul alphas_t alphas_t) (0.5 *. c1)) d2)
+    in
+    let accept = Nx.less_equal costs (Nx.add !cost (Nx.mul_s pred c1)) in
+    let scores = Nx.where accept costs (Nx.full_like costs Float.infinity) in
+    let best = Nx.cast Nx.int32 (Nx.argmin ~axis:0 scores) in
+    let w = Nx.cast (Nx.dtype !cost) (Nx.equal (Nx.arange Nx.int32 0 n_alpha 1) best) in
+    let any = Nx.greater (Nx.sum w) (Nx.scalar_like !cost 0.5) in
+    let us_sel = pick ~w ~batched:us_all in
+    let xs_sel = pick ~w ~batched:xs_all in
+    let cost_sel = Nx.sum (Nx.mul costs w) in
+    let us' = Nx.where any us_sel !us in
+    let xs' = Nx.where any xs_sel !xs in
+    let cost' = Nx.where any cost_sel !cost in
+    us := us';
+    xs := xs';
+    cost := cost'
+  done;
+  { xs = unstack (p.Problem.horizon + 1) !xs
+  ; us = unstack p.Problem.horizon !us
+  ; cost = !cost
+  }
 
-  (* The adaptive, host-driven solve. Requires untraced tensors: it reads
-     scalars on the host and retries the Cholesky factorization on
-     non-positive-definite [Quu]. *)
-  let solve
-        ?(max_iter = 20)
-        ?(conv_threshold = 1e-6)
-        ?(c1 = 1e-2)
-        ?(ls_depth = 8)
-        ?(reg = Regularisation.init)
-        (theta : value C.Params.t)
-        (x0 : value)
-        (us0 : value array)
-    : t
-    =
-    let us = ref (stack us0) in
-    let xs = ref (states theta x0 !us) in
-    let cost = ref (item_f (cost_of theta !xs !us)) in
-    let reg = ref reg in
-    let backward_adaptive tape =
-      let rec retry attempts =
-        if attempts > 30
-        then failwith "dilqr: Quu could not be regularized to positive definiteness";
-        match
-          Lqr.backward ~mu:!reg.Regularisation.mu ~tape ~lin:(Lqr.lin_of_tape tape)
-        with
-        | gains, d1, d2 -> gains, d1, d2
-        | exception Nx.Linalg_error _ ->
-          reg := Regularisation.increase !reg;
-          log "cholesky failed, mu -> %g" !reg.Regularisation.mu;
-          retry (attempts + 1)
-      in
-      retry 0
+(* The adaptive, host-driven solve. Requires untraced tensors: it reads
+   scalars on the host and retries the Cholesky factorization on
+   non-positive-definite [Quu]. *)
+let solve
+      p
+      ?(max_iter = 20)
+      ?(conv_threshold = 1e-6)
+      ?(c1 = 1e-2)
+      ?(ls_depth = 8)
+      ?(reg = Regularisation.init)
+      (theta : 'p)
+      (x0 : 'w Problem.value)
+      (us0 : 'w Problem.value array)
+  : 'w Problem.value t
+  =
+  let us = ref (stack us0) in
+  let xs = ref (states p theta x0 !us) in
+  let cost = ref (item_f (cost_of p theta !xs !us)) in
+  let reg = ref reg in
+  let backward_adaptive tape =
+    let rec retry attempts =
+      if attempts > 30
+      then failwith "dilqr: Quu could not be regularized to positive definiteness";
+      match Lqr.backward ~mu:!reg.Regularisation.mu ~tape ~lin:(Lqr.lin_of_tape tape) with
+      | gains, d1, d2 -> gains, d1, d2
+      | exception Nx.Linalg_error _ ->
+        reg := Regularisation.increase !reg;
+        log p "cholesky failed, mu -> %g" !reg.Regularisation.mu;
+        retry (attempts + 1)
     in
-    let converged c c' =
-      Float.(Float.abs ((c -. c') /. Float.max (Float.abs c) 1.0) < conv_threshold)
-    in
-    let rec loop iter c attempts =
-      if iter >= max_iter
+    retry 0
+  in
+  let converged c c' =
+    Float.(Float.abs ((c -. c') /. Float.max (Float.abs c) 1.0) < conv_threshold)
+  in
+  let rec loop iter c attempts =
+    if iter >= max_iter
+    then ()
+    else (
+      let tape = blocks_t p theta !xs !us in
+      let gains, d1t, d2t = backward_adaptive tape in
+      let d1 = item_f d1t
+      and d2 = item_f d2t in
+      (* Converged: the modelled first-order decrease is negligible against
+         the cost scale (it is second order in the control gradient, so this
+         fires well before the gradient itself vanishes). *)
+      if Float.(Float.abs d1 <= conv_threshold *. Float.max 1.0 (Float.abs c))
       then ()
       else (
-        let tape = blocks_t theta !xs !us in
-        let gains, d1t, d2t = backward_adaptive tape in
-        let d1 = item_f d1t
-        and d2 = item_f d2t in
-        (* Converged: the modelled first-order decrease is negligible against
-           the cost scale (it is second order in the control gradient, so
-           this fires well before the gradient itself vanishes). *)
-        if Float.(Float.abs d1 <= conv_threshold *. Float.max 1.0 (Float.abs c))
-        then ()
-        else (
-          let accepted =
-            let rec try_alphas = function
-              | [] -> None
-              | alpha :: tl ->
-                let xs_t, us_t =
-                  Lqr.rollout ~dyn:(dyn theta) ~x0 ~xs:!xs ~us:!us ~gains ~alpha
-                in
-                let cost_t = cost_of theta xs_t us_t in
-                let fv = item_f cost_t in
-                let model = Float.((alpha *. d1) +. (0.5 *. alpha *. alpha *. d2)) in
-                if Float.(fv <= c + (c1 *. model))
-                then Some (xs_t, us_t, fv, alpha)
-                else try_alphas tl
-            in
-            try_alphas (Linesearch.schedule ~n:ls_depth ())
+        let accepted =
+          let rec try_alphas = function
+            | [] -> None
+            | alpha :: tl ->
+              let xs_t, us_t =
+                Lqr.rollout ~dyn:(dyn p theta) ~x0 ~xs:!xs ~us:!us ~gains ~alpha
+              in
+              let cost_t = cost_of p theta xs_t us_t in
+              let fv = item_f cost_t in
+              let model = Float.((alpha *. d1) +. (0.5 *. alpha *. alpha *. d2)) in
+              if Float.(fv <= c + (c1 *. model))
+              then Some (xs_t, us_t, fv, alpha)
+              else try_alphas tl
           in
-          match accepted with
-          | None ->
-            (* No trial decreased enough: regularize harder and retry the
-               same iteration. If even the largest regularization cannot
-               buy a decreasing step, stop — the solve is stuck at a point
-               its quadratic model cannot improve. *)
-            log "line search failed at iter %d, mu -> %g" iter !reg.Regularisation.mu;
-            if attempts >= 12
-            then ()
-            else (
-              reg := Regularisation.increase !reg;
-              loop iter c (attempts + 1))
-          | Some (xs_t, us_t, fv, alpha) ->
-            log
-              "iter %d: %g -> %g (alpha %g, mu %g)"
-              iter
-              c
-              fv
-              alpha
-              !reg.Regularisation.mu;
-            (* Decay the regularization only when the full step was
-               accepted; backtracked steps keep it. *)
-            if Float.equal alpha (List.hd_exn (Linesearch.schedule ~n:ls_depth ()))
-            then reg := Regularisation.decrease !reg;
-            xs := xs_t;
-            us := us_t;
-            if converged c fv
-            then (
-              log "converged after %d iterations: %g -> %g" iter c fv;
-              ())
-            else loop (iter + 1) fv 0))
-    in
-    loop 0 !cost 0;
-    { xs = unstack (horizon + 1) !xs
-    ; us = unstack horizon !us
-    ; cost = cost_of theta !xs !us
-    }
-end
+          try_alphas (Linesearch.schedule ~n:ls_depth ())
+        in
+        match accepted with
+        | None ->
+          (* No trial decreased enough: regularize harder and retry the
+             same iteration. If even the largest regularization cannot
+             buy a decreasing step, stop — the solve is stuck at a point
+             its quadratic model cannot improve. *)
+          log p "line search failed at iter %d, mu -> %g" iter !reg.Regularisation.mu;
+          if attempts >= 12
+          then ()
+          else (
+            reg := Regularisation.increase !reg;
+            loop iter c (attempts + 1))
+        | Some (xs_t, us_t, fv, alpha) ->
+          log
+            p
+            "iter %d: %g -> %g (alpha %g, mu %g)"
+            iter
+            c
+            fv
+            alpha
+            !reg.Regularisation.mu;
+          (* Decay the regularization only when the full step was
+             accepted; backtracked steps keep it. *)
+          if Float.equal alpha (List.hd_exn (Linesearch.schedule ~n:ls_depth ()))
+          then reg := Regularisation.decrease !reg;
+          xs := xs_t;
+          us := us_t;
+          if converged c fv
+          then (
+            log p "converged after %d iterations: %g -> %g" iter c fv;
+            ())
+          else loop (iter + 1) fv 0))
+  in
+  loop 0 !cost 0;
+  { xs = unstack (p.Problem.horizon + 1) !xs
+  ; us = unstack p.Problem.horizon !us
+  ; cost = cost_of p theta !xs !us
+  }

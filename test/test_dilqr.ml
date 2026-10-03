@@ -64,106 +64,106 @@ let us_of (vs : float list list) : Nx.float64_t array =
 
 (* Double integrator: x = [position; velocity], control = force. *)
 module Integrator = struct
-  module Ctx = struct
-    type 'a params = { mass : 'a } [@@deriving ptree]
-
-    module Params = struct
-      type 'a t = 'a params
-
-      let walk = walk_params
-    end
-
-    type w = Nx.float64_elt
-    type value = (float, w) Nx.t
-
-    let dtype = Nx.float64
-    let n = 2
-    let m = 1
-    let horizon = 20
-    let verbose = false
-
-    let dynamics { mass } ~k:_ ~x ~u =
-      let pos = Nx.slice [ R (0, 1) ] x
-      and vel = Nx.slice [ R (1, 2) ] x in
-      let force = Nx.div u mass in
-      Nx.concatenate
-        ~axis:0
-        [ Nx.add pos (Nx.mul_s vel dt); Nx.add vel (Nx.mul_s force dt) ]
-
-    (* The state cost ramps with the step: [k] reaches the loss as data, so
-       the scans carry time with their rows. *)
-    let running_loss _ ~k ~x ~u =
-      let pos = Nx.slice [ R (0, 1) ] x
-      and vel = Nx.slice [ R (1, 2) ] x in
-      let weight = Nx.add_s (Nx.mul_s k 0.05) 1.0 in
-      Nx.sum
-        (Nx.add
-           (Nx.mul_s (Nx.mul (Nx.add (Nx.mul pos pos) (Nx.mul vel vel)) weight) 0.5)
-           (Nx.mul_s (Nx.mul u u) 0.05))
-
-    let final_loss _ ~x =
-      let pos = Nx.slice [ R (0, 1) ] x
-      and vel = Nx.slice [ R (1, 2) ] x in
-      Nx.mul_s (Nx.sum (Nx.add (Nx.mul pos pos) (Nx.mul vel vel))) 5.0
+  module Params = struct
+    type 'a t = { mass : 'a } [@@deriving ptree]
   end
 
-  module D = Dilqr.Make (Ctx)
+  let n = 2
+  let m = 1
+  let horizon = 20
+  let verbose = false
+
+  let dynamics { Params.mass } ~k:_ ~x ~u =
+    let pos = Nx.slice [ R (0, 1) ] x
+    and vel = Nx.slice [ R (1, 2) ] x in
+    let force = Nx.div u mass in
+    Nx.concatenate
+      ~axis:0
+      [ Nx.add pos (Nx.mul_s vel dt); Nx.add vel (Nx.mul_s force dt) ]
+
+  (* The state cost ramps with the step: [k] reaches the loss as data, so
+     the scans carry time with their rows. *)
+  let running_loss _ ~k ~x ~u =
+    let pos = Nx.slice [ R (0, 1) ] x
+    and vel = Nx.slice [ R (1, 2) ] x in
+    let weight = Nx.add_s (Nx.mul_s k 0.05) 1.0 in
+    Nx.sum
+      (Nx.add
+         (Nx.mul_s (Nx.mul (Nx.add (Nx.mul pos pos) (Nx.mul vel vel)) weight) 0.5)
+         (Nx.mul_s (Nx.mul u u) 0.05))
+
+  let final_loss _ ~x =
+    let pos = Nx.slice [ R (0, 1) ] x
+    and vel = Nx.slice [ R (1, 2) ] x in
+    Nx.mul_s (Nx.sum (Nx.add (Nx.mul pos pos) (Nx.mul vel vel))) 5.0
+
+  let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
+    { dtype = Nx.float64
+    ; n
+    ; m
+    ; horizon
+    ; verbose
+    ; params = Nx.Ptree.instantiate (module Params)
+    ; dynamics
+    ; running_loss
+    ; final_loss
+    }
 end
 
 (* Pendulum: x = [angle; angular velocity], control = torque, damping
    coefficient 0.1. Regulate the upright position (angle = π). *)
 module Pendulum = struct
-  module Ctx = struct
-    type 'a params =
+  module Params = struct
+    type 'a t =
       { gravity : 'a
       ; mass : 'a
       ; length : 'a
       }
     [@@deriving ptree]
-
-    module Params = struct
-      type 'a t = 'a params
-
-      let walk = walk_params
-    end
-
-    type w = Nx.float64_elt
-    type value = (float, w) Nx.t
-
-    let dtype = Nx.float64
-    let n = 2
-    let m = 1
-    let horizon = 30
-    let verbose = false
-    let target = 3.14159265358979
-
-    let dynamics { gravity; mass; length } ~k:_ ~x ~u =
-      let theta = Nx.slice [ R (0, 1) ] x
-      and omega = Nx.slice [ R (1, 2) ] x in
-      let ml2 = Nx.mul mass (Nx.mul length length) in
-      let grav_torque = Nx.mul (Nx.mul gravity (Nx.mul mass length)) (Nx.sin theta) in
-      let acc = Nx.div (Nx.sub u (Nx.add grav_torque (Nx.mul_s omega 0.1))) ml2 in
-      Nx.concatenate
-        ~axis:0
-        [ Nx.add theta (Nx.mul_s omega dt); Nx.add omega (Nx.mul_s acc dt) ]
-
-    let running_loss _ ~k:_ ~x ~u =
-      let theta = Nx.slice [ R (0, 1) ] x
-      and omega = Nx.slice [ R (1, 2) ] x in
-      let dtheta = Nx.sub_s theta target in
-      Nx.sum
-        (Nx.add
-           (Nx.mul_s (Nx.add (Nx.mul dtheta dtheta) (Nx.mul omega omega)) 0.5)
-           (Nx.mul_s (Nx.mul u u) 0.01))
-
-    let final_loss _ ~x =
-      let theta = Nx.slice [ R (0, 1) ] x
-      and omega = Nx.slice [ R (1, 2) ] x in
-      let dtheta = Nx.sub_s theta target in
-      Nx.mul_s (Nx.sum (Nx.add (Nx.mul dtheta dtheta) (Nx.mul omega omega))) 5.0
   end
 
-  module D = Dilqr.Make (Ctx)
+  let n = 2
+  let m = 1
+  let horizon = 30
+  let verbose = false
+  let target = 3.14159265358979
+
+  let dynamics { Params.gravity; mass; length } ~k:_ ~x ~u =
+    let theta = Nx.slice [ R (0, 1) ] x
+    and omega = Nx.slice [ R (1, 2) ] x in
+    let ml2 = Nx.mul mass (Nx.mul length length) in
+    let grav_torque = Nx.mul (Nx.mul gravity (Nx.mul mass length)) (Nx.sin theta) in
+    let acc = Nx.div (Nx.sub u (Nx.add grav_torque (Nx.mul_s omega 0.1))) ml2 in
+    Nx.concatenate
+      ~axis:0
+      [ Nx.add theta (Nx.mul_s omega dt); Nx.add omega (Nx.mul_s acc dt) ]
+
+  let running_loss _ ~k:_ ~x ~u =
+    let theta = Nx.slice [ R (0, 1) ] x
+    and omega = Nx.slice [ R (1, 2) ] x in
+    let dtheta = Nx.sub_s theta target in
+    Nx.sum
+      (Nx.add
+         (Nx.mul_s (Nx.add (Nx.mul dtheta dtheta) (Nx.mul omega omega)) 0.5)
+         (Nx.mul_s (Nx.mul u u) 0.01))
+
+  let final_loss _ ~x =
+    let theta = Nx.slice [ R (0, 1) ] x
+    and omega = Nx.slice [ R (1, 2) ] x in
+    let dtheta = Nx.sub_s theta target in
+    Nx.mul_s (Nx.sum (Nx.add (Nx.mul dtheta dtheta) (Nx.mul omega omega))) 5.0
+
+  let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
+    { dtype = Nx.float64
+    ; n
+    ; m
+    ; horizon
+    ; verbose
+    ; params = Nx.Ptree.instantiate (module Params)
+    ; dynamics
+    ; running_loss
+    ; final_loss
+    }
 end
 
 (* ──────────────────────────────────────────────────────────────────────────
@@ -186,14 +186,13 @@ let test_regularisation () =
    the total cost w.r.t. each control vanishes. Autodiff through the true
    rollout — independent of the Riccati code under test. *)
 let test_integrator_converges () =
-  let module D = Integrator.D in
-  let module Ctx = Integrator.Ctx in
-  let theta : Ctx.value Ctx.Params.t = { mass = scalar64 1.0 } in
+  let module P = Integrator in
+  let theta : Nx.float64_t P.Params.t = { mass = scalar64 1.0 } in
   let x0 = vec64 [| 1.0; 0.0 |] in
-  let us0 = us_of (List.init Ctx.horizon ~f:(fun _ -> [ 0.0 ])) in
-  let cost_of_us us = snd (D.Solver.rollout theta x0 us) in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let cost_of_us us = snd (Dilqr.Solver.rollout P.problem theta x0 us) in
   let cost0 = item (cost_of_us us0) in
-  let sol = D.Solver.solve theta x0 us0 in
+  let sol = Dilqr.Solver.solve P.problem theta x0 us0 in
   let cost1 = item sol.cost in
   require ~msg:"solve reduces cost" Float.(cost1 < 0.5 *. cost0);
   let worst = ref 0.0 in
@@ -211,50 +210,50 @@ let test_integrator_converges () =
   require ~msg:"control stationarity" Float.(!worst < 5e-4)
 
 let test_pendulum_converges () =
-  let module D = Pendulum.D in
-  let module Ctx = Pendulum.Ctx in
-  let theta : Ctx.value Ctx.Params.t =
+  let module P = Pendulum in
+  let theta : Nx.float64_t P.Params.t =
     { gravity = scalar64 9.81; mass = scalar64 1.0; length = scalar64 1.0 }
   in
-  let x0 = vec64 [| Ctx.target -. 0.3; 0.0 |] in
-  let us0 = us_of (List.init Ctx.horizon ~f:(fun _ -> [ 0.0 ])) in
-  let cost0 = item (snd (D.Solver.rollout theta x0 us0)) in
-  let sol = D.Solver.solve ~max_iter:80 theta x0 us0 in
+  let x0 = vec64 [| P.target -. 0.3; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let cost0 = item (snd (Dilqr.Solver.rollout P.problem theta x0 us0)) in
+  let sol = Dilqr.Solver.solve P.problem ~max_iter:80 theta x0 us0 in
   let cost1 = item sol.cost in
   require ~msg:"pendulum reduces cost" Float.(cost1 < 0.5 *. cost0);
   let xf = sol.xs.(Array.length sol.xs - 1) in
-  let err = Float.abs (Nx.item [ 0 ] (Nx.slice [ R (0, 1) ] xf) -. Ctx.target) in
+  let err = Float.abs (Nx.item [ 0 ] (Nx.slice [ R (0, 1) ] xf) -. P.target) in
   require ~msg:"pendulum reaches upright" Float.(err < 0.1)
 
 (* Implicit gradient vs. central finite differences, w.r.t. x0 and theta, on
    the pendulum with a tightly converged solve. *)
 let test_implicit_gradient_matches_fd () =
-  let module D = Pendulum.D in
-  let module Ctx = Pendulum.Ctx in
-  let theta : Ctx.value Ctx.Params.t =
+  let module P = Pendulum in
+  let theta : Nx.float64_t P.Params.t =
     { gravity = scalar64 9.81; mass = scalar64 1.3; length = scalar64 0.9 }
   in
-  let x0 = vec64 [| Ctx.target -. 0.4; 0.1 |] in
-  let us0 = us_of (List.init Ctx.horizon ~f:(fun _ -> [ 0.02 ])) in
-  let inputs : D.value D.Inputs.t = { theta; x0; us0 } in
+  let x0 = vec64 [| P.target -. 0.4; 0.1 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.02 ])) in
+  let inputs : (Nx.float64_t P.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+    { Dilqr.Inputs.theta; x0; us0 }
+  in
   (* A user loss on the solve output, different from the problem's own cost. *)
   let loss taus =
-    let xs, us = D.split_taus taus in
+    let xs, us = Dilqr.split_taus P.problem taus in
     let xf = xs.(Array.length xs - 1) in
     let ctrl =
       Array.fold us ~init:(scalar64 0.0) ~f:(fun a u ->
         Nx.add a (Nx.mul_s (Nx.sum (Nx.mul u u)) 0.5))
     in
-    let err = Nx.sub_s (Nx.slice [ R (0, 1) ] xf) Ctx.target in
+    let err = Nx.sub_s (Nx.slice [ R (0, 1) ] xf) P.target in
     Nx.add ctrl (Nx.mul_s (Nx.sum (Nx.mul err err)) 1.0)
   in
   let value inputs =
-    item (loss (D.solve_ilqr ~max_iter:100 ~conv_threshold:1e-10 inputs))
+    item (loss (Dilqr.solve_ilqr P.problem ~max_iter:100 ~conv_threshold:1e-10 inputs))
   in
   let grads =
     Rune.grad
-      D.inputs_ptree
-      (fun i -> loss (D.solve_ilqr ~max_iter:100 ~conv_threshold:1e-10 i))
+      (Dilqr.inputs P.problem)
+      (fun i -> loss (Dilqr.solve_ilqr P.problem ~max_iter:100 ~conv_threshold:1e-10 i))
       inputs
   in
   (* x0 gradient vs FD *)
@@ -294,30 +293,30 @@ let test_implicit_gradient_matches_fd () =
 (* The fixed (traceable) solve reaches costs competitive with the adaptive
    one. *)
 let test_fixed_solve_works () =
-  let module D = Integrator.D in
-  let module Ctx = Integrator.Ctx in
-  let theta : Ctx.value Ctx.Params.t = { mass = scalar64 1.0 } in
+  let module P = Integrator in
+  let theta : Nx.float64_t P.Params.t = { mass = scalar64 1.0 } in
   let x0 = vec64 [| 1.0; 0.0 |] in
-  let us0 = us_of (List.init Ctx.horizon ~f:(fun _ -> [ 0.0 ])) in
-  let sol = D.Solver.solve_fixed ~iters:8 theta x0 us0 in
-  let adaptive = D.Solver.solve ~max_iter:20 theta x0 us0 in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~iters:8 theta x0 us0 in
+  let adaptive = Dilqr.Solver.solve P.problem ~max_iter:20 theta x0 us0 in
   let c_fixed = item sol.cost
   and c_adaptive = item adaptive.cost in
   require ~msg:"fixed solve competitive" Float.(c_fixed < 1.05 *. c_adaptive)
 
 (* JIT: the compiled fixed solve equals the eager one. *)
 let test_jit_solve () =
-  let module D = Integrator.D in
-  let module Ctx = Integrator.Ctx in
-  let theta : Ctx.value Ctx.Params.t = { mass = scalar64 1.0 } in
+  let module P = Integrator in
+  let theta : Nx.float64_t P.Params.t = { mass = scalar64 1.0 } in
   let x0 = vec64 [| 1.0; 0.0 |] in
-  let us0 = us_of (List.init Ctx.horizon ~f:(fun _ -> [ 0.0 ])) in
-  let inputs : D.value D.Inputs.t = { theta; x0; us0 } in
-  let eager = D.solve_ilqr_fixed ~iters:5 inputs in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let inputs : (Nx.float64_t P.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+    { Dilqr.Inputs.theta; x0; us0 }
+  in
+  let eager = Dilqr.solve_ilqr_fixed P.problem ~iters:5 inputs in
   let jitted =
     Rune.jit
-      Nx.Ptree.(D.inputs_ptree @-> returns Nx.Ptree.tensor)
-      (fun i -> D.solve_ilqr_fixed ~iters:5 i)
+      Nx.Ptree.(Dilqr.inputs P.problem @-> returns Nx.Ptree.tensor)
+      (fun i -> Dilqr.solve_ilqr_fixed P.problem ~iters:5 i)
       inputs
   in
   check_close ~msg:"jit solve taus" ~tol:1e-10 jitted eager
@@ -325,27 +324,34 @@ let test_jit_solve () =
 (* JIT: the compiled gradient — forward solve and implicit VJP, all traced —
    matches the eager gradient. *)
 let test_jit_grad () =
-  let module D = Integrator.D in
-  let module Ctx = Integrator.Ctx in
-  let theta : Ctx.value Ctx.Params.t = { mass = scalar64 1.0 } in
+  let module P = Integrator in
+  let theta : Nx.float64_t P.Params.t = { mass = scalar64 1.0 } in
   let x0 = vec64 [| 1.0; 0.0 |] in
-  let us0 = us_of (List.init Ctx.horizon ~f:(fun _ -> [ 0.0 ])) in
-  let inputs : D.value D.Inputs.t = { theta; x0; us0 } in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let inputs : (Nx.float64_t P.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+    { Dilqr.Inputs.theta; x0; us0 }
+  in
   let loss taus =
-    let xs, us = D.split_taus taus in
+    let xs, us = Dilqr.split_taus P.problem taus in
     let xf = xs.(Array.length xs - 1) in
     Nx.add
       (Nx.sum (Array.fold us ~init:(scalar64 0.0) ~f:(fun a u -> Nx.add a (Nx.mul u u))))
       (Nx.mul_s (Nx.sum (Nx.mul xf xf)) 5.0)
   in
   let eager_grad =
-    Rune.grad D.inputs_ptree (fun i -> loss (D.solve_ilqr_fixed ~iters:4 i)) inputs
+    Rune.grad
+      (Dilqr.inputs P.problem)
+      (fun i -> loss (Dilqr.solve_ilqr_fixed P.problem ~iters:4 i))
+      inputs
   in
   let compiled =
     Rune.jit
-      Nx.Ptree.(D.inputs_ptree @-> returns D.inputs_ptree)
+      Nx.Ptree.(Dilqr.inputs P.problem @-> returns (Dilqr.inputs P.problem))
       (fun i ->
-         Rune.grad D.inputs_ptree (fun i -> loss (D.solve_ilqr_fixed ~iters:4 i)) i)
+         Rune.grad
+           (Dilqr.inputs P.problem)
+           (fun i -> loss (Dilqr.solve_ilqr_fixed P.problem ~iters:4 i))
+           i)
       inputs
   in
   check_close ~msg:"jit grad x0" ~tol:1e-9 compiled.x0 eager_grad.x0;
