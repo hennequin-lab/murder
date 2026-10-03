@@ -1,0 +1,13 @@
+(executable
+ (name pendulum_swingup)
+ (modules pendulum_swingup)
+ (libraries base stdio nx rune dilqr)
+ (preprocess
+  (pps ppx_ptree)))
+
+(executable
+ (name integrator_mpc)
+ (modules integrator_mpc)
+ (libraries base stdio nx rune dilqr)
+ (preprocess
+  (pps ppx_ptree)))
