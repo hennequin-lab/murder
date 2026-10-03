@@ -27,7 +27,16 @@
     gradient therefore trace and compile with [Rune.jit] on CPU or GPU in a
     program whose size grows with the iteration count, not with the horizon.
     The adaptive solver ({!Solver.solve}) uses host-side control flow
-    (regularization retries, Armijo backtracking) and runs eagerly only. *)
+    (regularization retries, Armijo backtracking) and runs eagerly only.
+
+    {b Batches.} {!Solver.solve_fixed} and {!solve_ilqr_fixed} also solve a
+    batch of problems at once: give every leaf of the parameters, the
+    initial state and every initial control a leading batch axis, and each
+    member gets its own trajectory, line search and gradient. The dynamics
+    and the losses stay written for one member; the solver maps them over
+    the batch. The adaptive solves ({!Solver.solve}, {!solve_ilqr}) are
+    deliberately unbatched: their control flow is host-side, and a batch
+    would need one of each per member. *)
 
 (** Levenberg-Marquardt regularization schedule. *)
 module Regularisation : module type of Regularisation
@@ -54,7 +63,8 @@ module Inputs = Problem.Inputs
 val inputs : ('w, 'p) Problem.t -> ('p, 'w Problem.value) Inputs.t Nx.Ptree.t
 
 (** [taus_of problem xs us] stacks the trajectory into a [(K+1); n+m] tensor:
-    row k is (x_k; u_k) for k < K, row K is (x_K; 0). *)
+    row k is (x_k; u_k) for k < K, row K is (x_K; 0). The batch axes lead the
+    horizon, so a batched trajectory stacks to [batch...; K+1; n+m]. *)
 val taus_of
   :  ('w, 'p) Problem.t
   -> 'w Problem.value array
@@ -68,7 +78,8 @@ val split_taus
   -> 'w Problem.value array * 'w Problem.value array
 
 (** [loss_of_taus problem theta taus] evaluates the problem's own running +
-    final losses along the trajectory. Differentiable, traceable. *)
+    final losses along the trajectory. Differentiable, traceable. A batched
+    [theta] and trajectory are evaluated member by member. *)
 val loss_of_taus : ('w, 'p) Problem.t -> 'p -> 'w Problem.value -> 'w Problem.value
 
 (** The iLQR solvers. *)
@@ -80,7 +91,8 @@ module Solver : sig
     }
 
   (** [rollout problem theta x0 us] integrates the dynamics from [x0] under
-      [us] and returns the state path and total cost. *)
+      [us] and returns the state path and total cost. Batched inputs are
+      rolled out member by member. *)
   val rollout
     :  ('w, 'p) Problem.t
     -> 'p
@@ -89,7 +101,7 @@ module Solver : sig
     -> 'w Problem.value array * 'w Problem.value
 
   (** [blocks problem theta xs us] linearizes dynamics and losses along the
-      trajectory. *)
+      trajectory. A batched trajectory is linearized member by member. *)
   val blocks
     :  ('w, 'p) Problem.t
     -> 'p
@@ -97,9 +109,11 @@ module Solver : sig
     -> 'w Problem.value array
     -> (float, 'w) Lqr.tape
 
-  (** Adaptive iLQR. Host-side control flow: eager only, do not jit.
-      Defaults: [max_iter = 20], [conv_threshold = 1e-6], [c1 = 1e-2],
-      [ls_depth = 8]. Fails when no step can be regularized into descent. *)
+  (** Adaptive iLQR. Host-side control flow: eager only, do not jit, and
+      unbatched: a batch would need one line search per member
+      ({!solve_fixed} has it). Defaults: [max_iter = 20],
+      [conv_threshold = 1e-6], [c1 = 1e-2], [ls_depth = 8]. Fails when no
+      step can be regularized into descent. *)
   val solve
     :  ('w, 'p) Problem.t
     -> ?max_iter:int
@@ -117,7 +131,12 @@ module Solver : sig
       so a program costs its iterations, not its horizon times its
       iterations. [alphas] is the trial schedule (default [1; 1/2; …], 8
       trials); the line search is a masked argmin over the trials, evaluated
-      in-graph. [mu] fixes the regularization (default none). *)
+      in-graph. [mu] fixes the regularization (default none).
+
+      Batched inputs — a leading batch axis on the parameters, the initial
+      state and every initial control — are solved member by member (the
+      single-member solve is mapped over the batch): [cost] is then [B] and
+      every state and control is [B; n] or [B; m]. *)
   val solve_fixed
     :  ('w, 'p) Problem.t
     -> ?alphas:float list
@@ -144,7 +163,7 @@ val bwd
 (** [solve_ilqr problem inputs] runs the adaptive solve and returns the
     stacked trajectory, with the implicit gradient attached through a custom
     VJP. Eager only — under [Rune.grad] the backward pass computes the
-    implicit gradient; do not jit (use {!solve_ilqr_fixed}). *)
+    implicit gradient; do not jit, and unbatched (use {!solve_ilqr_fixed}). *)
 val solve_ilqr
   :  ('w, 'p) Problem.t
   -> ?max_iter:int
@@ -155,8 +174,10 @@ val solve_ilqr
   -> ('p, 'w Problem.value) Inputs.t
   -> 'w Problem.value
 
-(** The traceable solve with its implicit gradient. Put inside [Rune.jit]
-    with a [Rune.grad] inside:
+(** The traceable solve with its implicit gradient. Batched inputs (a
+    leading batch axis on every leaf) are solved member by member, the
+    implicit VJP included; the stacked trajectory is then [B; K+1; n+m]. Put
+    inside [Rune.jit] with a [Rune.grad] inside:
 
     {[
     let step =

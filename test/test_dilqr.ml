@@ -166,6 +166,60 @@ module Pendulum = struct
     }
 end
 
+(* Batched double integrator: one mass per member and one target per member.
+   The dynamics and losses are written for a single member — the solver vmaps
+   them over the leading batch axis — so the same function serves the batched
+   and the unbatched solve. *)
+module Batched = struct
+  module Params = struct
+    type 'a t =
+      { mass : 'a
+      ; target : 'a
+      }
+    [@@deriving ptree]
+  end
+
+  let n = 2
+  let m = 1
+  let horizon = 12
+  let verbose = false
+
+  let dynamics { Params.mass; _ } ~k:_ ~x ~u =
+    let pos = Nx.slice [ R (0, 1) ] x
+    and vel = Nx.slice [ R (1, 2) ] x in
+    let force = Nx.div u mass in
+    Nx.concatenate
+      ~axis:0
+      [ Nx.add pos (Nx.mul_s vel dt); Nx.add vel (Nx.mul_s force dt) ]
+
+  let running_loss { Params.target; _ } ~k:_ ~x ~u =
+    let pos = Nx.slice [ R (0, 1) ] x
+    and vel = Nx.slice [ R (1, 2) ] x in
+    let err = Nx.sub pos target in
+    Nx.sum
+      (Nx.add
+         (Nx.mul_s (Nx.add (Nx.mul err err) (Nx.mul vel vel)) 0.5)
+         (Nx.mul_s (Nx.mul u u) 0.05))
+
+  let final_loss { Params.target; _ } ~x =
+    let pos = Nx.slice [ R (0, 1) ] x
+    and vel = Nx.slice [ R (1, 2) ] x in
+    let err = Nx.sub pos target in
+    Nx.mul_s (Nx.sum (Nx.add (Nx.mul err err) (Nx.mul vel vel))) 5.0
+
+  let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
+    { dtype = Nx.float64
+    ; n
+    ; m
+    ; horizon
+    ; verbose
+    ; params = Nx.Ptree.instantiate (module Params)
+    ; dynamics
+    ; running_loss
+    ; final_loss
+    }
+end
+
 (* ──────────────────────────────────────────────────────────────────────────
    Tests
    ────────────────────────────────────────────────────────────────────────── *)
@@ -357,6 +411,169 @@ let test_jit_grad () =
   check_close ~msg:"jit grad x0" ~tol:1e-9 compiled.x0 eager_grad.x0;
   check_close ~msg:"jit grad mass" ~tol:1e-9 compiled.theta.mass eager_grad.theta.mass
 
+(* Batched inputs: every leaf of the parameters, of the initial state and of
+   every initial control carries the leading batch axis. *)
+let batched_setup () =
+  let module P = Batched in
+  let b = 3 in
+  let theta : Nx.float64_t P.Params.t =
+    { mass = Nx.create Nx.float64 [| b |] [| 1.0; 1.0; 1.0 |]
+    ; target = Nx.create Nx.float64 [| b; 1 |] [| 1.0; -0.5; 0.8 |]
+    }
+  in
+  let x0 = Nx.create Nx.float64 [| b; 2 |] [| 1.0; 0.0; 1.0; 0.0; 1.0; 0.0 |] in
+  let us0 = Array.init P.horizon ~f:(fun _ -> Nx.zeros Nx.float64 [| b; 1 |]) in
+  b, theta, x0, us0
+
+(* Member [i]'s slice of a batched setup. *)
+let batched_member (theta : Nx.float64_t Batched.Params.t) x0 us0 i =
+  let theta_i : Nx.float64_t Batched.Params.t =
+    { mass = Nx.slice [ I i ] theta.Batched.Params.mass
+    ; target = Nx.slice [ I i ] theta.Batched.Params.target
+    }
+  in
+  let x0_i = Nx.slice [ I i ] x0 in
+  let us0_i = Array.map us0 ~f:(fun u -> Nx.slice [ I i ] u) in
+  theta_i, x0_i, us0_i
+
+(* A batched fixed solve gives, member by member, what the unbatched solve
+   gives for that member. *)
+let test_batched_fixed_solve () =
+  let module P = Batched in
+  let b, theta, x0, us0 = batched_setup () in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~iters:8 theta x0 us0 in
+  require ~msg:"batched cost shape" (Array.length (Nx.shape sol.cost) = 1);
+  require ~msg:"batched cost size" ((Nx.shape sol.cost).(0) = b);
+  (* the stacked trajectory leads with the batch and then the horizon *)
+  let taus = Dilqr.taus_of P.problem sol.xs sol.us in
+  require
+    ~msg:"batched taus shape"
+    (Array.equal Int.equal (Nx.shape taus) [| b; P.horizon + 1; P.n + P.m |]);
+  let xs, us = Dilqr.split_taus P.problem taus in
+  (* the trajectory helpers are batched too *)
+  let xs_b, cost_b = Dilqr.Solver.rollout P.problem theta x0 us0 in
+  let tape_b : (float, Nx.float64_elt) Dilqr.Lqr.tape =
+    Dilqr.Solver.blocks P.problem theta sol.xs sol.us
+  in
+  for i = 0 to b - 1 do
+    let theta_i, x0_i, us0_i = batched_member theta x0 us0 i in
+    let sol_i = Dilqr.Solver.solve_fixed P.problem ~iters:8 theta_i x0_i us0_i in
+    check_close
+      ~msg:(Printf.sprintf "batched cost %d" i)
+      ~tol:1e-10
+      (Nx.slice [ I i ] sol.cost)
+      sol_i.cost;
+    Array.iteri sol.xs ~f:(fun k t ->
+      check_close
+        ~msg:(Printf.sprintf "batched xs %d.%d" i k)
+        ~tol:1e-10
+        (Nx.slice [ I i ] t)
+        sol_i.xs.(k);
+      check_close
+        ~msg:(Printf.sprintf "batched taus %d.%d" i k)
+        ~tol:1e-10
+        (Nx.slice [ I i ] xs.(k))
+        sol_i.xs.(k));
+    Array.iteri sol.us ~f:(fun k t ->
+      check_close
+        ~msg:(Printf.sprintf "batched us %d.%d" i k)
+        ~tol:1e-10
+        (Nx.slice [ I i ] t)
+        sol_i.us.(k);
+      check_close
+        ~msg:(Printf.sprintf "batched taus us %d.%d" i k)
+        ~tol:1e-10
+        (Nx.slice [ I i ] us.(k))
+        sol_i.us.(k));
+    (* batched rollout and blocks *)
+    let xs_i, cost_i = Dilqr.Solver.rollout P.problem theta_i x0_i us0_i in
+    let tape_i = Dilqr.Solver.blocks P.problem theta_i sol_i.xs sol_i.us in
+    check_close
+      ~msg:(Printf.sprintf "batched rollout cost %d" i)
+      ~tol:1e-10
+      (Nx.slice [ I i ] cost_b)
+      cost_i;
+    Array.iteri xs_i ~f:(fun k x ->
+      check_close
+        ~msg:(Printf.sprintf "batched rollout xs %d.%d" i k)
+        ~tol:1e-10
+        (Nx.slice [ I i ] xs_b.(k))
+        x);
+    check_close
+      ~msg:(Printf.sprintf "batched blocks a %d" i)
+      ~tol:1e-10
+      (Nx.slice [ I i ] tape_b.Dilqr.Lqr.blocks.a)
+      tape_i.Dilqr.Lqr.blocks.a
+  done
+
+(* The batched implicit gradient is the member's gradient, and the same
+   compiled. *)
+let test_batched_grad () =
+  let module P = Batched in
+  let b, theta, x0, us0 = batched_setup () in
+  let inputs : (Nx.float64_t P.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+    { Dilqr.Inputs.theta; x0; us0 }
+  in
+  let objective i =
+    Nx.sum
+      (Dilqr.loss_of_taus
+         P.problem
+         i.Dilqr.Inputs.theta
+         (Dilqr.solve_ilqr_fixed P.problem ~iters:5 i))
+  in
+  let g = Rune.grad (Dilqr.inputs P.problem) objective inputs in
+  for i = 0 to b - 1 do
+    let theta_i, x0_i, us0_i = batched_member theta x0 us0 i in
+    let inputs_i : (Nx.float64_t P.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+      { Dilqr.Inputs.theta = theta_i; x0 = x0_i; us0 = us0_i }
+    in
+    let g_i = Rune.grad (Dilqr.inputs P.problem) objective inputs_i in
+    check_close
+      ~msg:(Printf.sprintf "batched grad target %d" i)
+      ~tol:1e-9
+      (Nx.slice [ I i ] g.theta.target)
+      g_i.theta.target;
+    check_close
+      ~msg:(Printf.sprintf "batched grad mass %d" i)
+      ~tol:1e-9
+      (Nx.slice [ I i ] g.theta.mass)
+      g_i.theta.mass;
+    check_close
+      ~msg:(Printf.sprintf "batched grad x0 %d" i)
+      ~tol:1e-9
+      (Nx.slice [ I i ] g.x0)
+      g_i.x0
+  done;
+  Array.iter g.us0 ~f:(fun u ->
+    require ~msg:"batched grad us0 is zero" Float.(Nx.item [] (Nx.max (Nx.abs u)) < 1e-12));
+  (* compiled: the batched solve and its implicit VJP in one program *)
+  let compiled =
+    Rune.jit
+      Nx.Ptree.(Dilqr.inputs P.problem @-> returns (Dilqr.inputs P.problem))
+      (fun i -> Rune.grad (Dilqr.inputs P.problem) objective i)
+      inputs
+  in
+  check_close ~msg:"batched jit grad x0" ~tol:1e-9 compiled.x0 g.x0;
+  check_close
+    ~msg:"batched jit grad target"
+    ~tol:1e-9
+    compiled.theta.target
+    g.theta.target;
+  check_close ~msg:"batched jit grad mass" ~tol:1e-9 compiled.theta.mass g.theta.mass
+
+(* The adaptive solve has one host-side line search; batches are for the
+   fixed solve. *)
+let test_adaptive_rejects_batches () =
+  let module P = Batched in
+  let b, theta, x0, us0 = batched_setup () in
+  require ~msg:"batch is not empty" (b > 0);
+  match Dilqr.Solver.solve P.problem theta x0 us0 with
+  | exception Failure msg ->
+    require
+      ~msg:"adaptive solve names batches"
+      (String.is_substring msg ~substring:"batched")
+  | _ -> failwith "the adaptive solve accepted a batch"
+
 let () =
   Stdlib.exit
     (run
@@ -370,4 +587,7 @@ let () =
        ; test "fixed solve is competitive" test_fixed_solve_works
        ; test "jit solve matches eager" test_jit_solve
        ; test "jit grad matches eager" test_jit_grad
+       ; test "batched fixed solve matches unbatched" test_batched_fixed_solve
+       ; test "batched gradient matches unbatched" test_batched_grad
+       ; test "adaptive solve rejects batches" test_adaptive_rejects_batches
        ])

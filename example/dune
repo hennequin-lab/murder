@@ -11,3 +11,10 @@
  (libraries base stdio nx rune dilqr)
  (preprocess
   (pps ppx_ptree)))
+
+(executable
+ (name batched_integrator)
+ (modules batched_integrator)
+ (libraries base stdio nx rune dilqr)
+ (preprocess
+  (pps ppx_ptree)))

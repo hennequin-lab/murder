@@ -208,7 +208,7 @@ let solve_ilqr
 (* The traceable solve, wrapped with its implicit gradient: put this inside
    [Rune.jit] (with a [Rune.grad] inside it) to compile the solve and its
    gradient together. *)
-let solve_ilqr_fixed
+let solve_ilqr_fixed_unbatched
       p
       ~(iters : int)
       ?alphas
@@ -221,7 +221,20 @@ let solve_ilqr_fixed
     (Problem.inputs p)
     Nx.Ptree.tensor
     (fun { Problem.Inputs.theta; x0; us0 } ->
-       let sol = Solver.solve_fixed p ?alphas ?mu ?c1 ~iters theta x0 us0 in
+       let sol = Solver.solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters theta x0 us0 in
        ( Problem.taus_of p sol.xs sol.us
        , fun ybar -> bwd p { theta; x0; us0; xs = sol.xs; us = sol.us } ybar ))
     inputs
+
+(* Batched inputs (a leading batch axis on the parameters, the initial state
+   and every initial control) are solved by vmapping the unbatched solve, its
+   implicit VJP included, over the batch: each member gets its own trajectory
+   and its own gradient. *)
+let solve_ilqr_fixed p ~iters ?alphas ?mu ?c1 inputs =
+  if not (Solver.is_batched inputs.Problem.Inputs.x0 inputs.us0)
+  then solve_ilqr_fixed_unbatched p ~iters ?alphas ?mu ?c1 inputs
+  else
+    Rune.vmap
+      Nx.Ptree.(Problem.inputs p @-> returns Nx.Ptree.tensor)
+      (fun i -> solve_ilqr_fixed_unbatched p ~iters ?alphas ?mu ?c1 i)
+      inputs

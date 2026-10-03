@@ -35,6 +35,12 @@ let stack (ts : ('a, 'b) Nx.t array) : ('a, 'b) Nx.t = Nx.stack ~axis:0 (Array.t
 let unstack len (t : ('a, 'b) Nx.t) : ('a, 'b) Nx.t array =
   Array.init len ~f:(fun k -> Nx.slice [ I k ] t)
 
+(* [is_batched x0 us0] is [true] when the state and every control carry a
+   leading batch axis. *)
+let is_batched x0 us0 =
+  Array.length (Nx.shape x0) > 1
+  || Array.exists us0 ~f:(fun u -> Array.length (Nx.shape u) > 1)
+
 (* [ks p] is the step index of each step, a scalar row per step. *)
 let ks p = Nx.arange p.Problem.dtype 0 p.Problem.horizon 1
 let dyn p theta ~k x u = p.Problem.dynamics theta ~k ~x ~u
@@ -71,14 +77,37 @@ let cost_of p theta (xs : 'w Problem.value) (us : 'w Problem.value) : 'w Problem
     (p.Problem.final_loss theta ~x:(Nx.slice [ I p.Problem.horizon ] xs))
     (Nx.sum losses)
 
-(* [rollout p theta x0 us] integrates the dynamics, returning the state path
-   and the total cost (running + final, a scalar tensor). *)
-let rollout p theta (x0 : 'w Problem.value) (us : 'w Problem.value array)
+(* [rollout_unbatched p theta x0 us] integrates the dynamics, returning the
+   state path and the total cost (running + final, a scalar tensor). *)
+let rollout_unbatched p theta (x0 : 'w Problem.value) (us : 'w Problem.value array)
   : 'w Problem.value array * 'w Problem.value
   =
   let us = stack us in
   let xs = states p theta x0 us in
   unstack (p.Problem.horizon + 1) xs, cost_of p theta xs us
+
+(* The structure of a rollout, for the [Rune.vmap] that batches it. *)
+let rollout_structure () =
+  Nx.Ptree.(
+    iso
+      (fun (xs, cost) -> Array.of_list xs, cost)
+      (fun (xs, cost) -> Array.to_list xs, cost)
+      (pair (list tensor) tensor))
+
+(* [rollout p theta x0 us] is {!rollout_unbatched}; batched inputs are rolled
+   out member by member. *)
+let rollout p theta x0 us0 =
+  if not (is_batched x0 us0)
+  then rollout_unbatched p theta x0 us0
+  else (
+    let inputs : ('p, 'w Problem.value) Problem.Inputs.t =
+      { Problem.Inputs.theta; x0; us0 }
+    in
+    Rune.vmap
+      Nx.Ptree.(Problem.inputs p @-> returns (rollout_structure ()))
+      (fun (i : ('p, 'w Problem.value) Problem.Inputs.t) ->
+         rollout_unbatched p i.theta i.x0 i.us0)
+      inputs)
 
 (* The rows of one step's linearization: the state, the control and the step
    index. *)
@@ -163,12 +192,41 @@ let blocks_t p theta (xs : 'w Problem.value) (us : 'w Problem.value)
   in
   { Lqr.blocks; fx; fxx }
 
-(* [blocks p theta xs us] linearizes dynamics and losses along the trajectory,
-   from per-step arrays. *)
-let blocks p theta (xs : 'w Problem.value array) (us : 'w Problem.value array)
+(* [blocks_unbatched p theta xs us] linearizes dynamics and losses along the
+   trajectory, from per-step arrays. *)
+let blocks_unbatched p theta (xs : 'w Problem.value array) (us : 'w Problem.value array)
   : (float, 'w) Lqr.tape
   =
   blocks_t p theta (stack xs) (stack us)
+
+(* The structure of a tape, for the [Rune.vmap] that batches a
+   linearization. *)
+let tape_structure () =
+  Nx.Ptree.(
+    iso
+      (fun (blocks, (fx, fxx)) -> { Lqr.blocks; fx; fxx })
+      (fun { Lqr.blocks; fx; fxx } -> blocks, (fx, fxx))
+      (pair (block_rows ()) (pair tensor tensor)))
+
+let blocks p theta (xs : 'w Problem.value array) (us : 'w Problem.value array)
+  : (float, 'w) Lqr.tape
+  =
+  let batched =
+    Array.exists xs ~f:(fun x -> Array.length (Nx.shape x) > 1)
+    || Array.exists us ~f:(fun u -> Array.length (Nx.shape u) > 1)
+  in
+  if not batched
+  then blocks_unbatched p theta xs us
+  else (
+    (* Stack after the batch axes so that each member is a [horizon; n] row
+       for the vmap. *)
+    let batch = Array.length (Nx.shape xs.(0)) - 1 in
+    let xs = Nx.stack ~axis:batch (Array.to_list xs)
+    and us = Nx.stack ~axis:batch (Array.to_list us) in
+    Rune.vmap
+      Nx.Ptree.(pair p.params (pair tensor tensor) @-> returns (tape_structure ()))
+      (fun (theta, (xs, us)) -> blocks_t p theta xs us)
+      (theta, (xs, us)))
 
 (* [pick ~w ~batched] selects one slice along axis 0 of a batched trajectory
    with a one-hot weight vector [w]. Pure tensor ops. *)
@@ -192,7 +250,7 @@ let log p (fmt : ('a, Stdlib.Format.formatter, unit) format) : 'a =
    realized with tensor ops, so the result never depends on host reads.
    A non-PD regularized [Quu] surfaces as NaNs, which the acceptance mask
    rejects. *)
-let solve_fixed
+let solve_fixed_unbatched
       p
       ?(alphas = Linesearch.schedule ~n:8 ())
       ?(mu = 0.0)
@@ -256,9 +314,37 @@ let solve_fixed
   ; cost = !cost
   }
 
+(* The structure of a solution: the states, the controls and the cost, for the
+   [Rune.vmap] that turns the unbatched solve into a batched one. *)
+let solution_structure () =
+  Nx.Ptree.(
+    iso
+      (fun (xs, (us, cost)) -> { xs = Array.of_list xs; us = Array.of_list us; cost })
+      (fun { xs; us; cost } -> Array.to_list xs, (Array.to_list us, cost))
+      (pair (list tensor) (pair (list tensor) tensor)))
+
+(* The fixed-iteration solve. Batched inputs (a leading batch axis on the
+   parameters, the initial state and every initial control) are solved by
+   [Rune.vmap]-ing the unbatched solve over the batch: every member gets its
+   own line search and its own trajectory, and the dynamics and losses are
+   written for one member. *)
+let solve_fixed p ?alphas ?mu ?c1 ~iters theta x0 us0 =
+  if not (is_batched x0 us0)
+  then solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters theta x0 us0
+  else (
+    let inputs : ('p, 'w Problem.value) Problem.Inputs.t =
+      { Problem.Inputs.theta; x0; us0 }
+    in
+    Rune.vmap
+      Nx.Ptree.(Problem.inputs p @-> returns (solution_structure ()))
+      (fun (i : ('p, 'w Problem.value) Problem.Inputs.t) ->
+         solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters i.theta i.x0 i.us0)
+      inputs)
+
 (* The adaptive, host-driven solve. Requires untraced tensors: it reads
    scalars on the host and retries the Cholesky factorization on
-   non-positive-definite [Quu]. *)
+   non-positive-definite [Quu]. Unbatched: a batch would need one line search
+   per member, which is host control flow. Use {!solve_fixed} for batches. *)
 let solve
       p
       ?(max_iter = 20)
@@ -271,6 +357,11 @@ let solve
       (us0 : 'w Problem.value array)
   : 'w Problem.value t
   =
+  if is_batched x0 us0
+  then
+    failwith
+      "dilqr: the adaptive solve is unbatched; use Solver.solve_fixed or \
+       solve_ilqr_fixed for batched problems";
   let us = ref (stack us0) in
   let xs = ref (states p theta x0 !us) in
   let cost = ref (item_f (cost_of p theta !xs !us)) in

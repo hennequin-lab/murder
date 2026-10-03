@@ -18,6 +18,11 @@
      fixed-iteration solve traces one step, not the whole horizon, and
      JIT-compiles as a loop.
 
+   Every per-step tensor may carry leading batch axes between the horizon and
+   the dimensions ([horizon; batch...; n]): reductions run over the horizon
+   and dimension axes only, and matrix-vector products broadcast over the
+   batch, so these functions are batch-correct as they stand.
+
    Every function here is a pure tensor computation with host-static control
    flow: safe to trace, safe to jit-compile. *)
 
@@ -72,18 +77,31 @@ let lin_of_tape (tape : ('a, 'b) tape) : ('a, 'b) lin =
   { rlx = tape.blocks.lx; rlu = tape.blocks.lu; rfx = tape.fx }
 
 (* [chol_solve ~upper ~rhs] solves [u^T u @ x = rhs] for upper Cholesky factor
-   [u]: two triangular substitutions, one per factor. A rank-1 right-hand side
-   is promoted to a [n; 1] matrix for the substitution and squeezed back (the
-   traced triangular solve requires matrix right-hand sides). *)
+   [u]: two triangular substitutions, one per factor. A right-hand side one
+   rank below [upper] is a vector: it is promoted to a [..., n, 1] matrix for
+   the substitution and squeezed back (the traced triangular solve requires
+   matrix right-hand sides). Batched over every leading axis. *)
 let chol_solve ~(upper : ('a, 'b) Nx.t) ~(rhs : ('a, 'b) Nx.t) : ('a, 'b) Nx.t =
-  let vector = Array.length (Nx.shape rhs) = 1 in
-  let rhs = if vector then Nx.unsqueeze ~axes:[ 1 ] rhs else rhs in
+  let vector = Array.length (Nx.shape rhs) = Array.length (Nx.shape upper) - 1 in
+  let rhs = if vector then Nx.unsqueeze ~axes:[ -1 ] rhs else rhs in
   let z = Nx.solve_triangular ~upper:true ~transpose:true ~unit_diag:false upper rhs in
   let x = Nx.solve_triangular ~upper:true ~transpose:false ~unit_diag:false upper z in
-  if vector then Nx.reshape [| (Nx.shape upper).(0) |] x else x
+  if vector then Nx.squeeze ~axes:[ -1 ] x else x
 
 (* [sym x] is the symmetrized part of [x]. *)
 let sym x = Nx.div_s (Nx.add x (Nx.matrix_transpose x)) 2.0
+
+(* [matvec m v] is [m @ v], batched over every leading axis. [Nx.matmul] would
+   contract the batch axis of a batched vector, so the vector is promoted to a
+   column and the result squeezed back. *)
+let matvec m v = Nx.squeeze ~axes:[ -1 ] (Nx.matmul m (Nx.unsqueeze ~axes:[ -1 ] v))
+
+(* [batch_zero x] is a zero with [x]'s shape without its last axis: the shape
+   of the per-member scalars a batched solve accumulates ([B] here, [] when
+   unbatched). *)
+let batch_zero x =
+  let s = Nx.shape x in
+  Nx.zeros (Nx.dtype x) (Array.init (Array.length s - 1) ~f:(fun i -> s.(i)))
 
 (* One Riccati step from the blocks of step [k]. [vx]/[vxx] is the value
    function at step [k+1]; returns the feedforward [k_k] ([m]), the feedback
@@ -105,8 +123,8 @@ let riccati_step ~(mu : float) ~(row : ('a, 'b) Nx.t Rows.t) ~vx ~vxx
   let b = row.b in
   let at = Nx.matrix_transpose a in
   let bt = Nx.matrix_transpose b in
-  let qx = Nx.add row.lx (Nx.matmul at vx) in
-  let qu = Nx.add row.lu (Nx.matmul bt vx) in
+  let qx = Nx.add row.lx (matvec at vx) in
+  let qu = Nx.add row.lu (matvec bt vx) in
   let qxx = Nx.add row.lxx (Nx.matmul at (Nx.matmul vxx a)) in
   let qux = Nx.add row.lux (Nx.matmul bt (Nx.matmul vxx a)) in
   let quu = Nx.add row.luu (Nx.matmul bt (Nx.matmul vxx b)) in
@@ -126,23 +144,25 @@ let riccati_step ~(mu : float) ~(row : ('a, 'b) Nx.t Rows.t) ~vx ~vxx
   let k_k = Nx.neg (chol_solve ~upper:u ~rhs:qu) in
   let k_mat = Nx.neg (chol_solve ~upper:u ~rhs:qux_r) in
   let vxx' = sym (Nx.add qxx (Nx.matmul (Nx.matrix_transpose qux_r) k_mat)) in
-  let vx' = Nx.add qx (Nx.matmul (Nx.matrix_transpose qux_r) k_k) in
+  let vx' = Nx.add qx (matvec (Nx.matrix_transpose qux_r) k_k) in
   (* Expected decrease accumulators: d1 = Σ kᵀQ_u ≤ 0 against the true
      gradient model, d2 = Σ kᵀQ_uu^μ k ≥ 0 against the regularized curvature
-     (matching the gains actually used), so J(α) ≈ J(0) + α·d1 + ½α²·d2. *)
-  let d1 = Nx.sum (Nx.mul k_k qu) in
-  let d2 = Nx.sum (Nx.mul k_k (Nx.matmul quu_r k_k)) in
+     (matching the gains actually used), so J(α) ≈ J(0) + α·d1 + ½α²·d2. The
+     sums run over the control axis only, so a batched solve gets one pair of
+     coefficients per member. *)
+  let d1 = Nx.sum ~axes:[ -1 ] (Nx.mul k_k qu) in
+  let d2 = Nx.sum ~axes:[ -1 ] (Nx.mul k_k (matvec quu_r k_k)) in
   k_k, k_mat, vx', vxx', d1, d2
 
 (* [backward ~mu ~tape ~lin] runs the Riccati sweep over the whole horizon as
    one scan, from the last step to the first. Returns the gains and the total
-   expected-decrease coefficients [d1], [d2] (scalar tensors). *)
+   expected-decrease coefficients [d1], [d2] (one scalar per member). *)
 let backward ~(mu : float) ~(tape : ('a, 'b) tape) ~(lin : ('a, 'b) lin)
   : ('a, 'b) gains * ('a, 'b) Nx.t * ('a, 'b) Nx.t
   =
   let rows = Nx.Ptree.instantiate (module Rows) in
   let flip x = Nx.flip ~axes:[ 0 ] x in
-  let zero = Nx.scalar_like lin.rfx 0.0 in
+  let zero = batch_zero lin.rfx in
   let (_, (_, (d1, d2))), (feedforward, feedback) =
     Rune.scan
       Nx.Ptree.(pair tensor (pair tensor (pair tensor tensor)))
@@ -181,7 +201,8 @@ end
 (* [rollout ~dyn ~x0 ~xs ~us ~gains ~alpha] integrates the true dynamics under
    the control law û_k = ū_k + α·k_k + K_k·(x̂_k − x̄_k), returning the new
    state path [[horizon+1; n]] and control path [[horizon; m]] as one scan.
-   [xs] is [[horizon+1; n]] and [us] is [[horizon; m]]. *)
+   [xs] is [[horizon+1; n]] and [us] is [[horizon; m]], with any batch axes
+   between the horizon and the dimensions. *)
 let rollout
       ~(dyn : k:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t)
       ~(x0 : ('a, 'b) Nx.t)
@@ -209,7 +230,7 @@ let rollout
       Nx.Ptree.(pair tensor tensor)
       ~f:(fun x row ->
         let dx = Nx.sub x row.Roll_rows.x in
-        let u = Nx.add row.u (Nx.add (Nx.mul_s row.ff alpha) (Nx.matmul row.fb dx)) in
+        let u = Nx.add row.u (Nx.add (Nx.mul_s row.ff alpha) (matvec row.fb dx)) in
         let x' = dyn ~k:row.k x u in
         x', (u, x'))
       ~init:x0
@@ -232,8 +253,8 @@ let rollout_linearized
       Nx.Ptree.(pair (pair tensor tensor) (pair tensor tensor))
       Nx.Ptree.(pair tensor tensor)
       ~f:(fun dx ((a, b), (k_k, k_mat)) ->
-        let u = Nx.add k_k (Nx.matmul k_mat dx) in
-        let dx' = Nx.add (Nx.matmul a dx) (Nx.matmul b u) in
+        let u = Nx.add k_k (matvec k_mat dx) in
+        let dx' = Nx.add (matvec a dx) (matvec b u) in
         dx', (u, dx'))
       ~init:x0
       ((tape.blocks.a, tape.blocks.b), (gains.feedforward, gains.feedback))

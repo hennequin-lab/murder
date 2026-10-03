@@ -213,6 +213,54 @@ every solver and helper takes it as its first argument.
 - **`Dilqr.Linesearch`** — trial-step schedules (`schedule ~n ()` is
   `1; 1/2; 1/4; …`) and the Armijo predicate (`accepts`).
 
+## Batched solves
+
+`Solver.solve_fixed` and `solve_ilqr_fixed` solve a **batch** of problems at
+once. Give every leaf of the parameters, of the initial state and of every
+initial control a leading batch axis. Say the quick-start problem's
+parameters also carry a per-member `target`, used by its running loss:
+
+```ocaml
+let b = 8                                  (* members *)
+let theta =
+  { mass = Nx.broadcast_to [| b |] (scalar64 1.0)      (* shared dynamics *)
+  ; target = Nx.create Nx.float64 [| b; 1 |] targets   (* per-member cost *)
+  }
+let x0 = Nx.create Nx.float64 [| b; 2 |] x0s
+let us0 = Array.init horizon ~f:(fun _ -> Nx.zeros Nx.float64 [| b; 1 |])
+
+let sol = Dilqr.Solver.solve_fixed Integrator.problem ~iters:8 theta x0 us0
+(* sol.cost : [b];  sol.xs.(k) : [b; 2];  sol.us.(k) : [b; 1] *)
+```
+
+The dynamics and the losses are still written for **one member**: the solver
+maps them over the batch, so each member gets its own line search, its own
+trajectory and its own gradient. A shared dynamics parameter is simply
+repeated along the batch axis (`Nx.broadcast_to`).
+
+`taus_of` stacks to `[b; K+1; n+m]` (the batch axes lead the horizon), and
+`split_taus` / `loss_of_taus` accept the batched trajectory. Differentiating
+is unchanged:
+
+```ocaml
+let inputs = { Dilqr.Inputs.theta; x0; us0 }
+let grads =
+  Rune.grad
+    (Dilqr.inputs Integrator.problem)
+    (fun i ->
+       Nx.sum
+         (Dilqr.loss_of_taus
+            Integrator.problem
+            i.Dilqr.Inputs.theta
+            (Dilqr.solve_ilqr_fixed Integrator.problem ~iters:8 i)))
+    inputs
+(* grads.theta.target : [b; 1];  grads.x0 : [b; 2];  ... *)
+```
+
+Only the fixed solves are batched. `Solver.solve` and `solve_ilqr` are
+unbatched and say so: their regularization retries and Armijo backtracking
+are host-side control flow, and a batch would need one of each per member.
+
 ## How the gradient works
 
 At the end of a solve, iLQR has built a local quadratic model of the problem
@@ -258,6 +306,14 @@ Two self-contained examples live in [`example/`](example/):
   $ dune exec ./example/integrator_mpc.exe
   ```
 
+- [`example/batched_integrator.ml`](example/batched_integrator.ml) — a batch of
+  double-integrator targets over one shared dynamics, solved and differentiated
+  in one call.
+
+  ```console
+  $ dune exec ./example/batched_integrator.exe
+  ```
+
 ## Building and testing
 
 From the `dilqr` directory:
@@ -276,7 +332,8 @@ The test suite covers the regularization schedule, LQR correctness (double
 integrator: cost decrease and control stationarity, checked with independent
 autodiff), nonlinear convergence (pendulum), implicit gradients against
 central finite differences, the fixed solve's competitiveness with the
-adaptive one, and JIT round-trips of both the solve and its gradient.
+adaptive one, JIT round-trips of both the solve and its gradient, and batched
+solves and gradients against their per-member counterparts.
 
 ## References
 
