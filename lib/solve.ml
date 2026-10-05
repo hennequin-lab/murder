@@ -15,7 +15,7 @@
 
    with [X^{p~} = U diag((damping * s_max + s)^p) Uᵀ] for [X = U diag(s) Uᵀ].
 
-   [Nx.svd] is the one operation [Rune.jit] refuses, so this module is the host
+   [Nx.eigh] does not compile under [Rune.jit], so this module is the host
    boundary of the step: it runs on the small dense surrogate matrices, never
    inside the traced [prepare]/[finish] halves. *)
 
@@ -29,6 +29,14 @@ let svd64 x =
   let u, s, _ = Nx.svd (Nx.cast Nx.float64 x) in
   Nx.cast Nx.float32 u, Nx.cast Nx.float32 s
 
+(* [spectrum64 x] is [svd64 x] for a symmetric [x]. A symmetric matrix's
+   singular values are its eigenvalues' magnitudes and its singular vectors are
+   its eigenvectors, so [Nx.eigh] gives the factorization [Nx.svd] would,
+   [x = u diag(±s) uᵀ], at about half the cost. *)
+let spectrum64 x =
+  let w, u = Nx.eigh (Nx.cast Nx.float64 x) in
+  Nx.cast Nx.float32 u, Nx.cast Nx.float32 (Nx.abs w)
+
 (* [damp_spectrum ~damping s] is [damping * s_max + s]. The relative damping
    keeps the smallest directions of a singular surrogate finite. *)
 let damp_spectrum ~damping s =
@@ -41,7 +49,7 @@ let damp_spectrum ~damping s =
    carries no information, and its inverse contributes nothing rather than
    [inf]-times-zero. *)
 let symmetric_power ~damping ~power x =
-  let u, s = svd64 x in
+  let u, s = spectrum64 x in
   let stilde = damp_spectrum ~damping s in
   let z =
     if Float.(power >= 0.)

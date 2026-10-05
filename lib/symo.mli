@@ -159,8 +159,9 @@ module Solve : sig
   val hessian : damping:float -> Nx.float32_t -> Nx.float32_t -> Nx.float32_t
 
   (** [hessian_inverse ~damping sigma_w sigma_g] is Eq. 10's preconditioner
-      [H_inv]. This is the one routine [Rune.jit] refuses ([Nx.svd]), kept
-      host-side on the small dense surrogate matrices. *)
+      [H_inv]. It needs [Nx.eigh], which [Rune.jit] does not compile, so it is
+      kept host-side on the small dense surrogate matrices. Its arguments must
+      be on the host. *)
   val hessian_inverse : damping:float -> Nx.float32_t -> Nx.float32_t -> Nx.float32_t
 end
 

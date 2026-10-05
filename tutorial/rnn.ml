@@ -12,6 +12,11 @@ open Symo
 let print s = Stdio.print_endline (Sexp.to_string_hum s)
 let in_dir = Cmdargs.in_dir "-d"
 
+(* [--device] lists the devices to try, in order, as [Devices.first] reads
+   them: "cpu" (the default), "cuda", "cuda:1", "metal", "cuda,cpu". *)
+let device = Devices.first Cmdargs.(get_string "--device" |> default "cpu")
+let on_device = Nx.Placement.on device
+
 module RNN = struct
   module P = struct
     type 'a t =
@@ -81,28 +86,35 @@ module RNN = struct
       (fun (params, input) -> forward params ~input)
 end
 
-let teacher, student = Rng.with_key (Rng.key 42) @@ fun () -> RNN.P.init (), RNN.P.init ()
+let teacher, student =
+  let place = Ptree.place RNN.ptree on_device in
+  Rng.with_key (Rng.key 42) @@ fun () -> place (RNN.P.init ()), place (RNN.P.init ())
 let horizon = 100
 let full_batch = 1024
 let batch = 128
 
-let minibatch =
-  let input =
-    Rng.with_key (Rng.key 1)
-    @@ fun () ->
+(* The full data set lives on the device; [minibatch] draws from it inside
+   the compiled step. *)
+let input =
+  Rng.with_key (Rng.key 1) (fun () ->
     concatenate
       ~axis:0
       [ mul_s (randn float32 [| 10; full_batch; RNN.P.input_dim |]) 0.1
       ; zeros float32 [| horizon - 10; full_batch; RNN.P.input_dim |]
-      ]
-  in
-  let target = RNN.forward_jit (teacher, input) in
-  fun key bs ->
-    let indices = Rng.permutation key full_batch |> slice [ R (0, bs) ] in
-    take ~axis:1 ~indices input, take ~axis:1 ~indices target
+      ])
+  |> Nx.place on_device
+
+let target = RNN.forward_jit (teacher, input)
+
+let draw ~input ~target key bs =
+  let indices = Rng.permutation key full_batch |> slice [ R (0, bs) ] in
+  take ~axis:1 ~indices input, take ~axis:1 ~indices target
+
+let minibatch = draw ~input ~target
 
 let _ =
-  let _, ys = minibatch (Rng.key 0) 1 in
+  let host = Nx.place Nx.Placement.host in
+  let _, ys = draw ~input:(host input) ~target:(host target) (Rng.key 0) 1 in
   Nx_io.save_txt (in_dir "target_example") (slice [ A; I 0; A ] ys)
 
 let loss (input, target) (p : Nx.float32_t RNN.P.t) =
@@ -154,4 +166,5 @@ let train_with_adam () =
   in
   loop 0 student state (Rng.key 1985)
 
+let () = Stdio.printf "device: %s\n%!" (Nx.Device.name device)
 let _ = train_with_symo ()

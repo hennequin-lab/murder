@@ -169,19 +169,20 @@ let compile_apply ~dims components =
       ~init:(Nx.scalar Nx.float32 0.0)
       ~f:(fun acc factor apply -> Nx.add acc (apply ~factor v))
 
-(* The SVD pseudo-inverse, used only as a compile-time fallback for a design
-   matrix that is not positive definite. Singular values are cut at a relative
-   tolerance, unlike the old implementation's unregularized division. *)
+(* The pseudo-inverse of the symmetric design matrix, used only as a
+   compile-time fallback for one that is not positive definite. Its
+   eigendecomposition [m = u diag(w) uᵀ] is its SVD up to signs, so the
+   pseudo-inverse is [u diag(1/w) uᵀ] over the eigenvalues whose magnitude
+   clears a relative tolerance, unlike the old implementation's unregularized
+   division. *)
 let pseudo_inverse m =
   let n = (Nx.shape m).(0) in
-  let u, s, _ = Nx.svd m in
-  let inv_s =
-    Nx.where
-      (Nx.greater s (Nx.scalar Nx.float64 (1e-12 *. Nx.item [ 0 ] s)))
-      (Nx.recip s)
-      (Nx.zeros_like s)
+  let w, u = Nx.eigh m in
+  let tol = 1e-12 *. Nx.item [] (Nx.max (Nx.abs w)) in
+  let inv_w =
+    Nx.where (Nx.greater_s (Nx.abs w) tol) (Nx.recip w) (Nx.zeros_like w)
   in
-  Nx.matmul (Nx.mul u (Nx.reshape [| 1; n |] inv_s)) (Nx.transpose u)
+  Nx.matmul (Nx.mul u (Nx.reshape [| 1; n |] inv_w)) (Nx.transpose u)
 
 (* Factor the constant design matrix once, at compile time: Cholesky when it
    is positive definite (the generic case for a basis of independent
