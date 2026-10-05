@@ -93,8 +93,7 @@ let permutations n =
   in
   List.map
     (go [] (List.range 0 n))
-    ~f:(fun p ->
-      Nx.create Nx.int64 [| n |] (Array.of_list (List.map p ~f:Int64.of_int)))
+    ~f:(fun p -> Nx.create Nx.int64 [| n |] (Array.of_list (List.map p ~f:Int64.of_int)))
 
 let cartesian xss =
   List.fold xss ~init:[ [] ] ~f:(fun acc xs ->

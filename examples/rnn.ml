@@ -87,9 +87,11 @@ let loss (p : Nx.float32_t RNN.t) =
 
 let value_and_grad_jit =
   let ptree = Ptree.instantiate (module RNN) in
-  Rune.jit Ptree.(ptree @-> returns ptree) (fun params ->
-    let _, grad = Rune.value_and_grad ptree loss params in
-    grad)
+  Rune.jit
+    Ptree.(ptree @-> returns ptree)
+    (fun params ->
+       let _, grad = Rune.value_and_grad ptree loss params in
+       grad)
 
 let grad = value_and_grad_jit student
 
@@ -123,14 +125,19 @@ let save_cov_for label theta =
   let s2_emp = uniformise_diag s2_emp in
   Nx_io.save_txt (in_dir (Printf.sprintf "rnn_%s_s2" label)) s2;
   Nx_io.save_txt (in_dir (Printf.sprintf "rnn_%s_s2_emp" label)) s2_emp;
-  let cmap = Hugin.Cmap.cividis in
-  Hugin.heatmap ~cmap ~data:s2 ~vmin:(-0.7) ~vmax:0.7 ()
-  |> Hugin.xlim 0. 128.
-  |> Hugin.ylim 0. 128.
-  |> Hugin.no_axes
-  |> Hugin.render_png
-       ~width:512.
-       ~height:512.
+  let heatmap =
+    Hugin.rect
+      ~x:(Hugin.dim 1)
+      ~y:(Hugin.dim 0)
+      ~fill:
+        (Hugin.num
+           ~scale:(Hugin.Scale.linear ~domain:(-0.7, 0.7) ~scheme:Hugin.Scheme.cividis ())
+           s2)
+      ()
+  in
+  Hugin.layer [ heatmap; Hugin.axis ~show:false "x"; Hugin.axis ~show:false "y" ]
+  |> Hugin.save
+       ~size:(Hugin.Size.figure 512. 512.)
        (in_dir (Printf.sprintf "rnn_%s.png" label))
 
 let _ = save_cov_for "params" student

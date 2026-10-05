@@ -230,17 +230,10 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     (* [Nx.Ptree.instantiate] returns a structure with weak dtype parameters;
        pinning each to the working dtype at the value level lets the jit take
        them as input/output structures. *)
-    let state_ptree : state Nx.Ptree.t =
-      Nx.Ptree.instantiate (module State)
-
-    let mid_ptree : mid Nx.Ptree.t =
-      Nx.Ptree.instantiate (module Mid)
-
-    let input_ptree : input Nx.Ptree.t =
-      Nx.Ptree.instantiate (module Input)
-
-    let finish_ptree : finish_input Nx.Ptree.t =
-      Nx.Ptree.instantiate (module Finish)
+    let state_ptree : state Nx.Ptree.t = Nx.Ptree.instantiate (module State)
+    let mid_ptree : mid Nx.Ptree.t = Nx.Ptree.instantiate (module Mid)
+    let input_ptree : input Nx.Ptree.t = Nx.Ptree.instantiate (module Input)
+    let finish_ptree : finish_input Nx.Ptree.t = Nx.Ptree.instantiate (module Finish)
 
     type t =
       { prepare : input -> mid
