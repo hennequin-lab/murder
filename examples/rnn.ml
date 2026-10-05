@@ -38,12 +38,6 @@ module RNN = struct
     ; bias = [ Symmetry.Perm 0 ]
     }
 
-  (* The surrogate network the estimator works on: free axes keep their
-     dimension, the permuted hidden axis shrinks to 2. It must stay
-     non-trivial (>= 2), or the estimated curvature vanishes. *)
-  let surrogate_dim = 4
-  let ensure_size_invariance = false
-
   let init () =
     let w = randn float32 [| hidden; hidden |] in
     let b = randn float32 [| input_dim; hidden |] in
@@ -105,7 +99,7 @@ let uniformise_diag m =
 let save_cov_for label theta =
   let s2 =
     let factors = S.Second_order.factors_of_pair ~symmetric:true theta theta in
-    S.Second_order.dense_of_factors ~symmetric:true ~full:true factors
+    S.Second_order.dense_of_factors ~symmetric:true factors
   in
   let s2_emp =
     let key = Rng.key 1985 in

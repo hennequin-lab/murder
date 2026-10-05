@@ -35,16 +35,28 @@
 
       let dims = { w = [ 100; 78 ] }
       let symmetries = { w = [ Symmetry.Id; Symmetry.Perm 0 ] }
-      let surrogate_dim = 2
     end
     ]}
 
     {!Make} turns that declaration into the orbit machinery and the Taylor
-    optimizer for the whole parameter tree. The estimator works on a {e surrogate} network: [Id] axes keep their dimension, permuted axes shrink
-    to {!Orbit.Model.surrogate_dim} (2 in the paper). The surrogate group must
-    stay non-trivial — collapsing it to a single element makes the estimated
-    curvature vanish identically — which is why the dimension is explicit
-    rather than derived from [dims].
+    optimizer for the whole parameter tree.
+
+    {2 Blocks and sizes}
+
+    The second-order operator lives in the commutant algebra of the group
+    action, which is a direct sum of small matrix algebras — one {e block} per
+    isotypic kind ([Blocks]). The factors the compiler estimates are a
+    size-dependent {e encoding} of that algebra; the blocks are the
+    size-independent description. {!Orbit.S.Second_order.blocks_of_factors}
+    decodes them and {!Orbit.S.Second_order.transport} re-encodes an operator
+    at another size, preserving its blocks, its distinct spectrum and any
+    function of it (only multiplicities, hence trace and determinant, change).
+    The optimizer works on the blocks directly, so no surrogate is involved.
+
+    A permuted axis must be in the stable range ([n >= 2k] for [k] permuted
+    axes per group, i.e. at least 2, 4 and 6 for one, two and three permuted
+    axes); below it the algebra is not semisimple and the decomposition is not
+    faithful. The compiler raises [Invalid_argument] when a spec violates it.
 
     {2 The Taylor step}
 
@@ -59,16 +71,16 @@
 
     with damped symmetric powers [X^{p̃} = U diag((damping·s_max + s)^p) Uᵀ],
     and the step is [θ ← θ − η · H_inv · ḡ]. {!Solve} performs the
-    factorization, the only step outside [Rune.jit]'s reach; {!Optim}
-    composes momentum, orbit averages, the dense surrogates, the estimator
-    solve and the parameter shift.
+    factorization on the assembled blocks, the only step outside [Rune.jit]'s
+    reach; {!Optim} composes momentum, orbit averages, the factors of
+    [S_w]/[S_g], the estimator solve and the parameter shift.
 
     {2 Compiled step}
 
     The step is split so that everything but the estimator solve is
-    traceable: [prepare] (momentum, orbit averages, dense [S_w]/[S_g], EMA
-    and bias counters) and [finish] (factors of [H_inv], apply to the
-    momentum, shift the parameters). {!Optim.Make.Compiled} wraps the two
+    traceable: [prepare] (momentum, orbit averages, the packed factors of
+    [S_w]/[S_g], EMA and bias counters) and [finish] (the factors of [H_inv],
+    applied to the momentum, shift the parameters). {!Optim.Make.Compiled} wraps the two
     halves in [Rune.jit] with the whole state threaded through input and
     output leaves, so a training loop traces once and then replays:
 
@@ -123,6 +135,17 @@ module Basis : module type of Basis
     fallback for degenerate bases). *)
 module Compiler : module type of Compiler
 
+(** Isotypic kinds of one permutation group, with their canonical test
+    vectors: the [k ≤ 2] decomposition of [V^{⊗k}] into [⊕_λ S^{[n-|λ|,λ]} ⊗ M_λ] that the block coordinates are built on.
+*)
+module Kind : module type of Kind
+
+(** Block (Wedderburn) coordinates of the commutant algebra of a compiled
+    pair: [to_blocks]/[of_blocks] convert factor lists to blocks and back,
+    and [transport] re-encodes an operator at another size, preserving its
+    blocks, its distinct spectrum and any function of it. *)
+module Blocks : module type of Blocks
+
 (** Orbit machinery: first- and second-order averages over a parameter tree.
 
     Everything here is a composition of tree traversals and [Nx] operations —
@@ -159,15 +182,25 @@ module Solve : sig
   val hessian : damping:float -> Nx.float32_t -> Nx.float32_t -> Nx.float32_t
 
   (** [hessian_inverse ~damping sigma_w sigma_g] is Eq. 10's preconditioner
-      [H_inv]. It needs [Nx.eigh], which [Rune.jit] does not compile, so it is
-      kept host-side on the small dense surrogate matrices. Its arguments must
-      be on the host. *)
+      [H_inv] on two dense matrices. It needs [Nx.eigh], which [Rune.jit] does
+      not compile, so it is kept host-side. Its arguments must be on the
+      host. *)
   val hessian_inverse : damping:float -> Nx.float32_t -> Nx.float32_t -> Nx.float32_t
+
+  (** [hessian_inverse_blocks ~damping sigma_w sigma_g] is the same
+      preconditioner applied blockwise: one square matrix per isotypic kind,
+      with the damping scale shared across blocks. This is what the optimizer
+      uses; it is exact at the model's size and small. *)
+  val hessian_inverse_blocks
+    :  damping:float
+    -> Nx.float32_t list
+    -> Nx.float32_t list
+    -> Nx.float32_t list
 end
 
 (** The Taylor optimizer on the orbit machinery: bias-corrected momentum, an
-    EMA of the gradient surrogate with debiasing, the estimator solve, the
-    parameter shift, and the compiled [prepare]/[finish] pair. *)
+    EMA of the gradient's factors with debiasing, the blockwise estimator
+    solve, the parameter shift, and the compiled [prepare]/[finish] pair. *)
 module Optim : module type of Optim
 
 (** [Make (M)] is the library entry point: the orbit machinery ({!Orbit.Make})
@@ -175,8 +208,7 @@ module Optim : module type of Optim
     the packed traversal {!Rune.grad} and {!Rune.jit} take.
 
     The parameter tree is [Nx.float32_t M.t] throughout; [dims] and
-    [symmetries] describe each leaf, and [surrogate_dim] the mock dimension
-    permuted axes take at surrogate size. *)
+    [symmetries] describe each leaf. *)
 module Make (M : Orbit.Model) : sig
   (** The packed traversal of the parameter tree. *)
   val ptree : Nx.float32_t M.t Nx.Ptree.t

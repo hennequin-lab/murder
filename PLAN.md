@@ -1,5 +1,10 @@
 # SYMO on the modern Raven stack — port plan
 
+> Historical note: this document records the port to the modern Raven stack.
+> The estimator no longer uses a surrogate network; curvature operators are
+> represented by their isotypic blocks and transported between sizes. See
+> `PLAN-transport.md` for that architecture.
+
 Status: the port is complete through M5. `symo/lib/` implements the pure
 front end, the compiler on Nx, the orbit machinery, the host estimator, the
 eager Taylor step and its jitted halves, with 34 passing tests

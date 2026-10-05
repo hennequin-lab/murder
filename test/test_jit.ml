@@ -23,8 +23,6 @@ module Mlp = struct
 
   let dims : int list t = { w1 = [ 3; 2 ]; w2 = [ 1; 3 ] }
   let symmetries : Symmetry.spec list t = { w1 = [ Perm 0; Id ]; w2 = [ Id; Perm 0 ] }
-  let surrogate_dim = 2
-  let ensure_size_invariance = false
 end
 
 module M = Make (Mlp)

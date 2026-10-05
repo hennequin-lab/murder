@@ -33,17 +33,3 @@ let label_of =
   in
   fun (symm : t) ->
     String.concat ~sep:"_" [ label_of_side symm.left; label_of_side symm.right ]
-
-(* [surrogate_dims ~surrogate_dim specs dims] is [dims] with every permuted
-   axis replaced by [min surrogate_dim dim], while [Id] axes keep their
-   dimension. The surrogate group must stay small but *non-trivial*: with a
-   permuted axis of size 1 the surrogate group is trivial, the distinct basis
-   components coincide, and the estimated curvature is identically zero. The
-   paper uses a surrogate dimension of 2 for permutation groups. *)
-let surrogate_dims ~surrogate_dim specs dims =
-  List.map2_exn specs dims ~f:(fun spec dim ->
-    match spec with
-    | Id -> dim
-    | Perm _ -> Int.min surrogate_dim dim
-    | Absent ->
-      invalid_arg "Symmetry.surrogate_dims: Absent axis in a parameter symmetry spec")

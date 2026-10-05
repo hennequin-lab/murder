@@ -19,15 +19,13 @@ open Symo
    Models under test
    ------------------------------------------------------------------------ *)
 
-(* One leaf: a [2; 3] tensor whose second axis is permuted. The free axis is
-   the first one, so the surrogate is [2; 1]. *)
+(* One leaf: a [2; 3] tensor whose second axis is permuted; the free axis is
+   the first one. *)
 module Single = struct
   type 'a t = { w : 'a } [@@deriving ptree]
 
   let dims : int list t = { w = [ 2; 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ] }
-  let surrogate_dim = 2
-  let ensure_size_invariance = false
 end
 
 module O = Orbit.Make (Single)
@@ -38,8 +36,6 @@ module Two_groups = struct
 
   let dims : int list t = { w = [ 2; 2; 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0; Perm 1 ] }
-  let surrogate_dim = 2
-  let ensure_size_invariance = false
 end
 
 module O2 = Orbit.Make (Two_groups)
@@ -55,8 +51,6 @@ module Multi = struct
 
   let dims : int list t = { w = [ 2; 3 ]; v = [ 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ]; v = [ Perm 1 ] }
-  let surrogate_dim = 2
-  let ensure_size_invariance = false
 end
 
 module OM = Orbit.Make (Multi)
@@ -72,8 +66,6 @@ module Shared = struct
 
   let dims : int list t = { a = [ 3; 2 ]; b = [ 2; 3 ] }
   let symmetries : Symmetry.spec list t = { a = [ Perm 0; Id ]; b = [ Id; Perm 0 ] }
-  let surrogate_dim = 2
-  let ensure_size_invariance = false
 end
 
 module OS = Orbit.Make (Shared)
@@ -200,7 +192,7 @@ let check_multi ~msg ~tol (expected : Nx.float32_t Multi.t) (got : Nx.float32_t 
 let test_first_order_exact () =
   let c = O.First_order.large.w in
   let x = Nx.Rng.normal (Nx.Rng.key 11) Nx.float32 [| 2; 3 |] in
-  (* R1 is what [orbit_average] returns. The dense surrogate is a compressed
+  (* R1 is what [orbit_average] returns. The dense assembly is a compressed
      representation with its own normalization, so only the round trip through
      it is expected to reproduce itself. *)
   let expected = exact_r1 c x in
@@ -212,7 +204,7 @@ let test_first_order_exact () =
   let round_trip =
     O.First_order.dense_of_factors (O.First_order.factors_of_dense dense)
   in
-  check_leaf ~msg:"surrogate round trip" ~tol:1e-5 dense round_trip
+  check_leaf ~msg:"dense round trip" ~tol:1e-5 dense round_trip
 
 let test_first_order_equivariant () =
   let c = O.First_order.large.w in
@@ -238,12 +230,12 @@ let test_second_order_exact () =
   (* Invariance of the assembled block under a random group element. *)
   let perms = random_perms c in
   check_leaf ~msg:"block invariance" ~tol:1e-5 assembled (c.transform ~perms assembled);
-  (* The dense surrogate round trip. *)
+  (* The dense dense round trip. *)
   let dense = O.Second_order.dense_of_factors factors in
   let round_trip =
     O.Second_order.dense_of_factors (O.Second_order.factors_of_dense dense)
   in
-  check_leaf ~msg:"surrogate round trip" ~tol:1e-5 dense round_trip;
+  check_leaf ~msg:"dense round trip" ~tol:1e-5 dense round_trip;
   (* The action of the assembled operator. *)
   let v = { Single.w = Nx.Rng.normal (Nx.Rng.key 22) Nx.float32 [| 2; 3 |] } in
   let l = 6
@@ -349,7 +341,7 @@ let test_multi_leaf () =
   let round_trip =
     OM.Second_order.dense_of_factors (OM.Second_order.factors_of_dense dense)
   in
-  check_leaf ~msg:"multi-leaf surrogate round trip" ~tol:1e-5 dense round_trip
+  check_leaf ~msg:"multi-leaf dense round trip" ~tol:1e-5 dense round_trip
 
 let test_multi_leaf_invariance () =
   let x =

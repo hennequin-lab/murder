@@ -33,3 +33,9 @@
  (libraries base stdio nx symo windtrap rune unix)
  (preprocess
   (pps ppx_ptree)))
+
+(test
+ (name test_blocks)
+ (modules test_blocks)
+ (package symo)
+ (libraries base stdio nx symo windtrap))

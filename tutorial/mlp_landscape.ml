@@ -24,16 +24,10 @@ module SimpleMLP = struct
 
     let dims = { w1 = [ input_dim; hidden ]; w2 = [ hidden; output_dim ] }
 
+    (* The hidden units are permuted (group 0); the input and output axes are
+       free. *)
     let symmetries : Symmetry.spec list t =
-      { w1 = [ Symmetry.Perm 0; Symmetry.Perm 1 ]
-      ; w2 = [ Symmetry.Perm 1; Symmetry.Perm 0 ]
-      }
-
-    (* The surrogate network the estimator works on: free axes keep their
-       dimension, the permuted hidden axis shrinks to 2. It must stay
-       non-trivial (>= 2), or the estimated curvature vanishes. *)
-    let surrogate_dim = 2
-    let ensure_size_invariance = false
+      { w1 = [ Symmetry.Id; Symmetry.Perm 0 ]; w2 = [ Symmetry.Perm 0; Symmetry.Id ] }
   end
 
   let init () =
@@ -59,10 +53,7 @@ module S = Symo.Make (SimpleMLP.P)
 
 let s2 =
   S.Second_order.(
-    dense_of_factors
-      ~full:true
-      ~symmetric:true
-      (factors_of_pair ~symmetric:true teacher teacher))
+    dense_of_factors ~symmetric:true (factors_of_pair ~symmetric:true teacher teacher))
 
 let pcs =
   let u, _, _ = svd s2 in

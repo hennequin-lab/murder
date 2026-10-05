@@ -24,12 +24,6 @@ let test_partitions () =
   equal int 15 (List.length (Compiler.partitions [ 1; 2; 3; 4 ]));
   equal int 52 (List.length (Compiler.partitions [ 1; 2; 3; 4; 5 ]))
 
-let test_ties_one_side () =
-  is_true (Compiler.ties_one_side [ left 0; left 1 ]);
-  is_true (Compiler.ties_one_side [ right 0; right 1 ]);
-  is_false (Compiler.ties_one_side [ left 0; right 0 ]);
-  is_false (Compiler.ties_one_side [ left 0; left 1 ] |> not)
-
 let factor_shape ~dims (comp : Component.t) =
   let term =
     match comp with
@@ -78,7 +72,7 @@ let check_coefficients ~dims components data =
       (Nx.to_array (Component.coefficient ~dims comp (`Outer_product (left, right)))))
 
 let check_basis ?(symmetric = false) ~name ~dims spec =
-  let compiled = Compiler.compile ~ensure_size_invariance:true ~symmetric ~dims spec in
+  let compiled = Compiler.compile ~symmetric ~dims spec in
   let components = compiled.basis.components in
   let data =
     Nx.Rng.normal (Nx.Rng.key 11) Nx.float32 (Array.of_list (dims.left @ dims.right))
@@ -189,7 +183,7 @@ let test_left_tie () =
 let test_compile_manual () =
   let d = dims ~left:[ 2; 3 ] ~right:[ 2; 3 ] in
   let s = spec ~left:[ Symmetry.Id; Perm 0 ] ~right:[ Symmetry.Id; Symmetry.Perm 0 ] in
-  let auto = Compiler.compile ~ensure_size_invariance:true ~symmetric:true ~dims:d s in
+  let auto = Compiler.compile ~symmetric:true ~dims:d s in
   let manual =
     Compiler.compile_manual
       ~symmetric:true
@@ -206,7 +200,6 @@ let test_compile_manual () =
 
 let tests =
   [ test "partitions enumerate set partitions of size >= 2" test_partitions
-  ; test "ties one side" test_ties_one_side
   ; test "first order" test_first_order
   ; test "same group both sides" test_same_group
   ; test "full permutation" test_full_permutation

@@ -17,14 +17,12 @@ open Symo
 
 (* One [2; 3] weight whose columns are permuted: the commutant is
    [M_2(R) ⊗ span {I_3, J_3}], so a Hessian [A ⊗ (3 I + 0.7 J)] exercises the
-   row-space structure that the [2; 1] surrogate carries. *)
+   row-space structure that the blocks carry. *)
 module Quad = struct
   type 'a t = { w : 'a } [@@deriving ptree]
 
   let dims : int list t = { w = [ 2; 3 ] }
   let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ] }
-  let surrogate_dim = 2
-  let ensure_size_invariance = false
 end
 
 module Q = Make (Quad)
@@ -40,8 +38,6 @@ module Mlp = struct
 
   let dims : int list t = { w1 = [ 3; 2 ]; w2 = [ 1; 3 ] }
   let symmetries : Symmetry.spec list t = { w1 = [ Perm 0; Id ]; w2 = [ Id; Perm 0 ] }
-  let surrogate_dim = 2
-  let ensure_size_invariance = false
 end
 
 module M = Make (Mlp)
@@ -197,11 +193,28 @@ let test_end_to_end () =
   in
   is_true ~msg:"loss decreased" Float.(loss state.M.State.theta < before)
 
+(* Transport across widths: the assembled blocks of an operator estimated at
+   one hidden size are the blocks of its re-encoding at another. *)
+let test_transport_blocks () =
+  let theta =
+    { Mlp.w1 = Nx.Rng.normal (Nx.Rng.key 41) Nx.float32 [| 3; 2 |]
+    ; w2 = Nx.Rng.normal (Nx.Rng.key 42) Nx.float32 [| 1; 3 |]
+    }
+  in
+  let factors = M.Second_order.factors_of_pair theta theta in
+  let blocks = M.Second_order.blocks_of_factors factors in
+  let wide = { Mlp.w1 = [ 5; 2 ]; w2 = [ 1; 5 ] } in
+  let transported = M.Second_order.transport ~dims:wide factors in
+  let blocks_wide = M.Second_order.blocks_of_factors transported in
+  List.iter2_exn blocks blocks_wide ~f:(fun a b ->
+    check ~msg:"transported blocks" ~tol:1e-4 a b)
+
 let tests =
   [ test "EMA and debias schedules" test_schedules
   ; test "Solve inverts a known operator" test_solve_identity
   ; test "exchange identity S_g = H S_w H" test_exchange_identity
   ; test "Newton step on an invariant quadratic" test_newton_step
+  ; test "transport preserves the blocks" test_transport_blocks
   ; test "end-to-end MLP training" test_end_to_end
   ]
 

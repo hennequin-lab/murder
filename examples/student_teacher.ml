@@ -35,12 +35,6 @@ module Mlp = struct
      together. The other axes are [Id] (free, never transformed). *)
   let symmetries : Symmetry.spec list t =
     { w1 = [ Symmetry.Perm 0; Symmetry.Id ]; w2 = [ Symmetry.Id; Symmetry.Perm 0 ] }
-
-  (* The surrogate network the estimator works on: free axes keep their
-     dimension, the permuted hidden axis shrinks to 2. It must stay
-     non-trivial (>= 2), or the estimated curvature vanishes. *)
-  let surrogate_dim = 2
-  let ensure_size_invariance = false
 end
 
 module S = Symo.Make (Mlp)

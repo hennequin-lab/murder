@@ -44,9 +44,9 @@ with damped symmetric powers `X^{p̃} = U diag((damping·s_max + s)^p) Uᵀ`.
 
 ## A model in three declarations
 
-A model declares its parameter tree with `[@@deriving ptree]` (which provides
-the `map`/`map2`/`iter`/`fold`/`names` traversals), one symmetry specification
-per leaf, and the surrogate dimension:
+A model declares its parameter tree with `[@@deriving ptree]` (one `walk`
+over the tree's parts, from which `Nx.Ptree` derives maps, folds and compiled
+keys) and one symmetry specification per leaf:
 
 ```ocaml
 open Symo
@@ -66,18 +66,16 @@ module Mlp = struct
     { w1 = [ Symmetry.Perm 0; Symmetry.Id ]
     ; w2 = [ Symmetry.Id; Symmetry.Perm 0 ]
     }
-
-  (* The estimator works on a surrogate network: free axes keep their size,
-     permuted axes shrink to 2. Must stay >= 2 (see Design notes). *)
-  let surrogate_dim = 2
 end
 
 module S = Symo.Make (Mlp)
 ```
 
 `Symo.Make (M)` returns the orbit machinery (`S.First_order`,
-`S.Second_order`, `S.orbit_average`), the optimizer (`S.init`, `S.step`,
-`S.prepare`/`S.solve`/`S.finish`), the compiled step (`S.Compiled`), and
+`S.Second_order`, `S.orbit_average`, and the block coordinates
+`S.Second_order.blocks_of_factors` / `transport`), the optimizer (`S.init`,
+`S.step`, `S.prepare`/`S.solve`/`S.finish`), the compiled step
+(`S.Compiled`), and
 `S.ptree`, the packed traversal `Rune.grad` and `Rune.jit` take.
 
 ## Training
@@ -147,7 +145,7 @@ From this directory:
 
 ```sh
 dune build @check     # type-check everything
-dune runtest          # 34 tests
+dune runtest          # 44 tests
 ```
 
 The suites are:
@@ -156,8 +154,9 @@ The suites are:
 | --------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `test_term`     | term ordering, normalization, symbolic inner products                                                                 |
 | `test_compiler` | compiled closures against brute-force sums over the index space, the Cholesky design solve, invariance (`A S Aᵀ = S`) |
-| `test_orbit`    | `R1`/`R2` and surrogate round trips against exact enumeration of the symmetry group                                   |
-| `test_optim`    | estimator identities, Newton step on an invariant quadratic, end-to-end training                                      |
+| `test_orbit`    | `R1`/`R2` and dense round trips against exact enumeration of the symmetry group                                      |
+| `test_blocks`   | blocks against the dense spectrum, transport across sizes, the blockwise estimator against the dense one              |
+| `test_optim`    | estimator identities, Newton step on an invariant quadratic, block transport, end-to-end training                     |
 | `test_jit`      | 50-step eager/compiled parity, state threading, replay-not-retrace                                                    |
 
 ## Library layout
@@ -165,21 +164,30 @@ The suites are:
 | module                       | role                                                                                                                   |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `Sides`, `Index`             | the two sides of a commutation equation; axis indices and einsum characters                                            |
-| `Symmetry`                   | `Absent`/`Id`/`Perm i` specs and the surrogate dimension they induce                                                   |
+| `Symmetry`                   | `Absent`/`Id`/`Perm i` specs                                                                                          |
+| `Kind`, `Blocks`             | isotypic kinds and canonical test vectors; block coordinates and transport between sizes                              |
 | `Term`, `Component`, `Basis` | basis terms (ties + free axes), components, and the symbolic basis of the invariant subspace                           |
 | `Compiler`                   | one specification at fixed dimensions → closures for factor estimation, dense blocks and batched block-vector products |
 | `Orbit`                      | lifts the compiler to the whole parameter tree (`First_order`, `Second_order`)                                         |
-| `Solve`                      | the host-side estimator (`svd64`, damped symmetric powers, `H`/`H_inv`)                                                |
+| `Solve`                      | the host-side estimator (blockwise and dense damped symmetric powers, `H`/`H_inv`)                                   |
 | `Optim`                      | the Taylor step, eager and jitted (`State`, `Mid`, `Compiled`)                                                         |
 | `Make`                       | the entry point: orbit machinery + optimizer + packed traversal                                                        |
 
 ## Design notes
 
-- **The surrogate dimension must be at least 2.** The estimator runs on a
-  surrogate network where permuted axes take `surrogate_dim` values. With a
-  one-element group the distinct basis components coincide, the surrogate
-  degenerates and the estimated curvature vanishes (the step is zero/NaN). The
-  paper uses 2.
+- **Blocks, not surrogates.** The second-order operator lives in the
+  commutant algebra, which is a direct sum of small matrix algebras — one block
+  per isotypic kind (`Kind`, `Blocks`). The factors are a size-dependent
+  *encoding* of that algebra; the blocks are the size-independent description.
+  The optimizer works on the blocks directly, and `transport` re-encodes an
+  operator at another size, preserving its blocks, its distinct spectrum and
+  any function of it. Only multiplicities (trace, determinant) change with the
+  size.
+- **Permuted axes must be in the stable range.** A group with `k` permuted
+  axes needs dimension `n >= 2k` (2, 4 and 6 for one, two and three axes) for
+  the commutant to be semisimple and the block decomposition faithful; the
+  compiler raises `Invalid_argument` below it. Free (`Id`) axes have no such
+  constraint.
 - **The design matrix is factorized once, at compile time**, by Cholesky in
   float64 (with a jittered retry and an eigendecomposition pseudo-inverse
   fallback for degenerate bases). The per-call factor estimation is two small
@@ -196,9 +204,9 @@ The suites are:
   its upstream fix, which retired the `Delta`/`Contract` workaround — is
   documented in `PLAN.md`, §10.
 
-`PLAN.md` is the port's design document and keeps the full milestone history,
-including two corrections found while porting (the surrogate convention above,
-and a dropped scalar factor in the compiler).
+`PLAN.md` is the port's design document and keeps the full milestone history;
+`PLAN-transport.md` records the block/transport design that replaced the
+surrogate estimator and the `ensure_size_invariance` filter.
 
 ## License
 

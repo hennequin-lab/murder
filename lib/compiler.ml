@@ -179,9 +179,7 @@ let pseudo_inverse m =
   let n = (Nx.shape m).(0) in
   let w, u = Nx.eigh m in
   let tol = 1e-12 *. Nx.item [] (Nx.max (Nx.abs w)) in
-  let inv_w =
-    Nx.where (Nx.greater_s (Nx.abs w) tol) (Nx.recip w) (Nx.zeros_like w)
-  in
+  let inv_w = Nx.where (Nx.greater_s (Nx.abs w) tol) (Nx.recip w) (Nx.zeros_like w) in
   Nx.matmul (Nx.mul u (Nx.reshape [| 1; n |] inv_w)) (Nx.transpose u)
 
 (* Factor the constant design matrix once, at compile time: Cholesky when it
@@ -288,14 +286,6 @@ let bundle_transposes terms =
     | [ a; _ ] -> Component.Sum [ a; Term.sort (Term.transpose a) ]
     | _ -> assert false)
 
-let ties_one_side ids =
-  let c_left, c_right =
-    List.fold ids ~init:(0, 0) ~f:(fun (l, r) -> function
-      | Index.Left _ -> l + 1, r
-      | Index.Right _ -> l, r + 1)
-  in
-  c_left > 1 || c_right > 1
-
 (* From a symmetry specification to the symbolic basis.
 
    - the free axes are the [Id] axes of both sides;
@@ -303,16 +293,10 @@ let ties_one_side ids =
      occurrences into blocks of size ≥ 2 enumerate the allowed delta
      structures;
    - the cartesian product across groups gives every term;
-   - if [ensure_size_invariance=true], second-order terms that tie two or more
-     dimensions on the same side (left or right) are rejected, as empirically
-     they appear to break the size invariance of the surrogate;
    - when symmetry is required, a term and its transpose are merged into one
      component. *)
-let basis_of_spec_uncached ~ensure_size_invariance ~symmetric (symm : Symmetry.t)
-  : Basis.t
-  =
+let basis_of_spec_uncached ~symmetric (symm : Symmetry.t) : Basis.t =
   let open Symmetry in
-  let is_first_order = Poly.(symm.right = [ Absent ] || symm.left = [ Absent ]) in
   let left i = Index.Left i in
   let right i = Index.Right i in
   let free =
@@ -352,14 +336,6 @@ let basis_of_spec_uncached ~ensure_size_invariance ~symmetric (symm : Symmetry.t
     |> List.map ~f:Term.sort
   in
   let components =
-    if is_first_order || not ensure_size_invariance
-    then components
-    else
-      List.filter components ~f:(fun term ->
-        List.fold term.Term.ties ~init:true ~f:(fun so_far ids ->
-          so_far && not (ties_one_side ids)))
-  in
-  let components =
     if symmetric
     then bundle_transposes components
     else List.map components ~f:(fun t -> Component.Single t)
@@ -374,9 +350,9 @@ let basis_of_spec_uncached ~ensure_size_invariance ~symmetric (symm : Symmetry.t
 (* The basis depends only on the symmetry specification — not on the
    dimensions — so it is memoized: second-order compilation asks for n²
    specifications, and repeated layer shapes revisit the same ones (all
-   diagonal pairs, every pair of identical layers, and the surrogate
-   compilation of every basis). Only the enumeration is shared; the closures
-   and the design matrix are rebuilt per [dims]. *)
+   diagonal pairs and every pair of identical layers). Only the enumeration is
+   shared; the closures, the design matrix and the block table are rebuilt per
+   [dims]. *)
 let basis_cache : (string, Basis.t) Hashtbl.t = Hashtbl.create (module String)
 
 let basis_cache_key ~symmetric (symm : Symmetry.t) =
@@ -391,12 +367,12 @@ let basis_cache_key ~symmetric (symm : Symmetry.t) =
     ~sep:"|"
     [ (if symmetric then "sym" else "asym"); side symm.left; side symm.right ]
 
-let basis_of_spec ~ensure_size_invariance ~symmetric spec =
+let basis_of_spec ~symmetric spec =
   let key = basis_cache_key ~symmetric spec in
   match Hashtbl.find basis_cache key with
   | Some basis -> basis
   | None ->
-    let basis = basis_of_spec_uncached ~ensure_size_invariance ~symmetric spec in
+    let basis = basis_of_spec_uncached ~symmetric spec in
     Hashtbl.set basis_cache ~key ~data:basis;
     basis
 
@@ -417,8 +393,8 @@ let compile_basis ~(dims : int list Sides.t) (basis : Basis.t) =
   let transform = transform ~dims basis.group_axes in
   { basis; dims; apply_block; dense_block; estimate_factors; transform }
 
-let compile ?(symmetric = false) ~ensure_size_invariance ~dims spec =
-  compile_basis ~dims (basis_of_spec ~ensure_size_invariance ~symmetric spec)
+let compile ?(symmetric = false) ~dims spec =
+  compile_basis ~dims (basis_of_spec ~symmetric spec)
 
 let compile_manual ?(symmetric = false) ~dims ~group_axes components =
   let group_ids = List.init (List.length group_axes) ~f:Fn.id in

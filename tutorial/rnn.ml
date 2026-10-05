@@ -46,12 +46,6 @@ module RNN = struct
       ; bias = [ Symmetry.Perm 0 ]
       }
 
-    (* The surrogate network the estimator works on: free axes keep their
-       dimension, the permuted hidden axis shrinks to 2. It must stay
-       non-trivial (>= 2), or the estimated curvature vanishes. *)
-    let surrogate_dim = 4
-    let ensure_size_invariance = false
-
     let init () =
       let w = randn float32 [| hidden; hidden |] in
       let b = randn float32 [| input_dim; hidden |] in
@@ -89,6 +83,7 @@ end
 let teacher, student =
   let place = Ptree.place RNN.ptree on_device in
   Rng.with_key (Rng.key 42) @@ fun () -> place (RNN.P.init ()), place (RNN.P.init ())
+
 let horizon = 100
 let full_batch = 1024
 let batch = 128
