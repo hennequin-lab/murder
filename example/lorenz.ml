@@ -1,8 +1,15 @@
 open Base
 open Nx
+open Jera
 
 let in_dir = Cmdargs.in_dir "-d"
 let print s = Stdio.print_endline (Sexp.to_string_hum s)
+
+(* [Nx.relu] is gone from [Nx] and activations now live in [Kaun]; the example
+   keeps its own rather than depend on [Kaun] for one line. *)
+let relu x =
+  let zero = Nx.scalar_like x 0. in
+  Nx.where (Nx.less_equal x zero) zero x
 
 (* Parameters *)
 
@@ -31,36 +38,32 @@ let lorenz_trajs =
     let sigma = 10. in
     let rho = 28. in
     let beta = 8. /. 3. in
-    let lorenz =
+    let lorenz _t y =
+      let open Infix in
+      let x = slice [ A; I 0 ] y
+      and yc = slice [ A; I 1 ] y
+      and z = slice [ A; I 2 ] y in
+      let dx = (yc - x) *$ sigma
+      and dy = (x * (-z +$ rho)) - yc
+      and dz = (x * yc) - (z *$ beta) in
+      stack ~axis:1 [ dx; dy; dz ]
+    in
+    (* The trajectory is the march's own output: [at] holds one time per step
+       and every step is kept, so nothing is interpolated. Its times are
+       float64, the steps as exact as the stride allows. *)
+    let march =
       Rune.jit
-        Nx.Ptree.(tensor @-> returns tensor)
-        (fun y ->
-           let open Infix in
-           let x = slice [ A; I 0 ] y
-           and yc = slice [ A; I 1 ] y
-           and z = slice [ A; I 2 ] y in
-           let dx = (yc - x) *$ sigma
-           and dy = (x * (-z +$ rho)) - yc
-           and dz = (x * yc) - (z *$ beta) in
-           stack ~axis:1 [ dx; dy; dz ])
+        Nx.Ptree.(tensor @-> tensor @-> returns tensor)
+        (fun at y0 -> Ode.march Nx.Ptree.tensor Ode.rk4 ~steps:1 lorenz ~at y0)
     in
     Rng.with_key (Rng.key 42)
     @@ fun () ->
     let n_bins = Int.((total_bs + 10) * horizon) in
-    let ys =
-      Laguz.solve
-        ~stepper:Laguz.rk4
-        ~output:`Every_step
-        ~max_steps:n_bins
-        ~dt
-        ~rhs:(fun _ y -> lorenz y)
-        ~t0:0.
-        ~t1:Float.(dt * of_int Int.(n_bins - 1))
-        ~y0:(ones float32 [| 1; 3 |])
-        ()
-      |> Laguz.ys
-      |> Option.value_exn
-    in
+    let y0 = ones float32 [| 1; 3 |] in
+    let at = linspace float64 0. Float.(dt * of_int Int.(n_bins - 1)) n_bins in
+    Stdio.printf "integrating the lorenz ODE... %!";
+    let ys = march at y0 in
+    Stdio.printf "done.\n%!";
     let n_bins = dim 0 ys in
     let ys =
       ys
