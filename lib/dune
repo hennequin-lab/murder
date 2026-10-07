@@ -1,0 +1,18 @@
+(library
+ (name ilqr_vae)
+ (public_name ilqr_vae)
+ (libraries base nx rune dilqr)
+ (preprocess
+  (pps ppx_ptree))
+ (modules
+  types
+  special
+  covariance
+  prior
+  likelihood
+  dynamics
+  model
+  recognition
+  encoder
+  elbo
+  ilqr_vae))
