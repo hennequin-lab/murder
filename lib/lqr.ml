@@ -108,9 +108,10 @@ let batch_zero x =
    [K_k] ([m; n]) and the value function at step [k]. Regularization follows
    Tassa: [Quu + mu B Bᵀ] and [Qux + mu B Aᵀ].
 
-   Raises [Nx.Linalg_error] when the regularized [Quu] is not positive
-   definite (only meaningful on untraced tensors; a traced factorization
-   yields NaNs instead). *)
+   A regularized [Quu] that is not positive definite gives a NaN Cholesky
+   factor, and every result the step computes from it is NaN: the adaptive
+   solve retries with more regularization, the fixed solve's acceptance mask
+   rejects the trial. *)
 let riccati_step ~(mu : float) ~(row : ('a, 'b) Nx.t Rows.t) ~vx ~vxx
   : ('a, 'b) Nx.t
     * ('a, 'b) Nx.t

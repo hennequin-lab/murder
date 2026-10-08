@@ -370,12 +370,18 @@ let solve
     let rec retry attempts =
       if attempts > 30
       then failwith "dilqr: Quu could not be regularized to positive definiteness";
-      match Lqr.backward ~mu:!reg.Regularisation.mu ~tape ~lin:(Lqr.lin_of_tape tape) with
-      | gains, d1, d2 -> gains, d1, d2
-      | exception Nx.Linalg_error _ ->
+      let gains, d1, d2 =
+        Lqr.backward ~mu:!reg.Regularisation.mu ~tape ~lin:(Lqr.lin_of_tape tape)
+      in
+      (* A non-positive-definite [Quu] gives a NaN Cholesky factor, and the
+         NaN runs through the sweep into the gains and the expected-decrease
+         accumulators. *)
+      if Nx.item [] (Nx.all (Nx.isfinite d1)) && Nx.item [] (Nx.all (Nx.isfinite d2))
+      then gains, d1, d2
+      else (
         reg := Regularisation.increase !reg;
         log p "cholesky failed, mu -> %g" !reg.Regularisation.mu;
-        retry (attempts + 1)
+        retry (attempts + 1))
     in
     retry 0
   in

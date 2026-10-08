@@ -236,6 +236,36 @@ let test_regularisation () =
   let r = decay (increase init) 40 in
   equal ~msg:"mu floors at 1e-6" (float 1e-15) 1e-6 r.mu
 
+(* The adaptive solve detects a failed factorization by the NaNs it leaves:
+   the Cholesky factor of a non-positive-definite [Quu] has every element NaN,
+   and the backward sweep carries that into the expected-decrease
+   accumulators the retry tests. *)
+let test_a_failed_factorization_is_nan () =
+  let open Dilqr.Lqr in
+  let one s = Nx.reshape s (Nx.scalar Nx.float64 1.0)
+  and zero s = Nx.zeros Nx.float64 s in
+  let blocks =
+    Rows.
+      { a = one [| 1; 1; 1 |]
+      ; b = one [| 1; 1; 1 |]
+      ; lx = zero [| 1; 1 |]
+      ; lu = zero [| 1; 1 |]
+      ; lxx = zero [| 1; 1; 1 |]
+      ; luu = Nx.reshape [| 1; 1; 1 |] (Nx.scalar Nx.float64 (-1.0))
+      ; lux = zero [| 1; 1; 1 |]
+      }
+  in
+  let tape = { blocks; fx = zero [| 1 |]; fxx = zero [| 1; 1 |] } in
+  let finite d1 d2 =
+    Nx.item [] (Nx.all (Nx.isfinite d1)) && Nx.item [] (Nx.all (Nx.isfinite d2))
+  in
+  let _, d1, d2 = backward ~mu:0.0 ~tape ~lin:(lin_of_tape tape) in
+  require
+    ~msg:"an indefinite Quu has NaN expected-decrease accumulators"
+    (not (finite d1 d2));
+  let _, d1, d2 = backward ~mu:2.0 ~tape ~lin:(lin_of_tape tape) in
+  require ~msg:"regularization makes Quu positive definite" (finite d1 d2)
+
 (* Stationarity of the double-integrator solution: the autodiff gradient of
    the total cost w.r.t. each control vanishes. Autodiff through the true
    rollout — independent of the Riccati code under test. *)
@@ -579,6 +609,7 @@ let () =
     (run
        "dilqr"
        [ test "regularisation schedule" test_regularisation
+       ; test "a failed factorization is NaN" test_a_failed_factorization_is_nan
        ; test "double integrator converges" test_integrator_converges
        ; test "pendulum converges" test_pendulum_converges
        ; test
