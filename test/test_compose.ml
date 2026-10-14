@@ -28,6 +28,12 @@ let f64 = Nx.float64
 let vec xs = Nx.create f64 [| Array.length xs |] xs
 let mat r c xs = Nx.create f64 [| r; c |] xs
 
+(* [Nx.relu] has moved to [Kaun]; the tests keep their own rather than take a
+   dependency on the activations package for one line. *)
+let relu x =
+  let zero = Nx.scalar_like x 0.0 in
+  Nx.where (Nx.less_equal x zero) zero x
+
 let check_arr ?(eps = 1e-9) ~msg expected actual =
   let actual = Nx.to_array actual in
   equal ~msg int (Array.length expected) (Array.length actual);
@@ -106,7 +112,7 @@ let params () =
   }
 
 let step p z =
-  Nx.add (Nx.matmul z p.a) (Nx.matmul (Nx.relu (Nx.add (Nx.matmul z p.ct) p.b)) p.wt)
+  Nx.add (Nx.matmul z p.a) (Nx.matmul (relu (Nx.add (Nx.matmul z p.ct) p.b)) p.wt)
 
 let z0 = vec [| 0.2; -0.4; 0.6 |]
 
@@ -473,8 +479,8 @@ let test_rng_in_the_graph_is_a_constant () =
 let test_jit_inside_degrades () =
   (* jit inside user code sees a transformation installed and runs eagerly:
      correct, uncompiled, and numerically identical to the rule it wraps. *)
-  let inline y = Nx.relu y in
-  let jitted_activation y = Rune.jit' (fun v -> Nx.relu v) y in
+  let inline y = relu y in
+  let jitted_activation y = Rune.jit' (fun v -> relu v) y in
   let model activation p =
     let z =
       Nx.add
@@ -502,8 +508,7 @@ let test_custom_jvp_inside () =
       Nx.Ptree.tensor
       Nx.Ptree.tensor
       (fun x ->
-         ( Nx.relu x
-         , fun dx -> Nx.where (Nx.greater x (Nx.zeros_like x)) dx (Nx.zeros_like dx) ))
+         relu x, fun dx -> Nx.where (Nx.greater x (Nx.zeros_like x)) dx (Nx.zeros_like dx))
       x
   in
   let loss p =

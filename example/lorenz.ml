@@ -113,10 +113,13 @@ module Model = struct
     + (relu (concatenate ~axis:1 [ x; ones float32 [| bs; 1 |] ] *@ theta.c) *@ theta.w)
 
   let forward ~horizon (theta : P.t) x0 =
-    Rune.scan'
-      ~f:(fun x t -> step theta x, t)
+    Rune.scan
+      Ptree.tensor
+      Ptree.tensor
+      Ptree.unit
+      ~f:(fun x t -> step theta x, ())
       ~init:x0
-      (Nx.zeros float32 [| horizon - 1; 1 |])
+      (Nx.zeros float32 [| horizon - 1 |])
     |> fst
 end
 

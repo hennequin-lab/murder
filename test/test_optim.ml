@@ -335,7 +335,7 @@ let stretch (type q) (structure : q Nx.Ptree.t) (s : Nx.float64_t) (t : q) : q =
   Nx.Ptree.map
     structure
     (fun _ leaf ->
-       if Nx_dtype.is_float (Nx.dtype leaf)
+       if Nx_dtype.is Nx_dtype.Float (Nx.dtype leaf)
        then (
          let shape =
            Array.append [| k |] (Array.make (Array.length (Nx.shape leaf) - 1) 1)

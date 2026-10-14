@@ -70,7 +70,7 @@ let sample (type p) (structure : p Nx.Ptree.t) ~k (params : p) : p =
     structure
     (fun _ leaf ->
        let shape = Array.append [| k |] (Nx.shape leaf) in
-       if Nx_dtype.is_float (Nx.dtype leaf)
+       if Nx_dtype.is Nx_dtype.Float (Nx.dtype leaf)
        then Nx.cast (Nx.dtype leaf) (Nx.randn Nx.float64 shape)
        else Nx.zeros (Nx.dtype leaf) shape)
     params

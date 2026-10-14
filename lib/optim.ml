@@ -74,7 +74,7 @@ let apply (type p) (structure : p Nx.Ptree.t) ~k (thetas : p) (z : Nx.float64_t)
     (fun _ theta ->
        (* Leaves that cannot carry a direction — a key, an index, a counter —
           get the zero direction, as they do in the sampler. *)
-       if Nx_dtype.is_float (Nx.dtype theta)
+       if Nx_dtype.is Nx_dtype.Float (Nx.dtype theta)
        then Sketch.contract z theta
        else
          Nx.zeros
@@ -93,7 +93,7 @@ let shift (type p) (structure : p Nx.Ptree.t) ~(lr : Nx.float64_t) (params : p) 
   Nx.Ptree.map2
     structure
     (fun _ p d ->
-       if Nx_dtype.is_float (Nx.dtype p)
+       if Nx_dtype.is Nx_dtype.Float (Nx.dtype p)
        then Nx.sub p (Nx.mul d (Nx.cast (Nx.dtype d) lr))
        else p)
     params
@@ -110,7 +110,7 @@ let gram (type p) (structure : p Nx.Ptree.t) ~k (dirs : p) : Nx.float64_t =
   Nx.Ptree.fold
     structure
     (fun _ leaf z ->
-       if Nx_dtype.is_float (Nx.dtype leaf)
+       if Nx_dtype.is Nx_dtype.Float (Nx.dtype leaf)
        then (
          let m =
            Nx.reshape [| k; Nx.numel leaf / k |] (Nx.contiguous (Nx.cast Nx.float64 leaf))
