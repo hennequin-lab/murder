@@ -246,3 +246,51 @@ module Gnode = struct
     ; dyn = (fun p ~k ~x ~u -> dyn ~phi p ~k ~x ~u)
     }
 end
+
+(* {1 Minimal gated unit} *)
+
+module Mgu = struct
+  type 'a params =
+    { uf : 'a
+    ; uh : 'a
+    ; w : 'a
+    ; bf : 'a
+    ; bh : 'a
+    }
+  [@@deriving ptree]
+
+  let structure () =
+    Nx.Ptree.instantiate
+      (module struct
+        type 'a t = 'a params
+
+        let walk = walk_params
+      end)
+
+  (* The paper's Appendix B.2 (S7)-(S9), with the [t - 1] subscript typo of
+     (S9) corrected and the biases it omits made explicit. [b_f] is not
+     optional: at the encoder's zero initial state a biasless gate is
+     [phi 0 = 0] and the state never leaves the origin. *)
+  let dyn ~phi p ~k:_ ~x ~u =
+    let f = phi (Nx.add (Nx.matmul x p.uf) p.bf) in
+    let h = Nx.add (phi (Nx.add (Nx.matmul (Nx.mul f x) p.uh) p.bh)) (Nx.matmul u p.w) in
+    Nx.add (Nx.mul (Nx.sub (Nx.ones_like f) f) x) (Nx.mul f h)
+
+  let make ?key ?(bias_f = 0.5) ~n ~m ~phi dtype =
+    if n <= 0 then invalid_arg "Dynamics.Mgu.make: n must be positive";
+    if m <= 0 then invalid_arg "Dynamics.Mgu.make: m must be positive";
+    let params =
+      { uf = Nx.zeros dtype [| n; n |]
+      ; uh = Nx.zeros dtype [| n; n |]
+      ; w = scaled_randn ?key ~sigma:(1.0 /. Float.sqrt (Float.of_int m)) dtype [| m; n |]
+      ; bf = Nx.full dtype [| n |] bias_f
+      ; bh = Nx.zeros dtype [| n |]
+      }
+    in
+    { n
+    ; m
+    ; structure = structure ()
+    ; params
+    ; dyn = (fun p ~k ~x ~u -> dyn ~phi p ~k ~x ~u)
+    }
+end

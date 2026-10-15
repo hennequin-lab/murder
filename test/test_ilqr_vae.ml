@@ -531,6 +531,100 @@ let test_dynamics () =
     first
     (D.integrate rnn rnn.D.params ~x0:(Nx.zeros dtype [| n |]) ~u)
 
+(* The paper's MGU (Appendix B.2, with the [z_{t-1}] subscript typo of (S9)
+   corrected): the input is additive in the candidate and does not enter the
+   forget gate. The expected step is computed with host floats from the same
+   equations, not from the implementation. *)
+let test_mgu () =
+  let n = 2
+  and m = 2 in
+  let dynamics = D.Mgu.make ~n ~m ~key:(Nx.Rng.key 4) ~phi:Nx.tanh dtype in
+  let params : Nx.float64_t D.Mgu.params =
+    { uf = Nx.create dtype [| n; n |] [| 0.5; 0.0; 0.0; -0.5 |]
+    ; uh = Nx.create dtype [| n; n |] [| 0.25; 0.0; 0.0; 0.25 |]
+    ; w = Nx.create dtype [| m; n |] [| 1.0; 0.5; -0.5; 1.0 |]
+    ; bf = vec [ 0.3; -0.1 ]
+    ; bh = vec [ 0.0; 0.2 ]
+    }
+  in
+  let x = vec [ 1.0; -2.0 ]
+  and u = vec [ 0.5; -1.0 ]
+  and k = scalar 0.0 in
+  (* f = tanh (U_f z + b_f); ẑ = tanh (U_h (f ⊙ z) + b_h) + u W;
+     z' = (1 − f) ⊙ z + f ⊙ ẑ. *)
+  let f1 = Float.tanh ((0.5 *. 1.0) +. 0.3)
+  and f2 = Float.tanh ((-0.5 *. -2.0) -. 0.1) in
+  let h1 = 0.25 *. f1
+  and h2 = (0.25 *. f2 *. -2.0) +. 0.2 in
+  let uh1 = (0.5 *. 1.0) +. (-1.0 *. -0.5)
+  and uh2 = (0.5 *. 0.5) +. (-1.0 *. 1.0) in
+  let z1 = ((1.0 -. f1) *. 1.0) +. (f1 *. (Float.tanh h1 +. uh1))
+  and z2 = ((1.0 -. f2) *. -2.0) +. (f2 *. (Float.tanh h2 +. uh2)) in
+  check_close ~msg:"mgu step" ~tol:1e-12 (dynamics.D.dyn params ~k ~x ~u) (vec [ z1; z2 ]);
+  (* the same step under the ReLU activation: the paper's gate and candidate
+     with [phi = relu] *)
+  let relu x = Nx.maximum x (Nx.zeros_like x) in
+  let r = Float.max 0.0 in
+  let f1r = r ((0.5 *. 1.0) +. 0.3)
+  and f2r = r ((-0.5 *. -2.0) -. 0.1) in
+  let h1r = r (0.25 *. f1r)
+  and h2r = r ((0.25 *. f2r *. -2.0) +. 0.2) in
+  let z1r = ((1.0 -. f1r) *. 1.0) +. (f1r *. (h1r +. uh1))
+  and z2r = ((1.0 -. f2r) *. -2.0) +. (f2r *. (h2r +. uh2)) in
+  check_close
+    ~msg:"mgu relu step"
+    ~tol:1e-12
+    (D.Mgu.dyn ~phi:relu params ~k ~x ~u)
+    (vec [ z1r; z2r ]);
+  let u' = vec [ -0.25; 0.75 ] in
+  let z_u = dynamics.D.dyn params ~k ~x ~u in
+  let z_u' = dynamics.D.dyn params ~k ~x ~u:u' in
+  let z_zero = dynamics.D.dyn params ~k ~x ~u:(Nx.zeros dtype [| m |]) in
+  let z_sum = dynamics.D.dyn params ~k ~x ~u:(Nx.add u u') in
+  check_close
+    ~msg:"mgu input additivity"
+    ~tol:1e-12
+    (Nx.sub z_sum z_zero)
+    (Nx.add (Nx.sub z_u z_zero) (Nx.sub z_u' z_zero));
+  (* a rollout matches a hand-written loop, and a batched rollout its
+     members *)
+  let t_steps = 4 in
+  let us =
+    Nx.create dtype [| t_steps; m |] [| 0.5; -1.0; 0.25; 0.0; -0.75; 0.5; 0.0; 0.25 |]
+  in
+  let x0 = vec [ 0.3; -0.4 ] in
+  let z = D.integrate dynamics params ~x0 ~u:us in
+  require ~msg:"mgu rollout shape" Poly.(Nx.shape z = [| t_steps + 1; n |]);
+  let expected =
+    let xs = Array.create ~len:(t_steps + 1) x0 in
+    for k = 0 to t_steps - 1 do
+      xs.(k + 1)
+      <- dynamics.D.dyn params ~k:(scalar (Float.of_int k)) ~x:xs.(k) ~u:(Nx.get [ k ] us)
+    done;
+    Nx.stack ~axis:0 (Array.to_list xs)
+  in
+  check_close ~msg:"mgu rollout" ~tol:1e-12 z expected;
+  let batched =
+    D.integrate
+      dynamics
+      params
+      ~x0:(Nx.broadcast_to [| 2; n |] x0)
+      ~u:(Nx.broadcast_to [| t_steps; 2; m |] (Nx.unsqueeze ~axes:[ 1 ] us))
+  in
+  require
+    ~msg:"mgu batched rollout shape"
+    Poly.(Nx.shape batched = [| t_steps + 1; 2; n |]);
+  check_close ~msg:"mgu batched rollout member" ~tol:1e-10 (Nx.slice [ A; I 0 ] batched) z;
+  (* the dynamics is differentiable in every parameter *)
+  match
+    Rune.check_grads
+      (D.Mgu.structure ())
+      (fun p -> Nx.sum (D.integrate dynamics p ~x0 ~u:us))
+      params
+  with
+  | Ok () -> ()
+  | Error msg -> failwith ("mgu gradient check failed: " ^ msg)
+
 (* ──────────────────────────────────────────────────────────────────────────
    Encoder
    ────────────────────────────────────────────────────────────────────────── *)
@@ -759,6 +853,7 @@ let () =
        ; test "gaussian KL" test_kl
        ; test "likelihoods" test_likelihoods
        ; test "dynamics" test_dynamics
+       ; test "mgu dynamics" test_mgu
        ; test "encoder stationarity" test_encoder_stationarity
        ; test "elbo gradient check" test_elbo_gradient
        ; test "elbo terms" test_elbo_terms
