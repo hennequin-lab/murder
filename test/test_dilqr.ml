@@ -387,6 +387,24 @@ let test_fixed_solve_works () =
   and c_adaptive = item adaptive.cost in
   require ~msg:"fixed solve competitive" Float.(c_fixed < 1.05 *. c_adaptive)
 
+(* When every line-search trial is rejected — here because the trial steps
+   are NaN — the fixed solve must keep the current trajectory. The argmin of
+   an all-infinity score vector returns 0, so the solver must not select that
+   fallback trial. *)
+let test_fixed_all_rejected () =
+  let module P = Integrator in
+  let theta : Nx.float64_t P.Params.t = { mass = scalar64 1.0 } in
+  let x0 = vec64 [| 1.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let sol =
+    Dilqr.Solver.solve_fixed P.problem ~alphas:[ Float.nan ] ~iters:2 theta x0 us0
+  in
+  require ~msg:"all-rejected cost stays finite" (Float.is_finite (item sol.cost));
+  Array.iter sol.us ~f:(fun u ->
+    require
+      ~msg:"all-rejected keeps the current controls"
+      (Float.is_finite (Nx.item [ 0 ] u) && Float.( = ) (Nx.item [ 0 ] u) 0.0))
+
 (* JIT: the compiled fixed solve equals the eager one. *)
 let test_jit_solve () =
   let module P = Integrator in
@@ -616,6 +634,9 @@ let () =
            "implicit gradient matches finite differences"
            test_implicit_gradient_matches_fd
        ; test "fixed solve is competitive" test_fixed_solve_works
+       ; test
+           "fixed solve keeps the trajectory when all trials are rejected"
+           test_fixed_all_rejected
        ; test "jit solve matches eager" test_jit_solve
        ; test "jit grad matches eager" test_jit_grad
        ; test "batched fixed solve matches unbatched" test_batched_fixed_solve

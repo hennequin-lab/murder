@@ -295,10 +295,26 @@ let solve_fixed_unbatched
         (Nx.mul (Nx.mul_s (Nx.mul alphas_t alphas_t) (0.5 *. c1)) d2)
     in
     let accept = Nx.less_equal costs (Nx.add !cost (Nx.mul_s pred c1)) in
+    (* [any] is true only when a trial was accepted. The argmin of an
+       all-infinity score vector returns 0, so testing [sum w] instead would
+       select trial 0 — possibly a non-finite rejected rollout — whenever no
+       trial is accepted. Mask the rejected trials' costs and trajectories
+       before any weighted sum: a NaN rejected trial must not reach the
+       result, nor the backward pass through [pick]. *)
+    let any = Nx.any accept in
+    let costs = Nx.where accept costs (Nx.full_like costs 0.0) in
     let scores = Nx.where accept costs (Nx.full_like costs Float.infinity) in
     let best = Nx.cast Nx.int32 (Nx.argmin ~axis:0 scores) in
     let w = Nx.cast (Nx.dtype !cost) (Nx.equal (Nx.arange Nx.int32 0 n_alpha 1) best) in
-    let any = Nx.greater (Nx.sum w) (Nx.scalar_like !cost 0.5) in
+    let mask =
+      Nx.reshape
+        (Array.append
+           [| n_alpha |]
+           (Array.create ~len:(Array.length (Nx.shape us_all) - 1) 1))
+        accept
+    in
+    let us_all = Nx.where mask us_all (Nx.broadcast_to (Nx.shape us_all) !us) in
+    let xs_all = Nx.where mask xs_all (Nx.broadcast_to (Nx.shape xs_all) !xs) in
     let us_sel = pick ~w ~batched:us_all in
     let xs_sel = pick ~w ~batched:xs_all in
     let cost_sel = Nx.sum (Nx.mul costs w) in
