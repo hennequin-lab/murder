@@ -40,8 +40,11 @@ type ('w, 'p) t =
         [kl p ~mu ~space_factor ~time_factor] is the exact KL [KL(q ‖ p)] for
         the recognition distribution [q = N(mu, Σ_time ⊗ Σ_space)], where the
         two factors are the Cholesky factors [L] of the covariances
-        ([Σ = L Lᵀ], triangular, as {!Covariance.factor} returns). [None] asks
-        the ELBO to estimate the KL from samples. *)
+        ([Σ = L Lᵀ], triangular, as {!Covariance.factor} returns). {!Elbo}
+        estimates its KL from samples whatever the prior — that is what lets
+        [q] be any distribution a recognition can sample — so this remains
+        for diagnostics and for a caller with a Gaussian prior who wants the
+        exact value. *)
   }
 
 (** {1:gaussian Gaussian} *)

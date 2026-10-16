@@ -8,11 +8,11 @@
   types
   special
   covariance
+  initial
   prior
   likelihood
   dynamics
-  model
   recognition
-  encoder
+  model
   elbo
   ilqr_vae))
