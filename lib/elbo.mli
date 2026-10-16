@@ -34,7 +34,13 @@
     fixed number of iLQR iterations, and {!batch_loss_fixed} folds it over
     trials. A caller that already has a posterior — reused across several
     bounds, or built with the adaptive iLQR solve — passes it to {!compute}
-    directly. *)
+    directly.
+
+    {b The KL weight.} [beta] is a scalar tensor, so a warm-up (β from 0 to 1,
+    the recipe that keeps an LFADS-style posterior from collapsing onto the
+    prior before the decoder has learned anything) is a value of
+    {!Schedule.at} passed in as an argument of the compiled step rather than
+    a constant baked into it. *)
 
 open Types
 
@@ -54,13 +60,16 @@ type 'w t =
     The posterior is what {!Recognition.infer} returns; it carries the draws
     and [log q] at them, so all three terms come from the same draws and one
     encoder pass. It carries gradients, so composing {!compute} with an
-    inference differentiates the whole path. [beta] defaults to [1.].
+    inference differentiates the whole path. [beta] is a scalar tensor
+    (default: a one of the model's dtype), not a host float, so a training
+    step can take it as an argument and follow a {!Schedule} — or any other
+    per-step weight — without recompiling under {!Rune.jit}.
 
     Raises [Invalid_argument] if the posterior batch is empty. *)
 val compute
   :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t
   -> ('w, 'd, 'l, 'p, 'e, 'r) Model.params
-  -> ?beta:float
+  -> ?beta:'w value
   -> posterior:'w Recognition.posterior
   -> 'w value
   -> 'w t
@@ -76,7 +85,7 @@ val compute
 val loss
   :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t
   -> ('w, 'd, 'l, 'p, 'e, 'r) Model.params
-  -> ?beta:float
+  -> ?beta:'w value
   -> ?iters:int
   -> key:Nx.Rng.t
   -> n_samples:int
@@ -88,7 +97,7 @@ val loss
 val loss_fixed
   :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t
   -> ('w, 'd, 'l, 'p, 'e, 'r) Model.params
-  -> ?beta:float
+  -> ?beta:'w value
   -> iters:int
   -> key:Nx.Rng.t
   -> n_samples:int
@@ -105,7 +114,7 @@ val loss_fixed
 val batch_loss_fixed
   :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t
   -> ('w, 'd, 'l, 'p, 'e, 'r) Model.params
-  -> ?beta:float
+  -> ?beta:'w value
   -> key:Nx.Rng.t
   -> n_samples:int
   -> iters:int

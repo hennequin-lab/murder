@@ -12,6 +12,7 @@
   prior
   likelihood
   dynamics
+  schedule
   recognition
   model
   elbo

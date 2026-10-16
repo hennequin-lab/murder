@@ -69,8 +69,8 @@
 
     {b Everything else.} The pieces are exposed as their own modules —
     {!Types}, {!Covariance}, {!Initial}, {!Prior}, {!Likelihood},
-    {!Dynamics}, {!Recognition}, {!Model}, {!Elbo} — and the functions below
-    are the front page. There is no functor and no parameter framework: a
+    {!Dynamics}, {!Schedule}, {!Recognition}, {!Model}, {!Elbo} — and the
+    functions below are the front page. There is no functor and no parameter framework: a
     model is a value, its parameters are a value, and a transformation is a
     function. *)
 
@@ -90,6 +90,7 @@ module Initial = Initial
 module Prior = Prior
 module Likelihood = Likelihood
 module Dynamics = Dynamics
+module Schedule = Schedule
 module Recognition = Recognition
 module Model = Model
 module Elbo = Elbo
@@ -135,7 +136,7 @@ val log_prob
 val elbo
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
-  -> ?beta:float
+  -> ?beta:'w value
   -> posterior:'w Recognition.posterior
   -> 'w value
   -> 'w value
@@ -145,7 +146,7 @@ val elbo
 val loss
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
-  -> ?beta:float
+  -> ?beta:'w value
   -> ?iters:int
   -> key:Nx.Rng.t
   -> n_samples:int
@@ -157,7 +158,7 @@ val loss
 val loss_fixed
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
-  -> ?beta:float
+  -> ?beta:'w value
   -> iters:int
   -> key:Nx.Rng.t
   -> n_samples:int
@@ -169,7 +170,7 @@ val loss_fixed
 val batch_loss_fixed
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
-  -> ?beta:float
+  -> ?beta:'w value
   -> key:Nx.Rng.t
   -> n_samples:int
   -> iters:int

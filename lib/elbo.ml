@@ -48,10 +48,11 @@ let compute
       (type w d l p e r)
       (model : (w, d, l, p, e, r) Model.t)
       (params : (w, d, l, p, e, r) Model.params)
-      ?(beta = 1.0)
+      ?beta
       ~(posterior : w Recognition.posterior)
       data
   =
+  let beta = Option.value beta ~default:(Nx.scalar model.Model.dtype 1.0) in
   let t_steps = model.Model.n_steps in
   let n_samples = Array.get (Nx.shape posterior.Recognition.x0) 0 in
   if n_samples <= 0 then invalid_arg "Elbo.compute: the posterior batch is empty";
@@ -91,7 +92,7 @@ let compute
      Duvenaud (2017): the gradient reaches the recognition through the draws
      only. *)
   let kl_by_sample = Nx.sub posterior.Recognition.log_prob log_prior_by_sample in
-  let elbo_by_sample = Nx.sub log_likelihood_by_sample (Nx.mul_s kl_by_sample beta) in
+  let elbo_by_sample = Nx.sub log_likelihood_by_sample (Nx.mul kl_by_sample beta) in
   { elbo = mean_over_batch elbo_by_sample n_samples
   ; log_likelihood = mean_over_batch log_likelihood_by_sample n_samples
   ; kl = mean_over_batch kl_by_sample n_samples

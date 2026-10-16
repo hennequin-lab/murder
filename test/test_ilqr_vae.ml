@@ -31,6 +31,7 @@ module I = Ilqr_vae.Initial
 module P = Ilqr_vae.Prior
 module L = Ilqr_vae.Likelihood
 module D = Ilqr_vae.Dynamics
+module Schedule = Ilqr_vae.Schedule
 module R = Ilqr_vae.Recognition
 module Il = R.Iilqr
 module Lf = R.Lfads
@@ -1197,7 +1198,7 @@ let test_elbo_terms () =
   let loss = El.loss model params ~iters:12 ~key:(Nx.Rng.key 2) ~n_samples:4 o in
   check_close ~msg:"loss is the negated elbo" ~tol:1e-12 loss (Nx.neg terms.El.elbo);
   (* beta scales the KL term *)
-  let half = El.compute model params ~beta:0.5 ~posterior o in
+  let half = El.compute model params ~beta:(scalar 0.5) ~posterior o in
   check_close
     ~msg:"beta scales the KL"
     ~tol:1e-10
@@ -1225,6 +1226,108 @@ let test_elbo_terms () =
   require
     ~msg:"the covariance parameters are learned"
     Float.(max_abs grads.M.recognition.Il.time_cov.t > 1e-10)
+
+let test_kl_schedule () =
+  let n = 2
+  and m = 2
+  and t_steps = 3 in
+  let model, params = setup ~n ~m ~t_steps ~n_output:2 () in
+  let o = lfads_data ~t_steps ~n_output:2 () in
+  let sched = Schedule.linear_warmup ~steps:10 dtype in
+  check_close
+    ~msg:"warm-up starts at zero"
+    ~tol:1e-12
+    (scalar (Schedule.value sched 0))
+    (scalar 0.0);
+  check_close
+    ~msg:"warm-up midpoint"
+    ~tol:1e-12
+    (scalar (Schedule.value sched 5))
+    (scalar 0.5);
+  check_close
+    ~msg:"warm-up reaches one"
+    ~tol:1e-12
+    (scalar (Schedule.value sched 10))
+    (scalar 1.0);
+  check_close
+    ~msg:"warm-up stays at one"
+    ~tol:1e-12
+    (scalar (Schedule.value sched 99))
+    (scalar 1.0);
+  let delayed =
+    Schedule.linear_warmup ~start:0.1 ~stop:0.9 ~start_step:4 ~steps:2 dtype
+  in
+  check_close
+    ~msg:"delayed warm-up, before"
+    ~tol:1e-12
+    (scalar (Schedule.value delayed 4))
+    (scalar 0.1);
+  check_close
+    ~msg:"delayed warm-up, middle"
+    ~tol:1e-12
+    (scalar (Schedule.value delayed 5))
+    (scalar 0.5);
+  check_close
+    ~msg:"delayed warm-up, after"
+    ~tol:1e-12
+    (scalar (Schedule.value delayed 6))
+    (scalar 0.9);
+  check_close
+    ~msg:"constant schedule"
+    ~tol:1e-12
+    (scalar (Schedule.value (Schedule.constant 0.3 dtype) 7))
+    (scalar 0.3);
+  let custom = Schedule.custom (fun step -> Float.of_int step *. 0.25) dtype in
+  check_close
+    ~msg:"custom schedule"
+    ~tol:1e-12
+    (scalar (Schedule.value custom 3))
+    (scalar 0.75);
+  let beta = Schedule.at sched 5 in
+  require ~msg:"beta is a scalar tensor" Poly.(Nx.shape beta = [||]);
+  (* beta = 0 leaves the log likelihood alone *)
+  let posterior = M.infer model params ~iters:6 ~n_samples:3 ~key:(Nx.Rng.key 30) o in
+  let zero = El.compute model params ~beta:(Schedule.at sched 0) ~posterior o in
+  check_close
+    ~msg:"beta 0 gives the log likelihood"
+    ~tol:1e-12
+    zero.El.elbo
+    zero.El.log_likelihood;
+  (* the weight is an argument of the compiled step: it follows the schedule
+     without a retrace, and the compiled value matches the eager one *)
+  let structure = M.structure model in
+  let key = Nx.Rng.key 31 in
+  let compiled =
+    Rune.jit
+      Nx.Ptree.(structure @-> tensor @-> Nx.Rng.ptree @-> returns tensor)
+      (fun p beta k -> El.loss_fixed model p ~beta ~iters:6 ~key:k ~n_samples:3 o)
+  in
+  let eager beta =
+    Nx.item
+      []
+      (El.loss_fixed
+         model
+         params
+         ~beta:(Schedule.at sched beta)
+         ~iters:6
+         ~key
+         ~n_samples:3
+         o)
+  in
+  let via_jit step = Nx.item [] (compiled params (Schedule.at sched step) key) in
+  check_close
+    ~msg:"compiled step at beta = 0"
+    ~tol:1e-10
+    (scalar (via_jit 0))
+    (scalar (eager 0));
+  check_close
+    ~msg:"compiled step at beta = 1"
+    ~tol:1e-10
+    (scalar (via_jit 10))
+    (scalar (eager 10));
+  require
+    ~msg:"the weight changes the loss"
+    Float.(Float.abs (via_jit 0 -. via_jit 10) > 1e-6)
 
 let test_jit () =
   let n = 2
@@ -1477,6 +1580,7 @@ let () =
        ; test "lfads jit" test_lfads_jit
        ; test "elbo gradient check" test_elbo_gradient
        ; test "elbo terms" test_elbo_terms
+       ; test "kl schedule" test_kl_schedule
        ; test "jit round-trips" test_jit
        ; test "recognition swapping" test_swapping
        ; test "training smoke test" test_training_smoke

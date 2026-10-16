@@ -9,6 +9,7 @@ module Initial = Initial
 module Prior = Prior
 module Likelihood = Likelihood
 module Dynamics = Dynamics
+module Schedule = Schedule
 module Recognition = Recognition
 module Model = Model
 module Elbo = Elbo

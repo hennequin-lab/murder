@@ -81,6 +81,30 @@ KL from `log q` and the model's `log p` at the same reparameterized draws, with
 the density's parameters stopped so that the gradient is the path-derivative
 (sticking-the-landing) estimator of Roeder, Wu & Duvenaud (2017).
 
+## KL warm-up
+
+The bound is `log p(o | z) − β · KL(q ‖ p)`, and `β` is a scalar tensor
+argument of the ELBO, not a host float. A step compiled with `Rune.jit`
+therefore takes `β` as an argument and follows a schedule without
+recompiling — a `β` captured from the closure would be a constant of the
+compiled program:
+
+```ocaml
+let schedule = Schedule.linear_warmup ~steps:2000 Nx.float64 in
+let step =
+  Rune.jit
+    Nx.Ptree.(Model.structure model @-> tensor @-> Nx.Rng.ptree @-> returns tensor)
+    (fun params beta key ->
+       Elbo.loss_fixed model params ~beta ~key ~n_samples:16 ~iters:4 data)
+in
+let loss = step params (Schedule.at schedule i) key
+```
+
+Raising `β` from `0` to `1` over the first few thousand steps keeps an
+LFADS-style posterior from collapsing onto the prior before the decoder has
+learned to read the data; iLQR-VAE needs it less, because its control cost
+already contains the encoder prior.
+
 ## Status
 
 The library is **implemented**: the `.mli` files in `lib/` are the design, the
