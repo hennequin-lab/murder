@@ -3,15 +3,13 @@
  (libraries
   sofo
   nx
-  nx.metal
-  nx.cuda
-  nx.nv
-  nx.amd
   rune
   vega
   base
   jera
   nx.io
+  rig.amd.amdgpu
+  rig.nv.nvidia
   stdio
   bos
   cmdliner

@@ -265,7 +265,8 @@ type 'p step_info =
   ; dirs : 'p
   }
 
-let sketch_jit ?beam ?parallel ~k (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptree.t) loss =
+let sketch_jit ?beam ?parallel ~k placement (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptree.t) loss
+  =
   let module Out = struct
     type t =
       { loss : Nx.float64_t
@@ -289,6 +290,8 @@ let sketch_jit ?beam ?parallel ~k (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptree.t) loss
       sketch
   in
   fun ~key ~aux params ->
+    let aux = Nx.Ptree.place a placement aux in
+    let params = Nx.Ptree.place p placement params in
     let out, dirs = f key aux params in
     { loss = out.loss; c = out.c; ggn = out.ggn; gram = out.gram; dirs }
 
@@ -296,6 +299,8 @@ let sketch_jit ?beam ?parallel ~k (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptree.t) loss
    directions live. [z] and [lr] are host values that join them per call. *)
 let shift_by p =
   Rune.jit
+    ~beam:2
+    ~parallel:8
     Nx.Ptree.(p @-> p @-> tensor @-> tensor @-> returns p)
     (fun params dirs (z : Nx.float64_t) lr ->
        shift p ~lr params (apply p ~k:(Nx.shape z).(0) dirs z))
@@ -305,9 +310,15 @@ let shift_by p =
    key the next sketch is drawn from cannot drift apart. The solve runs on
    the host, which copies three k-sized tensors when the sketch ran on a
    GPU. *)
-let update ?(lr = 1.0) ?damping ?preconditioner p (st : state) params o =
+let update ?(lr = 1.0) ?damping ?preconditioner placement p (st : state) params o =
   let host = Nx.place Nx.Placement.host in
   let z =
     coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
   in
-  shift_by p params o.dirs z (Nx.scalar Nx.float64 lr), next st
+  ( shift_by
+      p
+      (Nx.Ptree.place p placement params)
+      (Nx.Ptree.place p placement o.dirs)
+      (Nx.place placement z)
+      (Nx.scalar Nx.float64 lr)
+  , next st )

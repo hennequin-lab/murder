@@ -5,6 +5,21 @@ open Jera
 let in_dir = Cmdargs.in_dir "-d"
 let print s = Stdio.print_endline (Sexp.to_string_hum s)
 
+let device =
+  let gpu =
+    match Cmdargs.get_string "-dev" with
+    | Some "amd" | Some "AMD" ->
+      Rig.open_ (Rig_amd_amdgpu.gpu 0) |> Stdlib.Result.get_ok |> Option.some
+    | Some "nv" | Some "NV" ->
+      Rig.open_ (Rig_nv_nvidia.gpu 0) |> Stdlib.Result.get_ok |> Option.some
+    | _ -> None
+  in
+  match gpu with
+  | Some g -> Device.make g
+  | None -> Device.host
+
+let placement = Placement.on device
+
 (* [Nx.relu] is gone from [Nx] and activations now live in [Kaun]; the example
    keeps its own rather than depend on [Kaun] for one line. *)
 let relu x =
@@ -21,11 +36,6 @@ let max_iter = 10_000
 let lr = 0.3
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Relative_from_top 1e-5
-
-(* [--device] lists the devices to try, in order, as [Devices.first] reads
-   them: "cpu" (the default), "cuda", "cuda:1", "cuda,cpu". The sketch
-   accumulates in float64, which Metal cannot compute. *)
-let device = Devices.first Cmdargs.(get_string "-device" |> default "cpu")
 
 (* Data generation: simulate the Lorenz attractor for a very long time using RK4,
    and chop the resulting sequence into [total_bs] chunks *)
@@ -139,6 +149,7 @@ let sketch_step =
     ~beam:2
     ~parallel:8
     ~k:n_tangents
+    placement
     Model.P.ptree
     data_ptree
     objective
@@ -151,7 +162,7 @@ let rec loop_sofo ~i ~out (params : Model.P.t) (state : Sofo.Optim.state) =
     let data = minibatch key_data bs in
     let sketch = sketch_step ~key:state.key ~aux:data params in
     let params, state =
-      Sofo.Optim.update ~lr ~damping Model.P.ptree state params sketch
+      Sofo.Optim.update ~lr ~damping placement Model.P.ptree state params sketch
     in
     let loss = item [] sketch.loss in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;

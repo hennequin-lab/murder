@@ -8,10 +8,20 @@ let lr = 0.1
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Absolute 0.
 
-(* [--device] lists the devices to try, in order, as [Devices.first] reads
-   them: "cpu" (the default), "cuda", "cuda:1", "cuda,cpu". The sketch
-   accumulates in float64, which Metal cannot compute. *)
-let device = Devices.first Cmdargs.(get_string "--device" |> default "cpu")
+let device =
+  let gpu =
+    match Cmdargs.get_string "-dev" with
+    | Some "amd" | Some "AMD" ->
+      Rig.open_ (Rig_amd_amdgpu.gpu 0) |> Stdlib.Result.get_ok |> Option.some
+    | Some "nv" | Some "NV" ->
+      Rig.open_ (Rig_nv_nvidia.gpu 0) |> Stdlib.Result.get_ok |> Option.some
+    | _ -> None
+  in
+  match gpu with
+  | Some g -> Device.make g
+  | None -> Device.host
+
+let placement = Placement.on device
 
 module Model = struct
   module P = struct
@@ -27,8 +37,7 @@ module Model = struct
     x *@ w
 end
 
-let student =
-  Model.init ~d_in ~d_out |> Nx.Ptree.place Model.P.ptree (Nx.Placement.on device)
+let student = Model.init ~d_in ~d_out |> Nx.Ptree.place Model.P.ptree placement
 
 let minibatch =
   let open Infix in
@@ -57,7 +66,8 @@ let objective params key =
 
 (* The sketch compiles for the device the parameters are placed on; the
    keys are host values that join them on each call. *)
-let sketch_step = Sofo.Optim.sketch_jit ~k:n_tangents Model.P.ptree Rng.ptree objective
+let sketch_step =
+  Sofo.Optim.sketch_jit ~k:n_tangents placement Model.P.ptree Rng.ptree objective
 
 let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
@@ -65,7 +75,9 @@ let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
   else (
     let aux = Rng.fold_in state.key 0 in
     let out = sketch_step ~key:state.key ~aux params in
-    let params, state = Sofo.Optim.update ~lr ~damping Model.P.ptree state params out in
+    let params, state =
+      Sofo.Optim.update ~lr ~damping placement Model.P.ptree state params out
+    in
     let loss = item [] out.loss in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
     loop ~i:(i + 1) params state)

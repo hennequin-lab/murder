@@ -436,6 +436,7 @@ module Optim : sig
     :  ?beam:int
     -> ?parallel:int
     -> k:int
+    -> Nx.Placement.t
     -> 'p Nx.Ptree.t
     -> 'aux Nx.Ptree.t
     -> ('p -> 'aux -> ('a, 'b) Nx.t)
@@ -469,6 +470,7 @@ module Optim : sig
     :  ?lr:float
     -> ?damping:damping
     -> ?preconditioner:preconditioner
+    -> Nx.Placement.t
     -> 'p Nx.Ptree.t
     -> state
     -> 'p
