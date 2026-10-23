@@ -1,0 +1,12 @@
+(library
+ (name geom_viz)
+ (libraries
+  geom
+  nx
+  hugin.vg
+  hugin.vg.raster
+  hugin.vg.svg
+  hugin.vg.pdf
+  hugin.gg
+  hugin.font
+  unix))

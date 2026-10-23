@@ -1,0 +1,24 @@
+(executable
+ (name static)
+ (modules static)
+ (libraries geom geom_viz nx hugin.gg))
+
+(executable
+ (name movie)
+ (modules movie)
+ (libraries geom geom_viz nx hugin.gg))
+
+(executable
+ (name zoo)
+ (modules zoo)
+ (libraries geom geom_viz nx hugin.gg))
+
+(executable
+ (name conformal)
+ (modules conformal)
+ (libraries geom geom_viz nx hugin.gg))
+
+(executable
+ (name arm)
+ (modules arm)
+ (libraries geom geom_viz nx hugin.gg))
