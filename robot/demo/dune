@@ -1,0 +1,4 @@
+(executable
+ (name tour)
+ (modules tour)
+ (libraries geom geom_robot nx rune))

@@ -1,0 +1,4 @@
+(tests
+ (names test_robot)
+ (modules test_robot)
+ (libraries geom geom_robot nx rune windtrap))

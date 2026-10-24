@@ -1,0 +1,7 @@
+(library
+ (name geom_robot)
+ (libraries geom nx rune)
+ (instrumentation
+  (backend ppx_windtrap.coverage))
+ (instrumentation
+  (backend ppx_windtrap.mutate)))
