@@ -136,6 +136,22 @@ val of_quaternion : Nx.float32_t -> t
     scalar part is non-negative. *)
 val to_quaternion : t -> Nx.float32_t
 
+(** [translation m] is the vector [v] of shape [batch_shape m @ [|3|]] that is
+    the image of the origin under [m]: the position of the frame [m] describes,
+    in the frame it acts on. It is the inverse of {!translate} in the sense that
+    [translation (translate v)] is [v].
+
+    The representative of the rotor is not sign-normalised, so the translation
+    extracted is well defined whatever sign [m] carries. *)
+val translation : t -> Nx.float32_t
+
+(** [rotation m] is the 3 by 3 rotation matrix of [m], in row-major order, of
+    shape [batch_shape m @ [|3; 3|]]. It acts on column vectors, is the
+    top-left block of {!adjoint}, and agrees with the Euclidean action of
+    [m] on directions: for a motor [m] and a vector [x], [rotation m * x] is
+    the direction [m] maps [x] to. *)
+val rotation : t -> Nx.float32_t
+
 (** {1:exponential Exponential and logarithm} *)
 
 (** [exp twist] is the exponential of a twist [twist = (omega, v)], with angular

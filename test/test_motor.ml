@@ -378,6 +378,52 @@ let test_slerp () =
   let batch = M.slerp m0 m1 alpha in
   equal ~msg:"slerp accepts a batch of parameters" (array int) [| 2; 8 |] (M.shape batch)
 
+(* Components *)
+
+let test_components () =
+  let v = vec3 1. (-2.) 0.5 in
+  equal
+    ~msg:"translation of a translation"
+    (array (float 1e-6))
+    (Nx.to_array v)
+    (Nx.to_array (M.translation (translation v)));
+  equal
+    ~msg:"translation of a rotation"
+    (array (float 1e-6))
+    [| 0.; 0.; 0. |]
+    (Nx.to_array (M.translation (rot ~axis:z_axis 0.7)));
+  let mat = rotation_matrix ~axis:(vec3 1. 2. 3.) ~angle:0.9 in
+  equal_tensor ~msg:"rotation of a rotation matrix" mat (M.rotation (M.of_rotation mat));
+  let a = M.mul (translation (vec3 0.5 (-0.2) 0.3)) (rot ~axis:z_axis 0.7)
+  and b = M.mul (translation (vec3 (-0.1) 0.4 0.2)) (rot ~axis:x_axis (-1.1)) in
+  equal_tensor
+    ~msg:"rotation is a homomorphism"
+    (Nx.matmul (M.rotation a) (M.rotation b))
+    (M.rotation (M.mul a b));
+  (* The translation of a composition is [t + R u]: the frame is carried by its
+     own rotation of [u] on top of its position. *)
+  let u = vec3 0.3 (-0.4) 0.2 in
+  let expected =
+    Nx.add
+      (M.translation a)
+      (Nx.reshape [| 3 |] (Nx.matmul (M.rotation a) (Nx.reshape [| 3; 1 |] u)))
+  in
+  equal_tensor
+    ~msg:"translation composes through the rotation"
+    expected
+    (M.translation (M.mul a (translation u)));
+  let batch = Nx.stack ~axis:0 [ a; b ] in
+  equal
+    ~msg:"a batch of translations"
+    (array int)
+    [| 2; 3 |]
+    (Nx.shape (M.translation batch));
+  equal
+    ~msg:"a batch of rotations"
+    (array int)
+    [| 2; 3; 3 |]
+    (Nx.shape (M.rotation batch))
+
 (* Adjoint *)
 
 let test_adjoint () =
@@ -492,6 +538,7 @@ let () =
            ; test "translations and rotations" test_motion_constructors
            ; test "quaternion constructors" test_quaternions
            ; test "rotation matrices" test_rotation_matrices
+           ; test "translation and rotation components" test_components
            ]
        ; group
            "algebra"

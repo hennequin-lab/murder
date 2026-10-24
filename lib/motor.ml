@@ -371,6 +371,9 @@ let rotation_matrix q =
   let rows = [ row r00 r01 r02; row r10 r11 r12; row r20 r21 r22 ] in
   Nx.stack ~axis:(Array.length (Nx.shape (List.hd rows)) - 1) rows
 
+let translation m = translation_of_motor m
+let rotation m = rotation_matrix (to_quaternion m)
+
 let adjoint m =
   let q = to_quaternion m in
   let r = rotation_matrix q in
