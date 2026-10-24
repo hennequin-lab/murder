@@ -29,8 +29,8 @@ Outputs:
   versors (`Cga.dilator`, `Cga.transversion`) and re-extract the transformed
   CGA objects, unlike the rigid motor demos.
 
-`geom-viz` is still an experimental surface without `.mli` files; the main
-`geom` library has complete `.mli` files.
+`geom-viz` has complete `.mli` files and is still an experimental surface; the
+main `geom` library is the stable part to build geometry on.
 
 The demos use the `geom` library directly; `geom-viz` is a separate library in
 `viz/lib/`.

@@ -1,14 +1,14 @@
 # geom-viz — rendering geometric objects and motor movies
 
-Status: **V1–V3 partially implemented**. `viz/lib/` contains the first
-`geom_viz` library (primitives, pinhole camera, painter's-algorithm drawing,
-PNG/SVG/PDF frames, `ffmpeg` movie export, CGA-to-primitive adapters) and
-`viz/demo/` contains a static scene, a two-second motor animation, a CGA object
-zoo, a 6-DOF motor chain and dilation/transversion movies. The core library now
-implements the algebra, CGA objects including line/circle extractors and the
-conformal generators, motors including log/slerp/adjoint, and PGA/E3 basics;
-the PGA camera meet path, near-plane clipping, labels and sphere shading
-remain.
+Status: **V1–V2 implemented; V3 largely implemented; V4 partial**. `viz/lib/`
+contains the `geom_viz` library with complete `.mli` interfaces: primitives,
+the PGA camera (view motor, image plane, view rays and meet projection),
+painter's-algorithm drawing, PNG/SVG/PDF frames, `ffmpeg` movie export, and
+CGA/PGA-to-primitive adapters. `viz/demo/` contains a static scene, a
+two-second motor animation, a CGA object zoo, a 6-DOF motor chain and
+dilation/transversion movies. Near-plane clipping, labels and sphere shading
+remain. The camera and adapter tests live in `viz/test/`; run them with
+`dune runtest viz/test`.
 
 The mathematics is in [`doc/notes.typ`](doc/notes.typ); the core design is in
 [`PLAN.md`](PLAN.md). This document decides the rendering stack, the scene
@@ -144,7 +144,8 @@ The camera is a PGA construction:
   gives a point on the image plane; its `x` and `y` are the projected
   coordinates, and the meet implicitly performs the perspective division;
 - a world point is culled when its camera-space `z >= -near` (behind the near
-  plane), and clipped for segments and polygons;
+  plane); clipping of segments and polygons that cross the near plane is still
+  a remaining V4 item;
 - the page is `y`-down (Hugin's convention), so the projected `y` is flipped
   when mapping to page coordinates: `screen_y = h/2 - y_img`.
 
@@ -155,9 +156,10 @@ x_img = f * x_cam / (-z_cam)
 y_img = f * y_cam / (-z_cam)
 ```
 
-is the fast path; tests assert that the two agree. This is the concrete sense
-in which the visualizer "uses projective GA": the camera is a PGA point, plane
-and line construction, not an ad-hoc 4×4 matrix. In code (provisional names):
+is the fast path; `viz/test/test_camera.ml` asserts that the two agree across
+the frustum. This is the concrete sense in which the visualizer "uses
+projective GA": the camera is a PGA point, plane and line construction, not an
+ad-hoc 4×4 matrix. In code:
 
 ```ocaml
 let eye = Pga.point (vec3 0. 0. 0.)              (* camera-space origin *)
@@ -171,14 +173,13 @@ In PGA the meet of a line (2-blade) and a plane (1-vector) is a point
 (trivector), so the projection is one meet. In CGA the same line/plane
 intersection goes through the point-pair/dual construction; that is why the
 camera lives on the PGA side while the round objects live on the CGA side. The
-view transform itself is a `Motor`, shared with the animation layer. The exact
-sign conventions will be moved into `doc/notes.typ` §7 once they are pinned by
-tests; until then this section is the provisional source of truth for the
-camera.
+view transform itself is a `Motor`, shared with the animation layer. The
+implemented interface in `viz/lib/camera.mli` is the source of truth for the
+sign conventions; the constructions above are pinned by the camera tests.
 
 Orthographic mode is the same camera with `x_img = s * x_cam`,
-`y_img = s * y_cam` and no division; it is useful for textbook figures and
-exact GA diagrams.
+`y_img = s * y_cam` and no division, where `s` is `ortho_scale` (default
+`height / 4`); it is useful for textbook figures and exact GA diagrams.
 
 Depth for sorting is `-z_cam` (positive in front). The camera also exposes
 `ray : Camera.t -> x:float -> y:float -> Pga.t`, the world-space line through a
@@ -261,46 +262,53 @@ gradient primitive needed).
 ```
                     geom (Cga, Pga, Motor)
                               │
-             ┌────────────────┴────────────────┐
-             │                                 │
-        Geom_viz.Primitive              Geom_viz.Cga / Pga
-             │                                 │
-        Geom_viz.Camera (PGA) ────────► Geom_viz.Project
-             │                                 │
-        Geom_viz.Scene ──► Geom_viz.Draw ──► Geom_viz.Frame
-             │                                 │
-        Geom_viz.Anim                     Hugin_vg.Renderable
-             │                                 │
-        Geom_viz.Movie            hugin.vg.raster / svg / pdf
+                       Geom_viz.Primitive
+                  (p3, t, CGA/PGA adapters)
+                              │
+                    Geom_viz.Camera (PGA)
+               view motor, image plane, rays, meet
+                              │
+        Geom_viz.Draw (styles, entities, scene, projection, painter)
+                              │
+             Geom_viz.Frame ──► Hugin_vg.Renderable
+                              │       │
+                              │       ├── hugin.vg.raster (RGBA, PNG)
+                              │       └── hugin.vg.svg / pdf
+                              │
+                    Geom_viz.Movie ──► ffmpeg
 ```
 
 | Module | Role |
 |---|---|
-| `Primitive` | neutral 3D primitives, `p3`, rigid transforms by a motor |
-| `Camera` | eye/target/up, view motor, image plane, PGA projection, rays, perspective/orthographic |
-| `Project` | clipping and projection of primitives, depth keys, screen coordinates |
-| `Style` / `Theme` | colours, stroke widths, dashes, opacity, palettes |
-| `Scene` | entities (primitive + style + layer + time-dependent motor), camera, background |
-| `Draw` | evaluate a scene at a time, project, depth-sort, build a `Hugin_vg.Picture.t` |
+| `Primitive` | neutral 3D primitives, `p3`, rigid transforms by a motor, CGA/PGA adapters |
+| `Camera` | eye/target/up, view motor, eye point, image plane, PGA projection, view rays, perspective/orthographic |
+| `Draw` | styles, entities (primitive + style + layer + time-dependent motion), scenes, projection, depth sort, `Hugin_vg.Picture.t` |
 | `Frame` | page size + density; RGBA, PNG, SVG, PDF output |
-| `Anim` | timeline, keyframes, ScLERP, sampling |
-| `Movie` | frame sequence, `ffmpeg` invocation, MP4/GIF |
-| `Cga` | `Cga.t` → `Primitive.t` adapters (point, sphere, plane, line, circle, point pair) and motor frames |
-| `Pga` | `Pga.t` → `Primitive.t` adapters and motor frames |
+| `Movie` | frame sequence, `ffmpeg` invocation, MP4 |
+
+Clipping and a separate animation module (`Anim`, with keyframes and
+timelines) are still planned. ScLERP is available today as `Motor.slerp`, and
+the demos animate by evaluating a scene at each time; there is no separate
+timeline type.
 
 The package is `geom-viz` (library `geom_viz`), separate from `geom`, so the
 core algebra does not depend on Hugin. `geom-viz` depends on `geom`, `hugin.vg`,
 `hugin.vg.raster`, `hugin.vg.svg`, `hugin.vg.pdf`, `hugin.gg`, `hugin.font` and
-`nx` (transitively `nx.io` for PNG). The movie encoder uses `bos` or `unix`
-and the external `ffmpeg`; it can live in an optional `geom-viz.movie`
-sublibrary so that the pure frame renderer has no process dependency.
+`nx` (transitively `nx.io` for PNG). The movie encoder uses the `unix`
+library and the external `ffmpeg`. It is part of the same `geom_viz` library
+today; an optional `geom-viz.movie` split would keep the pure frame renderer
+free of the process dependency.
 
-## 5. API sketch (provisional)
+## 5. API sketch
+
+The implemented `.mli` files in `viz/lib/` are the source of truth. The
+primitive and camera sections below match the current interfaces; the style,
+scene and animation sections record the intended shape, and today those types
+live in `draw.mli` and `movie.mli` rather than in separate modules.
 
 ```ocaml
 (* primitive.ml *)
 type p3 = { x : float; y : float; z : float }
-type box3 = { min : p3; max : p3 }
 type t =
   | Point of p3
   | Segment of p3 * p3
@@ -312,31 +320,31 @@ type t =
   | Frame of { origin : p3; x : p3; y : p3; z : p3 }
 
 val transform : Motor.t -> t -> t
-val bounds : t -> box3
+val plane_patch : normal:p3 -> offset:float -> p3 list
 val of_cga_point : Cga.t -> t
 val of_cga_sphere : Cga.t -> t
 val of_cga_plane : Cga.t -> t
-val of_cga_line : Cga.t -> t
+val of_cga_line : ?extent:float -> Cga.t -> t
 val of_cga_circle : Cga.t -> t
 val of_pga_point : Pga.t -> t
 val of_pga_plane : Pga.t -> t
-val of_pga_line : Pga.t -> t
+val of_pga_line : ?extent:float -> Pga.t -> t
 
 (* camera.ml *)
 type t
 val create :
-  ?orthographic:bool ->
+  ?ortho:bool -> ?near:float -> ?far:float -> ?ortho_scale:float ->
   eye:p3 -> target:p3 -> up:p3 ->
-  fov_y:float -> near:float -> far:float ->
-  width:float -> height:float ->
+  fov_y:float -> width:float -> height:float -> unit ->
   t
 val view : t -> Motor.t
+val eye_point : t -> Pga.t
 val image_plane : t -> Pga.t
-val project : t -> p3 -> (float * float * float) option
-  (* page x, page y, depth; None if behind the near plane *)
 val ray : t -> x:float -> y:float -> Pga.t
-val orbit : t -> yaw:float -> pitch:float -> distance:float -> t
-val look_at : p3 -> p3 -> p3 -> t
+val project : t -> p3 -> (float * float * float) option
+  (* page x, page y, depth; None if outside (near, far) *)
+val project_image : t -> p3 -> (float * float * float) option
+val project_pinhole : t -> p3 -> (float * float * float) option
 
 (* style.ml *)
 type t = {
@@ -509,25 +517,25 @@ so labels sit naturally on the page.
 **V0 — plan (this document).** Confirm Hugin_vg, the PGA camera and the
 movie pipeline. A throwaway probe has already validated the rendering path.
 
-**V1 — static frames.** `Primitive`, `Camera` (PGA + pinhole fast path),
-`Project` for points/segments/polygons, `Style`, `Frame` (PNG/SVG/PDF), a
-static scene example. Tests: projection identities, near clipping, output
-dimensions, SVG/PDF non-empty. If `Pga` is not ready, the pinhole path unblocks
-V1; the PGA meet is the reference added as soon as `Pga` lands.
+**V1 — static frames (done).** `Primitive`, `Camera` (PGA meet plus the
+closed-form pinhole fast path), styles, entities, scenes and `Frame`
+(PNG/SVG/PDF). Projection identities and the meet/pinhole agreement are
+tested; near clipping is still a V4 item.
 
-**V2 — GA objects.** CGA/PGA adapters for points, spheres, planes, lines,
-circles, point pairs; sphere silhouettes; plane patches/grids; motor frames;
-depth sorting; a static "object zoo" example (a point, sphere, plane, line and
-circle in one scene).
+**V2 — GA objects (done).** CGA/PGA adapters for points, spheres, planes and
+lines, plus circles for CGA; sphere silhouettes; plane patches/grids; motor
+frames; depth sorting; a static "object zoo" example (a point, sphere, plane,
+line and circle in one scene).
 
-**V3 — animation and movies.** `Anim` keyframes/ScLERP; `Movie` PNG sequence
-and MP4; first movies: a rotating/translating sphere, a moving motor frame with
-a trail, a screw interpolation. A 6-DOF arm example comes once the core motor
-chain is stable.
+**V3 — animation and movies (largely done).** `Movie` PNG sequence and MP4;
+animated scenes for a rotating/translating sphere, a moving motor frame, a
+conformal object zoo and a 6-DOF arm. ScLERP is `Motor.slerp`; a separate
+`Anim` keyframe/timeline module is not yet split out.
 
-**V4 — polish.** Labels and arrows, trails, orthographic camera, camera orbit,
+**V4 — polish.** Near-plane clipping, labels and arrows, trails, camera orbit,
 themes, sphere shading via image/clip, GIF encoding, notebook RGBA previews,
-publication SVG/PDF.
+publication SVG/PDF. The orthographic camera and label overlays are already in
+use.
 
 **V5 — optional.** Interactive SDL preview; parallel frame rendering; a
 z-buffer or GA ray tracer for correct occlusion; a Cairo2 backend if gradients
@@ -538,7 +546,8 @@ or raster speed demand it.
 - **Projection**: a point on the optical axis projects to the page centre; an
   off-axis point matches the pinhole formula; a point behind the camera is
   rejected; orthographic mode scales without division; the PGA meet and the
-  closed-form projection agree to 1e-9.
+  closed-form projection agree to float32 page precision (about 1e-2 page
+  points in the worst case near the eye, much less for typical points).
 - **Clipping**: a segment crossing the near plane is cut at the right point; a
   polygon with vertices behind the camera is clipped; a circle crossing the
   near plane does not produce a wrap-around segment.
@@ -563,9 +572,9 @@ or raster speed demand it.
 
 1. **Package split**: separate `geom-viz` package (recommended) or a `geom.viz`
    sublibrary in the `geom` package? The latter makes `geom` depend on Hugin.
-2. **Camera math**: keep the PGA meet as the reference and the pinhole formula
-   as the fast path, or only one? Recommendation: both, with an equivalence
-   test.
+2. **Camera math** (resolved): both. The PGA meet is the reference and the
+   pinhole formula is the fast path; `viz/test/test_camera.ml` asserts
+   equivalence across the frustum.
 3. **Primitive layer vs. raw GA objects**: neutral primitives (recommended)
    keep the renderer model-agnostic; raw CGA/PGA objects would avoid adapters
    but couple the renderer to the algebra.
@@ -579,8 +588,9 @@ or raster speed demand it.
    helper? Defer to V4.
 8. **Hidden surfaces**: painter's algorithm is enough? If intersecting planes
    look wrong, add a z-buffer or a ray-traced backend later.
-9. **Coordinate conventions**: confirm `+y` up in the camera and `y`-down on
-   the page; document the flip in one place.
+9. **Coordinate conventions** (resolved): `+y` is up in camera and image
+   coordinates, `y` is down on the page; `viz/lib/camera.mli` documents the
+   mapping in one place, and the camera tests pin it.
 10. **Core API dependencies**: `Motor.of_rotation` (or `of_quaternion`), and
     the CGA/PGA extractors (`sphere_center`, `sphere_radius`, `plane_normal`,
     `plane_offset`, `line_direction`, `circle_center`, `circle_radius`,

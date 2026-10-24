@@ -1,11 +1,11 @@
 # geom — geometric algebra for robotics on the raven stack
 
-Status: **M1 complete, M2–M4/V1–V3 in progress**. The full `.mli` surface is in
-`geom/lib/` and compiles; the core algebra, CGA basics, motors and PGA/E3
-basics are implemented and tested, and `geom-viz` renders a static Hugin frame
-and a motor animation. The mathematics is in [`doc/notes.typ`](doc/notes.typ)
-(compiled to `doc/notes.pdf`); the visualization plan is in
-[`VIZ.md`](VIZ.md).
+Status: **M1 complete, M2–M4/V1–V3 largely implemented, V4 partial**. The full
+`.mli` surface is in `geom/lib/`, and `geom/viz/lib` has complete `.mli`
+interfaces too. The core algebra, CGA basics, motors and PGA/E3 basics are
+implemented and tested; `geom-viz` renders static Hugin frames and movies with
+a PGA camera. The mathematics is in [`doc/notes.typ`](doc/notes.typ) (compiled
+to `doc/notes.pdf`); the visualization plan is in [`VIZ.md`](VIZ.md).
 
 ## Current implementation state
 
@@ -18,15 +18,16 @@ and a motor animation. The mathematics is in [`doc/notes.typ`](doc/notes.typ)
 | `Pga` | points, planes, lines, incidence, meet/join, line extractors, normalization, motor bridge | more extraction tests |
 | `E3` | vectors, rotors, rotor action | more tests |
 | `Versor` | `exp_simple`, general `exp` (scaling + Taylor), simple-versor `log`, `slerp` | general even-versor log, accuracy study |
-| `geom-viz` | primitives, pinhole camera, painter's-algorithm drawing, PNG/SVG/PDF frames, `ffmpeg` movie export | PGA camera meet path, near-plane clipping, labels, sphere shading |
-| Demos | `static`, `movie`, `zoo`, `arm` (6-DOF chain), `conformal` (dilation/transversion) | labels, camera meet path, more robots |
-| Tests | algebra, CGA, PGA/E3, motor log/slerp/adjoint, versor exp/log/slerp (`dune runtest`) | golden frames, movie checks |
+| `geom-viz` | primitives, PGA camera (view motor, eye point, image plane, view rays, meet projection) with a closed-form pinhole fast path, painter's-algorithm drawing, PNG/SVG/PDF frames, `ffmpeg` movie export, CGA/PGA adapters | near-plane clipping, labels, sphere shading |
+| Demos | `static`, `movie`, `zoo`, `arm` (6-DOF chain), `conformal` (dilation/transversion) | labels, more robots |
+| Tests | algebra, CGA, PGA/E3, motor log/slerp/adjoint, versor exp/log/slerp, viz camera and PGA adapters (`dune runtest`; `dune runtest viz/test`) | golden frames, movie checks |
 
-The pinhole camera is the fast path of the planned PGA camera; the PGA
-meet/reference path is still to be added. The main-library stubs named in the
-earlier milestones are now implemented; the remaining limitations are the
-general even-versor (non-simple) logarithm and viz polish (near clipping,
-labels, camera meet path).
+The camera is a PGA construction: a view motor, an eye point, an image plane
+and a line/plane meet for every perspective projection. The closed-form
+pinhole evaluation is retained as `Camera.project_pinhole` and is tested
+against the meet. The main-library stubs named in the earlier milestones are
+implemented; the remaining limitations are the general even-versor (non-simple)
+logarithm and viz polish (near clipping, labels, shading).
 
 This document records the decisions, the alternatives that were rejected, and
 the order in which the library will be built. It is a working document: update

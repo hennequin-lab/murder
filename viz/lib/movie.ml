@@ -10,9 +10,14 @@ type spec =
   ; density : float
   }
 
-let frame_count spec = max 1 (int_of_float (spec.duration *. float_of_int spec.fps))
+let check_fps spec = if spec.fps <= 0 then invalid_arg "Movie: fps must be positive"
+
+let frame_count spec =
+  check_fps spec;
+  max 1 (int_of_float (spec.duration *. float_of_int spec.fps))
 
 let frame_at spec i =
+  check_fps spec;
   let time = float_of_int i /. float_of_int spec.fps in
   let picture = Draw.picture_at spec.scene ~time in
   let camera = Draw.camera spec.scene in

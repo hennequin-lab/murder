@@ -774,8 +774,11 @@ outputs.
 - **`meet` is not universal.** It is the outer product for constraint blades.
   Points are direct objects; mixing them with constraints needs the named
   constructors. See the note in `Cga.meet`.
-- **Visualisation.** `geom-viz` has no `.mli`, uses a painter's algorithm, and
-  has no near-plane clipping, shading or labels. See its README.
+- **Visualisation.** `geom-viz` has complete `.mli` interfaces but still uses
+  a painter's algorithm and has no near-plane clipping, shading or labels.
+  Its camera is a PGA construction (view motor, image plane, view rays and a
+  line/plane meet) with an equivalent closed-form pinhole fast path. See its
+  README.
 - **Not on opam.** The package is developed in-tree; the interface is not
   frozen.
 

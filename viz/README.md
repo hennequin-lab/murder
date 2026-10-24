@@ -11,10 +11,9 @@ package does not depend on a graphics stack. The renderer is
 (`hugin.vg`, `hugin.vg.raster`, `hugin.vg.svg`, `hugin.vg.pdf`, `hugin.gg`,
 `hugin.font`).
 
-> **Status.** Experimental. The library has no `.mli` files and its API can
-> change without notice. It uses a painter's algorithm, has no near-plane
-> clipping, no shading and no text labels. The core `geom` library has complete
-> interfaces.
+> **Status.** Experimental. The library has complete `.mli` interfaces, but its
+> API can still change without notice. It uses a painter's algorithm, has no
+> near-plane clipping, no shading and no text labels.
 
 ![A conformal object zoo rendered by geom-viz: a plane, a sphere, a line and a
 circle defined by points.](../doc/figures/cga-objects.svg)
@@ -84,9 +83,9 @@ triad; its three axes are drawn red, green and blue.
 The renderer consumes only this type. The algebra enters through the adapters
 below.
 
-### 2. A camera
+### 2. A camera with a PGA image plane
 
-`Camera.create` builds a pinhole camera:
+`Camera.create` builds a look-at camera:
 
 ```ocaml
 let camera =
@@ -101,14 +100,39 @@ let camera =
 ```
 
 The camera has a perspective mode by default and an orthographic mode with
-`~ortho:true`. `Camera.project camera p` returns `Some (x, y, depth)` in screen
+`~ortho:true`. `Camera.project camera p` returns `Some (x, y, depth)` in page
 coordinates (y down, origin at the top-left) or `None` when the point is behind
-the camera or beyond `~near`/`~far`. Screen units are points; the page is
+the near plane or beyond `~far`. Page units are points; the page is
 `width × height` points.
 
-The camera is a classic look-at camera, not a projective-geometry object. A
-future version may build the image plane and view rays with `Pga`; the current
-path is the fast pinhole projection.
+The projection is a PGA construction, not a 4×4 matrix:
+
+- `Camera.view camera` is the `Motor.t` that carries world points into camera
+  coordinates;
+- `Camera.eye_point camera` is the world-space eye as a `Pga.t` point;
+- `Camera.image_plane camera` is the world-space image plane `z = -focal` as a
+  `Pga.t` plane;
+- a perspective projection is the meet of the view ray (the line through the
+  eye and the world point) with the image plane. `Pga.point_coords` of the
+  meet is the image coordinate; the meet performs the perspective division.
+
+```ocaml
+let eye = Camera.eye_point camera             (* a Pga point *)
+let plane = Camera.image_plane camera         (* a Pga plane *)
+let ray = Camera.ray camera ~x:400. ~y:300.   (* a Pga line through the page *)
+```
+
+`Camera.ray` takes page coordinates and returns the world-space view line
+through that pixel; `Pga.line_direction` of the line points from the eye into
+the scene. It is the hook for picking and for a future ray-traced backend.
+
+`Camera.project_pinhole` is the closed-form evaluation of the same projection:
+`x_img = f x_cam / (-z_cam)` and `y_img = f y_cam / (-z_cam)`. It avoids the
+multivector allocations and is the path for throughput-critical loops; the
+test suite compares it with `Camera.project` across the frustum. The renderer
+uses the reference PGA path. An orthographic camera keeps the same eye, view
+motor and image plane, but scales camera coordinates by `~ortho_scale`
+(default `height / 4`).
 
 ### 3. Entities and styles
 
@@ -255,23 +279,28 @@ parameters from the multivector:
 | `P.of_cga_plane` | `Cga.plane` | `Cga.plane_normal`, `Cga.plane_offset` |
 | `P.of_cga_line ?extent` | `Cga.line` | direction and moment; the closest point is `d × m` |
 | `P.of_cga_circle` | `Cga.circle` | center, normal and radius |
+| `P.of_pga_point` | `Pga.point` | `Pga.point_coords` |
+| `P.of_pga_plane` | `Pga.plane` | normalized normal and offset; a default patch |
+| `P.of_pga_line ?extent` | `Pga.line` | direction and moment; the closest point is `d × m` |
 
-`P.of_cga_line` draws a finite segment of half-length `extent` (default 2.5)
-around the point of the line closest to the origin. A line is infinite; a
-picture is not.
+`P.of_cga_line` and `P.of_pga_line` draw a finite segment of half-length
+`extent` (default 2.5) around the point of the line closest to the origin. A
+line is infinite; a picture is not.
+
+`P.of_pga_plane` normalizes the plane projectively and builds a finite patch
+with `Primitive.plane_patch`, so a rescaled `Pga.t` gives the same picture.
+`P.of_pga_point` divides by the point weight, so a rescaled point is also the
+same primitive.
 
 `P.transform motor primitive` applies a rigid motion to a primitive. It
-transforms points with `Cga.apply_motor`; for a circle it rebuilds the normal
+transforms points with `Pga.apply_motor`; for a circle it rebuilds the normal
 from two transformed points; for a plane it transforms the patch and rebuilds
-the normal; for a sphere it moves the center and keeps the radius; for a frame
-it moves the origin and all three axis endpoints. The argument is a `Motor.t`,
-so the motion is always rigid. For a dilation or a transversion there is no
-motor: sandwich the `Cga.t` and re-extract the primitive with the adapter, as
-the `conformal` demo does.
-
-There is no PGA adapter yet. A PGA object can be converted by extracting its
-coordinates and line parameters and building primitives by hand; see the PGA
-figure in `../examples/figures.ml`.
+both the normal and the offset from a transformed point of the plane; for a
+sphere it moves the center and keeps the radius; for a frame it moves the
+origin and all three axis endpoints. The argument is a `Motor.t`, so the
+motion is always rigid. For a dilation or a transversion there is no motor:
+sandwich the `Cga.t` and re-extract the primitive with the adapter, as the
+`conformal` demo does.
 
 ## Demos
 
@@ -320,11 +349,9 @@ Three README figures exercise the library end to end:
 - **No text.** The scene language has no labels. The README figures overlay
   text in screen space with `Hugin_font.Font.outline` and `Hugin_vg.Picture`;
   see `../examples/figures.ml` for the pattern (`text`, `label`, `arrow2d`).
-- **No `.mli`.** The interface is the implementation. Names and records can
-  change. The main `geom` package has complete interfaces and is the part to
-  build geometry on.
+- **Per-point multivector cost.** The reference projection builds a view ray
+  and a meet for every point. `Camera.project_pinhole` is the algebraically
+  identical closed form for throughput-critical loops; the two agree to
+  float32 page precision. The orthographic camera scales instead of meeting.
 - **External encoder.** MP4 output needs `ffmpeg`; the library does not encode
   video itself.
-- **Euclidean camera.** The camera is a pinhole model, not a PGA image plane
-  and view-ray construction. The PGA camera path is planned in
-  [`../VIZ.md`](../VIZ.md).

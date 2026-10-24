@@ -3,17 +3,17 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-open Geom
 open Hugin_gg
 open Hugin_vg
 open Primitive
-open Camera
 module P = Primitive
 module C = Camera
 
+type color = Color.t
+
 type style =
-  { fill : Color.t option
-  ; stroke : Color.t option
+  { fill : color option
+  ; stroke : color option
   ; width : float
   ; dash : float list
   ; opacity : float
@@ -60,7 +60,6 @@ let create ?(background = Color.v 0.98 0.98 0.98) camera entities =
 let add e s = { s with entities = s.entities @ [ e ] }
 let camera s = s.camera
 let background s = s.background
-let page c = Hugin_vg.Renderable.v (C.width c) (C.height c)
 
 let path_of_points ?(close = false) pts =
   let xs = Array.of_list (List.map (fun (p : P.p3) -> p.x) pts) in
@@ -113,7 +112,7 @@ let circle_points ~center ~normal ~radius =
     P.add center (P.add (P.scale u (radius *. cos t)) (P.scale v (radius *. sin t))))
 
 let silhouette (c : C.t) (s : P.sphere) =
-  let dvec = P.sub c.eye s.center in
+  let dvec = P.sub (C.eye c) s.center in
   let d = P.norm dvec in
   if d <= s.radius +. 1e-9
   then None
@@ -171,7 +170,8 @@ let draw_point c s p =
       | Some col -> Picture.stroke (Stroke.v 1.) col circle
       | None -> Picture.empty
     in
-    Picture.group [ fill; stroke ]
+    let p = Picture.group [ fill; stroke ] in
+    if s.opacity < 1. then Picture.opacity s.opacity p else p
 
 let draw_polyline c s pts =
   match project_all c pts with

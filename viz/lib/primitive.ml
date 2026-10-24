@@ -63,11 +63,15 @@ type t =
   | Plane of plane
   | Frame of frame
 
-let transform_point (m : Motor.t) (p : p3) =
-  let x = Cga.point3 p.x p.y p.z in
-  let y = Cga.apply_motor m x in
-  let a = Cga.coords y |> Nx.to_array in
+let p3_of_tensor t =
+  let a = Nx.to_array t in
   { x = a.(0); y = a.(1); z = a.(2) }
+
+let scalar_of_tensor t = Nx.item [] t
+
+let transform_point (m : Motor.t) (p : p3) =
+  let y = Pga.apply_motor m (Pga.point3 p.x p.y p.z) in
+  p3_of_tensor (Pga.point_coords y)
 
 let transform (m : Motor.t) = function
   | Point p -> Point (transform_point m p)
@@ -80,11 +84,16 @@ let transform (m : Motor.t) = function
     Circle { center; normal = normalize n; radius = c.radius }
   | Sphere s -> Sphere { center = transform_point m s.center; radius = s.radius }
   | Plane p ->
+    (* A plane is not a subspace through the origin: transforming its normal
+       alone keeps the old offset. Transform a point of the plane and read the
+       offset back from the new normal. *)
     let patch = List.map (transform_point m) p.patch in
     let origin = p3 0. 0. 0. in
     let n = sub (transform_point m (add origin p.normal)) (transform_point m origin) in
-    let offset = p.offset -. dot n origin in
-    Plane { normal = normalize n; offset; patch }
+    let normal = normalize n in
+    let on_plane = transform_point m (scale (normalize p.normal) p.offset) in
+    let offset = dot normal on_plane in
+    Plane { normal; offset; patch }
   | Frame f ->
     Frame
       { origin = transform_point m f.origin
@@ -93,11 +102,6 @@ let transform (m : Motor.t) = function
       ; z = transform_point m f.z
       }
 
-let p3_of_tensor t =
-  let a = Nx.to_array t in
-  { x = a.(0); y = a.(1); z = a.(2) }
-
-let scalar_of_tensor t = Nx.item [] t
 let of_cga_point p = Point (p3_of_tensor (Cga.coords p))
 
 let of_cga_sphere s =
@@ -118,6 +122,7 @@ let plane_patch ~normal ~offset =
   ]
 
 let of_cga_plane pi =
+  let pi = Cga.normalize_plane pi in
   let normal = p3_of_tensor (Cga.plane_normal pi) in
   let offset = scalar_of_tensor (Cga.plane_offset pi) in
   Plane { normal; offset; patch = plane_patch ~normal ~offset }
@@ -133,3 +138,17 @@ let of_cga_circle c =
   let normal = p3_of_tensor (Cga.circle_normal c) in
   let radius = sqrt (scalar_of_tensor (Cga.circle_radius2 c)) in
   Circle { center; normal; radius }
+
+let of_pga_point p = Point (p3_of_tensor (Pga.point_coords p))
+
+let of_pga_plane pi =
+  let pi = Pga.normalize_plane pi in
+  let normal = p3_of_tensor (Pga.plane_normal pi) in
+  let offset = scalar_of_tensor (Pga.plane_offset pi) in
+  Plane { normal; offset; patch = plane_patch ~normal ~offset }
+
+let of_pga_line ?(extent = 2.5) l =
+  let d = p3_of_tensor (Pga.line_direction l) in
+  let m = p3_of_tensor (Pga.line_moment l) in
+  let c = cross d m in
+  Segment (sub c (scale d extent), add c (scale d extent))
