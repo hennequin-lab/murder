@@ -280,8 +280,21 @@ let exp twist =
   let q = Nx.stack ~axis:(-1) [ w; take_comp xyz 0; take_comp xyz 1; take_comp xyz 2 ] in
   mul (translate t) (of_quaternion q)
 
+let raw_quaternion m =
+  let w = take_comp m 0 in
+  let e12 = take_comp m 1
+  and e13 = take_comp m 2
+  and e23 = take_comp m 3 in
+  let q = Nx.stack ~axis:(-1) [ w; Nx.mul_s e23 (-1.); e13; Nx.mul_s e12 (-1.) ] in
+  let batch = batch_shape m in
+  let n2 = Nx.sum ~axes:[ Array.length (Nx.shape q) - 1 ] (Nx.mul q q) in
+  Nx.div q (expand batch (Nx.sqrt n2))
+
 let translation_of_motor m =
-  let q = to_quaternion m in
+  (* Use the rotation representative that belongs to [m] itself. [to_quaternion]
+     normalises the sign of the scalar part, which changes the sign of the whole
+     rotor and would flip the translation extracted from the dual part. *)
+  let q = raw_quaternion m in
   let r = of_quaternion q in
   let t = mul m (inverse r) in
   Nx.stack
@@ -335,7 +348,7 @@ let slerp m0 m1 alpha =
   let rel = mul (inverse m0) m1 in
   let tw = log rel in
   let abatch = Nx.shape alpha in
-  mul (exp (Nx.mul tw (Nx.reshape (Array.append abatch [| 1 |]) alpha))) m0
+  mul m0 (exp (Nx.mul tw (Nx.reshape (Array.append abatch [| 1 |]) alpha)))
 
 let rotation_matrix q =
   let w = take_comp q 0

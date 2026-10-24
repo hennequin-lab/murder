@@ -69,7 +69,7 @@ module type VERSOR = sig
       the group exponential:
 
       {[
-       slerp v0 v1 alpha = exp (alpha * log (v0^(-1) v1)) v0.
+       slerp v0 v1 alpha = v0 * exp (alpha * log (v0^(-1) v1)).
       ]}
 
       [alpha] is a tensor of shape [batch_shape] with values in [[0];[1]].

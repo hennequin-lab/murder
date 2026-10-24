@@ -116,5 +116,5 @@ module Make (A : Algebra.ALGEBRA) = struct
     let rel = A.gp (A.inverse v0) v1 in
     let tw = log rel in
     let abatch = Nx.shape alpha in
-    A.gp (exp (Nx.mul tw (Nx.reshape (Array.append abatch [| 1 |]) alpha))) v0
+    A.gp v0 (exp (Nx.mul tw (Nx.reshape (Array.append abatch [| 1 |]) alpha)))
 end

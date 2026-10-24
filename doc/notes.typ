@@ -615,7 +615,7 @@ transversions) is a later, separate routine.
 
 Because motors form a Lie group, interpolation is the group exponential:
 
-$ M(lambda) = exp(lambda log(M_0^(-1) M_1)) M_0, quad lambda in [0,1], $
+$ M(lambda) = M_0 exp(lambda log(M_0^(-1) M_1)), quad lambda in [0,1], $
 
 the *screw linear interpolation* (ScLERP) of rigid motions. It is the
 motor analogue of quaternion slerp and is the reason to keep `exp` and `log`

@@ -388,6 +388,7 @@ module Make (S : SIGNATURE) (K : SCALAR) = struct
     let mask = Array.make size false in
     mask.(Blade.to_int b) <- true;
     let mask = Nx.create Nx.bool [| size |] mask in
+    let c = Nx.broadcast_to batch c in
     let c = Nx.reshape (Array.append batch [| 1 |]) c in
     Nx.where mask c a
 

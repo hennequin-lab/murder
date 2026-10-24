@@ -9,6 +9,10 @@
 open Windtrap
 open Geom
 module P = Geom_viz.Primitive
+
+let vec3 x y z = Nx.create Nx.float32 [| 3 |] [| x; y; z |]
+let scalar x = Nx.scalar Nx.float32 x
+
 module M = Geom.Motor
 
 let p3 = P.p3
@@ -32,6 +36,71 @@ let plane_normal_and_offset = function
 let segment_endpoints = function
   | P.Segment (a, b) -> a, b
   | _ -> failwith "expected a segment"
+
+let test_vectors () =
+  equal_point ~msg:"normalizing zero is zero" (0., 0., 0.) (P.normalize (p3 0. 0. 0.));
+  equal_float
+    ~msg:"a normalized vector has unit length"
+    1.
+    (P.norm (P.normalize (p3 3. 4. 0.)));
+  equal_point
+    ~msg:"normalize keeps the direction"
+    (0.6, 0.8, 0.)
+    (P.normalize (p3 3. 4. 0.));
+  equal_float ~msg:"the dot product" 11. (P.dot (p3 1. 2. 3.) (p3 4. (-1.) 3.));
+  equal_point ~msg:"the cross product" (0., 0., 1.) (P.cross (p3 1. 0. 0.) (p3 0. 1. 0.))
+
+let test_plane_patch () =
+  let check ~normal ~offset =
+    let patch = P.plane_patch ~normal ~offset in
+    equal ~msg:"four patch corners" int 4 (List.length patch);
+    List.iter
+      (fun (q : P.p3) ->
+         equal_float
+           ~msg:"the corner lies on the plane"
+           offset
+           (P.dot (P.normalize normal) q))
+      patch;
+    let rec sides = function
+      | [] | [ _ ] -> []
+      | a :: (b :: _ as rest) -> P.norm (P.sub b a) :: sides rest
+    in
+    List.iter
+      (fun side -> equal_float ~msg:"the patch is a square of side four" 4. side)
+      (sides patch)
+  in
+  (* The two orientation branches of the in-plane basis. *)
+  check ~normal:(p3 0. 0. 1.) ~offset:1.;
+  check ~normal:(p3 1. 0. 0.) ~offset:(-2.)
+
+let test_cga_adapters () =
+  (match P.of_cga_point (Cga.point3 1. 2. 3.) with
+   | P.Point q -> equal_point ~msg:"a CGA point" (1., 2., 3.) q
+   | _ -> failwith "expected a point");
+  let sphere = Cga.sphere ~center:(vec3 1. 2. 3.) ~radius:(scalar 0.5) in
+  (match P.of_cga_sphere sphere with
+   | P.Sphere s ->
+     equal_point ~msg:"a CGA sphere centre" (1., 2., 3.) s.P.center;
+     equal_float ~msg:"a CGA sphere radius" 0.5 s.P.radius
+   | _ -> failwith "expected a sphere");
+  let plane = Cga.plane ~normal:(vec3 0. 1. 0.) ~offset:(scalar 2.) in
+  let normal, offset = plane_normal_and_offset (P.of_cga_plane plane) in
+  equal_point ~msg:"a CGA plane normal" (0., 1., 0.) normal;
+  equal_float ~msg:"a CGA plane offset" 2. offset;
+  let line = Cga.line (Cga.point3 0. 0. 0.) (Cga.point3 1. 0. 0.) in
+  let a, b = segment_endpoints (P.of_cga_line line) in
+  equal_float ~msg:"a CGA line segment half-length" 5. (P.norm (P.sub b a));
+  let mid = P.scale (P.add a b) 0.5 in
+  equal_point ~msg:"the CGA line segment is centred on the origin" (0., 0., 0.) mid;
+  let circle =
+    Cga.circle (Cga.point3 1. 0. 0.) (Cga.point3 0. 1. 0.) (Cga.point3 (-1.) 0. 0.)
+  in
+  match P.of_cga_circle circle with
+  | P.Circle c ->
+    equal_point ~msg:"a CGA circle centre" (0., 0., 0.) c.P.center;
+    equal_float ~msg:"a CGA circle radius" 1. c.P.radius;
+    equal_float ~msg:"a CGA circle normal is unit" 1. (P.norm c.P.normal)
+  | _ -> failwith "expected a circle"
 
 let test_pga_point () =
   let p = P.of_pga_point (Pga.point3 1. (-2.) 3.) in
@@ -85,7 +154,9 @@ let test_pga_line () =
     (point_on_line (Pga.point3 b.x b.y b.z) l);
   (* The closest point to the origin of this line is (1, 2, 0). *)
   let mid = P.scale (P.add a b) 0.5 in
-  equal_point ~msg:"the segment is centred on the closest point" (1., 2., 0.) mid
+  equal_point ~msg:"the segment is centred on the closest point" (1., 2., 0.) mid;
+  let a, b = segment_endpoints (P.of_pga_line l) in
+  equal_float ~msg:"the default extent" 5. (P.norm (P.sub b a))
 
 let test_transform_point_and_plane () =
   let m = M.translate3 0. 0. 2. in
@@ -121,6 +192,43 @@ let test_transform_point_and_plane () =
   in
   equal_point ~msg:"a rotated plane carries its normal" (0., -1., 0.) normal;
   equal_float ~msg:"a rotated plane keeps its distance" 0.5 offset
+
+let test_transform_shapes () =
+  let m =
+    M.mul
+      (M.translate3 1. 2. 3.)
+      (M.rotate
+         ~axis:(Nx.create Nx.float32 [| 3 |] [| 0.; 0.; 1. |])
+         ~angle:(Nx.scalar Nx.float32 (Float.pi /. 2.)))
+  in
+  let expected0 = 1., 2., 3.
+  and expected1 = 1., 3., 3. in
+  (match P.transform m (P.Segment (p3 0. 0. 0., p3 1. 0. 0.)) with
+   | P.Segment (a, b) ->
+     equal_point ~msg:"a transformed segment: first endpoint" expected0 a;
+     equal_point ~msg:"a transformed segment: second endpoint" expected1 b
+   | _ -> failwith "expected a segment");
+  (match P.transform m (P.Polyline [ p3 0. 0. 0.; p3 1. 0. 0. ]) with
+   | P.Polyline [ a; b ] ->
+     equal_point ~msg:"a transformed polyline: first point" expected0 a;
+     equal_point ~msg:"a transformed polyline: second point" expected1 b
+   | _ -> failwith "expected a two-point polyline");
+  (match P.transform m (P.Polygon [ p3 0. 0. 0.; p3 1. 0. 0. ]) with
+   | P.Polygon [ a; b ] ->
+     equal_point ~msg:"a transformed polygon: first point" expected0 a;
+     equal_point ~msg:"a transformed polygon: second point" expected1 b
+   | _ -> failwith "expected a two-point polygon");
+  match
+    P.transform
+      m
+      (P.Frame { origin = p3 0. 0. 0.; x = p3 1. 0. 0.; y = p3 0. 1. 0.; z = p3 0. 0. 1. })
+  with
+  | P.Frame f ->
+    equal_point ~msg:"a transformed frame origin" expected0 f.P.origin;
+    equal_point ~msg:"a transformed frame x" expected1 f.P.x;
+    equal_point ~msg:"a transformed frame y" (0., 2., 3.) f.P.y;
+    equal_point ~msg:"a transformed frame z" (1., 2., 4.) f.P.z
+  | _ -> failwith "expected a frame"
 
 let test_transform_matches_pga () =
   let m =
@@ -163,15 +271,22 @@ let () =
     (run
        "geom-viz primitive"
        [ group
-           "PGA adapters"
-           [ test "points" test_pga_point
+           "vectors and patches"
+           [ test "vector arithmetic" test_vectors
+           ; test "plane patches" test_plane_patch
+           ]
+       ; group
+           "adapters"
+           [ test "PGA points" test_pga_point
+           ; test "PGA planes" test_pga_plane
+           ; test "PGA lines" test_pga_line
+           ; test "CGA objects" test_cga_adapters
            ; test "CGA plane normalization" test_cga_plane_normalization
-           ; test "planes" test_pga_plane
-           ; test "lines" test_pga_line
            ]
        ; group
            "rigid transforms"
            [ test "points and planes" test_transform_point_and_plane
+           ; test "segments, polylines, polygons and frames" test_transform_shapes
            ; test "agreement with the PGA motor action" test_transform_matches_pga
            ; test "circles and spheres" test_transform_circle_and_sphere
            ]

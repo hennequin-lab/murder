@@ -68,8 +68,8 @@ let ideal_point d =
   A.op e0 b
 
 let plane ~normal ~offset =
+  let batch = batch_of_shape (Nx.shape normal) in
   let x, y, z = take3 normal in
-  let batch = batch_of_shape (Nx.shape x) in
   let x, y, z, d =
     match Nx.broadcast_arrays [ x; y; z; offset ] with
     | [ x; y; z; d ] -> x, y, z, d

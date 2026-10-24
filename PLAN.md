@@ -623,6 +623,11 @@ Numerical and integration:
 - `Rune.grad` finite-difference check on a small pose/IK objective;
 - `Rune.jit` produces the same result as eager execution;
 - no allocation surprises in the motor hot path (benchmark).
+- **Coverage and mutation**: `lib/dune` and `viz/lib/dune` carry the Windtrap
+  coverage and mutation backends. Run the suites with
+  `--instrument-with ppx_windtrap.coverage` and report with
+  `dune exec windtrap -- coverage`; run an individual suite with
+  `--instrument-with ppx_windtrap.mutate ... -- --mutate` for mutation testing.
 
 ## 10. Open questions
 

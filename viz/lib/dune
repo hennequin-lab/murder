@@ -9,4 +9,8 @@
   hugin.vg.pdf
   hugin.gg
   hugin.font
-  unix))
+  unix)
+ (instrumentation
+  (backend ppx_windtrap.coverage))
+ (instrumentation
+  (backend ppx_windtrap.mutate)))

@@ -1,3 +1,21 @@
 (tests
- (names test_algebra test_cga test_pga test_motor test_versor)
- (libraries geom nx))
+ (names
+  test_blade
+  test_signature
+  test_algebra
+  test_e3
+  test_motor
+  test_pga
+  test_cga
+  test_versor)
+ (modules
+  support
+  test_blade
+  test_signature
+  test_algebra
+  test_e3
+  test_motor
+  test_pga
+  test_cga
+  test_versor)
+ (libraries geom nx windtrap))

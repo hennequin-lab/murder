@@ -430,7 +430,7 @@ primitive and returns the static entities to draw.
 Keyframes interpolate motors with the group exponential:
 
 ```
-M(λ) = exp(λ log(M0⁻¹ M1)) M0
+M(λ) = M0 exp(λ log(M0⁻¹ M1))
 ```
 
 which is ScLERP. `Anim.keyframes` wraps this over a sorted list, with optional

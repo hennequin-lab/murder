@@ -160,7 +160,7 @@ val log : t -> Nx.float32_t
     [m1]:
 
     {[
-     slerp m0 m1 alpha = exp (alpha * log (m0^(-1) m1)) m0.
+     slerp m0 m1 alpha = m0 * exp (alpha * log (m0^(-1) m1)).
     ]}
 
     [alpha] has shape [batch_shape] and values in [[0];[1]]; the endpoints are

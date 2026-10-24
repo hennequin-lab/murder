@@ -16,8 +16,9 @@ let p3 = P.p3
 let width = 800.
 let height = 600.
 
-let camera ?(ortho = false) () =
+let camera ?(ortho = false) ?ortho_scale () =
   C.create
+    ?ortho_scale
     ~ortho
     ~eye:(p3 4. (-4.) 3.)
     ~target:(p3 0. 0. 0.5)
@@ -31,6 +32,9 @@ let equal_bool ?msg expected actual = equal ?msg bool expected actual
 
 let equal_float ?(eps = 5e-3) ?msg expected actual =
   equal ?msg (float eps) expected actual
+
+let equal_floats ?(eps = 5e-3) ?msg expected actual =
+  equal ?msg (array (float eps)) expected actual
 
 let equal_triple ?(eps = 5e-3) ?msg (x, y, d) actual =
   match actual with
@@ -87,6 +91,9 @@ let test_validation () =
     (fun e -> Exn.invalid_arg ~substring:"fov_y" e)
     (fun () -> build ~fov_y:0. ());
   raises_match
+    (fun e -> Exn.invalid_arg ~substring:"fov_y" e)
+    (fun () -> build ~fov_y:Float.pi ());
+  raises_match
     (fun e -> Exn.invalid_arg ~substring:"parallel" e)
     (fun () -> build ~up:(P.normalize (P.sub target eye)) ());
   raises_match
@@ -102,7 +109,98 @@ let test_validation () =
          ());
   raises_match
     (fun e -> Exn.invalid_arg ~substring:"near" e)
-    (fun () -> build ~near:10. ~far:5. ())
+    (fun () -> build ~near:10. ~far:5. ());
+  raises_match
+    (fun e -> Exn.invalid_arg ~substring:"width and height" e)
+    (fun () ->
+       C.create
+         ~eye
+         ~target
+         ~up:(p3 0. 0. 1.)
+         ~fov_y:(Float.pi /. 4.)
+         ~width:0.
+         ~height
+         ());
+  raises_match
+    (fun e -> Exn.invalid_arg ~substring:"ortho_scale" e)
+    (fun () ->
+       C.create
+         ~ortho:true
+         ~ortho_scale:0.
+         ~eye
+         ~target
+         ~up:(p3 0. 0. 1.)
+         ~fov_y:(Float.pi /. 4.)
+         ~width
+         ~height
+         ());
+  raises_match
+    (fun e -> Exn.invalid_arg ~substring:"width and height" e)
+    (fun () ->
+       C.create
+         ~eye
+         ~target
+         ~up:(p3 0. 0. 1.)
+         ~fov_y:(Float.pi /. 4.)
+         ~width:Float.nan
+         ~height
+         ());
+  raises_match
+    (fun e -> Exn.invalid_arg ~substring:"near" e)
+    (fun () ->
+       C.create
+         ~eye
+         ~target
+         ~up:(p3 0. 0. 1.)
+         ~fov_y:(Float.pi /. 4.)
+         ~width
+         ~height
+         ~near:Float.nan
+         ());
+  raises_match
+    (fun e -> Exn.invalid_arg ~substring:"near" e)
+    (fun () -> build ~near:0. ());
+  raises_match
+    (fun e -> Exn.invalid_arg ~substring:"near" e)
+    (fun () -> build ~far:Float.infinity ());
+  raises_match
+    (fun e -> Exn.invalid_arg ~substring:"width and height" e)
+    (fun () ->
+       C.create
+         ~eye
+         ~target
+         ~up:(p3 0. 0. 1.)
+         ~fov_y:(Float.pi /. 4.)
+         ~width
+         ~height:Float.infinity
+         ())
+
+let test_accessors () =
+  let c = camera () in
+  equal_float ~msg:"width" width (C.width c);
+  equal_float ~msg:"height" height (C.height c);
+  equal_float ~msg:"near" 0.1 (C.near c);
+  equal_float ~msg:"far" 1000. (C.far c);
+  equal_float ~msg:"the focal length" (height /. 2. /. tan (Float.pi /. 8.)) (C.focal c);
+  equal_bool ~msg:"perspective by default" false (C.is_orthographic c);
+  equal_float ~msg:"the default orthographic scale" (height /. 4.) (C.ortho_scale c);
+  let r = C.right c
+  and u = C.up c
+  and f = C.forward c in
+  equal_float ~msg:"the right axis is unit" 1. (P.norm r);
+  equal_float ~msg:"the up axis is unit" 1. (P.norm u);
+  equal_float ~msg:"the forward axis is unit" 1. (P.norm f);
+  equal_float ~msg:"right and up are orthogonal" 0. (P.dot r u);
+  equal_float ~msg:"right and forward are orthogonal" 0. (P.dot r f);
+  equal_float ~msg:"up and forward are orthogonal" 0. (P.dot u f);
+  let expected_forward = P.normalize (P.sub (p3 0. 0. 0.5) (p3 4. (-4.) 3.)) in
+  equal_float ~msg:"forward points at the target" expected_forward.x f.x;
+  equal_float ~msg:"forward points at the target" expected_forward.y f.y;
+  equal_float ~msg:"forward points at the target" expected_forward.z f.z;
+  equal_floats ~msg:"the eye point" [| 4.; -4.; 3. |] (coords (C.eye_point c));
+  let ortho = camera ~ortho:true ~ortho_scale:250. () in
+  equal_bool ~msg:"orthographic" true (C.is_orthographic ortho);
+  equal_float ~msg:"an explicit orthographic scale" 250. (C.ortho_scale ortho)
 
 (* The camera is a PGA construction: the view motor, the eye point and the
    image plane must agree with the direct look-at quantities. *)
@@ -210,6 +308,18 @@ let test_culling () =
     ~msg:"a point inside the near plane is culled"
     true
     (Option.is_none (C.project c too_close));
+  equal_bool
+    ~msg:"the pinhole path culls behind the eye"
+    true
+    (Option.is_none (C.project_pinhole c behind));
+  equal_bool
+    ~msg:"the image path culls behind the eye"
+    true
+    (Option.is_none (C.project_image c behind));
+  equal_bool
+    ~msg:"the pinhole path culls at the near plane"
+    true
+    (Option.is_none (C.project_pinhole c too_close));
   let near_camera =
     C.create
       ~near:0.1
@@ -311,6 +421,7 @@ let () =
        [ group
            "construction"
            [ test "validation" test_validation
+           ; test "parameters and axes" test_accessors
            ; test "the view motor" test_view_motor
            ; test "the image plane" test_image_plane
            ]

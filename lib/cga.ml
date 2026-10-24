@@ -71,13 +71,13 @@ let is_point p =
   Nx.logical_and (Nx.less_s (Nx.abs n2) 1e-5) (Nx.less_s (Nx.abs (Nx.sub_s b 1.)) 1e-5)
 
 let sphere ~center ~radius =
+  let batch = batch_of_shape (Nx.shape center) in
   let x, y, z = take3 center in
   let x, y, z, r =
     match Nx.broadcast_arrays [ x; y; z; radius ] with
     | [ x; y; z; r ] -> x, y, z, r
     | _ -> assert false
   in
-  let batch = batch_of_shape (Nx.shape x) in
   let x2 = Nx.add (Nx.add (Nx.mul x x) (Nx.mul y y)) (Nx.mul z z) in
   let r2 = Nx.mul r r in
   let d = Nx.sub x2 r2 in
@@ -103,8 +103,8 @@ let sphere_center s =
   Nx.add sn (Nx.mul (expand batch (Nx.mul_s s2 0.5)) einf)
 
 let plane ~normal ~offset =
+  let batch = batch_of_shape (Nx.shape normal) in
   let x, y, z = take3 normal in
-  let batch = batch_of_shape (Nx.shape x) in
   let x, y, z, d =
     match Nx.broadcast_arrays [ x; y; z; offset ] with
     | [ x; y; z; d ] -> x, y, z, d
