@@ -1,11 +1,13 @@
 # geom — geometric algebra for robotics on the raven stack
 
-Status: **M1 complete, M2–M4/V1–V3 largely implemented, V4 partial**. The full
-`.mli` surface is in `geom/lib/`, and `geom/viz/lib` has complete `.mli`
-interfaces too. The core algebra, CGA basics, motors and PGA/E3 basics are
-implemented and tested; `geom-viz` renders static Hugin frames and movies with
-a PGA camera. The mathematics is in [`doc/notes.typ`](doc/notes.typ) (compiled
-to `doc/notes.pdf`); the visualization plan is in [`VIZ.md`](VIZ.md).
+Status: **M1 complete, M2–M4/V1–V3 largely implemented, V4 partial; robotics
+R0 and part of R1 implemented**. The full `.mli` surface is in `geom/lib/`, and
+`geom/viz/lib` and `geom/robot/lib` have complete `.mli` interfaces too. The
+core algebra, CGA basics, motors and PGA/E3 basics are implemented and tested;
+`geom-viz` renders static Hugin frames and movies with a PGA camera. The
+mathematics is in [`doc/notes.typ`](doc/notes.typ) (compiled
+to `doc/notes.pdf`); the visualization plan is in [`VIZ.md`](VIZ.md), and the
+proposed robotics layer is in [`ROBOTICS.md`](ROBOTICS.md).
 
 ## Current implementation state
 
@@ -20,7 +22,15 @@ to `doc/notes.pdf`); the visualization plan is in [`VIZ.md`](VIZ.md).
 | `Versor` | `exp_simple`, general `exp` (scaling + Taylor), simple-versor `log`, `slerp` | general even-versor log, accuracy study |
 | `geom-viz` | primitives, PGA camera (view motor, eye point, image plane, view rays, meet projection) with a closed-form pinhole fast path, painter's-algorithm drawing, PNG/SVG/PDF frames, `ffmpeg` movie export, CGA/PGA adapters | near-plane clipping, labels, sphere shading |
 | Demos | `static`, `movie`, `zoo`, `arm` (6-DOF chain), `conformal` (dilation/transversion) | labels, more robots |
-| Tests | algebra, CGA, PGA/E3, motor log/slerp/adjoint, versor exp/log/slerp, viz camera and PGA adapters (`dune runtest`; `dune runtest viz/test`) | golden frames, movie checks |
+| Tests | algebra, CGA, PGA/E3, motor log/slerp/adjoint/translation/rotation, versor exp/log/slerp, viz camera and PGA adapters, robot FK/Jacobians (`dune runtest`; `dune runtest viz/test`) | golden frames, movie checks |
+| `geom_robot` | `Robot` (models, batched FK, geometric and analytic Jacobians, a `custom_jvp` rule for the pose), `Task` (pose and geometric residuals with compact Jacobians), `Ik` (batched damped Gauss–Newton with a trust region and limits); demos for a tour of the layer, and `geom-viz` renderings of the arm, its workspace and task geometry | `Jdot`, manipulability, model I/O, dynamics |
+| `geom_robot_viz` | stick-figure robots, frames, pose targets and trails as `geom-viz` entities, with animated and still demos | link geometry beyond segments and spheres, task-primitive overlays |
+
+`geom_robot` is the first slice of the robotics layer proposed in
+[`ROBOTICS.md`](ROBOTICS.md) §4.0: R0 (model and forward kinematics) and the
+part of R1 that does not need time derivatives. It lives in [`robot/`](robot)
+as a separate library because it depends on `rune` for the `custom_jvp` rule
+that gives the pose its analytic derivative; `geom` itself stays free of it.
 
 The camera is a PGA construction: a view motor, an eye point, an image plane
 and a line/plane meet for every perspective projection. The closed-form

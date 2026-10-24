@@ -1,6 +1,7 @@
 # OCaml build artifacts
 _build/
 viz/demo/out/
+robot/viz/demo/out/
 doc/notes.pdf
 *.install
 *.byte

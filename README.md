@@ -715,11 +715,15 @@ coordinate vector, `X` its conformal point.
 | [`Signature`](lib/signature.mli) | metric signatures `(p,q,r)`, `euclidean`, `projective`, `conformal` |
 | [`Algebra`](lib/algebra.mli) | dense multivectors, `gp`/`op`/`inner`/`scalar_prod`, involutions, duals, norms, `sandwich`, `adjoint`, the `Make` functor |
 | [`Versor`](lib/versor.mli) | exponential and logarithm of versors, `exp_simple`, `slerp` |
-| [`Motor`](lib/motor.mli) | packed dual quaternions: `mul`, `translate`, `rotate`, `of_rotation`, `of_quaternion`, `exp`, `log`, `slerp`, 6×6 `adjoint` |
+| [`Motor`](lib/motor.mli) | packed dual quaternions: `mul`, `translate`, `rotate`, `of_rotation`, `of_quaternion`, `exp`, `log`, `slerp`, 6×6 `adjoint`, `translation`, `rotation` |
 | [`E3`](lib/e3.mli) | `Cl(3,0,0)`: vectors, bivectors, `rotor`, `apply_rotor` |
 | [`Pga`](lib/pga.mli) | `Cl(3,0,1)`: points, planes, lines, `meet`/`join`, incidence |
 | [`Cga`](lib/cga.mli) | `Cl(4,1)`: points, spheres, planes, lines, circles, point pairs, conformal generators, motors |
 | [`Geom`](lib/geom.mli) | the umbrella module |
+| [`Robot`](robot/lib/robot.mli) | `geom_robot`: robot models, batched forward kinematics, geometric and analytic Jacobians, a `custom_jvp` rule for the pose |
+| [`Task`](robot/lib/task.mli) | `geom_robot`: task residuals — pose errors, and geometric tasks (point/line/plane/circle/sphere/point pair) with compact residuals and Jacobians, weights and stacking |
+| [`Ik`](robot/lib/ik.mli) | `geom_robot`: batched damped Gauss-Newton with a trust region, joint limits and per-sample convergence |
+| [`Geom_robot_viz`](robot/viz/lib/geom_robot_viz.mli) | `geom_robot_viz`: stick-figure robots, frames, pose markers and trails as `geom-viz` entities, with animated and still demos in [`robot/viz/demo`](robot/viz/demo) |
 
 Every module has a complete `.mli`; the doc comments state the conventions and
 the shape of every argument. The mathematical source of truth is
@@ -736,11 +740,18 @@ From `geom/`:
 
 ```sh
 dune build
-dune runtest                     # core and geom-viz suites
+dune runtest                     # core, geom-viz and geom_robot suites
 dune runtest viz/test            # only the camera and primitive suites
+dune runtest robot/test          # only the robot model and kinematics
 
 dune exec examples/tour.exe      # the numerical tour above
 dune exec examples/figures.exe   # regenerates doc/figures/*.svg
+dune exec robot/demo/reach.exe   # damped Gauss-Newton on a 6R arm
+dune exec robot/demo/tour.exe         # what the robot layer can do today
+dune exec robot/viz/demo/arm.exe      # the arm and its reach (PNG, SVG, MP4)
+dune exec robot/viz/demo/workspace.exe   # workspace cloud coloured by sigma_min
+dune exec robot/viz/demo/swarm.exe       # ten IK starts converging, animated
+dune exec robot/viz/demo/tasks.exe       # the tool point driven onto a circle
 ```
 
 The suites are Windtrap executables. `lib/dune` and `viz/lib/dune` carry
@@ -800,6 +811,8 @@ outputs.
   derivations, the CGA identities, the motor algebra, and the references.
   Compile with `typst compile doc/notes.typ`.
 - [`PLAN.md`](PLAN.md) — design decisions, alternatives, milestones.
+- [`ROBOTICS.md`](ROBOTICS.md) — the proposed robotics layer: robot models,
+  kinematics, tasks, dynamics, optimal control and the research roadmap.
 - [`VIZ.md`](VIZ.md) — the rendering stack and the scene model.
 - [`viz/README.md`](viz/README.md) — using `geom-viz`.
 - L. Dorst, D. Fontijne, S. Mann, *Geometric Algebra for Computer Science*.
