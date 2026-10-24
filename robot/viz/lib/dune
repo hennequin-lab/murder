@@ -1,0 +1,7 @@
+(library
+ (name geom_robot_viz)
+ (libraries geom geom_robot geom_viz nx hugin.gg)
+ (instrumentation
+  (backend ppx_windtrap.coverage))
+ (instrumentation
+  (backend ppx_windtrap.mutate)))

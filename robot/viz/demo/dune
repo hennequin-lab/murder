@@ -1,0 +1,19 @@
+(executable
+ (name arm)
+ (modules arm)
+ (libraries geom geom_robot geom_robot_viz geom_viz nx hugin.gg))
+
+(executable
+ (name workspace)
+ (modules workspace)
+ (libraries geom geom_robot geom_robot_viz geom_viz nx hugin.gg))
+
+(executable
+ (name swarm)
+ (modules swarm)
+ (libraries geom geom_robot geom_robot_viz geom_viz nx hugin.gg))
+
+(executable
+ (name tasks)
+ (modules tasks)
+ (libraries geom geom_robot geom_robot_viz geom_viz nx hugin.gg))
