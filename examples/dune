@@ -1,0 +1,9 @@
+(executable
+ (name tour)
+ (modules tour)
+ (libraries geom nx rune))
+
+(executable
+ (name figures)
+ (modules figures)
+ (libraries geom geom_viz nx hugin.gg hugin.vg hugin.font))
