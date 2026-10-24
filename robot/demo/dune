@@ -1,4 +1,9 @@
 (executable
+ (name reach)
+ (modules reach)
+ (libraries geom geom_robot nx))
+
+(executable
  (name tour)
  (modules tour)
  (libraries geom geom_robot nx rune))
