@@ -378,6 +378,50 @@ let test_slerp () =
   let batch = M.slerp m0 m1 alpha in
   equal ~msg:"slerp accepts a batch of parameters" (array int) [| 2; 8 |] (M.shape batch)
 
+(* Differentiability at zero angular part.
+
+   [exp] and [log] take a square root of the magnitude of the angular part,
+   which is exactly zero for a pure translation — so every prismatic joint. The
+   square root's derivative is infinite there; a forward-mode pass multiplies it
+   by a zero tangent and, unguarded, gets a NaN that poisons everything the
+   angle feeds. These check that the tangents are finite and are the derivative
+   of the value. *)
+
+let test_ad_at_pure_translation () =
+  let twist = vec6 0. 0. 0. 0.1 (-0.2) 0.3 in
+  let _, tangent = Rune.jvp' M.exp twist twist in
+  equal
+    ~msg:"exp: a finite tangent where the angular part vanishes"
+    bool
+    true
+    (Array.for_all Float.is_finite (Nx.to_array tangent));
+  let h = 1e-3 in
+  let finite_difference =
+    Nx.div_s
+      (Nx.sub (M.exp (Nx.mul_s twist (1. +. h))) (M.exp (Nx.mul_s twist (1. -. h))))
+      (2. *. h)
+  in
+  equal_tensor ~msg:"exp: and it is the derivative" ~rel:2e-3 tangent finite_difference;
+  let m = M.translate3 0.1 (-0.2) 0.3 in
+  let tw = M.log m in
+  (* Move the motor along a trajectory whose velocity is [tw], and differentiate
+     [log] along that direction: the direction itself is a central difference,
+     which is what the tangent of the argument is. *)
+  let plus = M.mul m (M.exp (Nx.mul_s tw h))
+  and minus = M.mul m (M.exp (Nx.mul_s tw (-.h))) in
+  let direction = Nx.div_s (Nx.sub plus minus) (2. *. h) in
+  let _, log_tangent = Rune.jvp' M.log m direction in
+  equal
+    ~msg:"log: a finite tangent where the rotation vanishes"
+    bool
+    true
+    (Array.for_all Float.is_finite (Nx.to_array log_tangent));
+  equal_tensor
+    ~msg:"log: and it is the derivative"
+    ~rel:5e-3
+    log_tangent
+    (Nx.div_s (Nx.sub (M.log plus) (M.log minus)) (2. *. h))
+
 (* Components *)
 
 let test_components () =
@@ -539,6 +583,7 @@ let () =
            ; test "quaternion constructors" test_quaternions
            ; test "rotation matrices" test_rotation_matrices
            ; test "translation and rotation components" test_components
+           ; test "differentiation at a pure translation" test_ad_at_pure_translation
            ]
        ; group
            "algebra"

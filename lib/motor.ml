@@ -254,18 +254,23 @@ let exp twist =
   let v =
     Nx.stack ~axis:(-1) [ take_comp twist 3; take_comp twist 4; take_comp twist 5 ]
   in
-  let theta =
-    Nx.sqrt (Nx.sum ~axes:[ Array.length (Nx.shape omega) - 1 ] (Nx.mul omega omega))
-  in
-  let small = Nx.less_s theta 1e-6 in
-  let theta_safe = Nx.where small (Nx.ones_like theta) theta in
-  let theta2 = Nx.mul theta_safe theta_safe in
-  let theta3 = Nx.mul theta2 theta_safe in
+  let theta2 = Nx.sum ~axes:[ Array.length (Nx.shape omega) - 1 ] (Nx.mul omega omega) in
+  (* [sqrt] at zero has an infinite derivative. A forward-mode pass multiplies it
+     by a zero tangent — which is exactly what a pure translation gives, so every
+     prismatic joint — and gets a NaN, which then poisons everything the angle
+     feeds. Lifting the radicand by [tiny] costs a relative 1e-12 on any nonzero
+     angle and none of the accuracy: the closed forms below are analytic at the
+     origin, and the [small] branch stays for the exact limits. *)
+  let theta = Nx.sqrt (Nx.add theta2 (Nx.scalar dtype 1e-12)) in
+  let small = Nx.less_s theta 2e-6 in
+  let one = Nx.ones_like theta in
+  let theta_safe = Nx.where small one theta in
+  let theta2_safe = Nx.mul theta_safe theta_safe in
+  let theta3_safe = Nx.mul theta2_safe theta_safe in
   let sin_t = Nx.sin theta
   and cos_t = Nx.cos theta in
-  let b0 = Nx.div (Nx.sub (Nx.ones_like cos_t) cos_t) theta2 in
-  let c0 = Nx.div (Nx.sub theta sin_t) theta3 in
-  let one = Nx.ones_like theta in
+  let b0 = Nx.div (Nx.sub (Nx.ones_like cos_t) cos_t) theta2_safe in
+  let c0 = Nx.div (Nx.sub theta sin_t) theta3_safe in
   let b = Nx.where small (Nx.mul_s one 0.5) b0 in
   let c = Nx.where small (Nx.mul_s one (1. /. 6.)) c0 in
   let cross1 = cross omega v in
@@ -276,7 +281,9 @@ let exp twist =
   let half = Nx.mul_s theta 0.5 in
   let w = Nx.cos half in
   let s = Nx.sin half in
-  let xyz = Nx.mul omega (expand batch (Nx.div s theta_safe)) in
+  (* [theta] rather than [theta_safe]: it is never zero, and [s / theta] tends to
+     the half-angle it should as the rotation vanishes. *)
+  let xyz = Nx.mul omega (expand batch (Nx.div s theta)) in
   let q = Nx.stack ~axis:(-1) [ w; take_comp xyz 0; take_comp xyz 1; take_comp xyz 2 ] in
   mul (translate t) (of_quaternion q)
 
@@ -310,20 +317,31 @@ let log m =
   and x = take_comp q 1
   and y = take_comp q 2
   and z = take_comp q 3 in
-  let qv = Nx.sqrt (Nx.add (Nx.add (Nx.mul x x) (Nx.mul y y)) (Nx.mul z z)) in
-  let small = Nx.less_s qv 1e-6 in
+  (* Both of these square roots vanish for a pure translation, and a vanishing
+     radicand makes the derivative infinite and a forward-mode pass NaN; see the
+     note in [exp]. *)
+  let qv =
+    Nx.sqrt
+      (Nx.add
+         (Nx.add (Nx.add (Nx.mul x x) (Nx.mul y y)) (Nx.mul z z))
+         (Nx.scalar dtype 1e-12))
+  in
+  let small = Nx.less_s qv 2e-6 in
   let qv_safe = Nx.where small (Nx.ones_like qv) qv in
   let theta = Nx.mul_s (Nx.atan2 qv w) 2. in
   let scale = Nx.where small (Nx.mul_s (Nx.ones_like qv) 2.) (Nx.div theta qv_safe) in
   let omega = Nx.stack ~axis:(-1) [ Nx.mul scale x; Nx.mul scale y; Nx.mul scale z ] in
   let t = translation_of_motor m in
   let theta =
-    Nx.sqrt (Nx.sum ~axes:[ Array.length (Nx.shape omega) - 1 ] (Nx.mul omega omega))
+    Nx.sqrt
+      (Nx.add
+         (Nx.sum ~axes:[ Array.length (Nx.shape omega) - 1 ] (Nx.mul omega omega))
+         (Nx.scalar dtype 1e-12))
   in
   let half = Nx.mul_s theta 0.5 in
   let sin_half = Nx.sin half
   and cos_half = Nx.cos half in
-  let small = Nx.less_s theta 1e-6 in
+  let small = Nx.less_s theta 2e-6 in
   let sin_safe = Nx.where small (Nx.ones_like sin_half) sin_half in
   let theta_safe = Nx.where small (Nx.ones_like theta) theta in
   let cot = Nx.div cos_half sin_safe in
