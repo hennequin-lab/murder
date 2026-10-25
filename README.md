@@ -813,6 +813,8 @@ outputs.
 - [`PLAN.md`](PLAN.md) — design decisions, alternatives, milestones.
 - [`ROBOTICS.md`](ROBOTICS.md) — the proposed robotics layer: robot models,
   kinematics, tasks, dynamics, optimal control and the research roadmap.
+- [`robot/README.md`](robot/README.md) — using `geom_robot`: the model, tasks,
+  inverse kinematics and the rendered demos.
 - [`VIZ.md`](VIZ.md) — the rendering stack and the scene model.
 - [`viz/README.md`](viz/README.md) — using `geom-viz`.
 - L. Dorst, D. Fontijne, S. Mann, *Geometric Algebra for Computer Science*.

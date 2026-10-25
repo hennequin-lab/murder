@@ -6,9 +6,11 @@ robotics layer on top of `geom` should be, using
 working document: it records the proposed scope, the decisions, and an order of
 work. The model, forward kinematics and differential kinematics are
 implemented in [`robot/lib`](robot/lib) (`geom_robot`, module
-`Geom_robot.Robot`) with the test suite in [`robot/test`](robot/test); §4.0 says
-exactly what landed, §5.4 and §5.7 record the two numerical decisions that
-matter for the rest of the stack, and §10 tracks every open question.
+`Geom_robot.Robot`) with the test suite in [`robot/test`](robot/test) — task
+residuals and inverse kinematics followed, in `Task` and `Ik`; §4.0 says exactly
+what landed, §5.4 and §5.7 record the two numerical decisions that matter for the
+rest of the stack, and §10 tracks every open question. [`robot/README.md`](robot/README.md)
+is the user's guide to all of it.
 
 The short recommendation:
 
