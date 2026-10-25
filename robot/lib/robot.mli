@@ -145,6 +145,10 @@ module Make (Mo : MOTION) : sig
   (** The type for configurations: [batch_shape @ [|dof|]], on the last axis. *)
   type q = (float, Mo.kind) Nx.t
 
+  (** The type for joint velocities. It has the shape of a configuration: the
+      same columns, in the same order, as rates. *)
+  type qdot = q
+
   (** A joint axis or direction, in the joint frame. It is normalised when the
       model is built. *)
   type axis = float * float * float
@@ -345,6 +349,104 @@ module Make (Mo : MOTION) : sig
       joint off the frame's chain contributes zeros, so [J * qdot] is the
       frame's velocity for a full-length [qdot]. *)
   val jacobian : t -> ?space:[ `Body | `World ] -> frame:frame -> q -> twist
+
+  (** {2:velocities Velocities and accelerations}
+
+      The velocity of the whole robot is one recursive pass over the joints —
+
+      {[
+      V_child = Ad_(L^-1) V_parent + g * qdot
+      ]}
+
+      with [L] the joint's local motion and [g] its unit screw — which is the
+      forward pass of a dynamics algorithm, [O(n)] rather than one Jacobian per
+      link. Twists follow the conventions of {!jacobian}: [(omega, v)] with [v]
+      the velocity of the point at the origin of the frame the twist is
+      expressed in, and [`World] referring to world axes. *)
+
+  (** [link_twists m ?space q qdot] is every link's twist, of shape
+      [batch_shape @ [|link_count; 6|]], from the root (at rest) down. It is
+      the velocity-propagation pass: the twist of a link is its parent's,
+      carried through the joint's local motion, plus the joint's own screw
+      times its rate.
+
+      [`Body] (the default) gives each twist in its own link's axes, which is
+      what a dynamics recursion wants; [`World] gives world axes, so the
+      [link_count] rows are directly comparable in a picture or a velocity
+      limit. *)
+  val link_twists : t -> ?space:[ `Body | `World ] -> q -> qdot -> twist
+
+  (** [twist m ?space ~frame q qdot] is the twist of a frame at velocity
+      [qdot], of shape [batch_shape @ [|6|]]: its angular velocity and the
+      velocity of its origin, in the same terms as {!jacobian} — world axes
+      referenced to the frame's origin by default, or the frame's own axes for
+      [`Body].
+
+      It is the same quantity as [`jacobian · qdot`]; the two are computed by
+      different routes — a recursion over the joints and a sum over the
+      chain's columns — and the test suite checks them against each other. *)
+  val twist : t -> ?space:[ `Body | `World ] -> frame:frame -> q -> qdot -> twist
+
+  (** [bias m ?space ~frame q qdot] is the time derivative of {!twist}, of
+      shape [batch_shape @ [|6|]]: the frame origin's acceleration and the
+      angular acceleration along a trajectory through [q] with velocity [qdot]
+      and zero acceleration. It is [Jdot * qdot], the second term of
+
+      {[
+      acceleration = (J * qddot) + bias
+      ]}
+
+      so it is what a resolved-acceleration or operational-space controller
+      needs on top of the Jacobian, and what makes a cost that mentions tool
+      velocity differentiable in the configuration.
+
+      [`World] (the default) is the physical acceleration, world axes;
+      [`Body] is the derivative of the body twist's components, which is the
+      one that pairs with [Jdot] in the frame's own axes. Note that the body
+      acceleration of a point is not the rotation of its world acceleration:
+      the frame's own motion contributes the usual [omega x v]. *)
+  val bias : t -> ?space:[ `Body | `World ] -> frame:frame -> q -> qdot -> twist
+
+  (** [jacobian_dot m ?space ~frame q qdot] is the time derivative of
+      {!jacobian}, of shape [batch_shape @ [|6; dof|]], in the same convention:
+      [d/dt (J qdot) = J qddot + jacobian_dot qdot].
+
+      This one is differentiated rather than derived: a forward-mode derivative
+      of {!jacobian} along [qdot], one pass, exact. {!bias} is the [O(n)]
+      closed form of its product with [qdot], which is what most callers want;
+      the full matrix is here for second-order terms, and the two are checked
+      against each other. *)
+  val jacobian_dot : t -> ?space:[ `Body | `World ] -> frame:frame -> q -> qdot -> twist
+
+  (** {2:conditioning Conditioning}
+
+      How well a frame can move in every direction at a configuration: the
+      singular values of its world Jacobian, and their product. Both are
+      diagnostics — a picture, a regulariser, a design comparison — not
+      something a solver needs. *)
+
+  (** [singular_values m ~frame q] are the singular values of the frame's world
+      Jacobian, of shape [batch_shape @ [|6|]], in decreasing order. The
+      smallest one is the usual distance from a singularity, and the honest
+      scalar to plot; the largest is the fastest the tool can move per unit
+      joint speed.
+
+      There are [min 6 dof] of them: six for a full six-coordinate frame, and
+      one per coordinate for a model with fewer. A redundant model has six that
+      all mean something, since the world Jacobian has six rows. *)
+  val singular_values : t -> frame:frame -> q -> twist
+
+  (** [manipulability m ~frame q] is Yoshikawa's measure, of shape
+      [batch_shape]: the product of the [min 6 dof] largest singular values,
+      that is, the volume of the ellipsoid of achievable tool velocities. It
+      vanishes at a singularity and grows as the arm moves freely.
+
+      Two warnings worth having before quoting it. It mixes units — the
+      translational and rotational rows are in different units, so the number
+      depends on the length unit of the model — and it knows nothing about the
+      task, so a weighted version or {!singular_values} is often the more
+      honest statistic. *)
+  val manipulability : t -> frame:frame -> q -> (float, Mo.kind) Nx.t
 
   (** {2:ad Differentiable kinematics}
 

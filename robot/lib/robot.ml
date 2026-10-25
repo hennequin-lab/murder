@@ -45,6 +45,7 @@ module Make (Mo : MOTION) = struct
   type motion = Mo.t
   type twist = (float, Mo.kind) Nx.t
   type q = (float, Mo.kind) Nx.t
+  type qdot = q
   type axis = float * float * float
 
   type kind =
@@ -465,6 +466,182 @@ module Make (Mo : MOTION) = struct
       let stacked = Nx.reshape [| prod batch; n; 6; 6 |] (Nx.stack ~axis:bl columns) in
       let out = Nx.einsum "bnij,nj->bin" [| stacked; screws |] in
       Nx.reshape (Array.append batch [| 6; n |]) out)
+
+  (* Velocities and accelerations *)
+
+  (* Three-vector helpers, on the last axis of a tensor. *)
+
+  let part v start stop =
+    let indices = Nx.arange Nx.int64 start stop 1 in
+    Nx.take ~axis:(-1) ~indices v
+
+  let cross3 a b =
+    let ax = part a 0 1
+    and ay = part a 1 2
+    and az = part a 2 3 in
+    let bx = part b 0 1
+    and by = part b 1 2
+    and bz = part b 2 3 in
+    Nx.concatenate
+      ~axis:(-1)
+      [ Nx.sub (Nx.mul ay bz) (Nx.mul az by)
+      ; Nx.sub (Nx.mul az bx) (Nx.mul ax bz)
+      ; Nx.sub (Nx.mul ax by) (Nx.mul ay bx)
+      ]
+
+  (* The Lie bracket of two twists, [(omega_1 x omega_2, omega_1 x v_2 - omega_2 x v_1)]: the derivative of a twist carried by a moving frame. *)
+  let ad u v =
+    let wu = part u 0 3
+    and vu = part u 3 6 in
+    let wv = part v 0 3
+    and vv = part v 3 6 in
+    Nx.concatenate ~axis:(-1) [ cross3 wu wv; Nx.sub (cross3 wu vv) (cross3 wv vu) ]
+
+  (* [m] times [v] over the last two axes, broadcasting [m] over [v]'s batch. *)
+  let matvec m v =
+    let batch = batch_shape v in
+    let bsz = prod batch in
+    let m = Nx.broadcast_to (Array.append batch [| 6; 6 |]) m in
+    let out = Nx.matmul (Nx.reshape [| bsz; 6; 6 |] m) (Nx.reshape [| bsz; 6; 1 |] v) in
+    Nx.reshape (Array.append batch [| 6 |]) out
+
+  (* The block-diagonal rotation of a motion, as an adjoint: it rotates a twist
+     onto other axes without moving its point of reference. *)
+  let rotating m =
+    let p = Mo.translation m in
+    Mo.adjoint (Mo.mul (Mo.translate (Nx.neg p)) m)
+
+  (* Every link's body twist, by propagation from the root:
+
+     {[
+     V_child = Ad_(L^-1) V_parent + g qdot
+     ]}
+
+     with [L] the joint's local motion and [g] its unit screw — one pass over
+     the joints, so [O(n)] rather than one Jacobian per link. A fixed joint still
+     contributes its adjoint: its local motion is a fixed motor, not the
+     identity. *)
+  let body_twists m q qdot =
+    let batch = batch_shape q in
+    let zero = Nx.zeros Mo.dtype (Array.append batch [| 6 |]) in
+    let twists = Array.make (Array.length m.link_names) zero in
+    Array.iteri
+      (fun j (jt : joint) ->
+         let local = joint_motion m j q in
+         let carried = matvec (Mo.adjoint (Mo.inverse local)) twists.(jt.parent) in
+         let own =
+           match jt.kind with
+           | Fixed -> carried
+           | Revolute _ | Prismatic _ ->
+             let speed = column qdot m.dof_index.(j) in
+             Nx.add carried (Nx.mul jt.screw (expand batch speed))
+         in
+         twists.(jt.child) <- own)
+      m.joints;
+    twists
+
+  let link_twists m ?(space = `Body) q qdot =
+    let batch = batch_shape q in
+    let body = body_twists m q qdot in
+    let stacked = Nx.stack ~axis:(Array.length batch) (Array.to_list body) in
+    match space with
+    | `Body -> stacked
+    | `World ->
+      (* Rotate every link's body twist onto world axes: the adjoint of its
+         rotation alone, block-diagonal, so both parts turn and neither moves
+         its point of reference. *)
+      let lm = link_motors m q in
+      let rotation_only = Mo.mul (Mo.translate (Nx.neg (Mo.translation lm))) lm in
+      let r = Mo.adjoint rotation_only in
+      let shape = Nx.shape r in
+      let bsz = prod (Array.sub shape 0 (Array.length shape - 2)) in
+      let flat =
+        Nx.matmul (Nx.reshape [| bsz; 6; 6 |] r) (Nx.reshape [| bsz; 6; 1 |] stacked)
+      in
+      Nx.reshape (Nx.shape stacked) flat
+
+  (* The world motor of the link a frame hangs off. *)
+  let frame_link m batch q fi =
+    let f = m.frames.(fi) in
+    take_link (link_motors m q) batch f.flink, f
+
+  (* A frame's body twist: the link's, re-referenced to the frame's origin and
+     rotated onto the frame's axes, which is the adjoint of the frame's own
+     fixed pose. *)
+  let frame_body_twist m ~frame:fi body =
+    let f = m.frames.(fi) in
+    matvec (Mo.adjoint (Mo.inverse f.fpose)) body.(f.flink)
+
+  let twist m ?(space = `Body) ~frame:fi q qdot =
+    let body = body_twists m q qdot in
+    let vb = frame_body_twist m ~frame:fi body in
+    match space with
+    | `Body -> vb
+    | `World ->
+      let link, f = frame_link m (batch_shape q) q fi in
+      matvec (rotating (Mo.mul link f.fpose)) vb
+
+  let bias m ?(space = `Body) ~frame:fi q qdot =
+    let batch = batch_shape q in
+    let body = body_twists m q qdot in
+    (* The body acceleration recursion at [qddot = 0]. Differentiating
+       [V_child = Ad_(L^-1) V_parent + g qdot] and using
+       [d/dt Ad_(L^-1) = -ad_(g qdot) Ad_(L^-1)] gives the form Featherstone
+       uses, with the child's own twist in the bracket:
+
+       {[
+       ddot V_child = Ad_(L^-1) ddot V_parent + ad_(V_child) (g qdot)
+       ]} *)
+    let zero = Nx.zeros Mo.dtype (Array.append batch [| 6 |]) in
+    let acc = Array.make (Array.length m.link_names) zero in
+    Array.iteri
+      (fun j (jt : joint) ->
+         let carried =
+           matvec (Mo.adjoint (Mo.inverse (joint_motion m j q))) acc.(jt.parent)
+         in
+         let own =
+           match jt.kind with
+           | Fixed -> zero
+           | Revolute _ | Prismatic _ ->
+             let speed = column qdot m.dof_index.(j) in
+             let screw = Nx.mul jt.screw (expand batch speed) in
+             ad body.(jt.child) screw
+         in
+         acc.(jt.child) <- Nx.add carried own)
+      m.joints;
+    let vdot = frame_body_twist m ~frame:fi acc in
+    match space with
+    | `Body -> vdot
+    | `World ->
+      (* Rotating the body twist is time-dependent: on top of the rotation of
+         the acceleration, the frame's own motion adds [omega x v]. *)
+      let vb = frame_body_twist m ~frame:fi body in
+      let coriolis =
+        Nx.concatenate
+          ~axis:(-1)
+          [ Nx.zeros_like (part vb 0 3); cross3 (part vb 0 3) (part vb 3 6) ]
+      in
+      let link, f = frame_link m batch q fi in
+      matvec (rotating (Mo.mul link f.fpose)) (Nx.add vdot coriolis)
+
+  let jacobian_dot m ?(space = `World) ~frame:fi q qdot =
+    snd (Rune.jvp' (fun q -> jacobian m ~space ~frame:fi q) q qdot)
+
+  (* Conditioning of a frame's motion, from the singular values of its world
+     Jacobian. *)
+
+  let singular_values m ~frame:fi q =
+    Nx.cast Mo.dtype (Nx.svdvals (jacobian m ~frame:fi q))
+
+  let manipulability m ~frame:fi q =
+    let sv = singular_values m ~frame:fi q in
+    let k = Stdlib.min 6 m.dof in
+    if k = 0
+    then Nx.zeros Mo.dtype (batch_shape q)
+    else (
+      let axes = Array.length (Nx.shape sv) - 1 in
+      let kept = Nx.take ~axis:axes ~indices:(Nx.arange Nx.int64 0 k 1) sv in
+      Nx.prod ~axes:[ axes ] kept)
 
   (* Differentiable kinematics *)
 

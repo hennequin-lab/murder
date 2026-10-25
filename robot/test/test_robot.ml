@@ -454,6 +454,17 @@ let test_ad () =
   equal_tensor ~msg:"jacfwd through exp" ~rel:2e-3 analytic by_ad;
   let by_rule = Rune.jacfwd' (R.pose_diff m ~frame:fr) q in
   equal_tensor ~msg:"jacfwd through the custom rule" ~rel:1e-6 analytic by_rule;
+  (* A prismatic joint makes the angular part of [exp] exactly zero, where the
+     square root has an infinite derivative: while that was unguarded, forward
+     mode returned NaN for the whole Jacobian of any model with one. *)
+  let branch = branch_model () in
+  let bframe = R.frame branch "ee" in
+  let bq = q_of [ 0.3; 0.2 ] in
+  equal_tensor
+    ~msg:"jacfwd through a prismatic joint"
+    ~rel:2e-3
+    (R.motion_jacobian branch ~frame:bframe bq)
+    (Rune.jacfwd' (fun q -> R.pose branch ~frame:bframe q) bq);
   equal_tensor
     ~msg:"the rule's values are pose's"
     (R.pose m ~frame:fr q)
@@ -464,6 +475,250 @@ let test_ad () =
   let by_branches = Rune.grad' (fun q -> scalar_of (R.pose m ~frame:fr q)) q in
   let by_rule = Rune.grad' (fun q -> scalar_of (R.pose_diff m ~frame:fr q)) q in
   equal_tensor ~msg:"grad through the custom rule" ~rel:2e-3 by_branches by_rule
+
+(* {1 Velocities and accelerations}
+
+   Three independent routes to the same velocity, and they must agree: the
+   recursion over the joints, the sum over the Jacobian's columns, and a finite
+   difference of the pose. The acceleration is checked against the finite
+   difference of the velocity, which is its definition, and the Jacobian's time
+   derivative against both. *)
+
+let qd_of l = Nx.create f32 [| List.length l |] (Array.of_list l)
+
+(* The derivative of a twist along the trajectory through [q] with velocity
+   [qdot], by central differences: what [bias] is defined to be. *)
+let fd_twist m ~frame ~space q qdot =
+  let h = 1e-3 in
+  let plus = R.twist ~space m ~frame (Nx.add q (Nx.mul_s qdot h)) qdot
+  and minus = R.twist ~space m ~frame (Nx.sub q (Nx.mul_s qdot h)) qdot in
+  Nx.div_s (Nx.sub plus minus) (2. *. h)
+
+let space_name = function
+  | `World -> "world"
+  | `Body -> "body"
+
+let qdot_of m seed =
+  (* A velocity with every coordinate moving, distinct per model. *)
+  Nx.create
+    f32
+    [| R.dof m |]
+    (Array.init (R.dof m) (fun i -> seed *. (1. +. Float.of_int i)))
+
+let check_velocities name m ~frame =
+  let q = q_of (List.init (R.dof m) (fun i -> (0.3 *. (1. +. Float.of_int i)) -. 0.4)) in
+  let qdot = qdot_of m 0.15 in
+  let dof = R.dof m in
+  List.iter
+    (fun space ->
+       (* The twist is J qdot: two routes, one recursion and one sum. *)
+       let jac = R.jacobian ~space m ~frame q in
+       let from_jacobian =
+         Nx.reshape [| 6 |] (Nx.matmul jac (Nx.reshape [| dof; 1 |] qdot))
+       in
+       equal_tensor
+         ~msg:(Printf.sprintf "%s: the %s twist is J qdot" name (space_name space))
+         from_jacobian
+         (R.twist ~space m ~frame q qdot);
+       (* The bias is the derivative of that twist. *)
+       let bias = R.bias ~space m ~frame q qdot in
+       equal_tensor
+         ~msg:
+           (Printf.sprintf "%s: the %s bias is d/dt of the twist" name (space_name space))
+         ~rel:2e-3
+         bias
+         (fd_twist m ~frame ~space q qdot);
+       (* And Jdot qdot is the same thing, from the Jacobian's own derivative. *)
+       let jd = R.jacobian_dot ~space m ~frame q qdot in
+       equal
+         ~msg:(Printf.sprintf "%s: Jdot shape in %s" name (space_name space))
+         (array int)
+         [| 6; dof |]
+         (Nx.shape jd);
+       equal_tensor
+         ~msg:(Printf.sprintf "%s: Jdot qdot is the %s bias" name (space_name space))
+         bias
+         (Nx.reshape [| 6 |] (Nx.matmul jd (Nx.reshape [| dof; 1 |] qdot))))
+    [ `World; `Body ]
+
+let test_velocities () =
+  let six = R.six_dof () in
+  check_velocities "six_dof" six ~frame:(R.frame six "ee");
+  (* The branch model carries a fixed and a prismatic joint, whose twists are
+     the ones a recursion gets wrong. *)
+  let branch = branch_model () in
+  check_velocities "branch" branch ~frame:(R.frame branch "ee");
+  check_velocities "branch eye" branch ~frame:(R.frame branch "eye");
+  let planar = R.planar2 ~l1:0.8 ~l2:0.5 () in
+  check_velocities "planar2" planar ~frame:(R.frame planar "ee")
+
+(* Every link's twist, against the right-trivialised derivative of its pose. *)
+let test_link_twists () =
+  let m = R.six_dof () in
+  let q = q_of [ 0.4; -0.3; 0.8; 0.2; -0.5; 0.9 ]
+  and qdot = qd_of [ 0.1; 0.2; -0.3; 0.4; -0.5; 0.6 ] in
+  let twists = R.link_twists ~space:`Body m q qdot in
+  equal ~msg:"one twist per link" (array int) [| 7; 6 |] (Nx.shape twists);
+  let h = 1e-3 in
+  let lm = R.link_motors m q in
+  Array.iteri
+    (fun i _ ->
+       let w = Nx.slice [ I i ] lm in
+       let plus = Nx.slice [ I i ] (R.link_motors m (Nx.add q (Nx.mul_s qdot h))) in
+       let minus = Nx.slice [ I i ] (R.link_motors m (Nx.sub q (Nx.mul_s qdot h))) in
+       let fd =
+         let forwards = M.log (M.mul (M.inverse w) plus)
+         and backwards = M.log (M.mul (M.inverse minus) w) in
+         Nx.div_s (Nx.add forwards backwards) (2. *. h)
+       in
+       equal_tensor
+         ~msg:(Printf.sprintf "link %d: the body twist is d/dt of its pose" i)
+         ~rel:2e-3
+         (Nx.slice [ I i ] twists)
+         fd)
+    (R.link_names m);
+  (* The root does not move, and [`World] is the body twist rotated. *)
+  equal_tensor ~msg:"the root is at rest" (Nx.zeros f32 [| 6 |]) (Nx.slice [ I 0 ] twists);
+  let world = R.link_twists ~space:`World m q qdot in
+  let rotate3 i =
+    let r = M.rotation (Nx.slice [ I i ] lm) in
+    let twist = Nx.reshape [| 6 |] (Nx.slice [ I i ] twists) in
+    let half from = Nx.slice [ R (from, from + 3) ] twist in
+    Nx.concatenate
+      ~axis:0
+      [ Nx.reshape [| 3 |] (Nx.matmul r (Nx.reshape [| 3; 1 |] (half 0)))
+      ; Nx.reshape [| 3 |] (Nx.matmul r (Nx.reshape [| 3; 1 |] (half 3)))
+      ]
+  in
+  equal_tensor
+    ~msg:"[`World] is [`Body] rotated"
+    ~rel:1e-4
+    (Nx.stack ~axis:0 (List.init 7 rotate3))
+    world
+
+(* Batches are tensor axes here too. *)
+let test_velocity_batching () =
+  let m = R.six_dof () in
+  let fr = R.frame m "ee" in
+  let rows = [ [ 0.2; -0.5; 0.4; -0.7; 0.2; 0.5 ]; [ -0.3; 0.1; 0.6; 0.2; -0.4; 0.8 ] ] in
+  let q = cfg rows
+  and qdot = cfg rows in
+  List.iter
+    (fun space ->
+       let batch = R.twist ~space m ~frame:fr q qdot in
+       equal ~msg:"twist batch shape" (array int) [| 2; 6 |] (Nx.shape batch);
+       List.iteri
+         (fun i row ->
+            let qi = q_of row in
+            let qdi = q_of row in
+            equal_tensor
+              ~msg:(Printf.sprintf "row %d of the twist" i)
+              (R.twist ~space m ~frame:fr qi qdi)
+              (Nx.slice [ I i ] batch))
+         rows)
+    [ `World; `Body ];
+  let bias = R.bias ~space:`World m ~frame:fr q qdot in
+  equal ~msg:"bias batch shape" (array int) [| 2; 6 |] (Nx.shape bias);
+  equal_tensor
+    ~msg:"row 0 of the bias"
+    (R.bias ~space:`World m ~frame:fr (q_of (List.hd rows)) (q_of (List.hd rows)))
+    (Nx.slice [ I 0 ] bias);
+  let jd = R.jacobian_dot ~space:`World m ~frame:fr q qdot in
+  equal ~msg:"Jdot batch shape" (array int) [| 2; 6; 6 |] (Nx.shape jd);
+  equal_tensor
+    ~msg:"row 0 of Jdot"
+    (R.jacobian_dot ~space:`World m ~frame:fr (q_of (List.hd rows)) (q_of (List.hd rows)))
+    (Nx.slice [ I 0 ] jd)
+
+(* {1 Conditioning} *)
+
+let test_conditioning () =
+  let m = R.six_dof () in
+  let fr = R.frame m "ee" in
+  let q = q_of [ 0.4; -0.3; 0.8; 0.2; -0.5; 0.9 ] in
+  let sv = R.singular_values m ~frame:fr q in
+  equal ~msg:"six singular values" (array int) [| 6 |] (Nx.shape sv);
+  let values = arr32 sv in
+  equal
+    ~msg:"singular values decrease"
+    bool
+    true
+    (Array.for_all2
+       (fun a b -> a >= b -. 1e-6)
+       (Array.sub values 0 5)
+       (Array.sub values 1 5));
+  (* Yoshikawa's measure is their product, and for a square non-singular
+     Jacobian it is also sqrt (det (J J^T)). *)
+  let w = Nx.item [] (R.manipulability m ~frame:fr q) in
+  let product = Array.fold_left ( *. ) 1. values in
+  equal ~msg:"manipulability is the product of the singular values" (float 1e-5) product w;
+  let jj =
+    Nx.matmul (R.jacobian m ~frame:fr q) (Nx.transpose (R.jacobian m ~frame:fr q))
+  in
+  equal
+    ~msg:"and sqrt (det (J J^T)) for a square Jacobian"
+    (float 1e-5)
+    (Float.sqrt (Nx.item [] (Nx.det jj)))
+    w;
+  (* A redundant pair of joints on one axis has one column twice, so it cannot
+     move in every direction and the measure vanishes — the case it exists to
+     detect. Note that a planar arm at full stretch is *not* an instance: its
+     six-row Jacobian keeps the angular rows independent, which is the "mixes
+     units" caveat, and why the smallest singular value is often the honest
+     statistic. *)
+  let coaxial =
+    match
+      R.create
+        ~links:[ "base"; "a"; "b" ]
+        ~joints:
+          [ { R.name = "j1"
+            ; kind = R.Revolute (0., 0., 1.)
+            ; parent = "base"
+            ; child = "a"
+            ; origin = M.one
+            ; limits = None
+            }
+          ; { R.name = "j2"
+            ; kind = R.Revolute (0., 0., 1.)
+            ; parent = "a"
+            ; child = "b"
+            ; origin = M.translate3 0. 0. 0.3
+            ; limits = None
+            }
+          ]
+        ~frames:[ { R.name = "tip"; link = "b"; pose = M.translate3 0. 0. 0.3 } ]
+        ()
+    with
+    | Ok m -> m
+    | Error msg -> failwith msg
+  in
+  let tip = R.frame coaxial "tip" in
+  let q2 = q_of [ 0.3; -0.7 ] in
+  equal
+    ~msg:"two joints on one axis leave a direction unachievable"
+    bool
+    true
+    (Nx.item [] (R.manipulability coaxial ~frame:tip q2) < 1e-4);
+  equal
+    ~msg:"and its smallest singular value is zero"
+    bool
+    true
+    (Array.fold_left min 1. (arr32 (R.singular_values coaxial ~frame:tip q2)) < 1e-4);
+  (* The batch case: a column of configurations gives a column of numbers. *)
+  let batch =
+    cfg [ [ 0.4; -0.3; 0.8; 0.2; -0.5; 0.9 ]; [ -0.2; 0.6; 0.1; -0.4; 0.3; 0.2 ] ]
+  in
+  let ws = arr32 (R.manipulability m ~frame:fr batch) in
+  equal
+    ~msg:"manipulability batch shape"
+    (array int)
+    [| 2 |]
+    (Nx.shape (R.manipulability m ~frame:fr batch));
+  equal
+    ~msg:"batch agrees with the rows"
+    (float 1e-6)
+    (Nx.item [] (R.manipulability m ~frame:fr (q_of [ -0.2; 0.6; 0.1; -0.4; 0.3; 0.2 ])))
+    ws.(1)
 
 (* Construction validation. *)
 
@@ -725,6 +980,15 @@ let () =
            ; test "the motor Jacobian" test_motion_jacobian
            ; test "the tangent map" test_pose_tangent
            ]
+       ; group
+           "velocities"
+           [ test "twists, biases and the Jacobian's derivative" test_velocities
+           ; test "per-link twists" test_link_twists
+           ; test "batching" test_velocity_batching
+           ]
+       ; group
+           "conditioning"
+           [ test "singular values and manipulability" test_conditioning ]
        ; group "autodiff" [ test "jacfwd and the custom rule" test_ad ]
        ; group
            "models"

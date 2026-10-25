@@ -28,6 +28,8 @@ here depends on a file format, a physics engine or a robotics middleware.
 - [Forward kinematics](#forward-kinematics)
 - [Conventions](#conventions)
 - [Differential kinematics](#differential-kinematics)
+- [Velocities and accelerations](#velocities-and-accelerations)
+- [Conditioning](#conditioning)
 - [Tasks](#tasks)
 - [Inverse kinematics](#inverse-kinematics)
 - [Differentiation](#differentiation)
@@ -252,6 +254,74 @@ identity only at the identity. `Task.pose` pairs them anyway, which is what ever
 operational-space controller does and what makes Gauss–Newton on a pose converge
 quadratically; the exact `d log` is listed as an open refinement in
 `ROBOTICS.md` §10.
+
+## Velocities and accelerations
+
+A velocity is one recursive pass over the joints,
+
+```
+V_child = Ad_(L^-1) V_parent + g * qdot
+```
+
+with `L` the joint's local motion and `g` its unit screw — the forward pass a
+dynamics algorithm is built on, `O(n)` rather than one Jacobian per link:
+
+```ocaml
+let twists = R.link_twists model q qdot              (* [link_count; 6], body axes *)
+let world = R.link_twists ~space:`World model q qdot  (* world axes                 *)
+let v = R.twist model ~frame:ee q qdot               (* [6], one frame             *)
+```
+
+`twist` is the same quantity as `jacobian · qdot`, computed by a different route
+— a recursion over the joints instead of a sum over the chain's columns — and the
+tests check them against each other. A fixed joint still contributes its adjoint,
+which is the case a recursion written from memory usually gets wrong.
+
+The acceleration along a trajectory is the second term of `ẍ = J q̈ + J̇ q̇`:
+
+```ocaml
+let bias = R.bias model ~frame:ee q qdot        (* [6]: Jdot qdot, at qddot = 0  *)
+let jdot = R.jacobian_dot model ~frame:ee q qdot (* [6; dof]: the full matrix    *)
+```
+
+`bias` is the closed form, `O(n)`, and is what a resolved-acceleration or
+operational-space controller needs on top of the Jacobian; `jacobian_dot` is
+differentiated rather than derived — a forward-mode pass of `jacobian` along
+`qdot` — and the two are checked against each other and against a finite
+difference. Both are per-`qdot`, because the derivative of the Jacobian is not a
+function of the configuration alone.
+
+Two notes on the pair. `Bias` is available in both conventions: `World` (the
+default) is the physical acceleration of the frame origin in world axes, and
+`Body` is the derivative of the body twist's components, which is what pairs with
+the body Jacobian — the two differ by the frame's own `omega x v`, and a
+controller that mixes them will look almost right and drift. And the closed form
+of `bias` exists because the recursion is cheap; when a second-order term needs
+`J̇` against *arbitrary* directions (a Newton step, an exact Hessian), reach for
+`jacobian_dot`, which costs one extra pass of the Jacobian.
+
+## Conditioning
+
+How well a frame can move in every direction at a configuration:
+
+```ocaml
+let sv = R.singular_values model ~frame:ee q   (* [6], decreasing *)
+let w = R.manipulability model ~frame:ee q     (* Yoshikawa: their product *)
+```
+
+`singular_values` gives the singular values of the world Jacobian, whose smallest
+is the usual distance from a singularity and the honest scalar to plot;
+`manipulability` is Yoshikawa's volume of the ellipsoid of achievable tool
+velocities, the product of the `min 6 dof` largest values, so it vanishes exactly
+when the arm loses a direction.
+
+Use it as a diagnostic, not an objective, and mind two things. It mixes units —
+translational and rotational rows are in rad and m — so the number depends on the
+length unit of the model, and a weighted or task-specific version is often what
+you meant. And it is a *local* property with no notion of the task: a planar arm
+at full stretch has a zero determinant in its translational rows, yet the
+six-row Jacobian keeps the angular rows independent, so its manipulability is not
+zero. That is why the smallest singular value is the better plot.
 
 ## Tasks
 
@@ -483,7 +553,7 @@ whole layer traceable.
 
 | module | contents |
 |---|---|
-| [`Robot`](lib/robot.mli) | `create`, `dof`, `frame`, `link_motors`, `frame_motors`, `pose`, `relative`, `joint_motion`, `motion_jacobian`, `jacobian`, `pose_tangent`, `pose_diff`, `planar2`, `six_dof`, `pp` |
+| [`Robot`](lib/robot.mli) | `create`, `dof`, `frame`, `link_motors`, `frame_motors`, `pose`, `relative`, `joint_motion`, `motion_jacobian`, `jacobian`, `link_twists`, `twist`, `bias`, `jacobian_dot`, `singular_values`, `manipulability`, `pose_tangent`, `pose_diff`, `planar2`, `six_dof`, `pp` |
 | [`Task`](lib/task.mli) | `pose`, `primitive`, `custom`, `weight`, `scale`, `stack`, `residual`, `jacobian`, `squared`, `norm`, `dim`, `label`, `pp` |
 | [`Ik`](lib/ik.mli) | `init`, `iterate`, `solve`, `q`, `lambda`, `iterations`, and the `result` record |
 | [`Geom_robot_viz`](viz/lib/geom_robot_viz.mli) | `make`, `links`, `joints`, `base`, `tool`, `trail`, `target`, `entities`, `animated`, `camera`, `stage`, `sample`, `linear_path`, `default_style` |
@@ -512,6 +582,13 @@ differences of its eight coefficients, the tangent map against the Jacobian, the
 rule against `Rune.jacfwd` through `exp` and `grad` through the branches, plus
 validation, dof bookkeeping, and the fixed-chain and root-frame edge cases.
 
+A third group covers the velocities: the per-link twists against the
+right-trivialised derivative of each link's pose, the frame twist against
+`J qdot`, the bias against the finite difference of the twist, `jacobian_dot`
+against both, and every one of those in both conventions and in batches — plus
+the singular values and manipulability, including a model with two joints on one
+axis, whose manipulability is zero.
+
 `test_task.ml` checks that a residual means what it says and that its Jacobian is
 the derivative of that residual, by central differences: the pose error against
 its log, a point against a plane, a sphere, a line and through a line, weights
@@ -521,7 +598,6 @@ and stacking, batching, and the solver on limits, step limits and batches.
 
 Not implemented, in rough dependency order:
 
-- `Jdot`, manipulability and velocity propagation;
 - dynamics: `Spatial` types, RNEA, mass matrix, forward dynamics — these need the
   float64 motion module first, which is why the model layer is a functor;
 - model I/O and a robot zoo (URDF/YAML, Panda, UR5) — the builders here are a 2R

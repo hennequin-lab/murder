@@ -202,7 +202,8 @@ tests. It covers R0 and the part of R1 that does not need time derivatives:
 | Differentiable FK: the closed-form tangent map, attached as a `Rune.custom_jvp` rule | done (`pose_tangent`, `pose_diff`) |
 | Task residuals: pose and primitive (point/line/plane/circle/sphere/point pair), weights, stacking, custom | done (`Geom_robot.Task`); see §4.4 |
 | Inverse kinematics: batched damped Gauss–Newton with a trust region, joint limits, per-sample damping and convergence | done (`Geom_robot.Ik`); no nullspace, hierarchy or restarts yet |
-| `Jdot`, manipulability, velocity propagation | not started |
+| Velocities: per-link twists by propagation, frame twists, accelerations (`bias` = `J̇ q̇`), `J̇` | done (`link_twists`, `twist`, `bias`, `jacobian_dot`) |
+| Conditioning: singular values of the frame Jacobian and Yoshikawa's manipulability | done (`singular_values`, `manipulability`) |
 | Standard models: 2R planar, 6R chain | done (`planar2`, `six_dof`); UR5/Panda wait for model I/O |
 
 Two small additions to `geom` came out of it: `Motor.translation` and
@@ -942,7 +943,7 @@ example, not only an API.
 | Milestone | Scope | Status |
 |---|---|---|
 | **R0 — Model + FK** | link/joint/frame/robot types, validation, 2R and 6R builders, FK for all frames, batching, convention note | **done** — 2R hand formulas, 6R matrix FK, batching, precision decision recorded (§5.2) |
-| **R1 — Differential kinematics** | geometric/analytic/frame Jacobians, `Jdot`, manipulability, twist/wrench types | **partly done** — both Jacobians, world/body, `custom_jvp` rule, checked against finite differences and `Rune.jacfwd`; `Jdot` and manipulability remain |
+| **R1 — Differential kinematics** | geometric/analytic/frame Jacobians, `Jdot`, manipulability, twist/wrench types | **done** — both Jacobians, world/body, the `custom_jvp` rule, velocity propagation, `J̇ q̇` and `J̇`, singular values and manipulability, all checked against finite differences and `Rune.jacfwd`; wrenches wait for dynamics |
 | **R2 — Tasks + IK** | pose task, primitive tasks (point/line/plane/circle/sphere/point pair), compact residuals/Jacobians, damped Gauss–Newton, limits, batch IK | **done** — `Task` and `Ik`; Jacobians checked against finite differences, batched IK, limits and trust region tested; demos in `robot/viz/demo` |
 | **R3 — Model I/O + zoo** | minimal YAML/URDF import, 2R/6R/Panda/UR5, reference fixtures, `geom-viz` robot rendering | acceptance: load and compare FK/Jacobians with Pinocchio/KDL/GAFRO fixtures; visual demos |
 | **R4 — Dynamics** | `Spatial` types, RNEA, mass matrix, gravity/Coriolis, forward dynamics, differentiability | needs the float64 motion module first (§5.2); acceptance: energy/momentum checks, RNEA vs Lagrangian, ABA/`M⁻¹`, Pinocchio/KDL comparison, `Rune` trace |
