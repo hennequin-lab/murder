@@ -1,0 +1,15 @@
+opam-version: "2.0"
+maintainer: "Hennequin Lab"
+authors: [ "Hennequin Lab" ]
+license: "MIT"
+homepage: "https://github.com/hennequin-lab/data"
+dev-repo: "git+https://github.com/hennequin-lab/cmdargs.git"
+bug-reports: "https://github.com/hennequin-lab/cmdargs/issues"
+build: [
+  ["dune" "build" "-p" name "-j" jobs]
+]
+depends: [
+  "ocaml" {>= "4.06.0"}
+  "dune" {build & >= "1.1.0"}
+]
+synopsis: "Simple parsing of command-line arguments"
