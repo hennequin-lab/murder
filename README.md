@@ -1,6 +1,6 @@
 # Murder
 
-The Hennequin lab's monorepo of stable, Raven-based OCaml libraries.
+The Hennequin lab's killer monorepo of stable, [Raven](https://github.com/raven-ml/raven)-based OCaml libraries.
 
 Applications and ongoing projects live in their own repositories. This repo is
 for shared libraries, their tests and documentation, and the onboarding course.
@@ -34,6 +34,5 @@ and Vega, then a capstone.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). The plan for the repo is in
-[`MONOREPO.md`](MONOREPO.md); coding-assistant rules are in
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Coding-assistant rules are in
 [`AGENTS.md`](AGENTS.md).
