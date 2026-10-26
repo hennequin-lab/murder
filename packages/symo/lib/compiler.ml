@@ -1,0 +1,403 @@
+(*---------------------------------------------------------------------------
+  Copyright (c) 2026 The SYMO authors. All rights reserved.
+  SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
+(* JIT compilation of the commutation-equation basis.
+
+   A symbolic symmetry specification is turned into the set of basis tensors
+   of the invariant subspace ({!basis_of_spec}), and each basis element into
+   runnable closures: an einsum that applies the corresponding curvature block
+   to a batch of vectors, its dense block, and the linear solve that estimates
+   the factors from data. [compile] is the entry point.
+
+   Factorization of the small, constant design matrix of a basis is the only
+   numeric work done at compile time (Cholesky, with a jittered retry and an
+   SVD fallback for degenerate bases). The closures themselves are compositions
+   of [Nx] operations — einsums, reshapes, broadcasts and triangular solves —
+   so the whole per-step computation is traceable by [Rune.jit]. *)
+
+open Base
+
+(* A compiled basis, instantiated at one set of dimensions. *)
+type t =
+  { basis : Basis.t
+  ; dims : int list Sides.t
+  ; apply_block : factors:Nx.float32_t list -> Nx.float32_t -> Nx.float32_t
+  ; dense_block : factors:Nx.float32_t list -> Nx.float32_t
+  ; estimate_factors :
+      [ `Full of Nx.float32_t | `Outer_product of Nx.float32_t * Nx.float32_t ]
+      -> Nx.float32_t list
+  ; transform : perms:Nx.int64_t list -> Nx.float32_t -> Nx.float32_t
+  }
+
+let is_scalar t = Array.length (Nx.shape t) = 0
+
+(* The number of elements on each side of a compilation. *)
+let side_counts ~(dims : int list Sides.t) =
+  let product list = List.fold list ~init:1 ~f:Int.( * ) in
+  product dims.left, product dims.right
+
+(* Multiply [r] by the Kronecker identity over the left axes [ids], which
+   forces all of them equal. [r] carries a singleton axis for each of them;
+   the identity is applied two axes at a time, so no tensor of order
+   [List.length ids] is materialized. *)
+let tie_left_axes ~(dims : int list Sides.t) r ids =
+  let left_pos = function
+    | Index.Left i -> i
+    | Index.Right _ -> assert false
+  in
+  let n_left = List.length dims.left in
+  let step r i j =
+    let dim = Index.dim_of ~dims i in
+    let shape = Array.create ~len:(1 + n_left) 1 in
+    shape.(1 + left_pos i) <- dim;
+    shape.(1 + left_pos j) <- dim;
+    Nx.mul r (Nx.reshape shape (Nx.eye Nx.float32 dim))
+  in
+  let rec go r = function
+    | i :: (j :: _ as rest) -> go (step r i j) rest
+    | _ -> r
+  in
+  go r ids
+
+(* Compile one term into [fun ~factor v -> ...]: [v] is a batch of vectors
+   ([batch × dims.right]) and the result is [batch × dims.left]. A tie between
+   right axes is a repeated index in the vector's einsum equation (a repeated
+   index names the diagonal); a tie between a left and a right axis makes the
+   left output axis take the right axis's label; a tie between left axes keeps
+   one representative axis and is completed by [tie_left_axes]. Free axes
+   travel in the factor; axes involved in neither are broadcast along. *)
+let compile_apply_term ~(dims : int list Sides.t) term =
+  let dim_of = Index.dim_of ~dims in
+  let normalizer = Term.normalization ~dims term in
+  let label = Index.to_char in
+  let involved = Term.indices_involved term in
+  let left_ids = List.mapi dims.left ~f:(fun i _ -> Index.Left i) in
+  let right_ids = List.mapi dims.right ~f:(fun i _ -> Index.Right i) in
+  let left_pos = function
+    | Index.Left i -> i
+    | Index.Right _ -> assert false
+  in
+  let right_pos = function
+    | Index.Right i -> i
+    | Index.Left _ -> assert false
+  in
+  (* Label of each right axis in [v]: the right axes of a tie share the label
+     of their representative, so the einsum sums over the diagonal. *)
+  let v_labels = Array.of_list (List.map right_ids ~f:label) in
+  (* Label of each left axis in the output: a free axis keeps its own, the
+     representative of a tie takes the group's right label, a left-only tie
+     member is completed by [tie_left_axes], and an axis involved in nothing
+     is broadcast along at the end. *)
+  let out_labels =
+    Array.of_list
+      (List.map left_ids ~f:(fun id ->
+         if not (Set.mem involved id)
+         then `Broadcast
+         else if List.mem term.free id ~equal:Index.equal
+         then `Char (label id)
+         else `Tied))
+  in
+  let left_ties = ref [] in
+  List.iter term.ties ~f:(fun group ->
+    let rights = List.filter group ~f:Index.is_right in
+    let lefts = List.filter group ~f:Index.is_left in
+    (match rights with
+     | [] -> ()
+     | rep :: rest ->
+       List.iter rest ~f:(fun id -> v_labels.(right_pos id) <- label rep);
+       (match lefts with
+        | [] -> ()
+        | left_rep :: _ -> out_labels.(left_pos left_rep) <- `Char (label rep)));
+    match lefts with
+    | _ :: _ :: _ -> left_ties := lefts :: !left_ties
+    | _ -> ());
+  let output_labels =
+    'z'
+    :: List.filter_map (Array.to_list out_labels) ~f:(function
+      | `Char c -> Some c
+      | `Broadcast | `Tied -> None)
+  in
+  let output_view =
+    Array.of_list
+      (List.map left_ids ~f:(fun id ->
+         match out_labels.(left_pos id) with
+         | `Char _ -> dim_of id
+         | `Broadcast | `Tied -> 1))
+  in
+  let output_shape = Array.of_list dims.left in
+  let factor_labels = List.map term.free ~f:label in
+  let v_eq = String.of_char_list ('z' :: Array.to_list v_labels) in
+  let out_eq = String.of_char_list output_labels in
+  fun ~factor v ->
+    let t =
+      match factor_labels with
+      | [] ->
+        (* A term with no free axes carries a scalar factor; it must still
+           multiply the contraction. [Nx.mul] broadcasts the scalar, and
+           unlike [Nx.item] it stays traceable under [Rune.jit]. *)
+        assert (is_scalar factor);
+        Nx.einsum (v_eq ^ "->" ^ out_eq) [| v |] |> Nx.mul factor
+      | factor_labels ->
+        Nx.einsum
+          (String.of_char_list factor_labels ^ "," ^ v_eq ^ "->" ^ out_eq)
+          [| factor; v |]
+    in
+    let batch = (Nx.shape v).(0) in
+    let t = Nx.reshape (Array.append [| batch |] output_view) t in
+    let t = List.fold !left_ties ~init:t ~f:(tie_left_axes ~dims) in
+    let t = Nx.mul_s t normalizer in
+    Nx.broadcast_to (Array.append [| batch |] output_shape) t
+
+let compile_apply_component ~dims = function
+  | Component.Single term -> compile_apply_term ~dims term
+  | Component.Sum terms ->
+    let applies = List.map terms ~f:(compile_apply_term ~dims) in
+    fun ~factor v ->
+      List.fold applies ~init:(Nx.scalar Nx.float32 0.0) ~f:(fun accu apply ->
+        Nx.add accu (apply ~factor v))
+
+(* [apply ~factors v] applies the block described by [factors] to a batch of
+   vectors. *)
+let compile_apply ~dims components =
+  let applies = List.map components ~f:(compile_apply_component ~dims) in
+  fun ~factors v ->
+    List.fold2_exn
+      factors
+      applies
+      ~init:(Nx.scalar Nx.float32 0.0)
+      ~f:(fun acc factor apply -> Nx.add acc (apply ~factor v))
+
+(* The pseudo-inverse of the symmetric design matrix, used only as a
+   compile-time fallback for one that is not positive definite. Its
+   eigendecomposition [m = u diag(w) uᵀ] is its SVD up to signs, so the
+   pseudo-inverse is [u diag(1/w) uᵀ] over the eigenvalues whose magnitude
+   clears a relative tolerance, unlike the old implementation's unregularized
+   division. *)
+let pseudo_inverse m =
+  let n = (Nx.shape m).(0) in
+  let w, u = Nx.eigh m in
+  let tol = 1e-12 *. Nx.item [] (Nx.max (Nx.abs w)) in
+  let inv_w = Nx.where (Nx.greater_s (Nx.abs w) tol) (Nx.recip w) (Nx.zeros_like w) in
+  Nx.matmul (Nx.mul u (Nx.reshape [| 1; n |] inv_w)) (Nx.transpose u)
+
+(* Factor the constant design matrix once, at compile time: Cholesky when it
+   is positive definite (the generic case for a basis of independent
+   components), a jittered Cholesky when it is only positive semidefinite, and
+   the SVD pseudo-inverse as a last resort. *)
+let build_estimator design n =
+  let design64 = Nx.cast Nx.float64 design in
+  let try_cholesky m =
+    match Nx.cholesky m with
+    | l -> Some l
+    | exception Nx.Linalg_error _ -> None
+  in
+  match try_cholesky design64 with
+  | Some l -> `Cholesky (Nx.cast Nx.float32 l)
+  | None ->
+    let trace = Nx.item [] (Nx.sum (Nx.diag design64)) in
+    let jitter = Nx.mul_s (Nx.eye Nx.float64 n) Float.(1e-8 * trace / of_int n) in
+    (match try_cholesky (Nx.add design64 jitter) with
+     | Some l -> `Cholesky (Nx.cast Nx.float32 l)
+     | None ->
+       Stdio.eprintf
+         "Symo.Compiler: design matrix is not positive definite (n=%d); falling back to \
+          the SVD pseudo-inverse\n\
+          %!"
+         n;
+       `Inverse (Nx.cast Nx.float32 (pseudo_inverse design64)))
+
+(* [estimate_factors data] projects [data] onto the basis and solves the
+   constant design system for the factor of each component. With a Cholesky
+   factor [L] the solve is two triangular solves; the explicit inverse is only
+   the fallback. Both paths are traceable. *)
+let compile_estimate_factors ~(dims : int list Sides.t) components =
+  let n = List.length components in
+  let estimator = build_estimator (Component.design_matrix ~dims components) n in
+  fun data ->
+    let b =
+      List.map components ~f:(fun c -> Component.coefficient ~dims c data)
+      |> Nx.stack ~axis:0
+    in
+    let factor_shape =
+      Array.sub (Nx.shape b) ~pos:1 ~len:(Array.length (Nx.shape b) - 1)
+    in
+    let b = Nx.reshape [| n; -1 |] b in
+    let v =
+      match estimator with
+      | `Cholesky l ->
+        let y = Nx.solve_triangular l b in
+        Nx.solve_triangular ~transpose:true l y
+      | `Inverse inv -> Nx.matmul inv b
+    in
+    List.mapi components ~f:(fun i _ -> Nx.reshape factor_shape (Nx.slice [ Nx.I i ] v))
+
+(* Apply one group element to a parameter-shaped tensor. [perms] holds one
+   permutation per group id (in [group_axes] order); every axis tied to a
+   group is permuted by that group's permutation. *)
+let transform ~(dims : int list Sides.t) group_axes =
+  let axis_of = Index.axis_of ~dims in
+  fun ~perms t ->
+    let original_shape = Nx.shape t in
+    let t = Nx.reshape (Array.of_list (dims.left @ dims.right)) t in
+    let t =
+      List.fold2_exn group_axes perms ~init:t ~f:(fun t ids perm ->
+        List.fold ids ~init:t ~f:(fun x id -> Nx.take ~axis:(axis_of id) ~indices:perm x))
+    in
+    Nx.reshape original_shape t
+
+(* All set partitions of [lst], keeping each partition's blocks of size ≥ 2
+   (singleton blocks are dropped, so a partition need not cover [lst]). *)
+let partitions (lst : 'a list) : 'a list list list =
+  let add_element acc x =
+    List.concat_map acc ~f:(fun p ->
+      let new_block = p @ [ [ x ] ] in
+      let add_to_existing =
+        List.mapi p ~f:(fun i _ ->
+          List.mapi p ~f:(fun j b -> if Int.equal i j then x :: b else b))
+      in
+      new_block :: add_to_existing)
+  in
+  List.fold lst ~init:[ [] ] ~f:add_element
+  |> List.map
+       ~f:
+         (List.filter ~f:(function
+            | [ _ ] -> false
+            | _ -> true))
+
+(* All ways of picking one element from each sublist. *)
+let cartesian_product (xss : 'a list list) : 'a list list =
+  List.fold_right xss ~init:[ [] ] ~f:(fun xs acc ->
+    List.concat_map xs ~f:(fun x -> List.map acc ~f:(fun prod -> x :: prod)))
+
+let rec dedup_map xs ~equal =
+  match xs with
+  | [] -> []
+  | x :: rest ->
+    let dups, others = List.partition_tf rest ~f:(fun y -> equal x y) in
+    (x :: dups) :: dedup_map others ~equal
+
+(* Merge a term with its transpose into one symmetric component. *)
+let bundle_transposes terms =
+  dedup_map terms ~equal:(fun x y -> Term.equal x (Term.transpose y))
+  |> List.map ~f:(function
+    | [ a ] -> Component.Single a
+    | [ a; _ ] -> Component.Sum [ a; Term.sort (Term.transpose a) ]
+    | _ -> assert false)
+
+(* From a symmetry specification to the symbolic basis.
+
+   - the free axes are the [Id] axes of both sides;
+   - each [Perm i] ties its occurrences together, and all partitions of those
+     occurrences into blocks of size ≥ 2 enumerate the allowed delta
+     structures;
+   - the cartesian product across groups gives every term;
+   - when symmetry is required, a term and its transpose are merged into one
+     component. *)
+let basis_of_spec_uncached ~symmetric (symm : Symmetry.t) : Basis.t =
+  let open Symmetry in
+  let left i = Index.Left i in
+  let right i = Index.Right i in
+  let free =
+    let discover_free cons init spec =
+      List.foldi spec ~init ~f:(fun i acc spec ->
+        match spec with
+        | Id -> cons i :: acc
+        | _ -> acc)
+    in
+    discover_free right (discover_free left [] symm.left) symm.right
+    |> List.sort ~compare:Index.compare
+  in
+  let unique_perms = Hashtbl.create (module Int) in
+  let find_perms cons spec =
+    List.iteri spec ~f:(fun i spec ->
+      match spec with
+      | Perm id -> Hashtbl.add_multi unique_perms ~key:id ~data:(cons i)
+      | _ -> ())
+  in
+  find_perms left symm.left;
+  find_perms right symm.right;
+  (* Sorted by group id: [transform] takes one permutation per entry of
+     [group_axes], and different leaves of the same model must agree on
+     which group each entry belongs to, so a deterministic order is part of
+     the contract. *)
+  let group_ids = Hashtbl.keys unique_perms |> List.sort ~compare:Int.compare in
+  let unique_perms =
+    Hashtbl.to_alist unique_perms
+    |> List.sort ~compare:(fun (a, _) (b, _) -> Int.compare a b)
+    |> List.map ~f:(fun (_, ids) -> List.sort ids ~compare:Index.compare)
+  in
+  let possible_ties = List.map unique_perms ~f:partitions in
+  let components =
+    cartesian_product possible_ties
+    |> List.map ~f:List.concat
+    |> List.map ~f:(fun ties -> Term.{ ties; free })
+    |> List.map ~f:Term.sort
+  in
+  let components =
+    if symmetric
+    then bundle_transposes components
+    else List.map components ~f:(fun t -> Component.Single t)
+  in
+  { label = Symmetry.label_of symm
+  ; symmetric
+  ; components
+  ; group_axes = unique_perms
+  ; group_ids
+  }
+
+(* The basis depends only on the symmetry specification — not on the
+   dimensions — so it is memoized: second-order compilation asks for n²
+   specifications, and repeated layer shapes revisit the same ones (all
+   diagonal pairs and every pair of identical layers). Only the enumeration is
+   shared; the closures, the design matrix and the block table are rebuilt per
+   [dims]. *)
+let basis_cache : (string, Basis.t) Hashtbl.t = Hashtbl.create (module String)
+
+let basis_cache_key ~symmetric (symm : Symmetry.t) =
+  let side specs =
+    List.map specs ~f:(function
+      | Symmetry.Absent -> "A"
+      | Symmetry.Id -> "I"
+      | Symmetry.Perm i -> "P" ^ Int.to_string i)
+    |> String.concat ~sep:","
+  in
+  String.concat
+    ~sep:"|"
+    [ (if symmetric then "sym" else "asym"); side symm.left; side symm.right ]
+
+let basis_of_spec ~symmetric spec =
+  let key = basis_cache_key ~symmetric spec in
+  match Hashtbl.find basis_cache key with
+  | Some basis -> basis
+  | None ->
+    let basis = basis_of_spec_uncached ~symmetric spec in
+    Hashtbl.set basis_cache ~key ~data:basis;
+    basis
+
+let compile_basis ~(dims : int list Sides.t) (basis : Basis.t) =
+  let components = basis.components in
+  let apply_block = compile_apply ~dims components in
+  let dense_block ~factors =
+    let _, right_size = side_counts ~dims in
+    let v =
+      Nx.eye Nx.float32 right_size
+      |> Nx.reshape (Array.append [| right_size |] (Array.of_list dims.right))
+    in
+    apply_block ~factors v
+    |> Nx.reshape [| right_size; -1 |]
+    |> fun x -> Nx.transpose ~axes:[ 1; 0 ] x
+  in
+  let estimate_factors = compile_estimate_factors ~dims components in
+  let transform = transform ~dims basis.group_axes in
+  { basis; dims; apply_block; dense_block; estimate_factors; transform }
+
+let compile ?(symmetric = false) ~dims spec =
+  compile_basis ~dims (basis_of_spec ~symmetric spec)
+
+let compile_manual ?(symmetric = false) ~dims ~group_axes components =
+  let group_ids = List.init (List.length group_axes) ~f:Fn.id in
+  compile_basis
+    ~dims
+    { Basis.label = "manual"; symmetric; components; group_axes; group_ids }
