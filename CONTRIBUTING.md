@@ -28,7 +28,8 @@ dune build @ci             # fmt + lint + tests
 
 This repo is for stable shared libraries. Applications and ongoing projects
 live in their own repositories and depend on a pinned murder commit or a
-released opam version. See `MONOREPO.md` §4.3.
+released opam version. See `doc/dev/dependencies.md` for the pin and lock
+workflow.
 
 ## Formatting
 

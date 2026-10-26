@@ -5,8 +5,9 @@ plus a getting-started course. Applications and ongoing projects live in their
 own repositories. Most work here happens in `packages/<name>/` or
 `getting-started/`.
 
-Read `MONOREPO.md` for the plan and `CONTRIBUTING.md` for the human workflow.
-This file is the short version for coding assistants.
+Read `CONTRIBUTING.md` for the human workflow and `doc/dev/` for the design,
+testing, CI, dependency, and release notes. This file is the short version for
+coding assistants.
 
 ## Hard rules
 
@@ -39,8 +40,9 @@ one causes real damage.
 - Do not run `git reset --hard`, `git checkout -- .`, `git clean`, or
   `git stash` in a shared checkout. Use a branch or worktree, and ask before
   destructive git.
-- If a decision in `MONOREPO.md` needs to change, update that document in the
-  same change. Do not let the repo and the plan drift.
+- If a repository-wide decision changes, update `CONTRIBUTING.md` or the
+  relevant `doc/dev/` note in the same change. Do not let the repo and its
+  documentation drift.
 
 ## Layout
 
@@ -171,7 +173,7 @@ type(scope): Imperative summary
 
 ## Reviewing
 
-- Read `MONOREPO.md`, the package's `README.md`, and the files the change
+- Read `CONTRIBUTING.md`, the package's `README.md`, and the files the change
   touches before reviewing.
 - A change to a public `.mli`, library behaviour, or a contract needs a review
   by someone who did not write it.
@@ -186,6 +188,6 @@ type(scope): Imperative summary
   shows it.
 - For a numerical bug, print shapes, dtypes, and a small input. Check broadcasting
   and axis conventions before changing the algorithm.
-- For a CI failure, run the local command from `MONOREPO.md` §7.4.
+- For a CI failure, run `./dev check` and see `doc/dev/ci.md`.
 - Ask with the command, the full error, and the commit. Do not leave a
   background job running when you end a turn.
