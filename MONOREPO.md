@@ -20,7 +20,7 @@
 | Commit `dune.lock/`? | **Yes.** Dune 3.24 solves one lock for Linux/macOS on x86_64/arm64. Commit it and treat it as generated. |
 | Dune/OCaml versions | **Dune 3.24.2+**, **OCaml 5.5.x** (the lock pins 5.5.2; litany requires 5.5). |
 | Package naming | **Bare library names inside the workspace.** Add a `murder-` public name only when a package is published to opam; no umbrella package until there are external consumers. |
-| Raven dependency | Start with the **opam release `1.0.0~alpha3`**, frozen by `dune.lock`. Pin a Raven commit only when a specific unreleased fix is needed. |
+| Raven dependency | **Pin `raven-ml/raven` main at a full SHA in `dune-workspace`**, frozen by `dune.lock`. Raven is external, never a package here. Move to a stable release later. |
 | Tests | **Windtrap** for every package; `:with-test` dependencies; property/stateful/expect tests as appropriate. |
 | Lint | **Litany** pinned to a commit, run as `@lint` locally and as a full `litany check` in CI. Start **aggressive**: `(select all)` stable rules; adopt restriction rules one at a time. |
 | Formatting | **`.ocamlformat` pinned to 0.28.1**, `dune build @fmt` in CI, `./dev fmt` locally, opt-in hooks. |
@@ -38,7 +38,7 @@ lays out a phased roadmap.
 | Repository shape | One root Dune project; one project per package; Bazel/Nix | One root project gives one lock, one build graph, and one command to learn. Per-package projects multiply solving and CI. Bazel/Nix add a second build system the lab does not need for pure OCaml. |
 | Package naming | Bare names; `murder-` public prefix at publication; umbrella package | Bare names keep internal code and package metadata short; the workspace is the namespace. A public prefix avoids opam collisions when a library leaves the lab. An umbrella package only helps external `opam install` users; it is pure maintenance while the monorepo is cloned as a workspace. |
 | Lock directory | Commit; ignore; commit one per platform | Commit: Dune 3.24 solves Linux and macOS on x86_64/arm64 in one lock. Ignoring it brings back solver drift for Raven/windtrap/litany. Per-platform locks are only needed if Windows or an unusual distro enters scope. |
-| Raven source | Released `1.0.0~alpha3`; pin `main`; vendor | Release + lock gives a stable API and a reproducible build. Pin a commit only for a specific unreleased fix; vendoring creates a maintenance fork. |
+| Raven source | Pin `main`; released packages; vendor | Pin `main` now, because the lab tracks Raven development; the lock freezes the SHA. Released packages become the default once they catch up; vendoring creates a maintenance fork. |
 | CI platforms | Linux only; Linux + macOS; self-hosted | Linux gives fast PR feedback; macOS catches platform-specific breakage. Self-hosted is not worth the maintenance for this team size. Demote macOS to `main`/weekly if Actions minutes become a problem. |
 | Lint policy | Litany default; `all`; all + restriction; no linter | `all` catches correctness/suspicious/perf/style/pedantic on new code without the churn of nursery rules. Restriction rules encode house policy and are adopted by exact name. Default is too timid for a new repo with no legacy. |
 | Getting started | Link to Raven docs; written guide; tested tutorial | A tested tutorial is the only one that stays correct. Links alone do not teach the lab's idioms; untested prose rots. |
@@ -204,12 +204,8 @@ A skeleton:
 (implicit_transitive_deps false)
 (using mdx 0.4)
 
-; Pins are for packages opam does not have, or for a specific unreleased fix.
-; Pin a commit SHA, never a moving branch.
-(pin
- (url "git+https://github.com/invariant-hq/litany.git#<litany-sha>")
- (package
-  (name litany)))
+; External sources are pinned in dune-workspace, not here: Raven, windtrap,
+; litany and cmdargs are workspace sources, not packages of this project.
 
 (package
  (name murder-dev)
@@ -231,12 +227,9 @@ A skeleton:
   (ocaml
    (>= 5.5.0))
   dune
-  (nx
-   (>= 1.0.0~alpha3))
-  (rune
-   (>= 1.0.0~alpha3))
-  (vega
-   (>= 1.0.0~alpha3))
+  nx
+  rune
+  vega
   (windtrap
    (and
     :with-test
@@ -262,11 +255,9 @@ Notes:
   exists (or add a second real package); do not delete it while `murder-dev` is
   the only package.
 - `(= :version)` on internal packages keeps the monorepo in lockstep.
-- For Raven packages, use a lower bound, not an exact version. The lock file is
-  the exact pin; the source constraint says what API you need.
-- If you pin Raven to a commit, remove the version constraints on the pinned
-  packages. Dune treats pinned packages as `dev`, and a `>= 1.0.0~alpha3`
-  constraint can reject `dev`.
+- Raven is pinned in `dune-workspace`; do not put version constraints on a
+  pinned package. Dune treats pinned packages as `dev`. The lock is the exact
+  pin; `dune-project` only says which packages the code uses.
 - `murder-dev` exists only to make `litany` a dependency of the workspace, so
   `dune exec -- litany` and `%{bin:litany}` work. It is not published. Its name
   keeps the `murder-` prefix because it is a repo-level tool, not a library.
@@ -372,7 +363,7 @@ section.
 **Yes.** Recommended policy:
 
 - Commit **one** `dune.lock/` at the repository root.
-- Treat it as generated: it is changed only by `dune pkg lock`, reviewed as a
+- Treat it as generated: it is changed only by `./dev lock`, reviewed as a
   dependency diff, and never hand-edited.
 - Commit it in the same PR as the `dune-project` change that caused it.
 - Never commit `_build/` or `_build/.dev-tools.locks/`; those are local.
@@ -396,7 +387,7 @@ Reasons:
 Caveats to state in CONTRIBUTING:
 
 - `dune.lock/` is platform-solved, not human-merged. On a conflict, take one
-  side, run `dune pkg lock`, run the tests, and commit the regenerated result.
+  side, run `./dev lock`, run the tests, and commit the regenerated result.
 - Lock updates can be large. Keep them in dedicated `chore(deps):` PRs when
   possible; do not bury a lock refresh in a feature PR.
 - A lock is only as good as its source URLs. Pin git dependencies to full
@@ -407,7 +398,7 @@ Caveats to state in CONTRIBUTING:
 If the team ever decides *not* to commit the lock, the fallback is:
 
 - Commit exact pins for Raven, windtrap, and litany in `dune-project`.
-- Run `dune pkg lock` in CI before building.
+- Run `./dev lock` in CI before building.
 - Accept that non-pinned transitive dependencies can drift.
 
 That fallback is strictly worse for a lab that cares about reproducible
@@ -418,7 +409,7 @@ matrix.
 
 ```sh
 # First setup, or after changing dependencies/pins:
-dune pkg lock
+./dev lock
 
 # Build using the committed lock:
 dune build
@@ -429,8 +420,10 @@ dune pkg outdated
 
 Rules:
 
-- `dune pkg lock` is the only writer of `dune.lock/`.
-- After changing `dune-project` dependencies or pins, relock and commit.
+- `./dev lock` is the only writer of `dune.lock/`. It runs `dune pkg lock` and
+  then `scripts/patch-lock.py` (see §5.4).
+- After changing `dune-project` dependencies or `dune-workspace` pins, relock
+  and commit.
 - If `dune build` says a package is missing from the lock, relock; do not edit
   the lock by hand.
 - Review lock diffs for unexpected new packages or source URLs.
@@ -440,39 +433,45 @@ Rules:
 
 ### 5.4 Pins: Raven, windtrap, litany
 
-**Raven.** Use the released opam packages (`nx`, `rune`, `vega`, and any other
-Raven packages a library needs) at `1.0.0~alpha3`. The lock freezes the exact
-version. If a lab library needs an unreleased Raven fix:
+Pins live in `dune-workspace`, because they are workspace-level sources rather
+than packages of this project. `dune-project` declares only our packages.
+
+**Raven.** Pinned to a full commit on `raven-ml/raven`'s `main`. The pin lists
+every Raven package the workspace uses: `compress`, `nx`, `rune`, `tolk`,
+`vega`, `jera`, `rig`, and `ppx_ptree`. Raven is not a package of this
+monorepo.
 
 ```lisp
 (pin
+ (name raven)
  (url "git+https://github.com/raven-ml/raven.git#<full-sha>")
+ (package (name compress))
  (package (name nx))
  (package (name rune))
- (package (name vega)))
+ (package (name tolk))
+ (package (name vega))
+ (package (name jera))
+ (package (name rig))
+ (package (name ppx_ptree)))
 ```
 
-Pin all Raven packages used, not just the one with the fix; Raven packages
-depend on each other with `(= :version)`. Remove the version constraints on
-those packages while the pin is active. Remove the pin once a release includes
-the fix.
+Move the SHA deliberately and relock. Once Raven has a stable release, replace
+the pin with versioned opam dependencies.
 
-**Windtrap.** Use the opam release (`0.2.x`) unless a needed feature or fix is
-only on `main`; then pin `windtrap` and `ppx_windtrap` to one SHA. Add both as
-`:with-test` dependencies:
+**Windtrap.** Pinned to the commit Raven's own CI uses, so our tests and
+Raven's agree. `ppx_windtrap` comes from the same pin. Both are `:with-test`
+dependencies.
 
-```lisp
-(windtrap (and :with-test (>= 0.2.0)))
-(ppx_windtrap (and :with-test (>= 0.2.0)))
-```
+**Litany and cmdargs.** Not on opam. Pinned to full SHAs in `dune-workspace`;
+litany is used only by `murder-dev`. Cmdargs is the lab's small CLI package.
 
-**Litany.** Not on opam. Pin it to a full SHA and put it only in `murder-dev`:
-
-```lisp
-(pin
- (url "git+https://github.com/invariant-hq/litany.git#<full-sha>")
- (package (name litany)))
-```
+**Lock workaround.** Raven main's private test libraries under
+`packages/hugin/test` are built by `@install` even when Dune builds another
+package with `-p`; one copies `packages/hugin/lib/marks.{ml,mli}` from outside
+its package and fails. `scripts/patch-lock.py`, run by `./dev lock`, changes the
+lock's Raven build actions to `<pkg>.install` and points Jane Street archive
+URLs at codeload (GitHub's archive endpoint returns 504). Remove the patch when
+both are fixed upstream. Never hand-edit `dune.lock/`; run `./dev lock`.
 
 Litany reads the compiler's `.cmt` artifacts and requires the same OCaml minor
 it was built with (`>= 5.5.0 & < 5.6.0`). The lock pins 5.5.2, so this is
@@ -520,7 +519,8 @@ be published. (Raven follows the same pattern with its `dev.opam`.)
 
   ```ini
   version = 0.28.1
-  profile = default
+  profile = janestreet
+  let-binding-spacing = compact
   parse-docstrings = true
   wrap-comments = true
   ```
@@ -934,7 +934,7 @@ Troubleshooting:
 - **ocamlformat version mismatch:** remove
   `_build/.dev-tools.locks/ocamlformat` and run `dune tools install
   ocamlformat`; Dune reads the version from `.ocamlformat`.
-- **Lock conflict:** take one side of `dune.lock/`, run `dune pkg lock`, run
+- **Lock conflict:** take one side of `dune.lock/`, run `./dev lock`, run
   `./dev check`, commit the regenerated lock.
 - **macOS build needs GNU patch:** add `install-gpatch` to the setup-dune
   `steps` input.
@@ -951,7 +951,7 @@ Troubleshooting:
   after two clean weeks.
 - **Mutation:** a scheduled or manual workflow; survivors are a reading list,
   not a failure.
-- **Dependency refresh:** a monthly PR from `dune pkg lock` plus
+- **Dependency refresh:** a monthly PR from `./dev lock` plus
   `dune pkg outdated`. Keep it separate from feature work.
 - **Release:** a tag-triggered workflow using `dune-release` if the lab decides
   to publish to opam. Do not build this before the first release is wanted.
@@ -980,89 +980,68 @@ getting-started/
 ├── 01-nx/
 │   ├── README.md             # arrays, dtypes, shapes, broadcasting, views
 │   ├── dune
-│   ├── ex01_create.ml
-│   ├── ex02_broadcast.ml
-│   ├── ex03_slicing.ml
-│   ├── ex04_linalg.ml
-│   ├── exercises.md
-│   └── solutions/
+│   ├── ex01_arrays.ml
+│   └── ex02_slicing.ml
 ├── 02-rune/
 │   ├── README.md             # grad, value_and_grad, pytrees, vmap, jit
 │   ├── dune
 │   ├── ex01_grad.ml
-│   ├── ex02_linear_regression.ml
-│   ├── ex03_vmap.ml
-│   ├── ex04_jit.ml
-│   ├── exercises.md
-│   └── solutions/
+│   └── ex02_linear_regression.ml
 ├── 03-vega/
 │   ├── README.md             # optimizers, state, schedules, clipping
 │   ├── dune
-│   ├── ex01_sgd.ml
-│   ├── ex02_adam.ml
-│   ├── ex03_schedules.ml
-│   ├── ex04_train_mlp.ml
-│   ├── exercises.md
-│   └── solutions/
+│   └── ex01_optimizers.ml
 └── 04-capstone/
-    ├── README.md             # train, evaluate, save, plot, write up
+    ├── README.md             # train, evaluate, and extend
     ├── dune
-    ├── train.ml
-    └── data/                 # generated or tiny; no downloads in tests
+    └── train.ml
 ```
 
 ### 8.3 Curriculum
 
 **Chapter 1 — Nx.** Tensors as values with a dtype and shape; creating arrays;
 elementwise ops; broadcasting; reductions; matrix multiplication; slicing and
-views versus copies; reading/writing `.npy`; a first plot with Hugin if the
-ecosystem chapter is included. Exercises: numerically stable softmax, one-hot
-encoding, layer normalization, a vectorized distance matrix, and a shape-error
-debugging exercise.
+views versus copies. Exercises: numerically stable softmax, one-hot encoding,
+layer normalization, a vectorized distance matrix, and a shape-error debugging
+exercise.
 
 **Chapter 2 — Rune.** Why autodiff; pure functions; `grad` and
 `value_and_grad`; parameter trees (`Nx.Ptree.S`) and typed records; linear
-regression from scratch; `check_grads` against finite differences; `vmap` for
-per-sample gradients; `jit` and its tracing rules (no side effects, static
-shapes); a small MLP forward/backward pass. Exercises: hand-code the MSE
-gradient and compare, compute per-sample gradients, jit a training step, and
-find the bug in a traced function with a side effect.
+regression from scratch. Exercises: check gradients against finite differences,
+compute per-sample gradients with `vmap`, jit a training step, and find the bug
+in a traced function with a side effect.
 
 **Chapter 3 — Vega.** Optimizer state has the shape of the parameters; `sgd`,
-`adam`, `adamw`; a training loop combining Rune and Vega; learning-rate
-schedules; gradient clipping and loss scaling; comparing optimizers on the same
-model; checkpointing state. Exercises: tune a learning rate, compare SGD and
-Adam, add warmup + cosine decay, and train an MLP on a synthetic two-moons or
-blobs dataset.
+`adam`, `adamw`; a training loop combining Rune and Vega. Exercises: compare
+the optimizers, add a learning-rate schedule, clip gradients, and add a second
+parameter leaf.
 
-**Chapter 4 — Capstone.** An end-to-end experiment: generate or load a small
-dataset, split train/validation, standardize features, train an MLP with
-Rune + Vega, track loss/accuracy, evaluate, save the weights, and plot the
-result. Optional: use Munin for logging and Hugin for plots. Acceptance:
-`dune exec getting-started/04-capstone/train.exe` runs in under a minute on a
-laptop CPU, is deterministic with a fixed seed, prints metrics, and has a
-README explaining how to reproduce the number.
+**Chapter 4 — Capstone.** An end-to-end experiment: generate two Gaussian
+blobs, train a one-hidden-layer MLP with Rune + Vega, and track loss and
+accuracy. Extensions: split off validation data, save and reload the
+parameters, plot the decision boundary with Hugin, or log with Munin.
+Acceptance: `dune exec getting-started/04-capstone/train.exe` runs in under a
+minute on a laptop CPU, is deterministic with fixed keys, and prints the final
+accuracy.
 
 ### 8.4 How the examples stay correct
 
-- Short snippets in `README.md` are mdx code blocks, tested by `dune runtest`.
-- Full programs are ordinary executables with windtrap tests for the numerical
-  claims (shapes, tolerances, determinism).
-- `solutions/` are compiled and tested; the exercise files are complete demos,
-  not `failwith "TODO"` stubs. New members write attempts in `scratch/`, which
-  is ignored by git.
-- No network downloads in tests. Synthetic data or a tiny committed fixture
-  with a checksum.
-- Total tutorial `runtest` under ~2 minutes warm.
-- When Raven changes, the lock bump PR must update the tutorials; CI catches
-  broken snippets.
+- Every example is compiled by `dune build @all`. `dune runtest getting-started`
+  runs them as a smoke test, so a runtime error fails CI.
+- The examples are complete programs, not `failwith "TODO"` stubs. Exercises
+  live in each chapter's README; attempts go in `getting-started/scratch/`,
+  which is ignored by git.
+- No network downloads in tests. The capstone uses synthetic Gaussian blobs.
+- Total tutorial `runtest` is well under two minutes warm.
+- When Raven changes, the lock bump PR must update the examples; CI catches
+  broken APIs. Add mdx snippets when a chapter needs inline expected output.
 
 ### 8.5 Onboarding path
 
 1. Install Dune 3.24.2 and put it on `PATH`.
 2. `git clone git@github.com:hennequin-lab/murder.git && cd murder`.
 3. `./dev setup` (installs hooks, builds `.cmt`, downloads dependencies).
-4. `dune exec getting-started/01-nx/ex01_create.exe`.
+4. `dune exec getting-started/01-nx/ex01_arrays.exe`.
 5. Read `getting-started/README.md`, work through Nx, Rune, Vega.
 6. Do the capstone; write a short README with the result.
 7. Read `CONTRIBUTING.md`, pick a `good-first-issue`, open a PR.
@@ -1086,7 +1065,7 @@ underlying `dune` command so it teaches rather than hides.
 ./dev check      # dune build @ci, then full litany check
 ./dev test       # dune runtest
 ./dev lint       # dune exec -- litany check
-./dev lock       # dune pkg lock
+./dev lock       # dune pkg lock + scripts/patch-lock.py
 ./dev outdated   # dune pkg outdated
 ./dev new NAME   # scaffold packages/NAME from the template
 ```
@@ -1148,7 +1127,7 @@ dune runtest             # tests only
 - [ ] Public API changes have `.mli` docs and a `CHANGES.md` entry.
 - [ ] New behavior has a windtrap test; bug fixes have a regression test that
   failed before the fix.
-- [ ] If dependencies changed, `dune pkg lock` was run and the lock diff is in
+- [ ] If dependencies changed, `./dev lock` was run and the lock diff is in
   the PR.
 - [ ] If docs/examples changed, mdx tests pass.
 
@@ -1202,7 +1181,7 @@ links to API docs.
 - [ ] `./dev` script and `.githooks/` (`commit-msg`, `pre-commit`, `pre-push`).
 - [ ] `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`,
   `CHANGES.md`.
-- [ ] `dune pkg lock`; commit `dune.lock/` and the generated `opam/*.opam`
+- [ ] `./dev lock`; commit `dune.lock/` and the generated `opam/*.opam`
   files for published packages (`opam/murder-dev.opam` is intentionally
   ignored).
 - [ ] `./dev check` green locally.
@@ -1272,9 +1251,9 @@ parentheses.
 2. **Project-repo pinning.** Project repos pin a murder commit by default. Do we
    also want a released opam version for stable libraries, and on what cadence?
 3. **License.** ISC is settled; keep the `LICENSE` and package metadata in sync.
-4. **Raven version.** Released `1.0.0~alpha3` + lock (recommended), or pin
-   Raven `main` from day one? Pinning `main` gives the newest APIs but makes
-   every lock refresh a compatibility project.
+4. **Raven release.** Raven is pinned to `main` for now. When a stable release
+   lands, replace the pin with versioned opam dependencies. On what cadence do
+   we move the pin?
 5. **Windtrap version.** Released `0.2.x` (recommended) or pin a commit for
    unreleased features?
 6. **Litany restriction rules.** Start with `(select all)`; which restriction
@@ -1363,7 +1342,8 @@ rest of the file is unaffected.
 
 ```ini
 version = 0.28.1
-profile = default
+profile = janestreet
+let-binding-spacing = compact
 parse-docstrings = true
 wrap-comments = true
 ```
@@ -1638,7 +1618,7 @@ changes do not need an entry.
 - [ ] Public API has `.mli` docs
 - [ ] Windtrap test covers the new behavior / regression
 - [ ] `CHANGES.md` entry for a user-visible change
-- [ ] If dependencies changed: `dune pkg lock` diff included
+- [ ] If dependencies changed: `./dev lock` diff included
 - [ ] If docs/examples changed: mdx tests pass
 ```
 
@@ -1657,7 +1637,7 @@ Requires Dune 3.24.2+ and network access on the first build.
 git clone git@github.com:hennequin-lab/murder.git
 cd murder
 ./dev setup
-dune exec getting-started/01-nx/ex01_create.exe
+dune exec getting-started/01-nx/ex01_arrays.exe
 ```
 
 ## Packages
@@ -1684,7 +1664,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md). The plan for the repo is in
 ## Set up
 - Install Dune 3.24.2+.
 - Clone; run `./dev setup`.
-- First command: `dune exec getting-started/01-nx/ex01_create.exe`.
+- First command: `dune exec getting-started/01-nx/ex01_arrays.exe`.
 
 ## Daily loop
 - `./dev fmt` before committing.
@@ -1718,7 +1698,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md). The plan for the repo is in
 
 ## Dependencies
 - Add the dependency to the package's `dune-project` stanza.
-- Run `dune pkg lock`; commit the lock diff with the change.
+- Run `./dev lock`; commit the lock diff with the change.
 - Pin git dependencies to a full SHA; never a moving branch.
 
 ## Pull requests

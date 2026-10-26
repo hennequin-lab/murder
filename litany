@@ -1,0 +1,9 @@
+(litany-config 1)
+
+(lint
+ (select all))
+
+; `all` is every stable rule outside the restriction tier. Add house-policy
+; restriction rules one at a time by exact name, for example:
+;   (extend unsafe-partial-stdlib)
+; Do not put nursery in the CI gate; run the full catalog as an audit.

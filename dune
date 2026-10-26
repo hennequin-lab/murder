@@ -1,0 +1,27 @@
+; Lint inside the build: findings become dune diagnostics.
+
+(rule
+ (alias lint)
+ (deps
+  (alias_rec check))
+ (action
+  (run %{bin:litany} check)))
+
+; Apply safe fixes as dune corrections; review with `dune promote`.
+
+(rule
+ (alias lint-fix)
+ (deps
+  (alias_rec check))
+ (corrections produce)
+ (action
+  (run %{bin:litany} check --fix)))
+
+; One command for the local pre-push gate.
+
+(alias
+ (name ci)
+ (deps
+  (alias fmt)
+  (alias lint)
+  (alias_rec runtest)))

@@ -16,7 +16,8 @@ one causes real damage.
 - NEVER push, force-push, amend published commits, or rewrite history. The
   human pushes. Do not commit unless explicitly asked.
 - NEVER hand-edit `dune.lock/`, `opam/*.opam`, or anything under `_build/`.
-  `dune.lock` is written by `dune pkg lock`; `_build` is Dune's output.
+  `dune.lock` is written by `./dev lock` (which also runs the Raven-main
+  workaround); `_build` is Dune's output.
 - NEVER relock or delete `dune.lock` as a side effect. Relock only when the
   change adds or updates a dependency or pin, and include the lock diff.
 - NEVER disable, bypass, or weaken `@fmt`, `@lint`, tests, or CI to make a
@@ -68,10 +69,10 @@ one causes real damage.
 - `./dev check` — `dune build @ci`, then the full litany roster.
 - `./dev test` — `dune runtest`.
 - `./dev lint` — `dune exec -- litany check`.
-- `./dev lock` — `dune pkg lock`.
+- `./dev lock` — `dune pkg lock` plus the Raven-main lock patch.
 - `./dev new <name>` — scaffold `packages/<name>/`.
 - One package's tests: `dune build @packages/<pkg>/runtest`.
-- One tutorial: `dune exec getting-started/01-nx/ex01_create.exe`.
+- One tutorial: `dune exec getting-started/01-nx/ex01_arrays.exe`.
 
 Use `timeout` for commands that can hang (tests, package solving). If a build
 looks stuck, check `dune rpc ping` before killing anything.
@@ -134,7 +135,7 @@ and runs.
 ## Dependencies and lock
 
 - Dune package management is the only package manager. Do not use opam.
-- Add a dependency to the package's `dune-project`, run `dune pkg lock`, and
+- Add a dependency to the package's `dune-project`, run `./dev lock`, and
   commit the lock diff with the change.
 - Pin a git dependency to a full SHA and name the packages it provides. Never
   pin a moving branch. Remove version constraints on a pinned package while the

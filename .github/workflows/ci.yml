@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DUNE_CACHE: enabled
+  DUNE_CACHE_STORAGE_MODE: copy
+  WINDTRAP_TIMEOUT: 120
+  WINDTRAP_PROP_COUNT: 200
+  LITANY_NO_PROGRESS: 1
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ocaml-dune/setup-dune@v2
+        with:
+          version: 3.24.2
+          steps: install-dune enable-pkg
+      - name: Check the lock is committed
+        run: test -f dune.lock/lock.dune
+      - name: Check formatting
+        run: dune build @fmt
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ocaml-dune/setup-dune@v2
+        with:
+          version: 3.24.2
+          steps: install-dune enable-pkg
+      - name: Lint
+        run: dune exec -- litany check
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ocaml-dune/setup-dune@v2
+        with:
+          version: 3.24.2
+          steps: install-dune enable-pkg install-depexts
+      - name: Build
+        run: dune build @all @install
+      - name: Test
+        run: dune runtest
+      - name: Check generated files are committed
+        if: runner.os == 'Linux'
+        run: git diff --exit-code
