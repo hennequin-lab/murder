@@ -1,0 +1,6 @@
+(test
+ (name test_dilqr)
+ (modules test_dilqr)
+ (libraries base stdio nx rune windtrap dilqr)
+ (preprocess
+  (pps ppx_ptree)))

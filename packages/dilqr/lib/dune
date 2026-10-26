@@ -1,0 +1,5 @@
+(library
+ (name dilqr)
+ (public_name dilqr)
+ (libraries base stdio nx rune)
+ (modules regularisation linesearch lqr problem solver implicit_grad dilqr))
