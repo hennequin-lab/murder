@@ -4,8 +4,6 @@
   ---------------------------------------------------------------------------*)
 
 open Base
-open Types
-
 (* The ELBO is [log p(o | z) − β · KL(q ‖ p)] ({!Elbo}). β = 1 is the
    variational bound, but a recognition trained from scratch can collapse
    onto the prior before it has learned to read the data, and the likelihood

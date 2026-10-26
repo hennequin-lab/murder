@@ -473,7 +473,7 @@ let test_rng_in_the_graph_is_a_constant () =
     (Nx.to_array (theta_t_cotangent ~k:kk thetas grads))
     sk_noisy.c;
   check_arr ~msg:"noise does not move G̃" (Nx.to_array sk_clean.ggn) sk_noisy.ggn;
-  if Nx.item [] sk_noisy.loss = Nx.item [] sk_clean.loss
+  if Float.equal (Nx.item [] sk_noisy.loss) (Nx.item [] sk_clean.loss)
   then fail "the noise did not reach the loss"
 
 let test_jit_inside_degrades () =
@@ -609,7 +609,7 @@ let test_control_flow_is_inherited () =
   let masked p =
     let _, zs =
       Rune.scan'
-        ~f:(fun z tgt ->
+        ~f:(fun z _tgt ->
           let z' = step p z in
           z', z')
         ~init:z0

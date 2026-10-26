@@ -39,6 +39,7 @@ end
 
 module S = Symo.Make (Mlp)
 
+let relu x = Nx.maximum x (Nx.zeros_like x)
 let batch = 128
 let steps = 500
 let print_every = 50
@@ -54,7 +55,7 @@ let init key =
   }
 
 let forward (p : Nx.float32_t Mlp.t) x =
-  let h = Nx.relu (Nx.matmul x (Nx.transpose p.w1)) in
+  let h = relu (Nx.matmul x (Nx.transpose p.w1)) in
   Nx.matmul h (Nx.transpose p.w2)
 
 let teacher = init (Nx.Rng.key 42)

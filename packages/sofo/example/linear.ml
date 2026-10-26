@@ -29,18 +29,18 @@ module Model = struct
   end
 
   let init ~d_in ~d_out =
-    let open Infix in
+    let open Nx.Infix in
     randn float32 [| d_in; d_out |] /$ Float.(sqrt (of_int d_in))
 
   let forward (w : P.t) x =
-    let open Infix in
+    let open Nx.Infix in
     x *@ w
 end
 
 let student = Model.init ~d_in ~d_out |> Nx.Ptree.place Model.P.ptree placement
 
 let minibatch =
-  let open Infix in
+  let open Nx.Infix in
   let teacher = Model.init ~d_in ~d_out in
   (* draw inputs from an ill-conditioned Gaussian;
      this covariance is the GGN (and also the Hessian in this case)! *)
@@ -59,7 +59,6 @@ let minibatch =
     x, y
 
 let objective params key =
-  let open Infix in
   let x, y = minibatch ~key batch_size in
   let y' = Model.forward params x in
   Sofo.mse ~target:y y'

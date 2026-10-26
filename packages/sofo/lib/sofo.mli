@@ -37,13 +37,13 @@
     a little loss therefore costs nothing outside a sketch.
 
     {[
-    let loss params =
-      let y = predict params x in
-      Nx.add (Sofo.mse ~target y) (Nx.sum (Nx.mul w w))
-    in
-    let dirs = Sofo.Optim.directions params_ptree ~key ~k:32 params in
-    let sk = Sofo.sketch params_ptree loss params dirs in
-    (* sk.c, sk.ggn : the sketched gradient and GGN; sk.apply : sketch → params *)
+      let loss params =
+        let y = predict params x in
+        Nx.add (Sofo.mse ~target y) (Nx.sum (Nx.mul w w))
+      in
+      let dirs = Sofo.Optim.directions params_ptree ~key ~k:32 params in
+      let sk = Sofo.sketch params_ptree loss params dirs in
+      (* sk.c, sk.ggn : the sketched gradient and GGN; sk.apply : sketch → params *)
     ]} *)
 
 module Curv : sig
@@ -207,13 +207,13 @@ val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
     the sketch and keeps the solve outside it:
 
     {[
-    (* build the compiled half once; it jits on first call *)
-    let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss in
+      (* build the compiled half once; it jits on first call *)
+      let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss in
 
-    (* the loop: one replay, one host solve, one compiled step *)
-    let params, state =
-      let out = sketch_step ~key:state.Sofo.Optim.key ~aux params in
-      Sofo.Optim.update ~lr ~damping Params.ptree state params out
+      (* the loop: one replay, one host solve, one compiled step *)
+      let params, state =
+        let out = sketch_step ~key:state.Sofo.Optim.key ~aux params in
+        Sofo.Optim.update ~lr ~damping Params.ptree state params out
     ]}
 
     The state is only the direction stream — a key carried as a tensor, so it
@@ -403,7 +403,7 @@ module Optim : sig
       [(key, aux, params)], compiled by [Rune.jit]. Build it once —
 
       {[
-      let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss
+        let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss
       ]}
 
       — and every later call replays: the shapes of the inputs do not change
@@ -457,7 +457,7 @@ module Optim : sig
       the state the sketch was drawn from, and thread the one you get back:
 
       {[
-      let params, state = Sofo.Optim.update ~lr ~damping p state params out in
+        let params, state = Sofo.Optim.update ~lr ~damping p state params out in
       ]}
 
       The solve runs on the host, from [out]'s [k]-sized [c], [ggn] and

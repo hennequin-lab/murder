@@ -24,7 +24,6 @@
 
 open Base
 open Windtrap
-open Stdio
 module Nx = Nx
 module C = Ilqr_vae.Covariance
 module I = Ilqr_vae.Initial
@@ -173,18 +172,6 @@ let run_mgu ~phi (p : mgu_params) ~init inputs =
     x := D.Mgu.dyn ~phi p ~k:(scalar (Float.of_int k)) ~x:!x ~u:(Nx.get [ k ] inputs)
   done;
   !x
-
-(* Central finite differences of a scalar function of one tensor. *)
-let fd_grad ~eps f (x : Nx.float64_t) : Nx.float64_t =
-  let n = (Nx.shape x).(0) in
-  let out = Array.create ~len:n 0.0 in
-  for i = 0 to n - 1 do
-    let xi = Nx.item [ i ] x in
-    let xp = Nx.set [ I i ] (Nx.scalar dtype (xi +. eps)) x in
-    let xm = Nx.set [ I i ] (Nx.scalar dtype (xi -. eps)) x in
-    out.(i) <- (f xp -. f xm) /. (2.0 *. eps)
-  done;
-  Nx.create dtype [| n |] out
 
 (* ──────────────────────────────────────────────────────────────────────────
    Covariance
@@ -575,7 +562,7 @@ let test_likelihoods () =
   let x = vec [ 1.0; 0.5 ] in
   let o = vec [ 3.0; 2.0 ] in
   let logp = poisson.L.logp_t poisson_params ~k:(scalar 0.0) ~x ~o in
-  let rate j xj g = 0.1 *. g *. (Float.exp xj +. 1e-3) in
+  let rate _j xj g = 0.1 *. g *. (Float.exp xj +. 1e-3) in
   let lgamma_exact z =
     (* log Γ of a small integer + 1, by definition *)
     let z = Int.of_float (z +. 0.5) in
@@ -1428,7 +1415,7 @@ let test_swapping () =
   and l_lfads = loss_of lfads in
   require
     ~msg:"both recognitions give finite losses"
-    Float.(Float.is_finite (item l_iilqr) && Float.is_finite (item l_lfads));
+    (Float.is_finite (item l_iilqr) && Float.is_finite (item l_lfads));
   (* both recognition parameter blocks receive gradients *)
   let params = M.init iilqr in
   let _, grads =

@@ -1,0 +1,15 @@
+(version dev)
+
+(build
+ (all_platforms ((action (run dune build -p %{pkg-self:name} -j %{jobs} %{pkg-self:name}.install)))))
+
+(depends
+ (all_platforms
+  (dune ocaml cmdliner)))
+
+(source
+ (fetch
+  (url
+   git+https://github.com/invariant-hq/litany.git#4cab5e78fd62d2455638fb76ca030ee6d9ce1d29)))
+
+(dev)

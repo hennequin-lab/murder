@@ -524,8 +524,8 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       let f_arr = to_array factors in
       let pieces =
         List.concat
-          (List.mapi (Array.to_list f_arr) ~f:(fun i row ->
-             List.mapi (Array.to_list row) ~f:(fun j fs ->
+          (List.map (Array.to_list f_arr) ~f:(fun row ->
+             List.map (Array.to_list row) ~f:(fun fs ->
                List.map fs ~f:(fun f -> Nx.reshape [| -1 |] f) |> Nx.concatenate ~axis:0)))
       in
       Nx.concatenate ~axis:0 pieces

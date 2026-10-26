@@ -18,45 +18,46 @@
     a model around names none of them: they are inferred from {!make}.
 
     {[
-    let model =
-      Model.make
-        Nx.float64
-        ~n:3
-        ~m:3
-        ~n_steps:32
-        ~n_output:3
-        ~dynamics:
-          (Dynamics.Linear_nonlinear.make
-             ~dt:0.01
-             ~tau:0.04
-             ~n:3
-             ~nh:128
-             ~m:3
-             ~phi:Nx.tanh
-             Nx.float64)
-        ~likelihood:(Likelihood.Gaussian.make ~n:3 ~n_output:3 Nx.float64)
-        ~prior:(Prior.Student.make ~m:3 Nx.float64)
-        ~encoder_prior:(Prior.Gaussian.make ~m:3 Nx.float64)
-        ~recognition:(Recognition.Iilqr.make ~n:3 ~m:3 ~n_steps:32 ~n_output:3 Nx.float64)
-        ()
-    in
-    let params = Model.init model in
-    Rune.value_and_grad (Model.structure model) objective params
+      let model =
+        Model.make
+          Nx.float64
+          ~n:3
+          ~m:3
+          ~n_steps:32
+          ~n_output:3
+          ~dynamics:
+            (Dynamics.Linear_nonlinear.make
+               ~dt:0.01
+               ~tau:0.04
+               ~n:3
+               ~nh:128
+               ~m:3
+               ~phi:Nx.tanh
+               Nx.float64)
+          ~likelihood:(Likelihood.Gaussian.make ~n:3 ~n_output:3 Nx.float64)
+          ~prior:(Prior.Student.make ~m:3 Nx.float64)
+          ~encoder_prior:(Prior.Gaussian.make ~m:3 Nx.float64)
+          ~recognition:
+            (Recognition.Iilqr.make ~n:3 ~m:3 ~n_steps:32 ~n_output:3 Nx.float64)
+          ()
+      in
+      let params = Model.init model in
+      Rune.value_and_grad (Model.structure model) objective params
     ]}
 
     {b Swapping the recognition.} The recognition is a value with its own
     parameters, so replacing iLQR by an LFADS-style encoder is one argument:
 
     {[
-    ~recognition:
-      (Recognition.Lfads.make ~n_ic:64 ~n_ctrl:32 ~n:3 ~m:3 ~n_steps:32 ~n_output:3
-         Nx.float64)
+      ~recognition:
+        (Recognition.Lfads.make ~n_ic:64 ~n_ctrl:32 ~n:3 ~m:3 ~n_steps:32 ~n_output:3
+           Nx.float64)
     ]}
 
     plus the initial-state prior the LFADS posterior needs:
 
     {[
-    ~initial_prior:(Initial.make ~std:1.0 ~n:3 Nx.float64)
+      ~initial_prior:(Initial.make ~std:1.0 ~n:3 Nx.float64)
     ]}
 
     Everything else — the ELBO, the sampling, the training step, the JIT

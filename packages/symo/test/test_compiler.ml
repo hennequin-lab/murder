@@ -13,8 +13,6 @@ open Windtrap
 open Symo
 
 let dims ~left ~right = { Sides.left; right }
-let left i = Index.Left i
-let right i = Index.Right i
 let spec ~left ~right = { Sides.left; right }
 
 let test_partitions () =
@@ -85,9 +83,8 @@ let check_basis ?(symmetric = false) ~name ~dims spec =
     Float.(
       abs (Nx.item [] (Nx.max (Nx.abs (Nx.sub design (Nx.transpose design))))) < 1e-6);
   let positive_definite =
-    match Nx.cholesky design64 with
-    | _ -> true
-    | exception Nx.Linalg_error _ -> false
+    let l = Nx.cholesky design64 in
+    Nx.item [] (Nx.all (Nx.isfinite l))
   in
   let factors = random_factors ~key:(Nx.Rng.key 12) ~dims components in
   let block = compiled.dense_block ~factors in

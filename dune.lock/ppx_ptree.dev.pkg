@@ -1,0 +1,15 @@
+(version dev)
+
+(build
+ (all_platforms ((action (run dune build -p %{pkg-self:name} -j %{jobs} %{pkg-self:name}.install)))))
+
+(depends
+ (all_platforms
+  (ocaml dune ppxlib)))
+
+(source
+ (fetch
+  (url
+   git+https://github.com/raven-ml/raven.git#3984341140aef7bfc6f27eb14474f4a261a7b7bc)))
+
+(dev)

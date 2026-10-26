@@ -7,6 +7,7 @@
   vega
   base
   jera
+  rig
   nx.io
   rig.amd.amdgpu
   rig.nv.nvidia

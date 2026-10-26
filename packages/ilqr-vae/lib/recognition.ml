@@ -264,7 +264,7 @@ module Iilqr = struct
   let problem
         (type w d l p e)
         (gen : (w, d, l, p, e) generative)
-        (gp : (w, d, l, p, e) gparams)
+        (_gp : (w, d, l, p, e) gparams)
         (data : w value)
     : (w, (w, d, l, p, e) gparams) Dilqr.Problem.t
     =

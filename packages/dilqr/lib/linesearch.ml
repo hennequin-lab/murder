@@ -16,4 +16,4 @@ let schedule ?(tau = 0.5) ~n () =
 (** [accepts ~f0 ~f ~df ~c1] is the Armijo condition: the trial cost [f]
     decreases enough relative to the modelled decrease [df] (both [f0 - f] and
     [-df] are positive when the step is good). *)
-let accepts ~f0 ~f ~df ~c1 = Float.(f < f0 -. (c1 *. df))
+let accepts ~f0 ~f ~df ~c1 = f < f0 -. (c1 *. df)

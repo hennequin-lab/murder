@@ -66,7 +66,6 @@ module Integrator = struct
     }
 end
 
-let vec64 a = Nx.create Nx.float64 [| Array.length a |] a
 let scalar64 v = Nx.scalar Nx.float64 v
 let b = 4
 let targets = [| 1.0; -0.6; 0.3; 1.5 |]

@@ -4,8 +4,6 @@
   ---------------------------------------------------------------------------*)
 
 open Base
-open Types
-
 (* The generative prior over the initial state [x_0].
 
    The library's own generative model starts every trial at [x_0 = 0] and

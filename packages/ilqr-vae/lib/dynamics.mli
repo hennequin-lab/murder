@@ -88,10 +88,10 @@ end
     term,
 
     {[
-     x' = x + (x A0 − x + φ (x A1 + bias1) A2 + bias2) · d + u'
+      x' = x + (x A0 − x + φ (x A1 + bias1) A2 + bias2) · d + u'
     ]}
     {[
-     u' = (k = 0 ? u : d · u)
+      u' = (k = 0 ? u : d · u)
     ]}
 
     with [d = dt_over_tau] a learned per-dimension vector, [u] projected by
@@ -159,13 +159,13 @@ end
     state [h],
 
     {[
-     g x = φ (x G1 + g_bias1)
+      g x = φ (x G1 + g_bias1)
     ]}
     {[
-     h x = φ (x H1 + h_bias1) H2 + h_bias2
+      h x = φ (x H1 + h_bias1) H2 + h_bias2
     ]}
     {[
-     x' = x + d · g x · (h x − x) + u'
+      x' = x + d · g x · (h x − x) + u'
     ]}
 
     with [u'] as in {!module:Linear_nonlinear} and the same [k = 0]
@@ -229,13 +229,13 @@ end
     additively and never the forget gate:
 
     {[
-     f_t  = \phi (z_{t-1} U_f + b_f)
+      f_t  = \phi (z_{t-1} U_f + b_f)
     ]}
     {[
-     \hat z_t = \phi ((f_t \odot z_{t-1}) U_h + b_h) + u_t W
+      \hat z_t = \phi ((f_t \odot z_{t-1}) U_h + b_h) + u_t W
     ]}
     {[
-     z_t  = (1 - f_t) \odot z_{t-1} + f_t \odot \hat z_t
+      z_t  = (1 - f_t) \odot z_{t-1} + f_t \odot \hat z_t
     ]}
 
     with the same activation [\phi] for the gate and the candidate, as in the

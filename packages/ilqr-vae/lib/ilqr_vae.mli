@@ -49,18 +49,18 @@
     {b A training step.}
 
     {[
-    let model = … Model.make … in
-    let params = Model.init model in
-    let step =
-      Rune.jit
-        Nx.Ptree.(Model.structure model @-> Nx.Rng.ptree @-> returns Nx.Ptree.tensor)
-        (fun params key ->
-           Rune.value_and_grad
-             (Model.structure model)
-             (fun p ->
-                Elbo.batch_loss_fixed model p ~key ~n_samples:16 ~iters:4 trials)
-             params)
-    in
+      let model = … Model.make … in
+      let params = Model.init model in
+      let step =
+        Rune.jit
+          Nx.Ptree.(Model.structure model @-> Nx.Rng.ptree @-> returns Nx.Ptree.tensor)
+          (fun params key ->
+             Rune.value_and_grad
+               (Model.structure model)
+               (fun p ->
+                  Elbo.batch_loss_fixed model p ~key ~n_samples:16 ~iters:4 trials)
+               params)
+      in
     ]}
 
     {b Sampling and prediction.} {!sample_generative} draws from the prior

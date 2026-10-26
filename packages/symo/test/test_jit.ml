@@ -27,6 +27,7 @@ end
 
 module M = Make (Mlp)
 
+let relu x = Nx.maximum x (Nx.zeros_like x)
 let xs = Nx.Rng.normal (Nx.Rng.key 7) Nx.float32 [| 8; 2 |]
 
 let ys =
@@ -36,7 +37,7 @@ let ys =
     (Nx.mul_s (Nx.Rng.normal (Nx.Rng.key 8) Nx.float32 [| 8; 1 |]) 0.05)
 
 let mlp_loss (p : Nx.float32_t Mlp.t) =
-  let h = Nx.relu (Nx.matmul xs (Nx.transpose p.w1)) in
+  let h = relu (Nx.matmul xs (Nx.transpose p.w1)) in
   let out = Nx.matmul h (Nx.transpose p.w2) in
   let d = Nx.sub out ys in
   Nx.mean (Nx.mul d d)

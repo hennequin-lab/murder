@@ -138,7 +138,7 @@ module Poisson = struct
       let log_factorial = Nx.sum ~axes:[ -1 ] (Special.lgamma (Nx.add_s o 1.0)) in
       Nx.sub ll log_factorial
     in
-    let sample p ~key ~mean = Nx.cast dtype (Nx.Rng.poisson key mean) in
+    let sample _p ~key ~mean = Nx.cast dtype (Nx.Rng.poisson key mean) in
     { n
     ; n_output
     ; structure = structure ()

@@ -21,14 +21,14 @@
     function takes rather than a constant it closes over.
 
     {[
-    let schedule = Schedule.linear_warmup ~steps:2000 dtype in
-    let step =
-      Rune.jit
-        Nx.Ptree.(structure @-> tensor @-> Nx.Rng.ptree @-> returns …)
-        (fun params beta key ->
-           Elbo.loss_fixed model params ~beta ~iters:4 ~key ~n_samples:16 trials)
-    in
-    let loss = step params (Schedule.at schedule i) key in
+      let schedule = Schedule.linear_warmup ~steps:2000 dtype in
+      let step =
+        Rune.jit
+          Nx.Ptree.(structure @-> tensor @-> Nx.Rng.ptree @-> returns …)
+          (fun params beta key ->
+             Elbo.loss_fixed model params ~beta ~iters:4 ~key ~n_samples:16 trials)
+      in
+      let loss = step params (Schedule.at schedule i) key in
     ]} *)
 
 open Types

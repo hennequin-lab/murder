@@ -404,7 +404,7 @@ let solve
   let converged c c' =
     Float.(Float.abs ((c -. c') /. Float.max (Float.abs c) 1.0) < conv_threshold)
   in
-  let rec loop iter c attempts =
+  let rec loop (iter : int) (c : float) (attempts : int) =
     if iter >= max_iter
     then ()
     else (
@@ -426,9 +426,9 @@ let solve
                 Lqr.rollout ~dyn:(dyn p theta) ~x0 ~xs:!xs ~us:!us ~gains ~alpha
               in
               let cost_t = cost_of p theta xs_t us_t in
-              let fv = item_f cost_t in
-              let model = Float.((alpha *. d1) +. (0.5 *. alpha *. alpha *. d2)) in
-              if Float.(fv <= c + (c1 *. model))
+              let fv : float = item_f cost_t in
+              let model = (alpha *. d1) +. (0.5 *. alpha *. alpha *. d2) in
+              if Float.(fv <= c +. (c1 *. model))
               then Some (xs_t, us_t, fv, alpha)
               else try_alphas tl
           in

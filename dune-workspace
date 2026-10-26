@@ -1,0 +1,52 @@
+(lang dune 3.24)
+
+(pkg enabled)
+
+; Raven is an external dependency. Pin its Git repository, never vendor it.
+; Move this SHA forward deliberately; dune.lock records the same commit.
+(pin
+ (name raven)
+ (url "git+https://github.com/raven-ml/raven.git#3984341140aef7bfc6f27eb14474f4a261a7b7bc")
+ (package (name compress))
+ (package (name nx))
+ (package (name rune))
+ (package (name tolk))
+ (package (name vega))
+ (package (name jera))
+ (package (name rig))
+ (package (name ppx_ptree)))
+
+; Windtrap is pinned to the commit Raven's CI uses.
+(pin
+ (name windtrap)
+ (url "git+https://github.com/invariant-hq/windtrap.git#7be03df651610949a87ed3bb797984015e9691b9")
+ (package (name windtrap))
+ (package (name ppx_windtrap)))
+
+; cmdargs is the lab's small CLI package, not on opam.
+(pin
+ (name cmdargs)
+ (url "git+https://github.com/hennequin-lab/cmdargs.git#054467255de411996f56a402ee9068facf477abb")
+ (package (name cmdargs)))
+
+; Litany is not on opam yet. Pin it by full SHA.
+(pin
+ (name litany)
+ (url "git+https://github.com/invariant-hq/litany.git#4cab5e78fd62d2455638fb76ca030ee6d9ce1d29")
+ (package (name litany)))
+
+(lock_dir
+ (path dune.lock)
+ (pins raven litany windtrap cmdargs))
+
+(env
+ (dev
+  (flags
+   (:standard %{dune-warnings}))
+  (odoc
+   (warnings fatal))
+  (env-vars
+   (WINDTRAP_TIMEOUT 60)))
+ (_
+  (env-vars
+   (WINDTRAP_TIMEOUT 60))))

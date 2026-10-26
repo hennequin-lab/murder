@@ -1,0 +1,4 @@
+(test
+ (name test_@NAME@)
+ (package @NAME@)
+ (libraries @NAME@ windtrap))

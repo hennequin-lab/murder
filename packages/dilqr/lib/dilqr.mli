@@ -8,8 +8,8 @@
     Dilqr solves discrete-time optimal control problems
 
     {[
-     min_{u_0..u_{K-1}}  φ(x_K) + Σ_{k<K} l(x_k, u_k)
-       s.t. x_{k+1} = f(x_k, u_k)
+      min_{u_0..u_{K-1}}  φ(x_K) + Σ_{k<K} l(x_k, u_k)
+        s.t. x_{k+1} = f(x_k, u_k)
     ]}
 
     with iterative LQR on Nx tensors, and differentiates through the solve.
@@ -180,14 +180,14 @@ val solve_ilqr
     inside [Rune.jit] with a [Rune.grad] inside:
 
     {[
-    let step =
-      Rune.jit
-        Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
-        (fun inputs ->
-           Rune.grad
-             (inputs problem)
-             (fun inputs -> loss (solve_ilqr_fixed problem ~iters:3 inputs))
-             inputs)
+      let step =
+        Rune.jit
+          Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
+          (fun inputs ->
+             Rune.grad
+               (inputs problem)
+               (fun inputs -> loss (solve_ilqr_fixed problem ~iters:3 inputs))
+               inputs)
     ]} *)
 val solve_ilqr_fixed
   :  ('w, 'p) Problem.t

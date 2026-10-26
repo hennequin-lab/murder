@@ -27,6 +27,8 @@ end
 
 module Q = Make (Quad)
 
+let relu x = Nx.maximum x (Nx.zeros_like x)
+
 (* A two-layer MLP with a hidden-permutation symmetry: the same group element
    permutes the rows of [w1] and the columns of [w2]. *)
 module Mlp = struct
@@ -46,8 +48,6 @@ let mat32 shape values = Nx.create Nx.float32 shape values
 
 let check ~msg ~tol expected got =
   equal ~msg (array (float tol)) (Nx.to_array expected) (Nx.to_array got)
-
-let close ~tol a b = Float.(abs (a - b) < tol)
 
 (* The large Hessian [A ⊗ C] of the quadratic, as a 6×6 matrix: [a] is 2×2
    and [c] is 3×3. *)
@@ -169,7 +169,7 @@ let ys =
     (Nx.mul_s (Nx.Rng.normal (Nx.Rng.key 8) Nx.float32 [| 8; 1 |]) 0.05)
 
 let mlp_loss (p : Nx.float32_t Mlp.t) =
-  let h = Nx.relu (Nx.matmul xs (Nx.transpose p.w1)) in
+  let h = relu (Nx.matmul xs (Nx.transpose p.w1)) in
   let out = Nx.matmul h (Nx.transpose p.w2) in
   let d = Nx.sub out ys in
   Nx.mean (Nx.mul d d)

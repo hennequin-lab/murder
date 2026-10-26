@@ -100,7 +100,7 @@ let () =
         { Dilqr.Inputs.theta; x0 = !x0; us0 = us }
       in
       let taus = solve_step inputs in
-      let xs, us_new = Dilqr.split_taus Integrator.problem taus in
+      let _, us_new = Dilqr.split_taus Integrator.problem taus in
       (* apply the first control, observe the true next state *)
       let x1 = Integrator.dynamics theta ~k:0 ~x:!x0 ~u:us_new.(0) in
       printf

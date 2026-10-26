@@ -32,8 +32,8 @@
     log prior at the same draws. The bound is the Monte-Carlo estimate
 
     {[
-     ELBO = (1/N) Σ_i [log p(o | z(x_0^i, u^i)) + log p(x_0^i) + Σ_k log p(u_k^i)
-       − log q(x_0^i, u^i)]
+      ELBO = (1/N) Σ_i [log p(o | z(x_0^i, u^i)) + log p(x_0^i) + Σ_k log p(u_k^i)
+        − log q(x_0^i, u^i)]
     ]}
 
     with the reparameterized draws differentiated end to end. {!val-infer}

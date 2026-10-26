@@ -9,7 +9,7 @@
     covariance is a Kronecker product
 
     {[
-     Σ = Σ_time ⊗ Σ_space
+      Σ = Σ_time ⊗ Σ_space
     ]}
 
     of a covariance over the horizon and a covariance over the input

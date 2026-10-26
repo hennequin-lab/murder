@@ -189,9 +189,8 @@ let pseudo_inverse m =
 let build_estimator design n =
   let design64 = Nx.cast Nx.float64 design in
   let try_cholesky m =
-    match Nx.cholesky m with
-    | l -> Some l
-    | exception Nx.Linalg_error _ -> None
+    let l = Nx.cholesky m in
+    if Nx.item [] (Nx.all (Nx.isfinite l)) then Some l else None
   in
   match try_cholesky design64 with
   | Some l -> `Cholesky (Nx.cast Nx.float32 l)

@@ -1,0 +1,15 @@
+(version dev)
+
+(build
+ (all_platforms ((action (run dune build -p %{pkg-self:name} -j %{jobs})))))
+
+(depends
+ (all_platforms
+  (ocaml dune)))
+
+(source
+ (fetch
+  (url
+   git+https://github.com/hennequin-lab/cmdargs.git#054467255de411996f56a402ee9068facf477abb)))
+
+(dev)

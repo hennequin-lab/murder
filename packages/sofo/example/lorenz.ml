@@ -49,7 +49,7 @@ let lorenz_trajs =
     let rho = 28. in
     let beta = 8. /. 3. in
     let lorenz _t y =
-      let open Infix in
+      let open Nx.Infix in
       let x = slice [ A; I 0 ] y
       and yc = slice [ A; I 1 ] y
       and z = slice [ A; I 2 ] y in
@@ -108,7 +108,7 @@ module Model = struct
   end
 
   let init ~d ~d_hidden =
-    let open Infix in
+    let open Nx.Infix in
     let w = randn float32 [| d_hidden; d |] *$ Float.(0.1 / sqrt (of_int d_hidden)) in
     let c =
       randn float32 [| Int.(d + 1); d_hidden |] /$ Float.(sqrt (of_int Int.(d + 1)))
@@ -117,7 +117,7 @@ module Model = struct
     P.{ w; c; a }
 
   let step (theta : P.t) x =
-    let open Infix in
+    let open Nx.Infix in
     let bs = dim 0 x in
     (x *@ theta.a)
     + (relu (concatenate ~axis:1 [ x; ones float32 [| bs; 1 |] ] *@ theta.c) *@ theta.w)
@@ -127,7 +127,7 @@ module Model = struct
       Ptree.tensor
       Ptree.tensor
       Ptree.unit
-      ~f:(fun x t -> step theta x, ())
+      ~f:(fun x _t -> step theta x, ())
       ~init:x0
       (Nx.zeros float32 [| horizon - 1 |])
     |> fst
@@ -138,7 +138,6 @@ let params =
   |> Nx.Ptree.place Model.P.ptree (Nx.Placement.on device)
 
 let objective params (x0, xf) =
-  let open Infix in
   let pred = Model.forward ~horizon params x0 in
   Sofo.mse ~w:(scalar float32 Float.(1. / of_int horizon)) ~target:xf pred
 
@@ -176,35 +175,3 @@ let _ =
   let out = in_dir "loss" in
   let () = Bos.Cmd.(v "rm" % "-f" % out) |> Bos.OS.Cmd.run |> ignore in
   loop_sofo ~i:0 ~out params state
-
-(* Adam version *)
-
-let value_and_grad_jit =
-  Rune.jit
-    Nx.Ptree.(Model.P.ptree @-> data_ptree @-> returns (pair tensor Model.P.ptree))
-    (fun params data ->
-       Rune.value_and_grad Model.P.ptree (fun model -> objective model data) params)
-
-let rec loop_adam ~i ~out (params : Model.P.t) state key =
-  if i >= max_iter
-  then params
-  else (
-    let keys = Rng.split key ~n:2 in
-    let data = minibatch keys.(0) bs in
-    let loss_val, grads = value_and_grad_jit params data in
-    let params, state =
-      Vega.adam_step Model.P.ptree ~lr:(scalar float32 0.0002) state ~params ~grads
-    in
-    let loss = item [] loss_val in
-    Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
-    if i % 10 = 0 then Nx_io.save_txt ~append:true out (create float32 [| 1 |] [| loss |]);
-    loop_adam ~i:(i + 1) ~out params state keys.(1))
-
-let state = Vega.adam_init Model.P.ptree params
-
-(*
-   let _ =
-   let out = in_dir "loss_adam" in
-   let () = Bos.Cmd.(v "rm" % "-f" % out) |> Bos.OS.Cmd.run |> ignore in
-   loop_adam ~i:0 ~out params state (Rng.key 1985)
-*)

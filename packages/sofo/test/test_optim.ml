@@ -473,7 +473,8 @@ let loss_c p () = loss p
 
 (* [Sofo.Optim.sketch_jit] compiles the whole (key, aux, params) computation
    with [Rune.jit] and hands back the function to call. *)
-let sketch_step = Sofo.Optim.sketch_jit ~k params_ptree Nx.Ptree.unit loss_c
+let sketch_step =
+  Sofo.Optim.sketch_jit ~k Nx.Placement.host params_ptree Nx.Ptree.unit loss_c
 
 let test_compiled_sketch_matches_the_eager_one () =
   let p = params () in
@@ -493,7 +494,14 @@ let test_compiled_sketch_matches_the_eager_one () =
      it was given, so the next step's sketch cannot reuse this one's subspace *)
   let st = Sofo.Optim.init ~key () in
   let a, st' =
-    Sofo.Optim.update ~lr:0.5 ~damping:(`Relative_from_top 1e-3) params_ptree st p out
+    Sofo.Optim.update
+      ~lr:0.5
+      ~damping:(`Relative_from_top 1e-3)
+      Nx.Placement.host
+      params_ptree
+      st
+      p
+      out
   in
   equal ~msg:"the compiled update advances the state" int 1 st'.Sofo.Optim.step;
   is_true ~msg:"and the stream with it" (key0 st'.Sofo.Optim.key <> key0 st.Sofo.Optim.key);
@@ -539,7 +547,9 @@ let test_compiled_loop_trains () =
      loss, and a state that never needs to leave the host. *)
   let p = params () in
   let k = 8 in
-  let step = Sofo.Optim.sketch_jit ~k params_ptree Nx.Ptree.unit loss_c in
+  let step =
+    Sofo.Optim.sketch_jit ~k Nx.Placement.host params_ptree Nx.Ptree.unit loss_c
+  in
   let st = Sofo.Optim.init ~key () in
   let rec go p st i prev best first =
     if i = 0
@@ -551,7 +561,14 @@ let test_compiled_loop_trains () =
         ~msg:(Printf.sprintf "step %d decreases the loss (%.8g < %.8g)" (9 - i) l prev)
         (l < prev);
       let p, st =
-        Sofo.Optim.update ~lr:1.0 ~damping:(`Absolute 0.0) params_ptree st p out
+        Sofo.Optim.update
+          ~lr:1.0
+          ~damping:(`Absolute 0.0)
+          Nx.Placement.host
+          params_ptree
+          st
+          p
+          out
       in
       equal ~msg:"the update advances the state" int (9 - i) st.Sofo.Optim.step;
       let first = if i = 8 then l else first in
@@ -589,7 +606,9 @@ let test_compiled_aux_reaches_the_loss () =
      program already compiled, and it changes nothing about what is
      differentiated — the step still annihilates C. *)
   let p = params () in
-  let step = Sofo.Optim.sketch_jit ~k params_ptree Aux_c.ptree loss_with_aux in
+  let step =
+    Sofo.Optim.sketch_jit ~k Nx.Placement.host params_ptree Aux_c.ptree loss_with_aux
+  in
   let aux = { Aux.shift = Nx.create f64 [| o |] [| 1.0; -0.5; 0.25 |] } in
   let out = step ~key ~aux p in
   (* the same numbers as an eager sketch with the aux closed over *)
@@ -608,6 +627,7 @@ let test_compiled_aux_reaches_the_loss () =
     Sofo.Optim.update
       ~lr:1.0
       ~damping:(`Absolute 0.0)
+      Nx.Placement.host
       params_ptree
       (Sofo.Optim.init ~key ())
       p

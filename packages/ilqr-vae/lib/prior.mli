@@ -98,7 +98,7 @@ module Gaussian : sig
       factorized Gaussian [p],
 
       {[
-       KL = ½ (tr (Σ_p⁻¹ Σ_q) + muᵀ Σ_p⁻¹ mu + log det Σ_p − log det Σ_q − d)
+        KL = ½ (tr (Σ_p⁻¹ Σ_q) + muᵀ Σ_p⁻¹ mu + log det Σ_p − log det Σ_q − d)
       ]}
 
       computed from the two Cholesky factors of [Σ_q] and the prior's scales,
@@ -117,7 +117,7 @@ end
     step:
 
     {[
-     p(u_k) ∝ (1 + ‖u_k / σ_k‖² / ν) ^ (−(ν + m) / 2),  ν = 2 + exp log_nu_minus_two
+      p(u_k) ∝ (1 + ‖u_k / σ_k‖² / ν) ^ (−(ν + m) / 2),  ν = 2 + exp log_nu_minus_two
     ]}
 
     with [σ_{k,j} = sqrt ((ν − 2) / ν) · exp log_spatial_stds_j] for [k ≥ 1]
@@ -170,7 +170,7 @@ end
 (** A Laplacian over each input row, with a Gaussian first step:
 
     {[
-     log p(u_k) = −‖u_k / σ_k‖₁ + cst,
+      log p(u_k) = −‖u_k / σ_k‖₁ + cst,
     ]}
 
     which promotes sparse inputs like the Student-t and is cheaper. Not

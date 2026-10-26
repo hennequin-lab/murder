@@ -23,13 +23,13 @@
       Composing
 
     {[
-    Rune.jit
-      Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
-      (fun i ->
-         Rune.grad
-           (inputs problem)
-           (fun i -> loss (solve_ilqr_fixed problem ~iters:5 i))
-           i)
+      Rune.jit
+        Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
+        (fun i ->
+           Rune.grad
+             (inputs problem)
+             (fun i -> loss (solve_ilqr_fixed problem ~iters:5 i))
+             i)
     ]}
 
     compiles the solve and its gradient together, on CPU or GPU.
