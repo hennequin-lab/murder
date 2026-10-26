@@ -13,6 +13,3 @@ opam/murder-dev.opam
 # Local tutorial scratch space
 getting-started/**/scratch/
 
-# Import scratch
-.import/
-getting-started/scratch/
