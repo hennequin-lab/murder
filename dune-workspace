@@ -13,6 +13,7 @@
  (package (name tolk))
  (package (name vega))
  (package (name jera))
+ (package (name hugin))
  (package (name rig))
  (package (name ppx_ptree)))
 

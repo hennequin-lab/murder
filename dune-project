@@ -104,6 +104,7 @@
   bos
   cmdargs
   cmdliner
+  hugin
   jera
   ppx_ptree
   rig

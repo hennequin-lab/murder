@@ -375,7 +375,7 @@ numerical rank decision; not the target architecture.
   `Orbit.surrogate_dims` (or keep the last as a test utility) and the
   `small` compilers from the step.
 - Tests: blockwise `H_inv` == dense `H_inv` at small `n`; eager/jit parity;
-  `student_teacher` and the RNN tutorial train; size-generalization test.
+  `student_teacher` and the RNN example train; size-generalization test.
 - Docs: `symo.mli`, README, this plan's status line.
 
 ### M3 — general specs (Route B)

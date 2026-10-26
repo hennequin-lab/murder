@@ -129,23 +129,21 @@ student-teacher MLP: 32 hidden units, 8 inputs, 128 examples
      500      0.000165
 ```
 
-`tutorial/rnn.ml` trains an RNN with `S.Compiled`, its parameters and data
-placed on the device `--device` names (`cpu` by default, or `cuda`, `cuda:1`,
-`metal`):
+`examples/rnn.ml` trains an RNN with `S.Compiled` and writes its diagnostics
+and plots to the directory named by `-d`:
 
 ```sh
-dune exec tutorial/rnn.exe -- -d /tmp --device cuda
+dune exec examples/rnn.exe -- -d /tmp
 ```
 
 ## Building and testing
 
-This repository is a standalone project inside the `raven-and-friends` dune
-workspace; `nx`, `rune` and `ppx_ptree` come from the local `raven/packages`.
-From this directory:
+This package is part of the `murder` monorepo. From the repository root:
 
 ```sh
-dune build @check     # type-check everything
-dune runtest          # 44 tests
+dune build @packages/symo/runtest
+dune exec packages/symo/examples/student_teacher.exe
+dune exec packages/symo/examples/rnn.exe -- -d /tmp
 ```
 
 The suites are:
