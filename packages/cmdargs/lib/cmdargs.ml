@@ -10,8 +10,7 @@ let check s = List.mem s arguments
 
 let extract f x err =
   try f x with
-  | _ -> raise (Cmdargs_Wrong err)
-
+  | Failure _ | Invalid_argument _ -> raise (Cmdargs_Wrong err)
 
 let _get f err s =
   let rec search = function
@@ -26,7 +25,6 @@ let _get f err s =
   in
   search arguments
 
-
 let get_bool = _get bool_of_string "get_bool"
 let get_int = _get int_of_string "get_int"
 let get_float = _get float_of_string "get_float"
@@ -37,14 +35,9 @@ let force ~usage x =
   | None -> failwith usage
   | Some z -> z
 
-
-let default d x =
-  match x with
-  | None -> d
-  | Some z -> z
-
+let default d x = Option.value ~default:d x
 
 let in_dir cmdarg =
-    let usage = Printf.sprintf "%s [directory]" cmdarg in
-    let dir = get_string cmdarg |> force ~usage in
-    Printf.sprintf "%s/%s" dir
+  let usage = Printf.sprintf "%s [directory]" cmdarg in
+  let dir = get_string cmdarg |> force ~usage in
+  Printf.sprintf "%s/%s" dir

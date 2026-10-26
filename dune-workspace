@@ -24,12 +24,6 @@
  (package (name windtrap))
  (package (name ppx_windtrap)))
 
-; cmdargs is the lab's small CLI package, not on opam.
-(pin
- (name cmdargs)
- (url "git+https://github.com/hennequin-lab/cmdargs.git#054467255de411996f56a402ee9068facf477abb")
- (package (name cmdargs)))
-
 ; Litany is not on opam yet. Pin it by full SHA.
 (pin
  (name litany)
@@ -38,7 +32,7 @@
 
 (lock_dir
  (path dune.lock)
- (pins raven litany windtrap cmdargs))
+ (pins raven litany windtrap))
 
 (env
  (dev

@@ -5,6 +5,7 @@ repositories.
 
 | Package | Status | What it does |
 | --- | --- | --- |
+| `cmdargs` | stable | Simple parsing of command-line arguments |
 | `dilqr` | alpha | Differentiable iLQR on Nx tensors |
 | `ilqr-vae` | alpha | iLQR-VAE: control-based learning of input-driven dynamics |
 | `symo` | alpha | Weight-space symmetry for curvature estimation |

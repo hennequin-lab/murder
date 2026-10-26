@@ -34,6 +34,17 @@
   (windtrap :with-test)))
 
 (package
+ (name cmdargs)
+ (license MIT)
+ (synopsis "Simple parsing of command-line arguments")
+ (description
+  "Small utility for dealing with command-line arguments in OCaml: typed getters with defaults, required values, flags, and input/output directory helpers.")
+ (depends
+  (ocaml
+   (>= 5.5.0))
+  dune))
+
+(package
  (name ilqr-vae)
  (synopsis "iLQR-VAE: control-based learning of input-driven dynamics")
  (description

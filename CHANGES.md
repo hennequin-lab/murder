@@ -5,6 +5,10 @@ changes do not need an entry.
 
 ## Unreleased
 
+### cmdargs
+
+- Imported from `hennequin-lab/cmdargs`; now a local package.
+
 ### dilqr
 
 - Imported from `hennequin-lab/dilqr-raven`.

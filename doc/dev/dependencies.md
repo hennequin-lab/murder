@@ -13,7 +13,6 @@ External sources are pinned in `dune-workspace`:
 - **windtrap** and **ppx_windtrap** — the commit Raven's own CI uses, so our
   tests and Raven's agree.
 - **litany** — a full SHA; it is not on opam.
-- **cmdargs** — the lab's small CLI package, which is not on opam.
 
 `dune-project` declares only this repo's packages and their dependencies. It
 does not declare Raven packages.

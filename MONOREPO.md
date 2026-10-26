@@ -33,9 +33,9 @@ lays out a phased roadmap.
 
 ### Current state
 
-- Imported packages: `packages/dilqr`, `packages/ilqr-vae`, `packages/symo`,
-  `packages/sofo`, with their original Git histories and conventional commit
-  subjects.
+- Imported packages: `packages/cmdargs`, `packages/dilqr`,
+  `packages/ilqr-vae`, `packages/symo`, `packages/sofo`, with their original
+  Git histories and conventional commit subjects.
 - `getting-started/` has the four chapters and runs as a smoke test under
   `dune runtest getting-started`.
 - Raven is pinned to `raven-ml/raven` main at
@@ -218,7 +218,7 @@ A skeleton:
 (using mdx 0.4)
 
 ; External sources are pinned in dune-workspace, not here: Raven, windtrap,
-; litany and cmdargs are workspace sources, not packages of this project.
+; litany is a workspace source, not a package of this project.
 
 (package
  (name murder-dev)
@@ -475,8 +475,8 @@ the pin with versioned opam dependencies.
 Raven's agree. `ppx_windtrap` comes from the same pin. Both are `:with-test`
 dependencies.
 
-**Litany and cmdargs.** Not on opam. Pinned to full SHAs in `dune-workspace`;
-litany is used only by `murder-dev`. Cmdargs is the lab's small CLI package.
+**Litany.** Not on opam. Pinned to a full SHA in `dune-workspace` and used only
+by `murder-dev`. `cmdargs` is a local package under `packages/cmdargs`.
 
 **Lock workaround.** Raven main's private test libraries under
 `packages/hugin/test` are built by `@install` even when Dune builds another
