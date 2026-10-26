@@ -7,7 +7,7 @@ renders animations to MP4 through the system `ffmpeg`.
 
 It is a separate library (`geom_viz`, in [`lib/`](lib)) so that the algebra
 package does not depend on a graphics stack. The renderer is
-[Hugin](https://github.com/hennequin-lab/raven)'s vector-graphics layer
+[Hugin](https://github.com/raven-ml/raven)'s vector-graphics layer
 (`hugin.vg`, `hugin.vg.raster`, `hugin.vg.svg`, `hugin.vg.pdf`, `hugin.gg`,
 `hugin.font`).
 
@@ -33,7 +33,7 @@ circle defined by points.](../doc/figures/cga-objects.svg)
 ## Install and run
 
 `geom-viz` uses the `geom` library and Hugin's vector-graphics packages. The
-project is developed inside the raven workspace; from `geom/`:
+project is part of the `murder` monorepo; from `packages/geom/`:
 
 ```sh
 dune build

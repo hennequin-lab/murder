@@ -53,17 +53,6 @@ let packed_table =
   t
 
 let packed_tbl = Nx.create dtype [| size; size; size |] packed_table
-
-let embedding =
-  let e = Array.make (size * 32) 0. in
-  for k = 0 to size - 1 do
-    let dense = A.to_array dense_basis.(k) in
-    for d = 0 to 31 do
-      e.((k * 32) + d) <- dense.(d)
-    done
-  done;
-  Nx.create dtype [| size; 32 |] e
-
 let reverse_sign = Nx.create dtype [| size |] [| 1.; -1.; -1.; -1.; -1.; -1.; -1.; 1. |]
 let rank a = Array.length (Nx.shape a)
 

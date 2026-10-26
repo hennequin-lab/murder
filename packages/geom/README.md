@@ -1,7 +1,7 @@
 # geom — geometric algebra for robotics
 
 `geom` is a batched geometric-algebra library for OCaml, built on
-[Raven](https://github.com/hennequin-lab/raven)'s `Nx`. One small core gives you
+[Raven](https://github.com/raven-ml/raven)'s `Nx`. One small core gives you
 Clifford algebras. Three models on top give you Euclidean rotations, projective
 incidence, and the conformal model of 3D space: points, spheres, planes, lines,
 circles and rigid motions in a single algebraic system.
@@ -731,12 +731,11 @@ the shape of every argument. The mathematical source of truth is
 
 ## Build and test
 
-`geom` builds with dune (lang 3.24) and depends on `nx`. The visualization
-library additionally depends on Hugin's vector-graphics packages. The project is
-developed inside the raven workspace; outside it, those packages must be
-available to dune.
+`geom` builds with Dune and depends on `nx`. The visualization library also
+depends on Hugin's vector-graphics packages. It is part of the `murder`
+monorepo; from the repository root, prefix targets with `packages/geom/`.
 
-From `geom/`:
+From `packages/geom/`:
 
 ```sh
 dune build

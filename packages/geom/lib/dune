@@ -1,5 +1,6 @@
 (library
  (name geom)
+ (public_name geom)
  (libraries nx)
  (instrumentation
   (backend ppx_windtrap.coverage))

@@ -73,10 +73,7 @@ let path_of_points ?(close = false) pts =
 let project_all c pts =
   let rec go acc = function
     | [] -> Some (List.rev acc)
-    | p :: rest ->
-      (match C.project c p with
-       | None -> None
-       | Some q -> go (q :: acc) rest)
+    | p :: rest -> Option.bind (C.project c p) (fun q -> go (q :: acc) rest)
   in
   go [] pts
 
@@ -128,7 +125,7 @@ let representative_depth c = function
   | P.Polyline ps | P.Polygon ps ->
     (match ps with
      | [] -> None
-     | p :: _ ->
+     | _ :: _ ->
        let sum = List.fold_left P.add (P.p3 0. 0. 0.) ps in
        C.project c (P.scale sum (1. /. float_of_int (List.length ps))))
   | P.Circle c0 -> C.project c c0.center
@@ -136,7 +133,7 @@ let representative_depth c = function
   | P.Plane pl ->
     (match pl.patch with
      | [] -> None
-     | p :: _ ->
+     | _ :: _ ->
        let sum = List.fold_left P.add (P.p3 0. 0. 0.) pl.patch in
        C.project c (P.scale sum (1. /. float_of_int (List.length pl.patch))))
   | P.Frame f -> C.project c f.origin

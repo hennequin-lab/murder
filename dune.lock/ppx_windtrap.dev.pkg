@@ -1,0 +1,15 @@
+(version dev)
+
+(build
+ (all_platforms ((dune))))
+
+(depends
+ (all_platforms
+  (ocaml windtrap ppxlib)))
+
+(source
+ (fetch
+  (url
+   git+https://github.com/invariant-hq/windtrap.git#7be03df651610949a87ed3bb797984015e9691b9)))
+
+(dev)

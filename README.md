@@ -21,6 +21,7 @@ dune exec getting-started/01-nx/ex01_arrays.exe
 | Package | What it does |
 | --- | --- |
 | [`cmdargs`](packages/cmdargs) | Simple parsing of command-line arguments |
+| [`geom`](packages/geom) | Geometric algebra for robotics on the Raven stack |
 | [`dilqr`](packages/dilqr) | Differentiable iLQR for optimal control on Nx tensors |
 | [`ilqr-vae`](packages/ilqr-vae) | Control-based learning of input-driven dynamics |
 | [`symo`](packages/symo) | Weight-space symmetry for curvature estimation |

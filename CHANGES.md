@@ -5,6 +5,10 @@ changes do not need an entry.
 
 ## Unreleased
 
+### geom
+
+- Imported from `hennequin-lab/geom`.
+
 ### cmdargs
 
 - Imported from `hennequin-lab/cmdargs`; now a local package.

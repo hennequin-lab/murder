@@ -1,5 +1,6 @@
 (library
  (name geom_viz)
+ (public_name geom.viz)
  (libraries
   geom
   nx

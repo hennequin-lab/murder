@@ -7,3 +7,9 @@
 ; restriction rules one at a time by exact name, for example:
 ;   (extend unsafe-partial-stdlib)
 ; Do not put nursery in the CI gate; run the full catalog as an audit.
+
+; Geometry constructors take x, y, z in that order by design.
+(per-path
+ (paths packages/geom/**)
+ (ignore suspicious-transposable-arguments)
+ (reason "geometry constructors take coordinates x y z in order"))

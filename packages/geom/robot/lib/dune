@@ -1,5 +1,6 @@
 (library
  (name geom_robot)
+ (public_name geom.robot)
  (libraries geom nx rune)
  (instrumentation
   (backend ppx_windtrap.coverage))

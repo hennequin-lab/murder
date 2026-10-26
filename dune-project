@@ -45,6 +45,21 @@
   dune))
 
 (package
+ (name geom)
+ (synopsis "Geometric algebra for robotics on the Raven stack")
+ (description
+  "Geometric algebra on Nx tensors: a small Clifford-algebra core, the E3, PGA and CGA models, motors and rigid motions, robot kinematics, and a Hugin-based visualization layer.")
+ (depends
+  (ocaml
+   (>= 5.5.0))
+  dune
+  nx
+  rune
+  hugin
+  (windtrap :with-test)
+  (ppx_windtrap :with-test)))
+
+(package
  (name ilqr-vae)
  (synopsis "iLQR-VAE: control-based learning of input-driven dynamics")
  (description

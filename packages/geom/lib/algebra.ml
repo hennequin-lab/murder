@@ -210,11 +210,13 @@ end
 (* --- implementation ------------------------------------------------------- *)
 
 let product_shape s = Array.fold_left ( * ) 1 s
-let invalid name msg = invalid_arg (name ^ ": " ^ msg)
+let invalid name msg = invalid_arg (Printf.sprintf "%s: %s" name msg)
 
 module Make (S : SIGNATURE) (K : SCALAR) = struct
   type kind = K.kind
   type t = (float, kind) Nx.t
+
+  module Source = S
 
   let dtype = K.dtype
   let signature = S.signature

@@ -33,7 +33,7 @@ lays out a phased roadmap.
 
 ### Current state
 
-- Imported packages: `packages/cmdargs`, `packages/dilqr`,
+- Imported packages: `packages/cmdargs`, `packages/dilqr`, `packages/geom`,
   `packages/ilqr-vae`, `packages/symo`, `packages/sofo`, with their original
   Git histories and conventional commit subjects.
 - `getting-started/` has the four chapters and runs as a smoke test under

@@ -742,8 +742,8 @@ module Make (Mo : MOTION) = struct
            column
            (limits j))
       m.joints;
-    Array.iteri
-      (fun i (f : frame_rec) ->
+    Array.iter
+      (fun (f : frame_rec) ->
          Format.fprintf ppf "@,  frame %s on %s" f.fname m.link_names.(f.flink))
       m.frames;
     Format.fprintf ppf "@]"

@@ -22,7 +22,7 @@ let rel = 2e-4
 let abs = 2e-4
 
 let close_scalar ?(rel = rel) ?(abs = abs) a b =
-  a = b
+  Float.equal a b
   || Float.abs (a -. b) <= abs
   || Float.abs (a -. b) <= rel *. Float.max (Float.abs a) (Float.abs b)
 

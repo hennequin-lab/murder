@@ -183,13 +183,5 @@ let project_image_meet c p =
       Some (Nx.item [ 0 ] q, Nx.item [ 1 ] q, -.zc)))
 
 let project_image c p = project_image_meet c p
-
-let project c p =
-  match project_image c p with
-  | None -> None
-  | Some image -> Some (page_of_image c image)
-
-let project_pinhole c p =
-  match project_image_pinhole c p with
-  | None -> None
-  | Some image -> Some (page_of_image c image)
+let project c p = Option.map (page_of_image c) (project_image c p)
+let project_pinhole c p = Option.map (page_of_image c) (project_image_pinhole c p)

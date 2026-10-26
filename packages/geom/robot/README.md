@@ -42,7 +42,7 @@ here depends on a file format, a physics engine or a robotics middleware.
 
 ## Quick start
 
-The package is developed inside the raven workspace. From `geom/`:
+The package is part of the `murder` monorepo. From `packages/geom/`:
 
 ```sh
 dune build

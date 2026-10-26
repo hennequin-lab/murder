@@ -113,10 +113,11 @@ let () =
     let scene = scene_for versor in
     let picture = Draw.picture_at scene ~time:0.25 in
     let frame = Frame.create ~density:1.5 ~width:640. ~height:480. picture in
-    Frame.save_png frame ("viz/demo/out/" ^ name ^ ".png");
-    Frame.save_svg frame ("viz/demo/out/" ^ name ^ ".svg");
+    let out ext = Printf.sprintf "viz/demo/out/%s.%s" name ext in
+    Frame.save_png frame (out "png");
+    Frame.save_svg frame (out "svg");
     let spec = { Movie.duration = 2.; fps = 24; scene; density = 1.5 } in
-    Movie.to_mp4 spec ~path:("viz/demo/out/" ^ name ^ ".mp4");
+    Movie.to_mp4 spec ~path:(out "mp4");
     Printf.printf "wrote viz/demo/out/%s.{png,svg,mp4}\n" name
   in
   let dilation t =

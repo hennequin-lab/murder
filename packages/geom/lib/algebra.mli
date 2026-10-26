@@ -237,4 +237,9 @@ end
 
 (** [Make (S) (K)] is the algebra of signature [S.signature] and scalar kind
     [K.kind]. The structure constants are computed at module initialisation. *)
-module Make (S : SIGNATURE) (K : SCALAR) : ALGEBRA with type kind = K.kind
+module Make (S : SIGNATURE) (K : SCALAR) : sig
+  include ALGEBRA with type kind = K.kind
+
+  (** The signature module this algebra was built from. *)
+  module Source : module type of S
+end

@@ -22,9 +22,14 @@ let equal_float ?(eps = 5e-3) ?msg expected actual =
   equal ?msg (float eps) expected actual
 
 let equal_point ?(eps = 5e-3) ?msg (x, y, z) (p : P.p3) =
-  equal_float ~eps ~msg:"x" x p.x;
-  equal_float ~eps ~msg:"y" y p.y;
-  equal_float ~eps ~msg:"z" z p.z
+  let prefix =
+    match msg with
+    | None -> ""
+    | Some m -> m ^ " "
+  in
+  equal_float ~eps ~msg:(prefix ^ "x") x p.x;
+  equal_float ~eps ~msg:(prefix ^ "y") y p.y;
+  equal_float ~eps ~msg:(prefix ^ "z") z p.z
 
 let point_coords p = Nx.to_array (Pga.point_coords p)
 let point_on_line p l = Nx.item [] (Pga.point_on_line p l)

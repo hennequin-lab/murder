@@ -722,11 +722,6 @@ let test_conditioning () =
 
 (* Construction validation. *)
 
-let bad msg =
-  match R.create ~links:[ "base"; "tip" ] ~joints:msg () with
-  | Ok _ -> None
-  | Error m -> Some m
-
 let joint ?(origin = M.one) ?limits name kind parent child =
   { R.name; kind; parent; child; origin; limits }
 
@@ -764,7 +759,6 @@ let test_validation () =
    with
    | Ok _ -> failwith "expected an error: a link with two parents"
    | Error _ -> ());
-  ignore bad;
   match branch_model () with
   | _ -> equal ~msg:"a valid model" int 2 (R.dof (branch_model ()))
 

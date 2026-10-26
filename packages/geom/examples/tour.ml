@@ -32,7 +32,7 @@ let show ~n a =
   | (b, x) :: rest ->
     let sign x = if x < 0. then " - " else " + " in
     List.fold_left
-      (fun acc (b, x) -> acc ^ sign x ^ term (Float.abs x) b)
+      (fun acc (b, x) -> Printf.sprintf "%s%s%s" acc (sign x) (term (Float.abs x) b))
       (if x < 0. then "-" ^ term (-.x) b else term x b)
       rest
 
