@@ -1,0 +1,19 @@
+(executables
+ (names lorenz linear)
+ (libraries
+  sofo
+  nx
+  rune
+  vega
+  base
+  jera
+  nx.io
+  rig.amd.amdgpu
+  rig.nv.nvidia
+  stdio
+  bos
+  cmdliner
+  cmdargs
+  unix)
+ (preprocess
+  (pps ppx_sexp_message ppx_ptree)))

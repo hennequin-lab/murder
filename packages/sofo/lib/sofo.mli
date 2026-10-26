@@ -1,0 +1,479 @@
+(*---------------------------------------------------------------------------
+  Copyright (c) 2026 The SOFO authors. All rights reserved.
+  SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
+(** Sketched second-order training.
+
+    A {e sketch} measures a model's loss and curvature along a random
+    [k]-dimensional subspace of parameter space instead of in all of it. The
+    subspace is the span of [k] sampled directions Θ, held as a
+    parameter-shaped structure whose every leaf stacks its [k] directions on a
+    leading axis; a sketch reports the loss, the gradient contracted with Θ
+    (C = Θᵀ∇c), the generalized Gauss-Newton matrix contracted on both sides
+    (ΘᵀJᵀHJΘ, a [k×k] matrix), and [apply], which turns a [k]-vector back into
+    a parameter-space direction. An update rule then solves a [k]-dimensional
+    problem and steps along its result — the cheap part, and not this library's
+    business.
+
+    The gradient and the curvature are not obtained by differentiating a
+    sketch: the loss is differentiated once, in batched forward mode along all
+    [k] directions at once, and the curvature is accumulated from little losses
+    the user marks with {!observe} or produces with the packaged losses
+    ({!mse}, {!softmax_ce}). So a sketch costs one forward pass plus one small
+    [k×k] accumulation per marked little loss.
+
+    Three modes, one loss function — swap the enclosing driver, not the model:
+
+    - {!sketch}: loss, C and the sketched GGN (the marks are collected);
+    - a bare [Rune.vmap] around [Rune.jvp] over the loss: loss and C (the
+      marks are inert), the composition the sketch itself drives;
+    - [Rune.value_and_grad]: loss and the exact gradient (the marks are
+      inert).
+
+    Marks are inert by construction: {!observe} runs a unit-result
+    [Rune.custom_jvp] whose rule only a sketch's total collects, and every
+    other driver runs its no-op function and lets the additions drop. Marking
+    a little loss therefore costs nothing outside a sketch.
+
+    {[
+    let loss params =
+      let y = predict params x in
+      Nx.add (Sofo.mse ~target y) (Nx.sum (Nx.mul w w))
+    in
+    let dirs = Sofo.Optim.directions params_ptree ~key ~k:32 params in
+    let sk = Sofo.sketch params_ptree loss params dirs in
+    (* sk.c, sk.ggn : the sketched gradient and GGN; sk.apply : sketch → params *)
+    ]} *)
+
+module Curv : sig
+  (** Curvature descriptions: the Hessian of a little loss as a linear map on
+      its prediction.
+
+      A little loss l = ℓ(y) contributes the block YᵀHY to the sketched GGN,
+      with H = ∂²ℓ/∂y² and Y the tangent batch of y. Descriptions therefore
+      only ever need to {e apply} H to a batch of directions, which every
+      constructor does in one batched pass over the lanes.
+
+      Every constructor's linearity is what makes the batched application
+      sound, and each is checked in the test suite against the Hessian
+      [Rune.jacfwd' (Rune.grad' f)] of the corresponding loss [f] rather than
+      against a hand-derived formula. *)
+
+  type t
+
+  (** [apply c v] is H v: the curvature applied to a tangent batch [v] of the
+      prediction's shape, whose leading axis holds the sketch's lanes. The
+      application is linear in [v] and keeps the lane axis, so it serves a
+      whole batch in one pass. *)
+  val apply : t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
+
+  (** [scale s] is H = s·I: the curvature of a mean-squared loss, and of any
+      loss whose second derivative in [y] is constant. *)
+  val scale : float -> t
+
+  (** [diag w] is H = diag w: the curvature of a weighted mean-squared loss, or
+      of any negative log-likelihood in a natural parameterisation whose
+      Hessian is diagonal. [w] is cast to the prediction's dtype. *)
+  val diag : ('a, 'b) Nx.t -> t
+
+  (** [softmax_ce ~scale p] is the cross-entropy curvature, for [p = softmax y]
+      over the last axis: H v = p⊙v − p (p·v), contracted per row, times
+      [scale] (a loss averaged over rows contributes [1/rows]). [p] is the
+      probability tensor of the little loss, so the value and the curvature it
+      describes cannot disagree. *)
+  val softmax_ce : ?scale:float -> ('a, 'b) Nx.t -> t
+
+  (** [hvp ~y f] describes an arbitrary curvature through its action [f] on a
+      single direction of the prediction's shape; the library lifts it over the
+      directions' lane axis. [f] must be linear in its argument and
+      side-effect free, and [y] fixes the element type [f] is written at, so
+      captured tensors need no casting. This is the escape hatch for losses
+      with no structured form, and it costs one vectorized translation of [f]
+      per mark. Under an enclosing [Rune.vmap] the direction [f]
+      receives carries the map's batch axes, like every other curvature here:
+      a shape-dependent [f] must accept them, as [Scale], [Diag] and
+      [Softmax_ce] do by construction. *)
+  val hvp : y:('a, 'b) Nx.t -> (('a, 'b) Nx.t -> ('a, 'b) Nx.t) -> t
+end
+
+(** [observe ~y ~curv l] marks the scalar [l] as a little loss in the
+    prediction [y], whose Hessian with respect to [y] is [curv]. Under a
+    {!sketch}, the rule of a unit-result [Rune.custom_jvp] gathers [y]'s
+    [k]-lane tangent batch and adds the block YᵀHY to the sketch's total; any
+    other driver runs the mark's no-op function and the block is dropped, so
+    calling this is a no-op outside a sketch.
+
+    [l] must be a scalar computed from [y] by differentiable operations — the
+    user's own arithmetic defines both the value and the tangent of the loss
+    the sketch returns. A little loss that depends on several predictions may
+    be observed once per prediction (the blocks add) or jointly, by marking a
+    concatenation of them with a matching curvature.
+
+    {b Law 6.} The sketch is the Gauss-Newton matrix of the returned loss
+    exactly when that loss is the plain sum of its marked little losses plus
+    unmarked terms, because a mark enters with weight one: a mean or a scale
+    the caller applies to a marked little loss reaches the loss and C but not
+    the block. A mean over steps or trials therefore belongs inside each little
+    loss — scale its value and curvature — not on a sum of them.
+
+    {b Inside [Rune.vmap].} Everything the mapped function performs happens
+    once, on physically batched tensors: a mark inside the caller's own map
+    carries one little loss per mapped element, and the block contracts over
+    every element of the packed prediction, so it accounts for the batch's
+    contribution whatever reduction the caller applies outside. A mean over
+    the map's axis is again a factor of [M] the block does not see; scale the
+    little loss and the map's outputs instead. *)
+val observe : y:('a, 'b) Nx.t -> curv:Curv.t -> ('a, 'b) Nx.t -> unit
+
+(** [mse ?w ~target y] is the mean weighted squared error
+    [mean (w * (y - target)²)], marked with its exact curvature
+    (H = diag (2 w / numel y), or [2 / numel y] times the identity without
+    weights), and returned as a scalar to accumulate into the loss. *)
+val mse : ?w:('a, 'b) Nx.t -> target:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
+
+(** [sse ?w ~target y] is the sum (optionally weighted) squared error
+    [sse (w * (y - target)²)], marked with its exact curvature
+    (H = diag (2 w), or [2] times the identity without weights),
+    and returned as a scalar to accumulate into the loss. *)
+val sse : ?w:('a, 'b) Nx.t -> target:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
+
+(** [softmax_ce y labels] is the cross entropy of the last axis of [y] against
+    class indices [labels] — which have [y]'s shape without its last axis —
+    averaged over the leading axes, observed with its exact curvature
+    ([diag p − p pᵀ] per row, divided by the number of rows) and returned as a
+    scalar. Labels must lie in [\[0, num_classes)]; the checked cases are the
+    user's to validate up front. *)
+val softmax_ce : ('a, 'b) Nx.t -> Nx.int64_t -> ('a, 'b) Nx.t
+
+(** A sketch's results. *)
+type 'p sketch =
+  { k : int (** The number of directions the sketch spans. *)
+  ; loss : Nx.float64_t (** The primal total loss, as a float64 scalar. *)
+  ; c : Nx.float64_t
+    (** C = Θᵀ∇c, shape [k]: the gradient sketched onto the sampled
+        directions. *)
+  ; ggn : Nx.float64_t
+    (** The sketched generalized Gauss-Newton matrix ΘᵀJᵀHJΘ, shape [k;k].
+        Blocks are accumulated in float64 and the result symmetrized. *)
+  ; dirs : 'p
+    (** Θ, the directions the sketch was measured along: one [k]-lane batch
+        per float leaf, and zero lanes where no direction can be drawn. They
+        are in whatever basis the draw produced, which {!Optim.coordinates}
+        whitens rather than assumes away. *)
+  ; apply : Nx.float64_t -> 'p
+    (** [apply z] is the parameter-space direction Θz for [z : [k]], each
+        leaf in its parameter's dtype. *)
+  }
+
+(** [sketch structure loss params dirs] sketches [loss] at [params] along the
+    directions [dirs]. [structure] is the parameter structure, the
+    {!Nx.Ptree.instantiate} of the record's module, and [dirs] is a parameter
+    structure whose float leaves stack [k] directions on a leading axis;
+    {!Optim.directions} draws them from a key, and any other sampler returning
+    the same structure serves.
+
+    [loss] must return a scalar — it is the whole objective, including any
+    terms the user accumulates but does not mark. Little losses are marked
+    with {!observe} or produced by {!mse}/{!softmax_ce}, and every term that
+    contributes to the loss should be marked, or the sketch's curvature will
+    only cover the marked ones (law 6, see {!observe}).
+
+    The same loss function runs under the other drivers without changing: the
+    marks are inert to {!Rune.value_and_grad} and to a bare [Rune.vmap] around
+    [Rune.jvp] (the composition this function drives). A [Rune.scan] inside
+    the loss is threaded by the total's scope, so a per-step mark fires for
+    every step and a compiled sketch keeps the scan a loop; a [Rune.vmap]
+    inside the loss batches the trials, while a {!Rune.vmap} *around* [sketch]
+    is a batch of sketches, one per mapped parameter tree, each along its own
+    lanes.
+
+    Raises [Invalid_argument] if [dirs] have no tensor leaf, if the number of
+    lanes [k] is less than 1, or if [loss] does not return a scalar. *)
+val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
+
+(** {1 The optimizer: Algorithm 1's update}
+
+    {!sketch} measures; this turns a measurement into a step. It is the whole
+    of SOFO beyond the sketching — the damped subspace solve and the parameter
+    update — and it is deliberately small: everything expensive or
+    differentiable belongs to the sketch.
+
+    Two halves, split by what compiles rather than by taste. The sketching half
+    is differentiable and jits ({!Optim.sketch_jit}), while the update needs
+    the eigendecomposition of the sketched GGN, which does not compile: it runs
+    eagerly on the host at O(k³), negligible beside a model with P ≫ k
+    parameters — the premise of the algorithm. A deployment therefore compiles
+    the sketch and keeps the solve outside it:
+
+    {[
+    (* build the compiled half once; it jits on first call *)
+    let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss in
+
+    (* the loop: one replay, one host solve, one compiled step *)
+    let params, state =
+      let out = sketch_step ~key:state.Sofo.Optim.key ~aux params in
+      Sofo.Optim.update ~lr ~damping Params.ptree state params out
+    ]}
+
+    The state is only the direction stream — a key carried as a tensor, so it
+    rides the compiled step as an ordinary input leaf and one compilation
+    serves the whole run — and an iteration counter. Directions are drawn
+    inside the compiled step, from that key, so every replay starts from a fresh
+    random subspace without a retrace. {!Optim.update} takes that state and
+    returns its successor with the new parameters, so the stream and the
+    parameters advance together and a loop cannot replay the subspace it just
+    measured. {!Optim.update_sketch} is the same step for a sketch measured
+    eagerly, and {!Optim.step} is a complete eager iteration.
+
+    The third kind of input, [Aux], is the loss's own: the batch, a schedule
+    value, whatever the caller has that the parameters do not. It is not a
+    parameter — the sketch does not differentiate it and the update does not
+    move it — but it rides the same input tree, so a new batch is a new input
+    to a program already compiled. A loss that reads nothing but the
+    parameters writes its aux tree as [Nx.Ptree.unit] and is called with
+    [~aux:()]. *)
+
+module Optim : sig
+  (** {2 State} *)
+
+  type state =
+    { key : Nx.Rng.t (** The stream the directions Θ are drawn from. *)
+    ; step : int (** Iterations completed. *)
+    }
+
+  (** [init ?key ()] is a fresh state: step 0, and [key] as the stream's root,
+      or a subkey of the ambient {!Nx.Rng} scope when [key] is omitted. The
+      whole run follows from this key. *)
+  val init : ?key:Nx.Rng.t -> unit -> state
+
+  (** [next st] is the state of the iteration after [st]: the counter advances
+      and the key becomes the subkey the counter indexes, so no two steps share
+      a direction draw. {!step} and {!update} advance the state themselves and
+      hand it back; this is for a loop that draws sketches without updating — a
+      first-order control, or a run that only measures. *)
+  val next : state -> state
+
+  (** {2 Directions} *)
+
+  (** [directions structure ?key ~k params] is Θ: one standard-normal [k]-lane
+      batch per float leaf, and zero lanes for leaves that cannot carry a
+      direction (an RNG key, an index, a counter — they do not participate).
+      [structure] is the parameter structure. A pure function of [key] (or of
+      the ambient scope when [key] is omitted), so the compiled step can draw
+      it from a key that is an input leaf, and a caller can reproduce a step's
+      subspace by name. {!sketch} takes these directions as an argument, so
+      this is how a caller draws them. *)
+  val directions : 'p Nx.Ptree.t -> ?key:Nx.Rng.t -> k:int -> 'p -> 'p
+
+  (** [apply structure ~k thetas z] is Θz: the parameter-space direction the
+      sketch coordinates [z] denote, each leaf in its parameter's dtype.
+      [structure] is the parameter structure. {!sketch} returns the same
+      function as the [apply] field of its record; this one takes the
+      directions as a value, because a compiled step cannot return a closure. *)
+  val apply : 'p Nx.Ptree.t -> k:int -> 'p -> Nx.float64_t -> 'p
+
+  (** [gram structure ~k thetas] is ΘΘᵀ — [VᵀV] for [V] the [P×k] matrix of a
+      tangent batch's components — accumulated leaf by leaf rather than over a
+      materialized matrix. [structure] is the parameter structure. It is the
+      matrix {!coordinates} takes the inverse square root of when it whitens,
+      so it is also how a caller checks or reuses the conditioning of a drawn
+      subspace. Float64 whoever the leaves are; a leaf that cannot carry a
+      direction contributes nothing. *)
+  val gram : 'p Nx.Ptree.t -> k:int -> 'p -> Nx.float64_t
+
+  (** {2 The update} *)
+
+  (** The damping mode: how the [γ] of [(S + γ·I)⁻¹] is chosen from the
+      sketch's singular values.
+
+      - [`Absolute λ] adds [λ] itself;
+      - [`Relative_from_top λ] adds [λ·s_max] — Algorithm 1's [λ·s_max], and
+        the default, [`Relative_from_top 1e-6];
+      - [`Relative_from_bottom λ] adds [λ·s_min].
+
+      The relative modes are what make [λ] dimensionless: the scale of G̃
+      depends on how the loss reduces — a mean over a batch of 32 and one over
+      512 differ by an order of magnitude — so an absolute [λ] does not
+      transfer between tasks. They are relative to the [s_max] and [s_min] of
+      the {e whitened} G̃ (see {!coordinates}), so they are statements about
+      the curvature of the sampled subspace rather than about the draw that
+      happened to span it: a draw whose directions are 10× longer would
+      otherwise lift its own damping. Damping from the top lifts every
+      direction in proportion to the largest curvature; damping from the
+      bottom lifts only what is barely resolved, and so needs a full-rank
+      sketch: with [s_min = 0] there is nothing to be relative to, and
+      {!coordinates} raises rather than dividing by it. *)
+  type damping =
+    [ `Absolute of float
+    | `Relative_from_top of float
+    | `Relative_from_bottom of float
+    ]
+
+  (** How the damped spectrum is inverted.
+
+      - [`Inverse] is Algorithm 1's [(S + γ·I)⁻¹]: the exact Newton step inside
+        the sketched subspace;
+      - [`Inverse_sqrt] is [(S + γ·I)^{-1/2}], which caps what a direction the
+        sketch resolves poorly can contribute and gives the step a square-root
+        scaling — closer to a normalized-gradient step than to a Newton one,
+        and usually wanting a larger [lr]. *)
+  type preconditioner =
+    [ `Inverse
+    | `Inverse_sqrt
+    ]
+
+  (** [coordinates ?damping ?preconditioner ?gram ggn c] is the damped sketched
+      solve [U (S + γ·I)^{-p} Uᵀ c] of the sketched normal equations
+      [ggn·z = c], from the eigendecomposition [ggn = U S Uᵀ] of the
+      symmetric [ggn], which is its SVD — Algorithm 1, lines 10–12 — with [γ]
+      from [damping] and [p] from [preconditioner] (default [`Inverse]).
+      The solve is eager and O(k³), and it is the one place the library needs a
+      factorization.
+
+      [gram] is the directions' Gram matrix ({!gram}), and it whitens the
+      problem first: [ggn ← Q ggn Qᵀ] and [c ← Q c] with [Q = (ΘΘᵀ)^{-1/2}],
+      before the damping and the inversion, and the result comes back through
+      [Qᵀ]. The solve is a statement about the subspace the directions span,
+      and it is basis-independent only once the basis is orthonormal — which is
+      also what makes the [s_max] and [s_min] that {!damping} is relative to
+      properties of the curvature rather than of the draw. Omit [gram] to solve
+      in the sketch's own basis, unconsidered directions and all.
+
+      {b Note.} Neither eigendecomposition — of the Gram, nor of the sketched
+      GGN — compiles, so this is for the host side of a step, not inside a
+      [Rune.jit]ed program. Its arguments must be on the host.
+
+      Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
+      smallest singular value is 0, and for a [gram] that is rank-deficient:
+      [k] orthonormal directions do not fit in what fewer than [k] parameters
+      span. *)
+  val coordinates
+    :  ?damping:damping
+    -> ?preconditioner:preconditioner
+    -> ?gram:Nx.float64_t
+    -> Nx.float64_t
+    -> Nx.float64_t
+    -> Nx.float64_t
+
+  (** [update_sketch structure ~lr ?damping ?preconditioner sk params] is one
+      SOFO step on an eager sketch: [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C],
+      from the sketch [sk] measured at [params]. [structure] is the parameter
+      structure. [lr] defaults to [1.0], which together with no damping is the
+      exact Newton step inside the sketched subspace.
+
+      The solve is {!coordinates} with the sketch's own directions: the Gram of
+      [sk.dirs] whitens it, so the damping is relative to the curvature of the
+      subspace and the parameter step is [Θ (Q z)] — the coordinates {!apply}
+      contracts are the whitened solve brought back to the drawn basis. Use
+      {!step} to draw the directions and sketch as well, and {!update} for the
+      state-threaded step on a {!sketch_jit} output. *)
+  val update_sketch
+    :  'p Nx.Ptree.t
+    -> ?lr:float
+    -> ?damping:damping
+    -> ?preconditioner:preconditioner
+    -> 'p sketch
+    -> 'p
+    -> 'p
+
+  (** {2 One eager step} *)
+
+  (** [step structure ~k ~lr ?damping ?preconditioner st ~loss ~params]
+      sketches [loss] at [params] along directions drawn from [st]'s key,
+      applies the update, and returns the new parameters, the next state and
+      the sketch — the loss, C and G̃, for logging. [structure] is the
+      parameter structure. One call is one training iteration, eager end to
+      end; use {!sketch_jit} with {!update} when the sketching half should be
+      compiled. *)
+  val step
+    :  'p Nx.Ptree.t
+    -> k:int
+    -> lr:float
+    -> ?damping:damping
+    -> ?preconditioner:preconditioner
+    -> state
+    -> loss:('p -> ('c, 'd) Nx.t)
+    -> params:'p
+    -> 'p * state * 'p sketch
+
+  (** {2 The compiled half}
+
+      {!sketch_jit} is the sketching computation as a pure function of
+      [(key, aux, params)], compiled by [Rune.jit]. Build it once —
+
+      {[
+      let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss
+      ]}
+
+      — and every later call replays: the shapes of the inputs do not change
+      across a training run, the directions come from the key the caller
+      threads, and so does the aux, so a fresh subspace or a new batch costs
+      nothing. What comes back is everything the update needs and nothing that
+      needs a factorization. *)
+
+  type 'p step_info =
+    { loss : Nx.float64_t (** The primal total, as a scalar. *)
+    ; c : Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
+    ; ggn : Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
+    ; gram : Nx.float64_t (** ΘΘᵀ, shape [k;k]: {!gram} of [dirs]. *)
+    ; dirs : 'p (** Θ, the directions the sketch was measured along. *)
+    }
+
+  (** [sketch_jit ~k structure aux_structure loss] draws Θ from [key],
+      sketches [loss] at [params] with [aux], and returns the numbers together
+      with the directions. It is the whole computation — [Rune.jit] over the
+      key, the aux and the parameters — so the function it returns compiles on
+      its first call, replays on every later one, and is pure and
+      differentiable in nothing.
+
+      [loss] takes the parameters and the aux, in that order. It is the same
+      function the eager entry points take, closed over its aux —
+      [Sofo.sketch structure (fun params -> loss params aux) params dirs] for a
+      caller's own directions, and likewise {!step}'s [~loss] — so one
+      objective serves the compiled half and the eager one. *)
+  val sketch_jit
+    :  ?beam:int
+    -> ?parallel:int
+    -> k:int
+    -> Nx.Placement.t
+    -> 'p Nx.Ptree.t
+    -> 'aux Nx.Ptree.t
+    -> ('p -> 'aux -> ('a, 'b) Nx.t)
+    -> key:Nx.Rng.t
+    -> aux:'aux
+    -> 'p
+    -> 'p step_info
+
+  (** [update ?lr ?damping ?preconditioner st params out] is one SOFO step on
+      a compiled sketch: [θ ← θ − η·Θ U (S + γ·I)⁻¹ Vᵀ C] from the output
+      [out] sketched at [params], together with [st]'s successor. [lr]
+      defaults to [1.0], which together with no damping is the exact Newton
+      step inside the sketched subspace.
+
+      [st] is the state whose key produced [out] — the one the compiled step
+      consumed — so a call advances the parameters and the direction stream
+      together and the next iteration is guaranteed a fresh subspace. Pass
+      the state the sketch was drawn from, and thread the one you get back:
+
+      {[
+      let params, state = Sofo.Optim.update ~lr ~damping p state params out in
+      ]}
+
+      The solve runs on the host, from [out]'s [k]-sized [c], [ggn] and
+      [gram]. The step on the parameters is compiled and runs where [params]
+      and [out.dirs] live, so parameters placed on a GPU stay there.
+
+      {!update_sketch} is the same step for a sketch measured eagerly, which
+      threads no state. *)
+  val update
+    :  ?lr:float
+    -> ?damping:damping
+    -> ?preconditioner:preconditioner
+    -> Nx.Placement.t
+    -> 'p Nx.Ptree.t
+    -> state
+    -> 'p
+    -> 'p step_info
+    -> 'p * state
+end
