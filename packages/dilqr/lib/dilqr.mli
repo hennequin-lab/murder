@@ -180,14 +180,14 @@ val solve_ilqr
     inside [Rune.jit] with a [Rune.grad] inside:
 
     {[
-      let step =
-        Rune.jit
-          Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
-          (fun inputs ->
-             Rune.grad
-               (inputs problem)
-               (fun inputs -> loss (solve_ilqr_fixed problem ~iters:3 inputs))
-               inputs)
+    let step =
+      Rune.jit
+        Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
+        (fun inputs ->
+           Rune.grad
+             (inputs problem)
+             (fun inputs -> loss (solve_ilqr_fixed problem ~iters:3 inputs))
+             inputs)
     ]} *)
 val solve_ilqr_fixed
   :  ('w, 'p) Problem.t

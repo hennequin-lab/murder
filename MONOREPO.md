@@ -23,7 +23,7 @@
 | Raven dependency | **Pin `raven-ml/raven` main at a full SHA in `dune-workspace`**, frozen by `dune.lock`. Raven is external, never a package here. Move to a stable release later. |
 | Tests | **Windtrap** for every package; `:with-test` dependencies; property/stateful/expect tests as appropriate. |
 | Lint | **Litany** pinned to a commit, run as `@lint` locally and as a full `litany check` in CI. Start **aggressive**: `(select all)` stable rules; adopt restriction rules one at a time. |
-| Formatting | **`.ocamlformat` pinned to 0.28.1**, `dune build @fmt` in CI, `./dev fmt` locally, opt-in hooks. |
+| Formatting | **`.ocamlformat` pinned to 0.29.0**, `dune build @fmt` in CI, `./dev fmt` locally, opt-in hooks. |
 | CI | **Format + lint + Linux/macOS build/test** on every PR; branch protection on `main`. |
 | Onboarding | **`getting-started/`** with four tested chapters: Nx, Rune, Vega, capstone. |
 | Coverage/mutation | Report first; gate only after the suite stabilizes. Mutation is a periodic reading list, not a PR gate. |
@@ -531,7 +531,7 @@ be published. (Raven follows the same pattern with its `dev.opam`.)
 - One root `.ocamlformat`:
 
   ```ini
-  version = 0.28.1
+  version = 0.29.0
   profile = janestreet
   let-binding-spacing = compact
   parse-docstrings = true
@@ -1354,7 +1354,7 @@ rest of the file is unaffected.
 ### A.4 `.ocamlformat`
 
 ```ini
-version = 0.28.1
+version = 0.29.0
 profile = janestreet
 let-binding-spacing = compact
 parse-docstrings = true
@@ -1780,8 +1780,8 @@ Linux while drafting this document:
   package, and running `dune pkg lock` produced a lock containing `litany.dev`.
   Both `dune build @lint` (in-build, `%{bin:litany}`) and
   `dune exec -- litany check` (full roster) worked.
-- `.ocamlformat` with `version = 0.28.1` made Dune's dev-tools solver install
-  and use ocamlformat 0.28.1; `dune build @fmt` failed on unformatted files and
+- `.ocamlformat` with `version = 0.29.0` made Dune's dev-tools solver install
+  and use ocamlformat 0.29.0; `dune build @fmt` failed on unformatted files and
   passed once they were formatted.
 - `(pkg enabled)` and the `(env ...)` form in `dune-workspace` parsed and built.
 - The `@ci` alias pattern (`(alias fmt)`, `(alias lint)`, `(alias_rec runtest)`)

@@ -30,12 +30,12 @@
     specification per leaf, alongside the leaf dimensions:
 
     {[
-      module Model = struct
-        type 'a t = { w : 'a } [@@deriving ptree]
+    module Model = struct
+      type 'a t = { w : 'a } [@@deriving ptree]
 
-        let dims = { w = [ 100; 78 ] }
-        let symmetries = { w = [ Symmetry.Id; Symmetry.Perm 0 ] }
-      end
+      let dims = { w = [ 100; 78 ] }
+      let symmetries = { w = [ Symmetry.Id; Symmetry.Perm 0 ] }
+    end
     ]}
 
     {!Make} turns that declaration into the orbit machinery and the Taylor
@@ -85,18 +85,18 @@
     output leaves, so a training loop traces once and then replays:
 
     {[
-      let config =
-        { Optim.learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
-      in
-      let compiled = S.Compiled.create ~config in
-      let rec train state n =
-        if n = 0
-        then state
-        else (
-          let _, grads = Rune.value_and_grad S.ptree loss state.S.State.theta in
-          train (S.Compiled.step compiled ~config ~state ~grads) (n - 1))
-      in
-      train (S.init ~config params) 1000
+    let config =
+      { Optim.learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+    in
+    let compiled = S.Compiled.create ~config in
+    let rec train state n =
+      if n = 0
+      then state
+      else (
+        let _, grads = Rune.value_and_grad S.ptree loss state.S.State.theta in
+        train (S.Compiled.step compiled ~config ~state ~grads) (n - 1))
+    in
+    train (S.init ~config params) 1000
     ]}
 
     Compiled functions are not thread-safe and cache on the leaf signature of

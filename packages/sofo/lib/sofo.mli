@@ -403,7 +403,7 @@ module Optim : sig
       [(key, aux, params)], compiled by [Rune.jit]. Build it once —
 
       {[
-        let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss
+      let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss
       ]}
 
       — and every later call replays: the shapes of the inputs do not change
