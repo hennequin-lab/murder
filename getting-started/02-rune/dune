@@ -1,0 +1,5 @@
+(executables
+ (names ex01_grad ex02_linear_regression)
+ (libraries nx nx.dtype rune)
+ (preprocess
+  (pps ppx_ptree)))

@@ -1,0 +1,3 @@
+(executable
+ (name ex01_optimizers)
+ (libraries nx rune vega))

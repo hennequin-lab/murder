@@ -1,0 +1,7 @@
+(executable
+ (name ex01_arrays)
+ (libraries nx nx.dtype))
+
+(executable
+ (name ex02_slicing)
+ (libraries nx nx.dtype))

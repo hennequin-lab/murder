@@ -1,0 +1,19 @@
+; Run the examples as a smoke test. They are short and deterministic.
+
+(rule
+ (alias runtest)
+ (deps
+  01-nx/ex01_arrays.exe
+  01-nx/ex02_slicing.exe
+  02-rune/ex01_grad.exe
+  02-rune/ex02_linear_regression.exe
+  03-vega/ex01_optimizers.exe
+  04-capstone/train.exe)
+ (action
+  (progn
+   (run %{dep:01-nx/ex01_arrays.exe})
+   (run %{dep:01-nx/ex02_slicing.exe})
+   (run %{dep:02-rune/ex01_grad.exe})
+   (run %{dep:02-rune/ex02_linear_regression.exe})
+   (run %{dep:03-vega/ex01_optimizers.exe})
+   (run %{dep:04-capstone/train.exe}))))
