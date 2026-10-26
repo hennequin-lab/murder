@@ -1,0 +1,4 @@
+(tests
+ (names test_camera test_primitive)
+ (modules test_camera test_primitive)
+ (libraries geom geom_viz nx windtrap))
