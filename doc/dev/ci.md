@@ -30,5 +30,8 @@ Or `./dev check` for everything.
   caches `_build` and the Dune cache. It does not create an opam switch.
 - The lock patch in `scripts/patch-lock.py` is applied when relocking, not in
   CI; CI uses the committed lock.
+- Litany on Dune 3.24.2 currently skips ppx-preprocessed units with
+  `derived-needs-build`. It still gates the units it admits, but the summary is
+  not full coverage. Remove this note when litany's Dune adapter catches up.
 - If GitHub Actions minutes become tight, demote macOS to `main` plus a weekly
   run. Keep Linux on every PR.
