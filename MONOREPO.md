@@ -31,6 +31,19 @@
 The rest of this document explains the choices, gives a concrete skeleton, and
 lays out a phased roadmap.
 
+### Current state
+
+- Imported packages: `packages/dilqr`, `packages/ilqr-vae`, `packages/symo`,
+  `packages/sofo`, with their original Git histories and conventional commit
+  subjects.
+- `getting-started/` has the four chapters and runs as a smoke test under
+  `dune runtest getting-started`.
+- Raven is pinned to `raven-ml/raven` main at
+  `3984341140aef7bfc6f27eb14474f4a261a7b7bc` in `dune-workspace`.
+- `scripts/relock.sh` + `scripts/patch-lock.py` handle the current Raven-main
+  lock workaround; see §5.4.
+- `./dev check` passes locally (format, litany, all package tests, tutorials).
+
 ### 0.1 Options considered
 
 | Decision | Options | Why the recommendation |
