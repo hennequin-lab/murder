@@ -1,7 +1,7 @@
 (version dev)
 
 (build
- (all_platforms ((action (run dune build -p %{pkg-self:name} -j %{jobs} %{pkg-self:name}.install)))))
+ (all_platforms ((dune))))
 
 (depends
  (all_platforms (ocaml)))
