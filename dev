@@ -6,7 +6,7 @@ usage() {
   cat <<'EOF'
 Usage: ./dev <command> [args]
 
-  setup     install hooks, build .cmt
+  setup     install hooks and dev tools, build .cmt
   fmt       apply formatting (dune fmt)
   check     dune build @ci, then the full litany roster
   test      dune runtest
@@ -28,6 +28,10 @@ case "$cmd" in
       exit 1
     }
     git config core.hooksPath .githooks
+    # Dev tools are not dependencies: they live in _build, one set per checkout.
+    for tool in ocamlformat ocamlmerlin ocamllsp odoc; do
+      dune tools install "$tool"
+    done
     dune build @check
     echo "Ready. Try: dune exec getting-started/01-nx/ex01_arrays.exe"
     ;;

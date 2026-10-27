@@ -71,7 +71,7 @@ one causes real damage.
 
 ## Commands
 
-- `./dev setup` — install hooks, build `.cmt`.
+- `./dev setup` — install hooks and dev tools, build `.cmt`.
 - `./dev fmt` — apply formatting (`dune fmt`).
 - `./dev check` — `dune build @ci`, then the full litany roster.
 - `./dev test` — `dune runtest`.

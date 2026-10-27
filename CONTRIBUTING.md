@@ -3,8 +3,9 @@
 ## Set up
 
 - Install Dune 3.24.2 or newer.
-- Clone the repo and run `./dev setup`. This installs the git hooks, downloads
-  the locked dependencies, and builds the `.cmt` files.
+- Clone the repo and run `./dev setup`. This installs the git hooks and the
+  dev tools (`ocamlformat`, `ocamlmerlin`, `ocamllsp`, `odoc`), downloads the
+  locked dependencies, and builds the `.cmt` files.
 - First command: `dune exec getting-started/01-nx/ex01_arrays.exe`.
 
 ## Daily loop

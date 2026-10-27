@@ -27,15 +27,17 @@ dune exec getting-started/01-nx/ex01_arrays.exe
 ```
 
 The first build downloads Raven and its dependencies and can take a few
-minutes. Later builds are incremental.
+minutes. Later builds are incremental. `./dev setup` also installs the dev
+tools (`ocamlformat`, `ocamlmerlin`, `ocamllsp`, `odoc`) into `_build`, so the
+formatter and editor tooling are available without touching an opam switch.
 
 ## Editor
 
 Install the OCaml platform extension for VS Code, or `ocaml-eglot`/`ocaml-lsp`
-for Emacs/Vim. The language server comes from Dune:
+for Emacs/Vim. `./dev setup` already installed the language server and merlin;
+put them on your `PATH` with:
 
 ```sh
-dune tools install ocamllsp
 eval $(dune tools env)
 ```
 
@@ -52,7 +54,7 @@ eval $(dune tools env)
 - **`dune: command not found`:** add `~/.local/bin` to `PATH`.
 - **A package is missing from the lock:** run `./dev lock`; see
   `CONTRIBUTING.md` for the current Raven pin.
-- **ocamlformat version mismatch:** remove
-  `_build/.dev-tools.locks/ocamlformat` and run
-  `dune tools install ocamlformat`.
+- **`Program ocamlformat not found in the tree or in PATH`, or an ocamlformat
+  version mismatch:** run `dune tools install ocamlformat`. Dune installs the
+  version named in `.ocamlformat` and relocks when that file changes.
 - **A weird incremental build:** `rm -rf _build` and rebuild.

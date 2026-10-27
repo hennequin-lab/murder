@@ -23,8 +23,10 @@ same time.
 ```
 
 `new` creates the worktree under `../murder-wt` and runs `./dev setup` in it:
-git hooks and the `.cmt` files. Set
-`MURDER_WT_ROOT` to put worktrees elsewhere. Plain git works too:
+git hooks, the dev tools and the `.cmt` files. Each worktree installs its own
+copy of the tools into its own `_build`; the machine-wide cache makes that
+cheap after the first one. Set `MURDER_WT_ROOT` to put worktrees elsewhere.
+Plain git works too:
 
 ```sh
 git worktree add ../murder-wt/geom-motor -b wt/geom-motor main
