@@ -220,6 +220,33 @@ module Batched = struct
     }
 end
 
+(* A deterministic pseudo-random pattern of the same shape as [like]: a fixed
+   float64 wave folded into the shape and cast to the leaf's dtype. Test inputs
+   only — no generator, so a failing case reproduces. *)
+let pattern ~seed ~(like : ('a, 'b) Nx.t) : ('a, 'b) Nx.t =
+  let s = Nx.shape like in
+  let numel = Array.fold s ~init:1 ~f:(fun a b -> a * b) in
+  let flat = Nx.arange_f Nx.float64 0.0 (Float.of_int numel) 1.0 in
+  let wave = Nx.sin (Nx.add_s (Nx.mul_s flat 1.7) seed) in
+  Nx.cast (Nx.dtype like) (Nx.reshape s wave)
+
+(* The same, one leaf at a time: a tangent seed, or a cotangent on the inputs. *)
+let pattern_inputs ~seed (structure : 'p Nx.Ptree.t) (value : 'p) : 'p =
+  Nx.Ptree.map structure (fun _ leaf -> pattern ~seed ~like:leaf) value
+
+(* The same with [k] leading lanes: a batch of directions. *)
+let pattern_lanes ~seed ~k (structure : 'p Nx.Ptree.t) (value : 'p) : 'p =
+  Nx.Ptree.map
+    structure
+    (fun _ leaf ->
+       Nx.concatenate
+         ~axis:0
+         (List.init k ~f:(fun i ->
+            Nx.unsqueeze
+              ~axes:[ 0 ]
+              (pattern ~seed:(seed +. (1.3 *. Float.of_int i)) ~like:leaf))))
+    value
+
 (* ──────────────────────────────────────────────────────────────────────────
    Tests
    ────────────────────────────────────────────────────────────────────────── *)
@@ -259,12 +286,36 @@ let test_a_failed_factorization_is_nan () =
   let finite d1 d2 =
     Nx.item [] (Nx.all (Nx.isfinite d1)) && Nx.item [] (Nx.all (Nx.isfinite d2))
   in
-  let _, d1, d2 = backward ~mu:0.0 ~tape ~lin:(lin_of_tape tape) in
+  let _, d1, d2 = backward tape ~lin:(lin_of_tape tape) in
   require
     ~msg:"an indefinite Quu has NaN expected-decrease accumulators"
     (not (finite d1 d2));
-  let _, d1, d2 = backward ~mu:2.0 ~tape ~lin:(lin_of_tape tape) in
+  let _, d1, d2 = backward ~mu:(Nx.scalar Nx.float64 2.0) tape ~lin:(lin_of_tape tape) in
   require ~msg:"regularization makes Quu positive definite" (finite d1 d2)
+
+(* The costate is the hand recursion: on a two-step tape with a closed form,
+   [λ_K = ∂φ/∂x], [λ_k = A_kᵀ λ_{k+1} + ∂l_k/∂x], and the stack holds
+   [λ_1; …; λ_K]. *)
+let test_costate () =
+  let open Dilqr.Lqr in
+  let one s v = Nx.mul_s (Nx.ones Nx.float64 s) v in
+  let blocks =
+    Rows.
+      { a = one [| 2; 1; 1 |] 0.5
+      ; b = one [| 2; 1; 2 |] 1.0
+      ; lx = Nx.create Nx.float64 [| 2; 1 |] [| 1.0; 2.0 |]
+      ; lu = Nx.zeros Nx.float64 [| 2; 2 |]
+      ; lxx = Nx.zeros Nx.float64 [| 2; 1; 1 |]
+      ; luu = Nx.zeros Nx.float64 [| 2; 2; 2 |]
+      ; lux = Nx.zeros Nx.float64 [| 2; 2; 1 |]
+      }
+  in
+  let tape = { blocks; fx = one [| 1 |] 3.0; fxx = Nx.zeros Nx.float64 [| 1; 1 |] } in
+  check_close
+    ~msg:"costate"
+    ~tol:1e-12
+    (costate tape)
+    (Nx.create Nx.float64 [| 2; 1 |] [| 3.5; 3.0 |])
 
 (* Stationarity of the double-integrator solution: the autodiff gradient of
    the total cost w.r.t. each control vanishes. Autodiff through the true
@@ -622,12 +673,260 @@ let test_adaptive_rejects_batches () =
       (String.is_substring msg ~substring:"batched")
   | _ -> failwith "the adaptive solve accepted a batch"
 
+(* ──────────────────────────────────────────────────────────────────────────
+   Forward mode
+   ────────────────────────────────────────────────────────────────────────── *)
+
+let pendulum_inputs () =
+  let module P = Pendulum in
+  let theta : Nx.float64_t P.Params.t =
+    { gravity = scalar64 9.81; mass = scalar64 1.3; length = scalar64 0.9 }
+  in
+  let x0 = vec64 [| P.target -. 0.4; 0.1 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.02 ])) in
+  { Dilqr.Inputs.theta; x0; us0 }
+
+(* The two modes are transposes: for a random cotangent on the trajectory and a
+   random tangent of the solve inputs,
+   [<reverse gradient, tangent> = <cotangent, JVP tangent>]. This is the law
+   the forward mode is built to satisfy, and it holds far tighter than a
+   finite-difference check. *)
+let test_jvp_is_the_transpose_of_the_vjp () =
+  let module P = Pendulum in
+  let inputs = pendulum_inputs () in
+  let structure = Dilqr.inputs P.problem in
+  let ybar =
+    pattern ~seed:0.3 ~like:(Nx.zeros Nx.float64 [| P.horizon + 1; P.n + P.m |])
+  in
+  let dinputs = pattern_inputs ~seed:1.1 structure inputs in
+  let grads =
+    Rune.grad
+      structure
+      (fun i -> Nx.sum (Nx.mul ybar (Dilqr.solve_ilqr_fixed P.problem ~iters:6 i)))
+      inputs
+  in
+  let dtaus =
+    snd
+      (Rune.jvp
+         structure
+         Nx.Ptree.tensor
+         (fun i -> Dilqr.solve_ilqr_fixed_jvp P.problem ~iters:6 i)
+         inputs
+         dinputs)
+  in
+  let lhs = Nx.Ptree.dot structure Nx.float64 grads dinputs in
+  let rhs = Nx.sum (Nx.mul ybar dtaus) in
+  check_close ~msg:"<grad, v> = <cotangent, JVP v>" ~tol:1e-8 lhs rhs
+
+(* The forward mode against central differences of the adaptive solve, one
+   input at a time and on a smooth objective: the trajectory tangent contracted
+   with the objective's gradient is the objective's directional derivative. Both
+   modes share one idealization, so the agreement is as good as the reverse
+   mode's (which the test above measures against the same kind of finite
+   difference); directions are taken one at a time because a direction that
+   mixes two inputs lets their contributions cancel and inflates the relative
+   error. *)
+let test_jvp_matches_finite_differences () =
+  let module P = Pendulum in
+  let inputs = pendulum_inputs () in
+  let structure = Dilqr.inputs P.problem in
+  let solve i = Dilqr.solve_ilqr P.problem ~max_iter:100 ~conv_threshold:1e-10 i in
+  (* A loss on the trajectory, smooth in the trajectory. *)
+  let loss taus =
+    let xs, us = Dilqr.split_taus P.problem taus in
+    let xf = xs.(Array.length xs - 1) in
+    let ctrl =
+      Array.fold us ~init:(scalar64 0.0) ~f:(fun a u ->
+        Nx.add a (Nx.mul_s (Nx.sum (Nx.mul u u)) 0.5))
+    in
+    let err = Nx.sub_s (Nx.slice [ R (0, 1) ] xf) P.target in
+    Nx.add ctrl (Nx.mul_s (Nx.sum (Nx.mul err err)) 1.0)
+  in
+  let taus = solve inputs in
+  let ybar = Rune.grad' loss taus in
+  let theta = inputs.Dilqr.Inputs.theta in
+  let base_gravity = item theta.Pendulum.Params.gravity in
+  let direction gravity x0 =
+    { Dilqr.Inputs.theta =
+        { Pendulum.Params.gravity = scalar64 gravity
+        ; mass = scalar64 0.0
+        ; length = scalar64 0.0
+        }
+    ; x0
+    ; us0 = Array.map inputs.us0 ~f:Nx.zeros_like
+    }
+  in
+  let shift d s =
+    let dt = d.Dilqr.Inputs.theta in
+    { inputs with
+      Dilqr.Inputs.theta =
+        { Pendulum.Params.gravity =
+            scalar64 (base_gravity +. (s *. item dt.Pendulum.Params.gravity))
+        ; mass = theta.Pendulum.Params.mass
+        ; length = theta.Pendulum.Params.length
+        }
+    ; x0 = Nx.add inputs.x0 (Nx.mul_s d.Dilqr.Inputs.x0 s)
+    }
+  in
+  let jvp d =
+    item
+      (Nx.sum
+         (Nx.mul
+            ybar
+            (snd
+               (Rune.jvp
+                  structure
+                  Nx.Ptree.tensor
+                  (fun i ->
+                     Dilqr.solve_ilqr_jvp P.problem ~max_iter:100 ~conv_threshold:1e-10 i)
+                  inputs
+                  d))))
+  in
+  let eps = 1e-5 in
+  let check ~msg d =
+    let fd =
+      (item (loss (solve (shift d eps))) -. item (loss (solve (shift d (-.eps)))))
+      /. (2. *. eps)
+    in
+    let j = jvp d in
+    printf "%s: jvp %g vs finite differences %g\n" msg j fd;
+    require ~msg Float.(Float.abs (j -. fd) < 5e-3 +. (5e-3 *. Float.abs fd))
+  in
+  check ~msg:"gravity direction" (direction 1.0 (Nx.zeros_like inputs.x0));
+  check ~msg:"initial state direction" (direction 0.0 (pattern ~seed:0.9 ~like:inputs.x0))
+
+(* The streaming tangent solve and the tape-based one are the same map: the
+   factors, the costate and the per-step tangents are the same values, and only
+   their storage differs. *)
+let test_streaming_jvp_matches_tape_jvp () =
+  let module P = Pendulum in
+  let inputs = pendulum_inputs () in
+  let structure = Dilqr.inputs P.problem in
+  let theta = inputs.Dilqr.Inputs.theta in
+  let dtheta = (pattern_inputs ~seed:1.7 structure inputs).Dilqr.Inputs.theta in
+  let dx0 = (pattern_inputs ~seed:2.9 structure inputs).Dilqr.Inputs.x0 in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~iters:6 theta inputs.x0 inputs.us0 in
+  let streaming = Dilqr.Solver.tangent_solve P.problem theta ~dtheta ~dx0 sol.xs sol.us in
+  let tape = Dilqr.Solver.blocks P.problem theta sol.xs sol.us in
+  let tangent = Dilqr.Solver.tangent P.problem theta ~dtheta sol.xs sol.us in
+  let tape_based =
+    Dilqr.Lqr.solve_jvp
+      ~common:(Dilqr.Lqr.backward_common tape)
+      ~tape
+      ~costate:(Dilqr.Lqr.costate tape)
+      ~tangent
+      ~dx0
+  in
+  check_close
+    ~msg:"streaming jvp xs"
+    ~tol:1e-10
+    streaming.Dilqr.Lqr.xs
+    tape_based.Dilqr.Lqr.xs;
+  check_close
+    ~msg:"streaming jvp us"
+    ~tol:1e-10
+    streaming.Dilqr.Lqr.us
+    tape_based.Dilqr.Lqr.us
+
+(* A batch of directions in one pass is the directions one at a time, and the
+   compiled composition is the eager one. [vmap] over the tangent seeds with
+   [jvp] inside is the batched forward-mode driver. *)
+let test_batched_forward_mode () =
+  let module P = Pendulum in
+  let inputs = pendulum_inputs () in
+  let structure = Dilqr.inputs P.problem in
+  let dirs = pattern_lanes ~seed:0.41 ~k:3 structure inputs in
+  let lanes =
+    Rune.vmap
+      Nx.Ptree.(structure @-> returns tensor)
+      (fun di ->
+         snd
+           (Rune.jvp
+              structure
+              Nx.Ptree.tensor
+              (fun i -> Dilqr.solve_ilqr_fixed_jvp P.problem ~iters:4 i)
+              inputs
+              di))
+      dirs
+  in
+  require
+    ~msg:"one lane per direction"
+    (Array.equal Int.equal (Nx.shape lanes) [| 3; P.horizon + 1; P.n + P.m |]);
+  for i = 0 to 2 do
+    let one (value : 'p) : 'p =
+      (* pick lane [i] of every tensor leaf *)
+      Nx.Ptree.map structure (fun _ leaf -> Nx.slice [ I i ] leaf) value
+    in
+    let dtaus =
+      snd
+        (Rune.jvp
+           structure
+           Nx.Ptree.tensor
+           (fun j -> Dilqr.solve_ilqr_fixed_jvp P.problem ~iters:4 j)
+           inputs
+           (one dirs))
+    in
+    check_close
+      ~msg:(Printf.sprintf "lane %d" i)
+      ~tol:1e-10
+      (Nx.slice [ I i ] lanes)
+      dtaus
+  done;
+  let compiled =
+    Rune.jit
+      Nx.Ptree.(structure @-> returns tensor)
+      (fun (dirs : 'p) ->
+         Rune.vmap
+           Nx.Ptree.(structure @-> returns tensor)
+           (fun di ->
+              snd
+                (Rune.jvp
+                   structure
+                   Nx.Ptree.tensor
+                   (fun i -> Dilqr.solve_ilqr_fixed_jvp P.problem ~iters:4 i)
+                   inputs
+                   di))
+           dirs)
+      dirs
+  in
+  check_close ~msg:"compiled batched forward mode" ~tol:1e-10 compiled lanes
+
+(* At a converged solution the local model is a fixed point: its feedforward
+   gains vanish and its own solution is the zero deviation. That is the
+   precondition of the implicit derivative in either mode, and it checks the
+   Riccati factors, the costate and the LQR solve against each other. *)
+let test_local_model_is_a_fixed_point () =
+  let module P = Integrator in
+  let theta : Nx.float64_t P.Params.t = { mass = scalar64 1.0 } in
+  let x0 = vec64 [| 1.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~iters:12 theta x0 us0 in
+  let tape = Dilqr.Solver.blocks P.problem theta sol.xs sol.us in
+  let common = Dilqr.Lqr.backward_common tape in
+  let gains, d1, _ =
+    Dilqr.Lqr.backward_lin ~common ~tape ~lin:(Dilqr.Lqr.lin_of_tape tape)
+  in
+  let worst = item (Nx.max (Nx.abs gains.Dilqr.Lqr.feedforward)) in
+  printf "worst feedforward gain at the solution: %g\n" worst;
+  require ~msg:"feedforward gain vanishes" Float.(worst < 1e-6);
+  require ~msg:"modelled decrease vanishes" Float.(Float.abs (item d1) < 1e-6);
+  let (zerosol : (float, Nx.float64_elt) Dilqr.Lqr.solution) =
+    Dilqr.Lqr.solve tape ~x0:(Nx.zeros Nx.float64 [| P.n |])
+  in
+  require
+    ~msg:"the local model's solution is the zero deviation"
+    Float.(item (Nx.max (Nx.abs zerosol.Dilqr.Lqr.xs)) < 1e-6);
+  require
+    ~msg:"and the zero control"
+    Float.(item (Nx.max (Nx.abs zerosol.Dilqr.Lqr.us)) < 1e-6)
+
 let () =
   Stdlib.exit
     (run
        "dilqr"
        [ test "regularisation schedule" test_regularisation
        ; test "a failed factorization is NaN" test_a_failed_factorization_is_nan
+       ; test "costate is the hand recursion" test_costate
        ; test "double integrator converges" test_integrator_converges
        ; test "pendulum converges" test_pendulum_converges
        ; test
@@ -642,4 +941,15 @@ let () =
        ; test "batched fixed solve matches unbatched" test_batched_fixed_solve
        ; test "batched gradient matches unbatched" test_batched_grad
        ; test "adaptive solve rejects batches" test_adaptive_rejects_batches
+       ; test
+           "forward mode is the transpose of the reverse mode"
+           test_jvp_is_the_transpose_of_the_vjp
+       ; test
+           "forward mode matches finite differences"
+           test_jvp_matches_finite_differences
+       ; test
+           "the streaming tangent solve is the tape one"
+           test_streaming_jvp_matches_tape_jvp
+       ; test "batched forward mode" test_batched_forward_mode
+       ; test "the local model is a fixed point" test_local_model_is_a_fixed_point
        ])

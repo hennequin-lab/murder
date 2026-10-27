@@ -10,11 +10,13 @@ Dilqr solves problems of the form
 min_{u_0..u_{K-1}}  φ(x_K) + Σ_{k<K} l(x_k, u_k)    s.t.  x_{k+1} = f(x_k, u_k; θ)
 ```
 
-with iterative LQR, and **differentiates through the solve**. The gradient is
-*implicit* rather than obtained by unrolling the iLQR iterations: the backward
-pass is the adjoint system of the local LQR QP, solved by the same Riccati
-machinery as the forward pass, then chained back to the problem parameters
-with a nested `Rune.grad`.
+with iterative LQR, and **differentiates through the solve**. The derivative is
+*implicit* rather than obtained by unrolling the iLQR iterations, and both
+modes are available: the **reverse** mode solves the adjoint system of the
+local LQR QP with the same Riccati machinery as the forward pass and chains the
+result to the problem parameters with a nested `Rune.grad`; the **forward**
+mode reuses one factorization of that QP for a whole batch of directions. The
+two are transposes of each other.
 
 This machinery is what makes iLQR usable as an *inference engine* and not just
 a controller: in iLQR-VAE ([Schimel et al., 2022](#references)), iLQR infers
@@ -41,6 +43,12 @@ program's size grows with the iteration count, **not with the horizon**.
   solves wrapped in a `Rune.custom_vjp`. Put them inside `Rune.jit` with a
   `Rune.grad` inside, and the forward solve and the implicit VJP compile
   together into one program, on CPU or GPU.
+- **Implicit JVPs** (`solve_ilqr_jvp`, `solve_ilqr_fixed_jvp`) — the same
+  solves wrapped in a `Rune.custom_jvp`. One Riccati backward pass at the
+  solution yields the factors every tangent shares — the Cholesky factor of
+  the regularized `Q_uu`, the feedback gain, and the costate — and each
+  direction then costs one cheap sweep plus one rollout. Map `Rune.jvp` over
+  the directions with `Rune.vmap` and the primal solve is computed once.
 - **Static shapes, dynamic time** — state and control dimensions and the
   horizon are static, which is what the compiled scans are built from. The
   step index `k` travels as a scalar tensor, so time-varying problems index
@@ -202,9 +210,21 @@ every solver and helper takes it as its first argument.
   `split_taus`, `taus_of` and `loss_of_taus` are the trajectory helpers they
   work with, each taking the problem first.
 
+- **`solve_ilqr_jvp`, `solve_ilqr_fixed_jvp`** — the differentiable solves in
+  forward mode: the same solves wrapped in `Rune.custom_jvp`. `Rune.jvp`
+  applied to them is the trajectory tangent, computed without differentiating a
+  Cholesky factor. See [Forward mode](#forward-mode).
+
 - **`Dilqr.Lqr`** — the tensor core: `Rows`, `tape`, `gains`, `lin`,
-  `lin_of_tape`, `riccati_step`, `backward`, `rollout`, `rollout_linearized`.
-  Pure tensor math with host-static control flow; safe to trace and jit.
+  `lin_of_tape`, `backward_common` (the factors a solve shares with its
+  tangents), `backward_lin`, `backward`, `costate`, `solve`, `solve_jvp`,
+  `rollout`, `rollout_linearized`, and the `tangent` record a forward-mode
+  solve consumes. Pure tensor math with host-static control flow; safe to trace
+  and jit.
+
+- **`Solver.tangent`** — the tangent of the tape's first-order data along a
+  direction in the problem's parameters: what `solve_jvp` needs from a problem,
+  and nothing else.
 
 - **`Dilqr.Regularisation`** — the Levenberg–Marquardt schedule
   (`{ delta; mu }`, `init`, `increase`, `decrease`), with `mu` floored at
@@ -285,6 +305,74 @@ Under a converged solve this is the true derivative of the solution map. With
 `solve_ilqr_fixed ~iters`, the gradient converges to the adaptive solve's as
 iterations accumulate (see the pendulum example, which prints both).
 
+Forward mode is the transpose of the same linear map, which is why the two give
+the same answer for any scalar objective:
+
+```
+  <reverse gradient, v>  =  <cotangent, JVP v>       for every v, cotangent
+```
+
+and it is computed without a single derivative of a factorization. With `λ` the
+costate of the local model, `K` its feedback gain and `G` the trajectory the
+tangent of the dynamics drives,
+
+```
+  G_0 = dx0,  G_{k+1} = A_k G_k + δf_k
+  X_k = δl_x,k + δA_kᵀ λ_{k+1} + l_xx,k G_k          (X_K = δφ_x + φ_xx G_K)
+  U_k = δl_u,k + δB_kᵀ λ_{k+1} + l_ux,k G_k
+  E_K = X_K,   q_k = U_k + B_kᵀ E_{k+1},   E_k = X_k + A_kᵀ E_{k+1} + K_kᵀ q_k
+  v_0 = 0,     δu_k = -Q_uu⁻¹ q_k + K_k v_k,  v_{k+1} = A_k v_k + B_k δu_k
+  δx_k = G_k + v_k,  δu_k
+```
+
+That is three cheap sweeps against the primal's factors. The tangents of the
+quadratic blocks (`l_xx`, `l_uu`, `l_ux`, `φ_xx`) are not needed: the
+derivative goes through the KKT system, whose matrix is the primal's.
+
+## Forward mode
+
+`Rune.jvp` of a `*_jvp` solve is its derivative along a tangent of the solve
+inputs. A **batch of directions** is one `Rune.vmap` around it, with the primal
+solve — and the factorization every direction reuses — computed once, outside
+the lanes:
+
+```ocaml
+let taus = Dilqr.solve_ilqr_fixed_jvp problem ~iters:4 inputs in
+let dtaus =
+  Rune.vmap
+    Nx.Ptree.(Dilqr.inputs problem @-> returns Nx.Ptree.tensor)
+    (fun dinputs ->
+       snd
+         (Rune.jvp
+            (Dilqr.inputs problem)
+            Nx.Ptree.tensor
+            (Dilqr.solve_ilqr_fixed_jvp problem ~iters:4)
+            inputs
+            dinputs))
+    dirs
+(* taus : [K+1; n+m];   dtaus : [k; K+1; n+m] for k directions in [dirs] *)
+```
+
+`dirs` is a structure of the solve inputs whose every leaf carries the `k`
+directions on a leading axis, and `inputs` is captured — that is what makes the
+primal a constant of the map. The tangents of the first-order data are computed
+step by step as the tangent sweeps reach them (`Solver.tangent_solve`), never
+materialized, so one direction costs `O (horizon · (n + m))` of memory on top of
+the primal's tape — the tape itself, the Hessian recursion and the Cholesky are
+lane-free and paid for once — plus one sweep of `n`-vectors and one rollout of
+compute.
+
+A **batch of problems** is a different axis and composes: the leading batch
+axis of the solved inputs is mapped over inside the solve, and the direction
+axis stays visible to `vmap` outside it.
+
+Forward mode is what a *sketch* needs (see [`sofo`](../sofo)): a sketch wants
+the trajectory tangent to compute its curvature blocks, and does not want a
+reverse pass. When marking little losses for a sketch, mark quantities derived
+from the **returned trajectory**, not terms inside `Problem.running_loss` or
+`Problem.final_loss`: the solver evaluates those once per line-search trial and
+once per iteration, and every evaluation would add its block again.
+
 ## Examples
 
 Two self-contained examples live in [`example/`](example/):
@@ -332,8 +420,10 @@ The test suite covers the regularization schedule, LQR correctness (double
 integrator: cost decrease and control stationarity, checked with independent
 autodiff), nonlinear convergence (pendulum), implicit gradients against
 central finite differences, the fixed solve's competitiveness with the
-adaptive one, JIT round-trips of both the solve and its gradient, and batched
-solves and gradients against their per-member counterparts.
+adaptive one, JIT round-trips of both the solve and its gradient, batched
+solves and gradients against their per-member counterparts, the forward mode
+against finite differences and against the reverse mode (the transpose law,
+pointwise), and a batch of directions against the directions one at a time.
 
 ## References
 

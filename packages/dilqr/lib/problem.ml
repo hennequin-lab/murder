@@ -121,21 +121,25 @@ let split_taus p taus =
   xs.(p.horizon) <- slice_last (row p.horizon) ~start:0 ~stop:p.n;
   xs, us
 
-(* The problem's own running + final losses along the trajectory. *)
+(* The problem's own running + final losses along the trajectory, as one scan
+   over the stacked trajectory: one traced step for the whole horizon. *)
 let loss_of_taus_unbatched p theta taus =
-  let xs, us = split_taus p taus in
-  let acc = ref (p.final_loss theta ~x:xs.(p.horizon)) in
-  for k = 0 to p.horizon - 1 do
-    acc
-    := Nx.add
-         !acc
-         (p.running_loss
-            theta
-            ~k:(Nx.scalar p.dtype (Float.of_int k))
-            ~x:xs.(k)
-            ~u:us.(k))
-  done;
-  !acc
+  let horizon = p.horizon in
+  let ks = Nx.arange p.dtype 0 horizon 1 in
+  let _, losses =
+    Rune.scan
+      Nx.Ptree.unit
+      Nx.Ptree.(pair tensor tensor)
+      Nx.Ptree.tensor
+      ~f:(fun () (row, k) ->
+        let x = Nx.slice [ R (0, p.n) ] row in
+        let u = Nx.slice [ R (p.n, p.n + p.m) ] row in
+        (), p.running_loss theta ~k ~x ~u)
+      ~init:()
+      (Nx.slice [ R (0, horizon) ] taus, ks)
+  in
+  let last = Nx.slice [ I horizon ] taus in
+  Nx.add (p.final_loss theta ~x:(Nx.slice [ R (0, p.n) ] last)) (Nx.sum losses)
 
 (** [loss_of_taus problem theta taus] evaluates the problem's own running +
     final losses along the trajectory. Useful for self-derivation checks and

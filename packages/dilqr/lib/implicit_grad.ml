@@ -39,6 +39,18 @@ type ('p, 'a) residual =
   ; us : 'a array (* solution controls, length horizon *)
   }
 
+(* [taus_of_stacked p xs us] is [Problem.taus_of] at stacked tensors: what a
+   forward-mode solve returns. *)
+let taus_of_stacked p (xs : 'w Problem.value) (us : 'w Problem.value) : 'w Problem.value =
+  let horizon = p.Problem.horizon in
+  let last =
+    Nx.concatenate
+      ~axis:(-1)
+      [ Nx.slice [ I horizon ] xs; Nx.zeros_like (Nx.slice [ I 0 ] us) ]
+  in
+  let body = Nx.concatenate ~axis:(-1) [ Nx.slice [ R (0, horizon) ] xs; us ] in
+  Nx.concatenate ~axis:0 [ body; Nx.unsqueeze ~axes:[ 0 ] last ]
+
 (* [outer a b] is [a bᵀ], batched over every leading axis. *)
 let outer a b = Nx.matmul (Nx.unsqueeze ~axes:[ -1 ] a) (Nx.unsqueeze ~axes:[ -2 ] b)
 
@@ -47,6 +59,9 @@ let matvec m v = Nx.squeeze ~axes:[ -1 ] (Nx.matmul m (Nx.unsqueeze ~axes:[ -1 ]
 
 (* [row t k] is the k-th step of a stacked tensor. *)
 let row (t : ('a, 'b) Nx.t) k = Nx.slice [ I k ] t
+
+(* [flip x] reverses the horizon axis. *)
+let flip x = Nx.flip ~axes:[ 0 ] x
 
 (* [stack_array ts] stacks the steps of [ts] along a new leading axis. *)
 let stack_array (ts : ('a, 'b) Nx.t array) : ('a, 'b) Nx.t =
@@ -81,38 +96,40 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
     ; rfx = yx horizon
     }
   in
-  let gains, _, _ = Lqr.backward ~mu:0.0 ~tape ~lin in
+  let gains, _, _ = Lqr.backward tape ~lin in
   let dx, du = Lqr.rollout_linearized ~tape ~gains ~x0:zero_n in
   (* Perturbed costates: δλ_K = C_xx,K δx_K + ȳ_x,K;
-     δλ_k = Aᵀδλ_{k+1} + C_xx δx_k + C_uxᵀ δu_k + ȳ_x,k. Only λ₁..λ_K are
-     needed. *)
-  let dl = Array.create ~len:(horizon + 1) zero_n in
-  dl.(horizon) <- Nx.add (Nx.matmul tape.fxx (row dx horizon)) (yx horizon);
-  for k = horizon - 1 downto 0 do
-    dl.(k)
-    <- Nx.add
-         (Nx.matmul (Nx.matrix_transpose (row tape.Lqr.blocks.a k)) dl.(k + 1))
-         (Nx.add
-            (Nx.matmul (row tape.Lqr.blocks.lxx k) (row dx k))
+     δλ_k = Aᵀδλ_{k+1} + C_xx δx_k + C_uxᵀ δu_k + ȳ_x,k. One scan over the
+     horizon, emitting the incoming carry so the stack is δλ_K … δλ_1 and flips
+     to δλ_1 … δλ_K; the final carry is δλ_0, the gradient on x₀. *)
+  let dl0, dl1 =
+    Rune.scan
+      Nx.Ptree.tensor
+      Nx.Ptree.(
+        pair (pair tensor tensor) (pair tensor (pair tensor (pair tensor tensor))))
+      Nx.Ptree.tensor
+      ~f:(fun dl ((a, lxx), (lux, (dx_k, (du_k, yx_k)))) ->
+        let dl_k =
+          Nx.add
+            (matvec (Nx.matrix_transpose a) dl)
             (Nx.add
-               (Nx.matmul (Nx.matrix_transpose (row tape.Lqr.blocks.lux k)) (row du k))
-               (yx k)))
-  done;
-  (* Step 2: block cotangents, following the reference formulation (the
-     VJP of the fixed-point map). λ* are the solution costates of the
-     problem's own losses; δτ = (δx, δu) and δλ the perturbation solve's
-     response. Every cotangent is a stacked tensor: one batched product per
-     block, whatever the horizon. *)
-  let lam = Array.create ~len:(horizon + 1) zero_n in
-  lam.(horizon) <- tape.fx;
-  for k = horizon - 1 downto 0 do
-    lam.(k)
-    <- Nx.add
-         (Nx.matmul (Nx.matrix_transpose (row tape.Lqr.blocks.a k)) lam.(k + 1))
-         (row tape.Lqr.blocks.lx k)
-  done;
-  let dl1 = stack_array (Array.init horizon ~f:(fun k -> dl.(k + 1))) in
-  let lm1 = stack_array (Array.init horizon ~f:(fun k -> lam.(k + 1))) in
+               (matvec lxx dx_k)
+               (Nx.add (matvec (Nx.matrix_transpose lux) du_k) yx_k))
+        in
+        dl_k, dl)
+      ~init:(Nx.add (matvec tape.fxx (row dx horizon)) (yx horizon))
+      ( (flip tape.Lqr.blocks.a, flip tape.Lqr.blocks.lxx)
+      , ( flip tape.Lqr.blocks.lux
+        , ( flip (Nx.slice [ R (0, horizon) ] dx)
+          , (flip du, flip (Nx.slice [ R (0, horizon); R (0, n) ] ybar)) ) ) )
+  in
+  let dl1 = flip dl1 in
+  (* Step 2: block cotangents, following the reference formulation (the VJP of
+     the fixed-point map). λ* are the solution costates of the problem's own
+     losses; δτ = (δx, δu) and δλ the perturbation solve's response. Every
+     cotangent is a stacked tensor: one batched product per block, whatever the
+     horizon. *)
+  let lm1 = Lqr.costate tape in
   let x = Nx.slice [ R (0, horizon) ] xs_t in
   let dxk = Nx.slice [ R (0, horizon) ] dx in
   let dx_last = row dx horizon in
@@ -125,7 +142,7 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
   let cot_lux = Nx.add (outer du x) (Nx.matrix_transpose (outer dxk us_t)) in
   let cot_fx = dx_last in
   let cot_fxx = Lqr.sym (outer dx_last xs.(horizon)) in
-  let grad_x0 = dl.(0) in
+  let grad_x0 = dl0 in
   (* Step 3: chain the block cotangents to θ with a nested grad over a
      scalar surrogate that recomputes the blocks from θ exactly like the
      forward pass, so derived quantities (a_k, c_k) propagate couplings. *)
@@ -201,7 +218,7 @@ let solve_ilqr
        let sol =
          Solver.solve p ?max_iter ?conv_threshold ?c1 ?ls_depth ~reg theta x0 us0
        in
-       ( Problem.taus_of p sol.xs sol.us
+       ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
        , fun ybar -> bwd p { theta; x0; us0; xs = sol.xs; us = sol.us } ybar ))
     inputs
 
@@ -222,7 +239,7 @@ let solve_ilqr_fixed_unbatched
     Nx.Ptree.tensor
     (fun { Problem.Inputs.theta; x0; us0 } ->
        let sol = Solver.solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters theta x0 us0 in
-       ( Problem.taus_of p sol.xs sol.us
+       ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
        , fun ybar -> bwd p { theta; x0; us0; xs = sol.xs; us = sol.us } ybar ))
     inputs
 
@@ -237,4 +254,74 @@ let solve_ilqr_fixed p ~iters ?alphas ?mu ?c1 inputs =
     Rune.vmap
       Nx.Ptree.(Problem.inputs p @-> returns Nx.Ptree.tensor)
       (fun i -> solve_ilqr_fixed_unbatched p ~iters ?alphas ?mu ?c1 i)
+      inputs
+
+(* ──────────────────────────────────────────────────────────────────────────
+   Forward mode
+   ────────────────────────────────────────────────────────────────────────── *)
+
+(* The tangent map of a solve: the local model at the solution, and one
+   streaming tangent solve. The factors and the tape are computed here, in the
+   map, so that a solve whose derivative nobody asks for does not pay for them —
+   the same bargain the VJP's pullback makes. *)
+let tangent_of_solve p ~theta ~(sol : 'w Problem.value Solver.t) ~dx0 ~dtheta
+  : 'w Problem.value
+  =
+  let dsol = Solver.tangent_solve p theta ~dtheta ~dx0 sol.xs sol.us in
+  taus_of_stacked p dsol.Lqr.xs dsol.Lqr.us
+
+(* The adaptive solve with a custom forward-mode rule. Eager only: the primal
+   solve reads values on the host. *)
+let solve_ilqr_jvp
+      p
+      ?max_iter
+      ?conv_threshold
+      ?c1
+      ?ls_depth
+      ?reg0
+      (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
+  : 'w Problem.value
+  =
+  let reg = Option.value reg0 ~default:Regularisation.init in
+  Rune.custom_jvp
+    (Problem.inputs p)
+    Nx.Ptree.tensor
+    (fun { Problem.Inputs.theta; x0; us0 } ->
+       let sol =
+         Solver.solve p ?max_iter ?conv_threshold ?c1 ?ls_depth ~reg theta x0 us0
+       in
+       ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
+       , fun { Problem.Inputs.theta = dtheta; x0 = dx0; us0 = _ } ->
+           tangent_of_solve p ~theta ~sol ~dx0 ~dtheta ))
+    inputs
+
+(* The traceable solve with a custom forward-mode rule. *)
+let solve_ilqr_fixed_jvp_unbatched
+      p
+      ~(iters : int)
+      ?alphas
+      ?mu
+      ?c1
+      (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
+  : 'w Problem.value
+  =
+  Rune.custom_jvp
+    (Problem.inputs p)
+    Nx.Ptree.tensor
+    (fun { Problem.Inputs.theta; x0; us0 } ->
+       let sol = Solver.solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters theta x0 us0 in
+       ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
+       , fun { Problem.Inputs.theta = dtheta; x0 = dx0; us0 = _ } ->
+           tangent_of_solve p ~theta ~sol ~dx0 ~dtheta ))
+    inputs
+
+(* Batched inputs are solved member by member, the primal and the tangents
+   alike: each member gets its own trajectory and its own derivative. *)
+let solve_ilqr_fixed_jvp p ~iters ?alphas ?mu ?c1 inputs =
+  if not (Solver.is_batched inputs.Problem.Inputs.x0 inputs.us0)
+  then solve_ilqr_fixed_jvp_unbatched p ~iters ?alphas ?mu ?c1 inputs
+  else
+    Rune.vmap
+      Nx.Ptree.(Problem.inputs p @-> returns Nx.Ptree.tensor)
+      (fun i -> solve_ilqr_fixed_jvp_unbatched p ~iters ?alphas ?mu ?c1 i)
       inputs

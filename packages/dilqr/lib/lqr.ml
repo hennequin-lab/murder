@@ -4,8 +4,9 @@
   ---------------------------------------------------------------------------*)
 
 (* Core iLQR tensor mathematics: the per-step linearization tape, the Riccati
-   backward pass (regularized, Cholesky-based), gain rollouts, and the
-   perturbed sweeps used by the implicit gradient.
+   backward pass (regularized, Cholesky-based) in the two halves a derivative
+   reuses, the LQR solve and its JVP, gain rollouts, and the perturbed sweeps
+   used by the implicit VJP.
 
    Conventions (column vectors throughout):
    - state [n], control [m]; dynamics [f] : x -> u -> x'
@@ -21,7 +22,8 @@
    Every per-step tensor may carry leading batch axes between the horizon and
    the dimensions ([horizon; batch...; n]): reductions run over the horizon
    and dimension axes only, and matrix-vector products broadcast over the
-   batch, so these functions are batch-correct as they stand.
+   batch, so these functions are batch-correct as they stand. A tangent axis
+   is just such a batch axis.
 
    Every function here is a pure tensor computation with host-static control
    flow: safe to trace, safe to jit-compile. *)
@@ -76,6 +78,9 @@ type ('a, 'b) lin =
 let lin_of_tape (tape : ('a, 'b) tape) : ('a, 'b) lin =
   { rlx = tape.blocks.lx; rlu = tape.blocks.lu; rfx = tape.fx }
 
+(* [flip x] reverses the horizon axis. *)
+let flip x = Nx.flip ~axes:[ 0 ] x
+
 (* [chol_solve ~upper ~rhs] solves [u^T u @ x = rhs] for upper Cholesky factor
    [u]: two triangular substitutions, one per factor. A right-hand side one
    rank below [upper] is a vector: it is promoted to a [..., n, 1] matrix for
@@ -96,87 +101,137 @@ let sym x = Nx.div_s (Nx.add x (Nx.matrix_transpose x)) 2.0
    column and the result squeezed back. *)
 let matvec m v = Nx.squeeze ~axes:[ -1 ] (Nx.matmul m (Nx.unsqueeze ~axes:[ -1 ] v))
 
-(* [batch_zero x] is a zero with [x]'s shape without its last axis: the shape
-   of the per-member scalars a batched solve accumulates ([B] here, [] when
-   unbatched). *)
-let batch_zero x =
-  let s = Nx.shape x in
-  Nx.zeros (Nx.dtype x) (Array.init (Array.length s - 1) ~f:(fun i -> s.(i)))
+(* The per-step factors that the primal and every tangent of one LQR solve
+   share. *)
+type ('a, 'b) common =
+  { quu_chol : ('a, 'b) Nx.t
+    (** the upper Cholesky factor of the regularized [Q_uu], [horizon; m; m] *)
+  ; feedback : ('a, 'b) Nx.t (** K_k = -Q_uu⁻¹ Q_ux, [horizon; m; n] *)
+  }
 
-(* One Riccati step from the blocks of step [k]. [vx]/[vxx] is the value
-   function at step [k+1]; returns the feedforward [k_k] ([m]), the feedback
-   [K_k] ([m; n]) and the value function at step [k]. Regularization follows
-   Tassa: [Quu + mu B Bᵀ] and [Qux + mu B Aᵀ].
+(* [regularize ~mu ...] adds Tassa's damping. All three terms are needed for the
+   recursion to stay stable as mu grows. *)
+let regularize ~mu ~at ~bt ~a ~b ~quu ~qux ~qxx =
+  match mu with
+  | None -> quu, qux, qxx
+  | Some mu ->
+    ( Nx.add quu (Nx.mul (Nx.matmul bt b) mu)
+    , Nx.add qux (Nx.mul (Nx.matmul bt a) mu)
+    , Nx.add qxx (Nx.mul (Nx.matmul at a) mu) )
 
-   A regularized [Quu] that is not positive definite gives a NaN Cholesky
-   factor, and every result the step computes from it is NaN: the adaptive
-   solve retries with more regularization, the fixed solve's acceptance mask
-   rejects the trial. *)
-let riccati_step ~(mu : float) ~(row : ('a, 'b) Nx.t Rows.t) ~vx ~vxx
-  : ('a, 'b) Nx.t
-    * ('a, 'b) Nx.t
-    * ('a, 'b) Nx.t
-    * ('a, 'b) Nx.t
-    * ('a, 'b) Nx.t
-    * ('a, 'b) Nx.t
-  =
-  let a = row.a in
-  let b = row.b in
-  let at = Nx.matrix_transpose a in
-  let bt = Nx.matrix_transpose b in
-  let qx = Nx.add row.lx (matvec at vx) in
-  let qu = Nx.add row.lu (matvec bt vx) in
+(* One step of the Hessian recursion: the value Hessian at step [k] from its
+   successor, the regularized [Q_uu] factor, and the feedback gain. A
+   regularized [Q_uu] that is not positive definite gives a NaN Cholesky
+   factor, and every quantity computed from it is NaN. *)
+let common_step ~mu ~(row : ('a, 'b) Nx.t Rows.t) ~vxx =
+  let a = row.a
+  and b = row.b in
+  let at = Nx.matrix_transpose a
+  and bt = Nx.matrix_transpose b in
   let qxx = Nx.add row.lxx (Nx.matmul at (Nx.matmul vxx a)) in
   let qux = Nx.add row.lux (Nx.matmul bt (Nx.matmul vxx a)) in
   let quu = Nx.add row.luu (Nx.matmul bt (Nx.matmul vxx b)) in
-  (* Tassa regularization = adding [mu I] to the running value function:
-     quu += mu BᵀB, qux += mu BᵀA, qxx += mu AᵀA. All three terms are needed
-     for the recursion to stay stable as mu grows. *)
-  let quu_r =
-    if Float.equal mu 0.0 then quu else Nx.add quu (Nx.mul_s (Nx.matmul bt b) mu)
-  in
-  let qux_r =
-    if Float.equal mu 0.0 then qux else Nx.add qux (Nx.mul_s (Nx.matmul bt a) mu)
-  in
-  let qxx =
-    if Float.equal mu 0.0 then qxx else Nx.add qxx (Nx.mul_s (Nx.matmul at a) mu)
-  in
-  let u = Nx.cholesky ~upper:true quu_r in
-  let k_k = Nx.neg (chol_solve ~upper:u ~rhs:qu) in
-  let k_mat = Nx.neg (chol_solve ~upper:u ~rhs:qux_r) in
-  let vxx' = sym (Nx.add qxx (Nx.matmul (Nx.matrix_transpose qux_r) k_mat)) in
-  let vx' = Nx.add qx (matvec (Nx.matrix_transpose qux_r) k_k) in
-  (* Expected decrease accumulators: d1 = Σ kᵀQ_u ≤ 0 against the true
-     gradient model, d2 = Σ kᵀQ_uu^μ k ≥ 0 against the regularized curvature
-     (matching the gains actually used), so J(α) ≈ J(0) + α·d1 + ½α²·d2. The
-     sums run over the control axis only, so a batched solve gets one pair of
-     coefficients per member. *)
-  let d1 = Nx.sum ~axes:[ -1 ] (Nx.mul k_k qu) in
-  let d2 = Nx.sum ~axes:[ -1 ] (Nx.mul k_k (matvec quu_r k_k)) in
-  k_k, k_mat, vx', vxx', d1, d2
+  let quu, qux, qxx = regularize ~mu ~at ~bt ~a ~b ~quu ~qux ~qxx in
+  let u = Nx.cholesky ~upper:true quu in
+  let k_mat = Nx.neg (chol_solve ~upper:u ~rhs:qux) in
+  let vxx' = sym (Nx.add qxx (Nx.matmul (Nx.matrix_transpose qux) k_mat)) in
+  u, k_mat, vxx'
 
-(* [backward ~mu ~tape ~lin] runs the Riccati sweep over the whole horizon as
-   one scan, from the last step to the first. Returns the gains and the total
-   expected-decrease coefficients [d1], [d2] (one scalar per member). *)
-let backward ~(mu : float) ~(tape : ('a, 'b) tape) ~(lin : ('a, 'b) lin)
+let rows_structure () = Nx.Ptree.instantiate (module Rows)
+
+(* [backward_common ?mu tape] runs the Hessian recursion over the whole horizon
+   as one scan, from the last step to the first. *)
+let backward_common ?mu (tape : ('a, 'b) tape) : ('a, 'b) common =
+  let rows = rows_structure () in
+  let _, (quu_chol, feedback) =
+    Rune.scan
+      Nx.Ptree.tensor
+      rows
+      Nx.Ptree.(pair tensor tensor)
+      ~f:(fun vxx row ->
+        let u, k_mat, vxx' = common_step ~mu ~row ~vxx in
+        vxx', (u, k_mat))
+      ~init:tape.fxx
+      (Nx.Ptree.map rows (fun _ x -> flip x) tape.blocks)
+  in
+  { quu_chol = flip quu_chol; feedback = flip feedback }
+
+(* [costate tape] is the primal costate [λ_{k+1}] at every step, [horizon; n]:
+   the value gradient of the local model with the tape's own linear terms. One
+   scan, and the same tensor for every tangent of the solve. *)
+let costate (tape : ('a, 'b) tape) : ('a, 'b) Nx.t =
+  let _, lam =
+    Rune.scan
+      Nx.Ptree.tensor
+      Nx.Ptree.(pair tensor tensor)
+      Nx.Ptree.tensor
+      ~f:(fun lam (lx_k, a_k) ->
+        (* Emit the incoming carry, so the stack is [λ_K; …; λ_1] and flips to
+           [λ_1; …; λ_K]: row [k] is [λ_{k+1}], the value gradient at the state
+           the step starts from. *)
+        Nx.add lx_k (matvec (Nx.matrix_transpose a_k) lam), lam)
+      ~init:tape.fx
+      (flip tape.blocks.lx, flip tape.blocks.a)
+  in
+  flip lam
+
+(* The per-step outputs of the linear half of the backward pass. *)
+module Lin_rows = struct
+  type 'a t =
+    { k : 'a
+    ; d1 : 'a
+    ; d2 : 'a
+    }
+
+  let walk c { k; d1; d2 } =
+    let open Nx.Ptree.Walk in
+    let k = field c "k" leaf k in
+    let d1 = field c "d1" leaf d1 in
+    let d2 = field c "d2" leaf d2 in
+    { k; d1; d2 }
+end
+
+(* [backward_lin ~common ~tape ~lin] is the linear half of the Riccati pass,
+   with the factorization already in hand. *)
+let backward_lin ~(common : ('a, 'b) common) ~(tape : ('a, 'b) tape) ~(lin : ('a, 'b) lin)
   : ('a, 'b) gains * ('a, 'b) Nx.t * ('a, 'b) Nx.t
   =
-  let rows = Nx.Ptree.instantiate (module Rows) in
-  let flip x = Nx.flip ~axes:[ 0 ] x in
-  let zero = batch_zero lin.rfx in
-  let (_, (_, (d1, d2))), (feedforward, feedback) =
+  let _, out =
     Rune.scan
-      Nx.Ptree.(pair tensor (pair tensor (pair tensor tensor)))
-      Nx.Ptree.(pair (pair tensor tensor) rows)
-      Nx.Ptree.(pair tensor tensor)
-      ~f:(fun (vx, (vxx, (d1, d2))) ((rlx, rlu), row) ->
-        let row = { row with Rows.lx = rlx; Rows.lu = rlu } in
-        let k_k, k_mat, vx', vxx', d1', d2' = riccati_step ~mu ~row ~vx ~vxx in
-        (vx', (vxx', (Nx.add d1 d1', Nx.add d2 d2'))), (k_k, k_mat))
-      ~init:(lin.rfx, (tape.fxx, (zero, zero)))
-      ((flip lin.rlx, flip lin.rlu), Nx.Ptree.map rows (fun _ x -> flip x) tape.blocks)
+      Nx.Ptree.tensor
+      Nx.Ptree.(
+        pair (pair tensor tensor) (pair (pair tensor tensor) (pair tensor tensor)))
+      (Nx.Ptree.instantiate (module Lin_rows))
+      ~f:(fun vx ((a, b), ((chol, k_mat), (rx, ru))) ->
+        let qu = Nx.add ru (matvec (Nx.matrix_transpose b) vx) in
+        let qx = Nx.add rx (matvec (Nx.matrix_transpose a) vx) in
+        let k_k = Nx.neg (chol_solve ~upper:chol ~rhs:qu) in
+        (* [Q_uu k_k = -Q_u], so [k_kᵀ Q_uu k_k = -k_kᵀ Q_u]: the curvature the
+           gains actually used is minus the modelled first-order decrease. *)
+        let d1 = Nx.sum ~axes:[ -1 ] (Nx.mul k_k qu) in
+        let d2 = Nx.neg d1 in
+        let vx' = Nx.add qx (matvec (Nx.matrix_transpose k_mat) qu) in
+        vx', { Lin_rows.k = k_k; d1; d2 })
+      ~init:lin.rfx
+      ( (flip tape.blocks.a, flip tape.blocks.b)
+      , ((flip common.quu_chol, flip common.feedback), (flip lin.rlx, flip lin.rlu)) )
   in
-  { feedback = flip feedback; feedforward = flip feedforward }, d1, d2
+  ( { feedback = common.feedback; feedforward = flip out.Lin_rows.k }
+  , Nx.sum ~axes:[ 0 ] out.Lin_rows.d1
+  , Nx.sum ~axes:[ 0 ] out.Lin_rows.d2 )
+
+(* [backward ?mu ~tape ~lin] runs the whole Riccati sweep over the horizon. *)
+let backward ?mu (tape : ('a, 'b) tape) ~(lin : ('a, 'b) lin)
+  : ('a, 'b) gains * ('a, 'b) Nx.t * ('a, 'b) Nx.t
+  =
+  let common = backward_common ?mu tape in
+  backward_lin ~common ~tape ~lin
+
+(* A solution trajectory, as one tensor per trajectory. *)
+type ('a, 'b) solution =
+  { xs : ('a, 'b) Nx.t (** [horizon + 1; n] *)
+  ; us : ('a, 'b) Nx.t (** [horizon; m] *)
+  }
 
 (* The rows of one step of a gain rollout: the nominal state and control, the
    step index, and the gains. *)
@@ -261,3 +316,189 @@ let rollout_linearized
       ((tape.blocks.a, tape.blocks.b), (gains.feedforward, gains.feedback))
   in
   Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] x0; dx_next ], du
+
+(* [solve ?mu ~tape ~x0] is the solution of the quadratic problem: the Riccati
+   backward pass, then the gain rollout from [x0] under the linearized
+   dynamics. *)
+let solve ?mu (tape : ('a, 'b) tape) ~(x0 : ('a, 'b) Nx.t) : ('a, 'b) solution =
+  let common = backward_common ?mu tape in
+  let gains, _, _ = backward_lin ~common ~tape ~lin:(lin_of_tape tape) in
+  let xs, us = rollout_linearized ~tape ~gains ~x0 in
+  { xs; us }
+
+(** The tangent of a tape's first-order data: what {!solve_jvp} consumes. *)
+type ('a, 'b) tangent =
+  { da : ('a, 'b) Nx.t (** ∂A_k along the tangent, shape [horizon; n; n] *)
+  ; db : ('a, 'b) Nx.t (** ∂B_k, shape [horizon; n; m] *)
+  ; df : ('a, 'b) Nx.t
+    (** ∂f_k, the tangent of the dynamics' value at the nominal step,
+        shape [horizon; n] *)
+  ; dlx : ('a, 'b) Nx.t (** ∂(∂l_k/∂x), shape [horizon; n] *)
+  ; dlu : ('a, 'b) Nx.t (** ∂(∂l_k/∂u), shape [horizon; m] *)
+  ; dfx : ('a, 'b) Nx.t (** ∂(∂φ/∂x) at the final state, shape [n] *)
+  }
+
+(* The per-step inputs of the tangent backward pass. *)
+module Tangent_rows = struct
+  type 'a t =
+    { a : 'a
+    ; b : 'a
+    ; da : 'a
+    ; db : 'a
+    ; lxx : 'a
+    ; lux : 'a
+    ; lx : 'a
+    ; dlx : 'a
+    ; dlu : 'a
+    ; g : 'a
+    ; fb : 'a
+    }
+
+  let walk c { a; b; da; db; lxx; lux; lx; dlx; dlu; g; fb } =
+    let open Nx.Ptree.Walk in
+    let a = field c "a" leaf a in
+    let b = field c "b" leaf b in
+    let da = field c "da" leaf da in
+    let db = field c "db" leaf db in
+    let lxx = field c "lxx" leaf lxx in
+    let lux = field c "lux" leaf lux in
+    let lx = field c "lx" leaf lx in
+    let dlx = field c "dlx" leaf dlx in
+    let dlu = field c "dlu" leaf dlu in
+    let g = field c "g" leaf g in
+    let fb = field c "fb" leaf fb in
+    { a; b; da; db; lxx; lux; lx; dlx; dlu; g; fb }
+end
+
+(* The per-step inputs of the tangent feedforward rollout. *)
+module Tangent_roll_rows = struct
+  type 'a t =
+    { a : 'a
+    ; b : 'a
+    ; chol : 'a
+    ; fb : 'a
+    ; q : 'a
+    }
+
+  let walk c { a; b; chol; fb; q } =
+    let open Nx.Ptree.Walk in
+    let a = field c "a" leaf a in
+    let b = field c "b" leaf b in
+    let chol = field c "chol" leaf chol in
+    let fb = field c "fb" leaf fb in
+    let q = field c "q" leaf q in
+    { a; b; chol; fb; q }
+end
+
+(* One step of the tangent backward pass: the tangent feedforward [q] from the
+   per-step inputs [row] and the incoming [e], and the next [e]. *)
+let tangent_step ~e (row : ('a, 'b) Nx.t Tangent_rows.t) : ('a, 'b) Nx.t * ('a, 'b) Nx.t =
+  let x =
+    Nx.add
+      row.dlx
+      (Nx.add (matvec (Nx.matrix_transpose row.da) row.lx) (matvec row.lxx row.g))
+  in
+  let u =
+    Nx.add
+      row.dlu
+      (Nx.add (matvec (Nx.matrix_transpose row.db) row.lx) (matvec row.lux row.g))
+  in
+  let q = Nx.add u (matvec (Nx.matrix_transpose row.b) e) in
+  let e' =
+    Nx.add
+      x
+      (Nx.add
+         (matvec (Nx.matrix_transpose row.a) e)
+         (matvec (Nx.matrix_transpose row.fb) q))
+  in
+  q, e'
+
+(* One step of the tangent gain rollout: the tangent control from the per-step
+   inputs [row] and the incoming [v], and the next [v]. *)
+let tangent_roll_step ~v (row : ('a, 'b) Nx.t Tangent_roll_rows.t)
+  : ('a, 'b) Nx.t * ('a, 'b) Nx.t
+  =
+  let du = Nx.add (Nx.neg (chol_solve ~upper:row.chol ~rhs:row.q)) (matvec row.fb v) in
+  du, Nx.add (matvec row.a v) (matvec row.b du)
+
+(* [solve_jvp ~common ~tape ~costate ~tangent ~dx0] is the derivative of
+   {!solve}'s solution. Derived as the transpose of the implicit VJP, and
+   checked against it in the test suite: three cheap sweeps against the primal's
+   factorization, no Cholesky and no triangular solve differentiated.
+
+   1. [G], the trajectory the tangent of the dynamics drives: [G_0 = dx0],
+   [G_{k+1} = A_k G_k + δf_k];
+   2. a backward recursion for [E] and the tangent feedforward [q̂], which
+   carries the tangents of the linear blocks and of the loss gradients, with
+   the primal Hessians acting on [G];
+   3. a forward rollout of the tangent control law against the shared factor. *)
+let solve_jvp
+      ~(common : ('a, 'b) common)
+      ~(tape : ('a, 'b) tape)
+      ~(costate : ('a, 'b) Nx.t)
+      ~(tangent : ('a, 'b) tangent)
+      ~(dx0 : ('a, 'b) Nx.t)
+  : ('a, 'b) solution
+  =
+  let horizon = (Nx.shape tape.blocks.a).(0) in
+  (* 1. The tangent trajectory. *)
+  let _, g_next =
+    Rune.scan
+      Nx.Ptree.tensor
+      Nx.Ptree.(pair tensor tensor)
+      Nx.Ptree.tensor
+      ~f:(fun g (a, df) ->
+        let g' = Nx.add (matvec a g) df in
+        g', g')
+      ~init:dx0
+      (tape.blocks.a, tangent.df)
+  in
+  let g = Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] dx0; g_next ] in
+  (* 2. The tangent backward pass. *)
+  let rows =
+    { Tangent_rows.a = flip tape.blocks.a
+    ; b = flip tape.blocks.b
+    ; da = flip tangent.da
+    ; db = flip tangent.db
+    ; lxx = flip tape.blocks.lxx
+    ; lux = flip tape.blocks.lux
+    ; lx = flip costate
+    ; dlx = flip tangent.dlx
+    ; dlu = flip tangent.dlu
+    ; g = flip (Nx.slice [ R (0, horizon) ] g)
+    ; fb = flip common.feedback
+    }
+  in
+  let e_last = Nx.add tangent.dfx (matvec tape.fxx (Nx.slice [ I horizon ] g)) in
+  let _, q_hat =
+    Rune.scan
+      Nx.Ptree.tensor
+      (Nx.Ptree.instantiate (module Tangent_rows))
+      Nx.Ptree.tensor
+      ~f:(fun e row ->
+        let q, e' = tangent_step ~e row in
+        e', q)
+      ~init:e_last
+      rows
+  in
+  (* 3. The tangent gain rollout. *)
+  let _, (du, v_next) =
+    Rune.scan
+      Nx.Ptree.tensor
+      (Nx.Ptree.instantiate (module Tangent_roll_rows))
+      Nx.Ptree.(pair tensor tensor)
+      ~f:(fun v row ->
+        let du, v' = tangent_roll_step ~v row in
+        v', (du, v'))
+      ~init:(Nx.zeros_like dx0)
+      { Tangent_roll_rows.a = tape.blocks.a
+      ; b = tape.blocks.b
+      ; chol = common.quu_chol
+      ; fb = common.feedback
+      ; q = flip q_hat
+      }
+  in
+  let v =
+    Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] (Nx.zeros_like dx0); v_next ]
+  in
+  { xs = Nx.add g v; us = du }

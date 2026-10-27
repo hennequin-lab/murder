@@ -228,6 +228,283 @@ let blocks p theta (xs : 'w Problem.value array) (us : 'w Problem.value array)
       (fun (theta, (xs, us)) -> blocks_t p theta xs us)
       (theta, (xs, us)))
 
+(* The per-step tangents of the first-order data: what a materialized tangent
+   (an [Lqr.tangent]) holds, and what {!tangent} emits. *)
+module Tangent_data_rows = struct
+  type 'a t =
+    { da : 'a
+    ; db : 'a
+    ; df : 'a
+    ; dlx : 'a
+    ; dlu : 'a
+    }
+
+  let walk c { da; db; df; dlx; dlu } =
+    let open Nx.Ptree.Walk in
+    let da = field c "da" leaf da in
+    let db = field c "db" leaf db in
+    let df = field c "df" leaf df in
+    let dlx = field c "dlx" leaf dlx in
+    let dlu = field c "dlu" leaf dlu in
+    { da; db; df; dlx; dlu }
+end
+
+let tangent_data_rows () = Nx.Ptree.instantiate (module Tangent_data_rows)
+
+(* [step_tangent p theta ~dtheta row] is the θ-tangent of the first-order data
+   at one step. One forward pass, with the Jacobians and gradients the data are
+   defined by taken inside it: the tangents of [A], [B], [f] and of the loss
+   gradient, which is what a tangent of the LQR problem consumes. The tangents
+   of the loss Hessians are never needed (see [Lqr]). *)
+let step_tangent p theta ~dtheta (row : 'w Problem.value Step_rows.t)
+  : 'w Problem.value Tangent_data_rows.t
+  =
+  let x = row.x
+  and u = row.u
+  and k = row.k in
+  let derivs th =
+    let f = dyn p th ~k x u in
+    let a = Rune.jacfwd' (fun x -> dyn p th ~k x u) x in
+    let b = Rune.jacfwd' (fun u -> dyn p th ~k x u) u in
+    let lx = Rune.grad' (fun x -> p.Problem.running_loss th ~k ~x ~u) x in
+    let lu = Rune.grad' (fun u -> p.Problem.running_loss th ~k ~x ~u) u in
+    f, (a, (b, (lx, lu)))
+  in
+  let df, (da, (db, (dlx, dlu))) =
+    snd
+      (Rune.jvp
+         p.Problem.params
+         Nx.Ptree.(pair tensor (pair tensor (pair tensor (pair tensor tensor))))
+         derivs
+         theta
+         dtheta)
+  in
+  { Tangent_data_rows.da; db; df; dlx; dlu }
+
+(* [tangent_t p theta ~dtheta xs us] is the tangent of the first-order data
+   along the stacked trajectory, as one scan over the horizon. *)
+let tangent_t p theta ~dtheta (xs : 'w Problem.value) (us : 'w Problem.value)
+  : (float, 'w) Lqr.tangent
+  =
+  let rows =
+    { Step_rows.x = Nx.slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p }
+  in
+  let _, t =
+    Rune.scan
+      Nx.Ptree.unit
+      (step_rows ())
+      (tangent_data_rows ())
+      ~f:(fun () row -> (), step_tangent p theta ~dtheta row)
+      ~init:()
+      rows
+  in
+  let xf = Nx.slice [ I p.Problem.horizon ] xs in
+  let dfx =
+    snd
+      (Rune.jvp
+         p.Problem.params
+         Nx.Ptree.tensor
+         (fun th -> Rune.grad' (fun x -> p.Problem.final_loss th ~x) xf)
+         theta
+         dtheta)
+  in
+  { Lqr.da = t.Tangent_data_rows.da; db = t.db; df = t.df; dlx = t.dlx; dlu = t.dlu; dfx }
+
+(* [tangent p theta ~dtheta xs us] is {!tangent_t} at a per-step trajectory.
+   The trajectory is one member's: a batched problem is mapped over the batch
+   by the solve that calls this, so the whole call sees one member. *)
+let tangent p theta ~dtheta (xs : 'w Problem.value array) (us : 'w Problem.value array)
+  : (float, 'w) Lqr.tangent
+  =
+  tangent_t p theta ~dtheta (stack xs) (stack us)
+
+(* [flip x] reverses the horizon axis. *)
+let flip x = Nx.flip ~axes:[ 0 ] x
+
+(* The per-step inputs of the streaming tangent backward pass: the trajectory
+   point the step differentiates at, the tape and costate rows it reads, and the
+   tangent trajectory. Unlike {!Tangent_data_rows} it carries no tangent: the
+   step computes those, and drops them once it has used them. *)
+module Tangent_stream_rows = struct
+  type 'a t =
+    { x : 'a
+    ; u : 'a
+    ; k : 'a
+    ; g : 'a
+    ; a : 'a
+    ; b : 'a
+    ; lxx : 'a
+    ; lux : 'a
+    ; lx : 'a
+    ; fb : 'a
+    }
+
+  let walk c { x; u; k; g; a; b; lxx; lux; lx; fb } =
+    let open Nx.Ptree.Walk in
+    let x = field c "x" leaf x in
+    let u = field c "u" leaf u in
+    let k = field c "k" leaf k in
+    let g = field c "g" leaf g in
+    let a = field c "a" leaf a in
+    let b = field c "b" leaf b in
+    let lxx = field c "lxx" leaf lxx in
+    let lux = field c "lux" leaf lux in
+    let lx = field c "lx" leaf lx in
+    let fb = field c "fb" leaf fb in
+    { x; u; k; g; a; b; lxx; lux; lx; fb }
+end
+
+let tangent_stream_rows () = Nx.Ptree.instantiate (module Tangent_stream_rows)
+
+(* [step_tangent_data p theta ~dtheta row] is the θ-tangent of the first-order
+   data at one step, without the dynamics value: what the tangent backward pass
+   consumes, and nothing else. *)
+let step_tangent_data p theta ~dtheta (row : 'w Problem.value Tangent_stream_rows.t)
+  : 'w Problem.value * ('w Problem.value * ('w Problem.value * 'w Problem.value))
+  =
+  let x = row.x
+  and u = row.u
+  and k = row.k in
+  let derivs th =
+    let a = Rune.jacfwd' (fun x -> dyn p th ~k x u) x in
+    let b = Rune.jacfwd' (fun u -> dyn p th ~k x u) u in
+    let lx = Rune.grad' (fun x -> p.Problem.running_loss th ~k ~x ~u) x in
+    let lu = Rune.grad' (fun u -> p.Problem.running_loss th ~k ~x ~u) u in
+    a, (b, (lx, lu))
+  in
+  snd
+    (Rune.jvp
+       p.Problem.params
+       Nx.Ptree.(pair tensor (pair tensor (pair tensor tensor)))
+       derivs
+       theta
+       dtheta)
+
+(* [tangent_solve p theta ~dtheta ~dx0 ~xs ~us] is the tangent of the local
+   model's LQR solve at the stacked trajectory, along the tangent of the
+   problem's parameters and with initial state tangent [dx0].
+
+   The same three sweeps [Lqr.solve_jvp] runs over a materialized [Lqr.tangent],
+   but the tangents of the first-order data are computed at each step as the
+   sweep reaches it and never stored: the only direction-multiplied tensors are
+   the tangent trajectory, the tangent feedforward and the tangent control, so a
+   batch of [k] directions costs [O (k · horizon · (n + m))] rather than the
+   [O (k · horizon · (n² + n·m))] the [Lqr.tangent] tape would take.
+
+   The tape itself, its Riccati factors and the costate are shared: they do not
+   depend on the direction, so under [Rune.vmap] they are constants of the map
+   and are computed once for the whole batch. *)
+let tangent_solve
+      p
+      theta
+      ~dtheta
+      ~(dx0 : 'w Problem.value)
+      (xs : 'w Problem.value array)
+      (us : 'w Problem.value array)
+  : (float, 'w) Lqr.solution
+  =
+  let horizon = p.Problem.horizon in
+  let xs = stack xs
+  and us = stack us in
+  let tape = blocks_t p theta xs us in
+  let common = Lqr.backward_common tape in
+  let x0s = Nx.slice [ R (0, horizon) ] xs in
+  (* 1. The tangent trajectory, driven by the tangent of the dynamics. *)
+  let _, g_next =
+    Rune.scan
+      Nx.Ptree.tensor
+      Nx.Ptree.(pair (step_rows ()) tensor)
+      Nx.Ptree.tensor
+      ~f:(fun g (row, a) ->
+        let df =
+          snd
+            (Rune.jvp
+               p.Problem.params
+               Nx.Ptree.tensor
+               (fun th -> dyn p th ~k:row.Step_rows.k row.x row.u)
+               theta
+               dtheta)
+        in
+        let g' = Nx.add (Lqr.matvec a g) df in
+        g', g')
+      ~init:dx0
+      ({ Step_rows.x = x0s; u = us; k = ks p }, tape.Lqr.blocks.a)
+  in
+  let g = Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] dx0; g_next ] in
+  (* 2. The tangent backward pass, against the primal's factors. *)
+  let rows =
+    { Tangent_stream_rows.x = flip x0s
+    ; u = flip us
+    ; k = flip (ks p)
+    ; g = flip (Nx.slice [ R (0, horizon) ] g)
+    ; a = flip tape.Lqr.blocks.a
+    ; b = flip tape.Lqr.blocks.b
+    ; lxx = flip tape.Lqr.blocks.lxx
+    ; lux = flip tape.Lqr.blocks.lux
+    ; lx = flip (Lqr.costate tape)
+    ; fb = flip common.Lqr.feedback
+    }
+  in
+  let dfx =
+    snd
+      (Rune.jvp
+         p.Problem.params
+         Nx.Ptree.tensor
+         (fun th ->
+            Rune.grad' (fun x -> p.Problem.final_loss th ~x) (Nx.slice [ I horizon ] xs))
+         theta
+         dtheta)
+  in
+  let e_last = Nx.add dfx (Lqr.matvec tape.Lqr.fxx (Nx.slice [ I horizon ] g)) in
+  let _, q_hat =
+    Rune.scan
+      Nx.Ptree.tensor
+      (tangent_stream_rows ())
+      Nx.Ptree.tensor
+      ~f:(fun e row ->
+        let da, (db, (dlx, dlu)) = step_tangent_data p theta ~dtheta row in
+        let q, e' =
+          Lqr.tangent_step
+            ~e
+            { Lqr.Tangent_rows.a = row.Tangent_stream_rows.a
+            ; b = row.b
+            ; da
+            ; db
+            ; lxx = row.lxx
+            ; lux = row.lux
+            ; lx = row.lx
+            ; dlx
+            ; dlu
+            ; g = row.g
+            ; fb = row.fb
+            }
+        in
+        e', q)
+      ~init:e_last
+      rows
+  in
+  (* 3. The tangent gain rollout. *)
+  let _, (du, v_next) =
+    Rune.scan
+      Nx.Ptree.tensor
+      (Nx.Ptree.instantiate (module Lqr.Tangent_roll_rows))
+      Nx.Ptree.(pair tensor tensor)
+      ~f:(fun v row ->
+        let du, v' = Lqr.tangent_roll_step ~v row in
+        v', (du, v'))
+      ~init:(Nx.zeros_like dx0)
+      { Lqr.Tangent_roll_rows.a = tape.Lqr.blocks.a
+      ; b = tape.Lqr.blocks.b
+      ; chol = common.Lqr.quu_chol
+      ; fb = common.Lqr.feedback
+      ; q = flip q_hat
+      }
+  in
+  let v =
+    Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] (Nx.zeros_like dx0); v_next ]
+  in
+  { Lqr.xs = Nx.add g v; us = du }
+
 (* [pick ~w ~batched] selects one slice along axis 0 of a batched trajectory
    with a one-hot weight vector [w]. Pure tensor ops. *)
 let pick ~w ~(batched : ('a, 'b) Nx.t) : ('a, 'b) Nx.t =
@@ -262,12 +539,15 @@ let solve_fixed_unbatched
   : 'w Problem.value t
   =
   let alphas = Array.of_list alphas in
+  (* A host float becomes a scalar tensor for the LQR core; zero means no
+     damping terms at all, which is cheaper than regularizing by zero. *)
+  let mu = if Float.equal mu 0.0 then None else Some (Nx.scalar_like x0 mu) in
   let us = ref (stack us0) in
   let xs = ref (states p theta x0 !us) in
   let cost = ref (cost_of p theta !xs !us) in
   for _ = 1 to iters do
     let tape = blocks_t p theta !xs !us in
-    let gains, d1, d2 = Lqr.backward ~mu ~tape ~lin:(Lqr.lin_of_tape tape) in
+    let gains, d1, d2 = Lqr.backward ?mu tape ~lin:(Lqr.lin_of_tape tape) in
     let n_alpha = Array.length alphas in
     (* Placeholders, every element is written below. *)
     let us_trials = Array.create ~len:n_alpha x0 in
@@ -386,9 +666,8 @@ let solve
     let rec retry attempts =
       if attempts > 30
       then failwith "dilqr: Quu could not be regularized to positive definiteness";
-      let gains, d1, d2 =
-        Lqr.backward ~mu:!reg.Regularisation.mu ~tape ~lin:(Lqr.lin_of_tape tape)
-      in
+      let mu = Nx.scalar_like x0 !reg.Regularisation.mu in
+      let gains, d1, d2 = Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape) in
       (* A non-positive-definite [Quu] gives a NaN Cholesky factor, and the
          NaN runs through the sweep into the gains and the expected-decrease
          accumulators. *)
