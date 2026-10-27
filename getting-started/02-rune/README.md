@@ -18,7 +18,9 @@ dune exec getting-started/02-rune/ex02_linear_regression.exe
 - A parameter record needs an `Nx.Ptree.S` module with one `walk`; the compiler
   keeps the record type through the transformation.
 - `Rune.value_and_grad` returns `(loss, grads)` in one pass. The update is
-  ordinary OCaml: subtract `lr * grad` from each leaf.
+  ordinary OCaml: subtract `lr * grad` from each leaf. The training loop is a
+  tail-recursive function that threads the parameters; no mutable state is
+  needed.
 - `Rune.vmap` maps a function over axis 0 of every argument. Composing `vmap`
   with `grad` gives per-example gradients.
 - `Rune.jit` traces once and replays. Keep traced functions pure and shapes

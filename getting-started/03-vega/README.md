@@ -14,7 +14,9 @@ dune exec getting-started/03-vega/ex01_optimizers.exe
 
 - `Vega.adam_init p params` builds a state for the parameter structure `p`.
 - `Vega.adam_step p ~lr st ~params ~grads` returns `(params', state')`.
-- The same loop drives SGD, Adam, and AdamW; only `init` and `step` change.
+- The same recursive loop drives SGD, Adam, and AdamW; only `init` and `step`
+  change. Parameters and optimizer state are threaded as a pair, so the loop
+  needs no `ref`.
 - `Vega.lr` makes the learning rate explicit. Schedules are values too.
 - Gradient clipping is a transformation: `Vega.clip_by_global_norm p ~max_norm`.
 

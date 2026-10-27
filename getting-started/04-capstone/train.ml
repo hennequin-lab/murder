@@ -67,27 +67,32 @@ let make_data () =
   in
   x, y
 
+let steps = 400
+let report_every = 50
+let learning_rate = 0.01
+
 let () =
   let x, y = make_data () in
-  let p = init (Nx.Rng.key 3) in
-  let st = Vega.adam_init params p in
   let loss p =
     let pred = forward p x in
     Nx.mean (Nx.square (Nx.sub pred y))
   in
-  let p = ref p
-  and st = ref st in
-  for i = 1 to 400 do
-    let l, g = Rune.value_and_grad params loss !p in
-    let p', st' = Vega.adam_step params ~lr:(Vega.lr 0.01) !st ~params:!p ~grads:g in
-    p := p';
-    st := st';
-    if i mod 50 = 0
-    then
-      Printf.printf
-        "step %3d  loss %.5f  accuracy %.3f\n%!"
-        i
-        (Nx.item [] l)
-        (accuracy !p x y)
-  done;
-  Printf.printf "\nFinal accuracy: %.3f\n%!" (accuracy !p x y)
+  let step (p, st) =
+    let value, grads = Rune.value_and_grad params loss p in
+    let p, st = Vega.adam_step params ~lr:(Vega.lr learning_rate) st ~params:p ~grads in
+    p, st, Nx.item [] value
+  in
+  (* The accumulator is the pair [(params, optimizer state)]; each recursion
+     replaces it with the result of one step. *)
+  let rec train ~i (p, st) =
+    if i > steps
+    then p
+    else (
+      let p, st, value = step (p, st) in
+      if i mod report_every = 0
+      then Printf.printf "step %3d  loss %.5f  accuracy %.3f\n%!" i value (accuracy p x y);
+      train ~i:(i + 1) (p, st))
+  in
+  let p0 = init (Nx.Rng.key 3) in
+  let p = train ~i:1 (p0, Vega.adam_init params p0) in
+  Printf.printf "\nFinal accuracy: %.3f\n%!" (accuracy p x y)

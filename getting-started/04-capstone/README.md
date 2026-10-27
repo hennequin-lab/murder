@@ -10,6 +10,10 @@ dune exec getting-started/04-capstone/train.exe
 The model is a one-hidden-layer MLP on two Gaussian blobs. It is deliberately
 small enough to run on a laptop CPU in seconds.
 
+The training loop is a recursive function over `(params, optimizer state)`.
+Each call takes one step and passes the result to the next; the recursive call
+is in tail position.
+
 ## What to do next
 
 1. Change the number of hidden units and see how the loss curve moves.
