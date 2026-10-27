@@ -14,7 +14,7 @@ let check_fps spec = if spec.fps <= 0 then invalid_arg "Movie: fps must be posit
 
 let frame_count spec =
   check_fps spec;
-  max 1 (int_of_float (spec.duration *. float_of_int spec.fps))
+  Int.max 1 (int_of_float (spec.duration *. float_of_int spec.fps))
 
 let frame_at spec i =
   check_fps spec;

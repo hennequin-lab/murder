@@ -13,6 +13,7 @@
    several times within a term (once per side of the orbit average). *)
 
 open Base
+open Nx
 
 type t =
   { ties : Index.t list list
@@ -170,13 +171,13 @@ let coefficient ~(dims : int list Sides.t) term =
   fun data ->
     let result =
       match data with
-      | `Full x -> Nx.einsum full_equation [| Nx.reshape expected_shape x |]
+      | `Full x -> einsum full_equation [| reshape expected_shape x |]
       | `Outer_product (x_left, x_right) ->
-        let x_left = Nx.reshape (Array.of_list dims.left) x_left in
-        let x_right = Nx.reshape (Array.of_list dims.right) x_right in
+        let x_left = reshape (Array.of_list dims.left) x_left in
+        let x_right = reshape (Array.of_list dims.right) x_right in
         (match sides with
-         | `Left -> Nx.einsum split_equation [| x_left |] |> Nx.mul x_right
-         | `Right -> Nx.einsum split_equation [| x_right |] |> Nx.mul x_left
-         | `Both -> Nx.einsum split_equation [| x_left; x_right |])
+         | `Left -> Infix.(einsum split_equation [| x_left |] * x_right)
+         | `Right -> Infix.(einsum split_equation [| x_right |] * x_left)
+         | `Both -> einsum split_equation [| x_left; x_right |])
     in
-    Nx.Infix.(result *$ normalizer) |> Nx.reshape free_shape
+    Nx.Infix.(result *$ normalizer) |> reshape free_shape

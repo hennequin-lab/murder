@@ -6,12 +6,13 @@
 (* Tests for Geom_viz.Primitive: the neutral primitives, the PGA adapters and
    rigid transforms. *)
 
+open Nx
 open Windtrap
 open Geom
 module P = Geom_viz.Primitive
 
-let vec3 x y z = Nx.create Nx.float32 [| 3 |] [| x; y; z |]
-let scalar x = Nx.scalar Nx.float32 x
+let vec3 x y z = create float32 [| 3 |] [| x; y; z |]
+let scalar x = Nx.scalar float32 x
 
 module M = Geom.Motor
 
@@ -31,8 +32,8 @@ let equal_point ?(eps = 5e-3) ?msg (x, y, z) (p : P.p3) =
   equal_float ~eps ~msg:(prefix ^ "y") y p.y;
   equal_float ~eps ~msg:(prefix ^ "z") z p.z
 
-let point_coords p = Nx.to_array (Pga.point_coords p)
-let point_on_line p l = Nx.item [] (Pga.point_on_line p l)
+let point_coords p = to_array (Pga.point_coords p)
+let point_on_line p l = item [] (Pga.point_on_line p l)
 
 let plane_normal_and_offset = function
   | P.Plane pl -> pl.P.normal, pl.P.offset
@@ -113,7 +114,7 @@ let test_pga_point () =
    | P.Point q -> equal_point ~msg:"the point coordinates" (1., -2., 3.) q
    | _ -> failwith "expected a point");
   (* A rescaled representative is the same projective point. *)
-  let scaled = Nx.mul_s (Pga.point3 1. (-2.) 3.) 4. in
+  let scaled = Infix.(Pga.point3 1. (-2.) 3. *$ 4.) in
   match P.of_pga_point scaled with
   | P.Point q -> equal_point ~msg:"a rescaled point" (1., -2., 3.) q
   | _ -> failwith "expected a point"
@@ -122,8 +123,8 @@ let test_cga_plane_normalization () =
   (* 2 z = 4 is the plane z = 2. The adapter must divide out the normal. *)
   let pi =
     Cga.plane
-      ~normal:(Nx.create Nx.float32 [| 3 |] [| 0.; 0.; 2. |])
-      ~offset:(Nx.scalar Nx.float32 4.)
+      ~normal:(create float32 [| 3 |] [| 0.; 0.; 2. |])
+      ~offset:(Nx.scalar float32 4.)
   in
   let normal, offset = plane_normal_and_offset (P.of_cga_plane pi) in
   equal_point ~msg:"the normalized CGA plane normal" (0., 0., 1.) normal;
@@ -188,8 +189,8 @@ let test_transform_point_and_plane () =
     M.mul
       (M.translate3 0. 0. 2.)
       (M.rotate
-         ~axis:(Nx.create Nx.float32 [| 3 |] [| 1.; 0.; 0. |])
-         ~angle:(Nx.scalar Nx.float32 (Float.pi /. 2.)))
+         ~axis:(create float32 [| 3 |] [| 1.; 0.; 0. |])
+         ~angle:(Nx.scalar float32 (Float.pi /. 2.)))
   in
   let normal, offset =
     plane_normal_and_offset
@@ -203,8 +204,8 @@ let test_transform_shapes () =
     M.mul
       (M.translate3 1. 2. 3.)
       (M.rotate
-         ~axis:(Nx.create Nx.float32 [| 3 |] [| 0.; 0.; 1. |])
-         ~angle:(Nx.scalar Nx.float32 (Float.pi /. 2.)))
+         ~axis:(create float32 [| 3 |] [| 0.; 0.; 1. |])
+         ~angle:(Nx.scalar float32 (Float.pi /. 2.)))
   in
   let expected0 = 1., 2., 3.
   and expected1 = 1., 3., 3. in
@@ -240,12 +241,12 @@ let test_transform_matches_pga () =
     M.mul
       (M.translate3 0.4 (-1.2) 0.7)
       (M.rotate
-         ~axis:(Nx.create Nx.float32 [| 3 |] [| 0.; 0.; 1. |])
-         ~angle:(Nx.scalar Nx.float32 0.9))
+         ~axis:(create float32 [| 3 |] [| 0.; 0.; 1. |])
+         ~angle:(Nx.scalar float32 0.9))
   in
   let p = p3 0.3 (-0.6) 1.1 in
   let expected =
-    Pga.apply_motor m (Pga.point3 p.x p.y p.z) |> Pga.point_coords |> Nx.to_array
+    Pga.apply_motor m (Pga.point3 p.x p.y p.z) |> Pga.point_coords |> to_array
   in
   match P.transform m (P.Point p) with
   | P.Point q ->

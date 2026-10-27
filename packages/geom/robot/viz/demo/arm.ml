@@ -32,10 +32,10 @@ let drawn = V.make ~joint_radius:0.065 model
 (* A target a few degrees away in joint space: an arbitrary pose in the
    workspace has solutions that wind a joint through several turns, which is a
    correct answer and a terrible demo. *)
-let q_start = Nx.create f32 [| 6 |] [| 0.35; -0.75; 0.45; -0.95; 0.30; -0.50 |]
+let q_start = create f32 [| 6 |] [| 0.35; -0.75; 0.45; -0.95; 0.30; -0.50 |]
 
 let q_reach =
-  Nx.add q_start (Nx.create f32 [| 6 |] [| 0.55; 0.50; -0.45; 0.40; 0.55; -0.70 |])
+  Infix.(q_start + create f32 [| 6 |] [| 0.55; 0.50; -0.45; 0.40; 0.55; -0.70 |])
 
 let target = R.pose model ~frame:tool q_reach
 
@@ -47,22 +47,18 @@ let solve q0 =
   for _ = 1 to 60 do
     let e = M.log (M.mul (M.inverse target) (R.pose model ~frame:tool !q)) in
     let j = R.jacobian ~space:`Body model ~frame:tool !q in
-    let jt = Nx.transpose j in
-    let normal = Nx.add (Nx.matmul jt j) (Nx.mul_s (Nx.eye f32 6) 1e-5) in
-    let step =
-      Nx.reshape
-        [| 6 |]
-        (Nx.matmul (Nx.inv normal) (Nx.reshape [| 6; 1 |] (Nx.matmul jt e)))
-    in
-    let largest = Nx.max (Nx.abs step) in
-    let scale = Nx.minimum_s (Nx.div (Nx.scalar f32 0.25) largest) 1. in
-    q := Nx.sub !q (Nx.mul scale step)
+    let jt = transpose j in
+    let normal = Infix.((jt *@ j) + (eye f32 6 *$ 1e-5)) in
+    let step = reshape [| 6 |] Infix.(inv normal *@ reshape [| 6; 1 |] (jt *@ e)) in
+    let largest = max (Nx.abs step) in
+    let scale = minimum_s Infix.(Nx.scalar f32 0.25 / largest) 1. in
+    q := Infix.(!q - (scale * step))
   done;
   let e = M.log (M.mul (M.inverse target) (R.pose model ~frame:tool !q)) in
   Format.printf
     "reached the target to %.2e with |q| <= %.2f rad@."
-    (Float.sqrt (Nx.item [] (Nx.sum (Nx.mul e e))))
-    (Nx.item [] (Nx.max (Nx.abs !q)));
+    (Float.sqrt (item [] (sum (mul e e))))
+    (item [] (max (Nx.abs !q)));
   !q
 
 (* {1 The picture} *)

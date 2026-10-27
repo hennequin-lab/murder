@@ -33,6 +33,7 @@
    to the left copies' Gram matrix. *)
 
 open Base
+open Nx
 
 (* The partition tail of a kind: [] is the trivial [S^(n)], [1] the standard
    [S^(n-1,1)], [2] the symmetric [S^(n-2,2)] and [1;1] the antisymmetric
@@ -106,11 +107,11 @@ let helmert n =
   let v = Array.create ~len:n 0.0 in
   v.(0) <- 1.0 /. Float.sqrt 2.0;
   v.(1) <- -1.0 /. Float.sqrt 2.0;
-  Nx.create Nx.float32 [| n |] v
+  create float32 [| n |] v
 
-let ones n = Nx.ones Nx.float32 [| n |]
-let eye n = Nx.eye Nx.float32 n
-let outer a b = Nx.mul (Nx.reshape [| -1; 1 |] a) (Nx.reshape [| 1; -1 |] b)
+let ones n = Nx.ones float32 [| n |]
+let eye n = Nx.eye float32 n
+let outer a b = Infix.(reshape [| -1; 1 |] a * reshape [| 1; -1 |] b)
 
 (* A canonical vector of [S(n-2,2)]: a symmetric, zero-diagonal matrix whose
    row sums vanish (a 4-cycle), hence traceless and orthogonal to the diagonal
@@ -126,40 +127,36 @@ let s_vector n =
   set 2 1 (-1.0);
   set 3 0 (-1.0);
   set 0 3 (-1.0);
-  Nx.create Nx.float32 [| n; n |] a
+  create float32 [| n; n |] a
 
 let elementary n i j =
   let a = Array.create ~len:(n * n) 0.0 in
   a.((i * n) + j) <- 1.0;
-  Nx.create Nx.float32 [| n; n |] a
+  create float32 [| n; n |] a
 
 (* Project an antisymmetric matrix onto [Λ²W]: remove the [1 ∧ x] component,
    which is [-(1/n)(1 yᵀ - y 1ᵀ)] with [y] the zero-sum part of [M 1]. *)
 let project_antisymmetric m =
-  let n = (Nx.shape m).(0) in
+  let n = (shape m).(0) in
   let nn = Float.of_int n in
-  let y = Nx.sum ~axes:[ 1 ] m in
-  let y = Nx.sub y (Nx.mul_s (ones n) (Nx.item [] (Nx.sum y) /. nn)) in
-  let y = Nx.reshape [| n; 1 |] y in
-  let one_row = Nx.reshape [| 1; n |] (ones n) in
-  let w =
-    Nx.mul_s (Nx.sub (Nx.mul one_row (Nx.transpose y)) (Nx.mul y one_row)) (-1. /. nn)
-  in
-  Nx.sub m w
+  let y = sum ~axes:[ 1 ] m in
+  let y = Infix.(y - (ones n *$ (item [] (sum y) /. nn))) in
+  let y = reshape [| n; 1 |] y in
+  let one_row = reshape [| 1; n |] (ones n) in
+  let w = Infix.(((one_row * transpose y) - (y * one_row)) *$ (-1. /. nn)) in
+  Infix.(m - w)
 
 let diagonal_part n x =
   (* the [W]-component of [Diag(x)]: [Diag(x) - (x 1ᵀ + 1 xᵀ)/n]. *)
   let nn = Float.of_int n in
   let diag = Nx.diag x in
-  let x = Nx.reshape [| n; 1 |] x in
+  let x = reshape [| n; 1 |] x in
   let spread =
-    Nx.mul_s
-      (Nx.add
-         (Nx.mul x (Nx.reshape [| 1; n |] (ones n)))
-         (Nx.mul (ones n |> Nx.reshape [| n; 1 |]) (Nx.transpose x)))
-      (1. /. nn)
+    Infix.(
+      ((x * reshape [| 1; n |] (ones n)) + ((ones n |> reshape [| n; 1 |]) * transpose x))
+      *$ (1. /. nn))
   in
-  Nx.sub diag spread
+  Infix.(diag - spread)
 
 (* [test_vectors ~k ~n] is one canonical test vector per (kind, copy), in a
    canonical order, as a tensor of shape [[|n; …; n|]] ([k] axes). The copy
@@ -169,27 +166,27 @@ let diagonal_part n x =
    abstract basis at every size, so the block coordinates are comparable across
    sizes (the blocks are the operator's matrix in this basis). *)
 let normalize v =
-  let norm = Float.sqrt (Nx.item [] (Nx.sum (Nx.mul v v))) in
-  Nx.mul_s v (1. /. norm)
+  let norm = Float.sqrt (item [] (sum (mul v v))) in
+  Infix.(v *$ (1. /. norm))
 
 let test_vectors ~k ~n =
   check_stable ~k ~n;
   let vectors =
     match k with
-    | 0 -> [ [], 0, Nx.scalar Nx.float32 1.0 ]
+    | 0 -> [ [], 0, scalar float32 1.0 ]
     | 1 ->
       let x = helmert n in
       [ [], 0, ones n; [ 1 ], 0, x ]
     | 2 ->
       let x = helmert n in
-      let spread = Nx.mul_s (Nx.ones Nx.float32 [| n; n |]) (1. /. Float.of_int n) in
-      let diagonal = Nx.sub (eye n) spread in
+      let spread = Infix.(Nx.ones float32 [| n; n |] *$ (1. /. Float.of_int n)) in
+      let diagonal = Infix.(eye n - spread) in
       let row = outer x (ones n) in
       let column = outer (ones n) x in
       let diag_w = diagonal_part n x in
       let e = elementary n 0 1 in
       let s = s_vector n in
-      let a = project_antisymmetric (Nx.sub e (Nx.transpose e)) in
+      let a = project_antisymmetric Infix.(e - transpose e) in
       [ [], 0, spread
       ; [], 1, diagonal
       ; [ 1 ], 0, row

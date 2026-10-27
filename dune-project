@@ -28,7 +28,7 @@
   stdio
   nx
   rune
-  (ppx_ptree :with-test)
+  ppx_ptree
   (windtrap :with-test)))
 
 (package

@@ -36,7 +36,7 @@ let tool = R.frame model "ee"
 
 (* The target: a pose the arm reaches at a configuration away from every start,
    so the fan has somewhere to travel. *)
-let q_target = Nx.create f32 [| 6 |] [| 0.70; -0.45; 0.85; -0.60; 0.40; 0.95 |]
+let q_target = create f32 [| 6 |] [| 0.70; -0.45; 0.85; -0.60; 0.40; 0.95 |]
 let target = R.pose model ~frame:tool q_target
 let task = T.pose model ~frame:tool ~target
 
@@ -58,9 +58,9 @@ let starts = 10
 
 let paths =
   Rng.with_key (Rng.key 7) (fun () ->
-    let q0 = Nx.mul_s (Nx.randn f32 [| starts; 6 |]) 1.0 in
+    let q0 = Infix.(randn f32 [| starts; 6 |] *$ 1.0) in
     Array.init starts (fun i ->
-      let start = Nx.slice [ I i ] q0 in
+      let start = slice [ I i ] q0 in
       let q_end = (Ik.solve ~max_iter:150 ~step_limit:0.3 task ~q:start).q in
       Array.init nframes (fun k -> V.linear_path start q_end ~n:nframes k)))
 
@@ -109,8 +109,7 @@ let () =
   if not (Sys.file_exists out) then ignore (Sys.command ("mkdir -p " ^ out));
   let reached =
     Array.fold_left
-      (fun n traj ->
-         if Nx.item [] (T.norm task traj.(nframes - 1)) < 1e-2 then n + 1 else n)
+      (fun n traj -> if item [] (T.norm task traj.(nframes - 1)) < 1e-2 then n + 1 else n)
       0
       paths
   in

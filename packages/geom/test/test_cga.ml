@@ -5,6 +5,7 @@
 
 (* Tests for Geom.Cga: the conformal model of R^3, Cl(4,1). *)
 
+open Nx
 open Windtrap
 open Support
 module C = Geom.Cga
@@ -29,8 +30,8 @@ let test_null_basis () =
   equal_scalar ~msg:"e1 squares to 1" 1. (C.coeff (C.gp C.e1 C.e1) (B.of_int 0));
   equal_scalar ~msg:"e4 squares to 1" 1. (C.coeff (C.gp C.e4 C.e4) (B.of_int 0));
   equal_scalar ~msg:"e5 squares to -1" (-1.) (C.coeff (C.gp C.e5 C.e5) (B.of_int 0));
-  equal_tensor ~msg:"e0 is (e5 - e4)/2" (Nx.mul_s (Nx.sub C.e5 C.e4) 0.5) C.e0;
-  equal_tensor ~msg:"einf is e4 + e5" (Nx.add C.e4 C.e5) C.einf;
+  equal_tensor ~msg:"e0 is (e5 - e4)/2" Infix.((C.e5 - C.e4) *$ 0.5) C.e0;
+  equal_tensor ~msg:"einf is e4 + e5" Infix.(C.e4 + C.e5) C.einf;
   equal_scalar ~msg:"e0 is null" 0. (C.norm2 C.e0);
   equal_scalar ~msg:"einf is null" 0. (C.norm2 C.einf);
   equal_scalar ~msg:"e0 dot einf is -1" (-1.) (C.scalar_prod C.e0 C.einf);
@@ -58,22 +59,25 @@ let test_points () =
     (C.is_point (C.plane ~normal:(v3 0. 0. 1.) ~offset:(sc 0.)));
   check_point
     ~msg:"normalize_point keeps the coordinates"
-    (C.normalize_point (Nx.mul_s p 3.))
+    (C.normalize_point Infix.(p *$ 3.))
     (1., 2., 3.);
   equal_bool
     ~msg:"a normalized point is a point"
     true
-    (C.is_point (C.normalize_point (Nx.mul_s p 3.)));
-  equal_scalar ~msg:"distance from the origin" (sqrt 14.) (C.distance p (p3 0. 0. 0.));
+    (C.is_point (C.normalize_point Infix.(p *$ 3.)));
+  equal_scalar
+    ~msg:"distance from the origin"
+    (Float.sqrt 14.)
+    (C.distance p (p3 0. 0. 0.));
   equal_scalar ~msg:"squared distance" 25. (C.distance2 (p3 0. 0. 0.) (p3 3. 4. 0.));
   equal_scalar ~msg:"distance is symmetric" 5. (C.distance (p3 3. 4. 0.) (p3 0. 0. 0.));
-  let batch = C.point (Nx.create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 0.5 |]) in
+  let batch = C.point (create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 0.5 |]) in
   equal ~msg:"a batch of points" (array int) [| 2; 32 |] (C.shape batch);
   equal
     ~msg:"its coordinates keep the batch shape"
     (array int)
     [| 2; 3 |]
-    (Nx.shape (coords batch));
+    (shape (coords batch));
   equal_floats
     ~msg:"the batched coordinates"
     [| 1.; 2.; 3.; -1.; 0.; 0.5 |]
@@ -82,7 +86,7 @@ let test_points () =
     ~msg:"a batched is_point"
     (array bool)
     [| true; true |]
-    (Nx.to_array (C.is_point batch))
+    (to_array (C.is_point batch))
 
 (* Spheres *)
 
@@ -99,7 +103,7 @@ let test_spheres () =
   equal_scalar ~msg:"einf dot a sphere is -1" (-1.) (C.scalar_prod C.einf s);
   let s' = C.sphere_of_point ~center:(p3 1. 0. 0.) ~radius:(sc 2.) in
   equal_tensor ~msg:"sphere_of_point agrees with sphere" s s';
-  let scaled = Nx.mul_s s 3. in
+  let scaled = Infix.(s *$ 3.) in
   equal_scalar ~msg:"the radius is scale invariant" 4. (C.sphere_radius2 scaled);
   check_point ~msg:"the center is scale invariant" (C.sphere_center scaled) (1., 0., 0.);
   equal_scalar
@@ -110,8 +114,8 @@ let test_spheres () =
   equal_scalar ~msg:"an imaginary sphere reports r^2" 4. (C.sphere_radius2 imaginary);
   let batch =
     C.sphere
-      ~center:(Nx.create f32 [| 2; 3 |] [| 1.; 0.; 0.; 0.; 2.; 0. |])
-      ~radius:(Nx.create f32 [| 2 |] [| 2.; 3. |])
+      ~center:(create f32 [| 2; 3 |] [| 1.; 0.; 0.; 0.; 2.; 0. |])
+      ~radius:(create f32 [| 2 |] [| 2.; 3. |])
   in
   equal ~msg:"a batch of spheres" (array int) [| 2; 32 |] (C.shape batch);
   equal_floats ~msg:"their squared radii" [| 4.; 9. |] (C.sphere_radius2 batch);
@@ -119,7 +123,7 @@ let test_spheres () =
     ~msg:"their centers keep the batch shape"
     (array int)
     [| 2; 3 |]
-    (Nx.shape (coords (C.sphere_center batch)))
+    (shape (coords (C.sphere_center batch)))
 
 (* Planes *)
 
@@ -144,15 +148,15 @@ let test_planes () =
   on ~msg:"the scaled plane still contains the point" (p3 0. 0. 1.) scaled;
   let batch =
     C.plane
-      ~normal:(Nx.create f32 [| 2; 3 |] [| 1.; 0.; 0.; 0.; 1.; 0. |])
-      ~offset:(Nx.create f32 [| 2 |] [| 1.; 2. |])
+      ~normal:(create f32 [| 2; 3 |] [| 1.; 0.; 0.; 0.; 1.; 0. |])
+      ~offset:(create f32 [| 2 |] [| 1.; 2. |])
   in
   equal ~msg:"a batch of planes" (array int) [| 2; 32 |] (C.shape batch);
   equal
     ~msg:"their normals keep the batch shape"
     (array int)
     [| 2; 3 |]
-    (Nx.shape (C.plane_normal batch));
+    (shape (C.plane_normal batch));
   equal_floats
     ~msg:"the batched normals"
     [| 1.; 0.; 0.; 0.; 1.; 0. |]
@@ -173,7 +177,7 @@ let test_point_pairs () =
     ~msg:"a point off the pair"
     (float 1e-4)
     ~than:0.
-    (Nx.item [] (C.norm (C.op (p3 1. 1. 0.) pair)));
+    (item [] (C.norm (C.op (p3 1. 1. 0.) pair)));
   equal_bool ~msg:"a point pair is round" true (C.is_round pair);
   equal_scalar ~msg:"a degenerate pair vanishes" 0. (C.norm2 (C.point_pair a a))
 
@@ -183,8 +187,8 @@ let test_lines () =
   let l = C.line a b in
   equal_bool ~msg:"a line is flat" true (C.is_flat l);
   equal_bool ~msg:"a line is not round" false (C.is_round l);
-  let d = C.line_direction l |> Nx.to_array in
-  let m = C.line_moment l |> Nx.to_array in
+  let d = C.line_direction l |> to_array in
+  let m = C.line_moment l |> to_array in
   equal
     ~msg:"the line direction is along z"
     bool
@@ -222,7 +226,7 @@ let test_circles () =
   off ~msg:"a point off the circle" (p3 0. 0. 1.) circle;
   check_point ~msg:"the circle center" (C.circle_center circle) (0., 0., 0.);
   equal_scalar ~msg:"the circle radius" 1. (C.circle_radius2 circle);
-  let n = C.circle_normal circle |> Nx.to_array in
+  let n = C.circle_normal circle |> to_array in
   equal
     ~msg:"the carrier normal is along z"
     bool
@@ -239,10 +243,10 @@ let test_circles () =
     (C.circle_center meeting)
     (0.5, 0., 0.);
   equal_scalar ~msg:"the meeting circle radius" 0.75 (C.circle_radius2 meeting);
-  on ~msg:"a point on the meeting circle" (p3 0.5 (sqrt 0.75) 0.) meeting;
+  on ~msg:"a point on the meeting circle" (p3 0.5 (Float.sqrt 0.75) 0.) meeting;
   off ~msg:"a point off the meeting circle" (p3 0. 0. 0.) meeting;
-  on ~msg:"the first sphere point is on the circle" (p3 0.5 (sqrt 0.75) 0.) meeting;
-  on ~msg:"the second sphere point is on the circle" (p3 0.5 0. (sqrt 0.75)) meeting
+  on ~msg:"the first sphere point is on the circle" (p3 0.5 (Float.sqrt 0.75) 0.) meeting;
+  on ~msg:"the second sphere point is on the circle" (p3 0.5 0. (Float.sqrt 0.75)) meeting
 
 let test_constructed_flats () =
   let a = p3 0. 0. 1.
@@ -253,7 +257,7 @@ let test_constructed_flats () =
   on ~msg:"plane_through contains b" b pi;
   on ~msg:"plane_through contains c" c pi;
   off ~msg:"a point off the constructed plane" (p3 0. 0. 0.) pi;
-  let n = C.plane_normal (C.normalize_plane pi) |> Nx.to_array in
+  let n = C.plane_normal (C.normalize_plane pi) |> to_array in
   equal
     ~msg:"the constructed plane normal"
     bool
@@ -283,13 +287,13 @@ let test_meets () =
   off ~msg:"the sphere center is not on the circle" (p3 0. 0. 0.) circle;
   let s2 = C.sphere ~center:(v3 1. 0. 0.) ~radius:(sc 1.) in
   let circle2 = C.meet s s2 in
-  on ~msg:"the spheres meet in a circle" (p3 0.5 (sqrt 0.75) 0.) circle2;
+  on ~msg:"the spheres meet in a circle" (p3 0.5 (Float.sqrt 0.75) 0.) circle2;
   off ~msg:"a point off the sphere meet" (p3 0. 0. 0.) circle2
 
 (* Conformal generators *)
 
 let test_conformal () =
-  let d = C.dilator (sc (log 2.)) in
+  let d = C.dilator (sc (Float.log 2.)) in
   check_point ~msg:"dilation scales a point" (C.sandwich d (p3 1. 0. 0.)) (2., 0., 0.);
   let s = C.sphere ~center:(v3 1. 0. 0.) ~radius:(sc 0.5) in
   let sd = C.sandwich d s in
@@ -306,11 +310,9 @@ let test_conformal () =
     (C.sandwich (C.transversion (v3 0. 0. 0.)) (p3 1. 2. 3.))
     (1., 2., 3.);
   equal_tensor ~msg:"a zero dilator is the identity" C.one (C.dilator (sc 0.));
-  let batch_d = C.dilator (Nx.create f32 [| 2 |] [| 0.; log 2. |]) in
+  let batch_d = C.dilator (create f32 [| 2 |] [| 0.; Float.log 2. |]) in
   equal ~msg:"a batch of dilators" (array int) [| 2; 32 |] (C.shape batch_d);
-  let batch_tv =
-    C.transversion (Nx.create f32 [| 2; 3 |] [| 0.; 0.; 0.; 0.5; 0.; 0. |])
-  in
+  let batch_tv = C.transversion (create f32 [| 2; 3 |] [| 0.; 0.; 0.; 0.5; 0.; 0. |]) in
   equal ~msg:"a batch of transversions" (array int) [| 2; 32 |] (C.shape batch_tv)
 
 (* Motors *)
@@ -339,15 +341,15 @@ let test_motors () =
   equal_scalar ~msg:"a motor preserves the sphere radius" 4. (C.sphere_radius2 moved);
   let batch =
     C.apply_motor
-      (M.translate (Nx.create f32 [| 2; 3 |] [| 0.; 0.; 1.; 1.; 0.; 0. |]))
-      (C.point (Nx.create f32 [| 2; 3 |] [| 0.; 0.; 0.; 1.; 0.; 0. |]))
+      (M.translate (create f32 [| 2; 3 |] [| 0.; 0.; 1.; 1.; 0.; 0. |]))
+      (C.point (create f32 [| 2; 3 |] [| 0.; 0.; 0.; 1.; 0.; 0. |]))
   in
   equal
     ~msg:"a batch of points through a batch of motors"
     (array int)
     [| 2; 32 |]
     (C.shape batch);
-  equal ~msg:"the batch coordinates" (array int) [| 2; 3 |] (Nx.shape (coords batch))
+  equal ~msg:"the batch coordinates" (array int) [| 2; 3 |] (shape (coords batch))
 
 (* Inherited algebra *)
 
@@ -365,26 +367,26 @@ let test_inherited () =
 
 let vec_gen =
   Gen.map
-    (fun v -> Nx.create f32 [| 3 |] v)
+    (fun v -> create f32 [| 3 |] v)
     Gen.(array ~size:(constant 3) (float_range (-2.) 2.))
 
 let point_gen = Gen.map C.point vec_gen
 
 let axis_gen =
   Gen.map
-    (fun (x, y) -> Nx.create f32 [| 3 |] [| x; y; 1. |])
+    (fun (x, y) -> create f32 [| 3 |] [| x; y; 1. |])
     Gen.(pair (float_range (-1.) 1.) (float_range (-1.) 1.))
 
 let sphere_gen =
   Gen.map
     (fun (c, r) ->
-       C.sphere ~center:(Nx.create f32 [| 3 |] c) ~radius:(sc (Float.abs r +. 0.1)))
+       C.sphere ~center:(create f32 [| 3 |] c) ~radius:(sc (Float.abs r +. 0.1)))
     Gen.(pair (array ~size:(constant 3) (float_range (-2.) 2.)) (float_range (-2.) 2.))
 
 let motor_gen =
   Gen.map
     (fun (t, axis, a) ->
-       M.mul (M.translate (Nx.create f32 [| 3 |] t)) (M.rotate ~axis ~angle:(sc a)))
+       M.mul (M.translate (create f32 [| 3 |] t)) (M.rotate ~axis ~angle:(sc a)))
     Gen.(
       triple
         (array ~size:(constant 3) (float_range (-1.) 1.))
@@ -395,27 +397,27 @@ let test_properties =
   group
     "properties"
     [ prop "coords inverts point" vec_gen (fun v ->
-        equal_floats (Nx.to_array v) (coords (C.point v)))
+        equal_floats (to_array v) (coords (C.point v)))
     ; prop "a point is null" vec_gen (fun v ->
         equal_scalar ~eps:1e-3 0. (C.norm2 (C.point v)))
     ; prop "a sphere contains its surface points" sphere_gen (fun s ->
         let center = C.coords (C.sphere_center s) in
-        let r = sqrt (Nx.item [] (C.sphere_radius2 s)) in
-        let p = C.point (Nx.add center (v3 r 0. 0.)) in
+        let r = Float.sqrt (item [] (C.sphere_radius2 s)) in
+        let p = C.point Infix.(center + v3 r 0. 0.) in
         on p s)
     ; prop
         "distance is symmetric"
         Gen.(pair point_gen point_gen)
         (fun (a, b) ->
-           equal (float 1e-4) (Nx.item [] (C.distance a b)) (Nx.item [] (C.distance b a)))
+           equal (float 1e-4) (item [] (C.distance a b)) (item [] (C.distance b a)))
     ; prop
         "a motor preserves incidence"
         Gen.(pair motor_gen (pair point_gen sphere_gen))
         (fun (m, (p, s)) ->
            equal
              (array bool)
-             (Nx.to_array (C.incident p s))
-             (Nx.to_array (C.incident (C.apply_motor m p) (C.apply_motor m s))))
+             (to_array (C.incident p s))
+             (to_array (C.incident (C.apply_motor m p) (C.apply_motor m s))))
     ; prop
         "the motor action is a homomorphism"
         Gen.(pair motor_gen (pair motor_gen point_gen))

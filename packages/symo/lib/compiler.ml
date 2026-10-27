@@ -18,6 +18,7 @@
    so the whole per-step computation is traceable by [Rune.jit]. *)
 
 open Base
+open Nx
 
 (* A compiled basis, instantiated at one set of dimensions. *)
 type t =
@@ -53,7 +54,7 @@ let tie_left_axes ~(dims : int list Sides.t) r ids =
     let shape = Array.create ~len:(1 + n_left) 1 in
     shape.(1 + left_pos i) <- dim;
     shape.(1 + left_pos j) <- dim;
-    Nx.mul r (Nx.reshape shape (Nx.eye Nx.float32 dim))
+    Infix.(r * reshape shape (eye float32 dim))
   in
   let rec go r = function
     | i :: (j :: _ as rest) -> go (step r i j) rest
@@ -138,36 +139,33 @@ let compile_apply_term ~(dims : int list Sides.t) term =
            multiply the contraction. [Nx.mul] broadcasts the scalar, and
            unlike [Nx.item] it stays traceable under [Rune.jit]. *)
         assert (is_scalar factor);
-        Nx.einsum (v_eq ^ "->" ^ out_eq) [| v |] |> Nx.mul factor
+        Infix.(einsum (v_eq ^ "->" ^ out_eq) [| v |] * factor)
       | factor_labels ->
-        Nx.einsum
+        einsum
           (String.of_char_list factor_labels ^ "," ^ v_eq ^ "->" ^ out_eq)
           [| factor; v |]
     in
     let batch = (Nx.shape v).(0) in
-    let t = Nx.reshape (Array.append [| batch |] output_view) t in
+    let t = reshape (Array.append [| batch |] output_view) t in
     let t = List.fold !left_ties ~init:t ~f:(tie_left_axes ~dims) in
-    let t = Nx.mul_s t normalizer in
-    Nx.broadcast_to (Array.append [| batch |] output_shape) t
+    let t = Infix.(t *$ normalizer) in
+    broadcast_to (Array.append [| batch |] output_shape) t
 
 let compile_apply_component ~dims = function
   | Component.Single term -> compile_apply_term ~dims term
   | Component.Sum terms ->
     let applies = List.map terms ~f:(compile_apply_term ~dims) in
     fun ~factor v ->
-      List.fold applies ~init:(Nx.scalar Nx.float32 0.0) ~f:(fun accu apply ->
-        Nx.add accu (apply ~factor v))
+      List.fold applies ~init:(scalar float32 0.0) ~f:(fun accu apply ->
+        Infix.(accu + apply ~factor v))
 
 (* [apply ~factors v] applies the block described by [factors] to a batch of
    vectors. *)
 let compile_apply ~dims components =
   let applies = List.map components ~f:(compile_apply_component ~dims) in
   fun ~factors v ->
-    List.fold2_exn
-      factors
-      applies
-      ~init:(Nx.scalar Nx.float32 0.0)
-      ~f:(fun acc factor apply -> Nx.add acc (apply ~factor v))
+    List.fold2_exn factors applies ~init:(scalar float32 0.0) ~f:(fun acc factor apply ->
+      Infix.(acc + apply ~factor v))
 
 (* The pseudo-inverse of the symmetric design matrix, used only as a
    compile-time fallback for one that is not positive definite. Its
@@ -177,35 +175,35 @@ let compile_apply ~dims components =
    division. *)
 let pseudo_inverse m =
   let n = (Nx.shape m).(0) in
-  let w, u = Nx.eigh m in
-  let tol = 1e-12 *. Nx.item [] (Nx.max (Nx.abs w)) in
-  let inv_w = Nx.where (Nx.greater_s (Nx.abs w) tol) (Nx.recip w) (Nx.zeros_like w) in
-  Nx.matmul (Nx.mul u (Nx.reshape [| 1; n |] inv_w)) (Nx.transpose u)
+  let w, u = eigh m in
+  let tol = 1e-12 *. item [] (max (abs w)) in
+  let inv_w = where (greater_s (abs w) tol) (recip w) (zeros_like w) in
+  Infix.(u * reshape [| 1; n |] inv_w *@ transpose u)
 
 (* Factor the constant design matrix once, at compile time: Cholesky when it
    is positive definite (the generic case for a basis of independent
    components), a jittered Cholesky when it is only positive semidefinite, and
    the SVD pseudo-inverse as a last resort. *)
 let build_estimator design n =
-  let design64 = Nx.cast Nx.float64 design in
+  let design64 = cast float64 design in
   let try_cholesky m =
-    let l = Nx.cholesky m in
-    if Nx.item [] (Nx.all (Nx.isfinite l)) then Some l else None
+    let l = cholesky m in
+    if item [] (Nx.all (isfinite l)) then Some l else None
   in
   match try_cholesky design64 with
-  | Some l -> `Cholesky (Nx.cast Nx.float32 l)
+  | Some l -> `Cholesky (cast float32 l)
   | None ->
-    let trace = Nx.item [] (Nx.sum (Nx.diag design64)) in
-    let jitter = Nx.mul_s (Nx.eye Nx.float64 n) Float.(1e-8 * trace / of_int n) in
-    (match try_cholesky (Nx.add design64 jitter) with
-     | Some l -> `Cholesky (Nx.cast Nx.float32 l)
+    let trace = item [] (sum (diag design64)) in
+    let jitter = Infix.(eye float64 n *$ Float.(1e-8 * trace / of_int n)) in
+    (match try_cholesky Infix.(design64 + jitter) with
+     | Some l -> `Cholesky (cast float32 l)
      | None ->
        Stdio.eprintf
          "Symo.Compiler: design matrix is not positive definite (n=%d); falling back to \
           the SVD pseudo-inverse\n\
           %!"
          n;
-       `Inverse (Nx.cast Nx.float32 (pseudo_inverse design64)))
+       `Inverse (cast float32 (pseudo_inverse design64)))
 
 (* [estimate_factors data] projects [data] onto the basis and solves the
    constant design system for the factor of each component. With a Cholesky
@@ -217,20 +215,20 @@ let compile_estimate_factors ~(dims : int list Sides.t) components =
   fun data ->
     let b =
       List.map components ~f:(fun c -> Component.coefficient ~dims c data)
-      |> Nx.stack ~axis:0
+      |> stack ~axis:0
     in
     let factor_shape =
       Array.sub (Nx.shape b) ~pos:1 ~len:(Array.length (Nx.shape b) - 1)
     in
-    let b = Nx.reshape [| n; -1 |] b in
+    let b = reshape [| n; -1 |] b in
     let v =
       match estimator with
       | `Cholesky l ->
-        let y = Nx.solve_triangular l b in
-        Nx.solve_triangular ~transpose:true l y
-      | `Inverse inv -> Nx.matmul inv b
+        let y = solve_triangular l b in
+        solve_triangular ~transpose:true l y
+      | `Inverse inv -> Infix.(inv *@ b)
     in
-    List.mapi components ~f:(fun i _ -> Nx.reshape factor_shape (Nx.slice [ Nx.I i ] v))
+    List.mapi components ~f:(fun i _ -> reshape factor_shape (slice [ Nx.I i ] v))
 
 (* Apply one group element to a parameter-shaped tensor. [perms] holds one
    permutation per group id (in [group_axes] order); every axis tied to a
@@ -239,12 +237,12 @@ let transform ~(dims : int list Sides.t) group_axes =
   let axis_of = Index.axis_of ~dims in
   fun ~perms t ->
     let original_shape = Nx.shape t in
-    let t = Nx.reshape (Array.of_list (dims.left @ dims.right)) t in
+    let t = reshape (Array.of_list (dims.left @ dims.right)) t in
     let t =
       List.fold2_exn group_axes perms ~init:t ~f:(fun t ids perm ->
-        List.fold ids ~init:t ~f:(fun x id -> Nx.take ~axis:(axis_of id) ~indices:perm x))
+        List.fold ids ~init:t ~f:(fun x id -> take ~axis:(axis_of id) ~indices:perm x))
     in
-    Nx.reshape original_shape t
+    reshape original_shape t
 
 (* All set partitions of [lst], keeping each partition's blocks of size ≥ 2
    (singleton blocks are dropped, so a partition need not cover [lst]). *)
@@ -381,12 +379,12 @@ let compile_basis ~(dims : int list Sides.t) (basis : Basis.t) =
   let dense_block ~factors =
     let _, right_size = side_counts ~dims in
     let v =
-      Nx.eye Nx.float32 right_size
-      |> Nx.reshape (Array.append [| right_size |] (Array.of_list dims.right))
+      eye float32 right_size
+      |> reshape (Array.append [| right_size |] (Array.of_list dims.right))
     in
     apply_block ~factors v
-    |> Nx.reshape [| right_size; -1 |]
-    |> fun x -> Nx.transpose ~axes:[ 1; 0 ] x
+    |> reshape [| right_size; -1 |]
+    |> fun x -> transpose ~axes:[ 1; 0 ] x
   in
   let estimate_factors = compile_estimate_factors ~dims components in
   let transform = transform ~dims basis.group_axes in

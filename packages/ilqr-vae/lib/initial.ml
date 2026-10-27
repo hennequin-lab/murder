@@ -4,6 +4,7 @@
   ---------------------------------------------------------------------------*)
 
 open Base
+open Nx
 (* The generative prior over the initial state [x_0].
 
    The library's own generative model starts every trial at [x_0 = 0] and
@@ -35,23 +36,24 @@ let structure () =
 let make ?(mean = 0.0) ?(std = 1.0) ~n dtype =
   if n <= 0 then invalid_arg "Initial.make: n must be positive";
   if not (Float.( > ) std 0.0) then invalid_arg "Initial.make: std must be positive";
-  { mean = Nx.full dtype [| n |] mean; log_stds = Nx.full dtype [| n |] (Float.log std) }
+  { mean = full dtype [| n |] mean; log_stds = full dtype [| n |] (Float.log std) }
 
 let log_2pi = Float.log (2.0 *. Float.pi)
 
 (* [logp p x] is [log p(x)] summed over the last axis: one value per row of a
    batched [x], a scalar for a single state. *)
 let logp p x =
-  let scaled = Nx.div (Nx.sub x p.mean) (Nx.exp p.log_stds) in
+  let open Infix in
+  let scaled = (x - p.mean) / exp p.log_stds in
   (* [log (2 pi sigma^2)] is [log 2 pi + 2 log sigma]. *)
-  let log_scale = Nx.add (Nx.mul_s p.log_stds 2.0) (Nx.scalar_like p.log_stds log_2pi) in
-  Nx.mul_s (Nx.sum ~axes:[ -1 ] (Nx.add (Nx.mul scaled scaled) log_scale)) (-0.5)
+  let log_scale = (p.log_stds *$ 2.0) + scalar_like p.log_stds log_2pi in
+  sum ~axes:[ -1 ] ((scaled * scaled) + log_scale) *$ -0.5
 
 (* [sample p key ~n_samples] draws [n_samples] states, of shape
    [[n_samples; n]]. Reparameterized and differentiable. *)
 let sample p ~key ~n_samples =
   if n_samples <= 0 then invalid_arg "Initial.sample: n_samples must be positive";
-  let n = Array.get (Nx.shape p.mean) 0 in
+  let n = Array.get (shape p.mean) 0 in
   let dtype = Nx.dtype p.mean in
   let eps = Nx.Rng.normal key dtype [| n_samples; n |] in
-  Nx.add (Nx.reshape [| 1; n |] p.mean) (Nx.mul eps (Nx.exp p.log_stds))
+  Infix.(reshape [| 1; n |] p.mean + (eps * exp p.log_stds))

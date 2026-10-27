@@ -1,3 +1,5 @@
+open Nx
+
 module type SCALAR = sig
   (** The buffer element kind of {!Nx}, such as {!Nx.float32_elt}. *)
   type kind
@@ -264,9 +266,9 @@ module Make (S : SIGNATURE) (K : SCALAR) = struct
         if m = 0 then 0 else blade_mul_sign i j * m)
       else 0)
 
-  let gp_tbl = Nx.create dtype [| size; size; size |] gp_table
-  let op_tbl = Nx.create dtype [| size; size; size |] op_table
-  let inner_tbl = Nx.create dtype [| size; size; size |] inner_table
+  let gp_tbl = create dtype [| size; size; size |] gp_table
+  let op_tbl = create dtype [| size; size; size |] op_table
+  let inner_tbl = create dtype [| size; size; size |] inner_table
 
   let rev_sign =
     Array.init size (fun i -> float_of_int (Blade.reverse_sign (Blade.of_int i)))
@@ -278,9 +280,9 @@ module Make (S : SIGNATURE) (K : SCALAR) = struct
     Array.init size (fun i ->
       float_of_int (Blade.clifford_conjugation_sign (Blade.of_int i)))
 
-  let rev_vec = Nx.create dtype [| size |] rev_sign
-  let gi_vec = Nx.create dtype [| size |] gi_sign
-  let conj_vec = Nx.create dtype [| size |] conj_sign
+  let rev_vec = create dtype [| size |] rev_sign
+  let gi_vec = create dtype [| size |] gi_sign
+  let conj_vec = create dtype [| size |] conj_sign
 
   let complement_perm =
     Array.init size (fun i -> Blade.to_int (Blade.complement ~n (Blade.of_int i)))
@@ -288,10 +290,8 @@ module Make (S : SIGNATURE) (K : SCALAR) = struct
   let complement_sign =
     Array.init size (fun i -> float_of_int (Blade.complement_sign ~n (Blade.of_int i)))
 
-  let complement_idx =
-    Nx.create Nx.int64 [| size |] (Array.map Int64.of_int complement_perm)
-
-  let complement_vec = Nx.create dtype [| size |] complement_sign
+  let complement_idx = create int64 [| size |] (Array.map Int64.of_int complement_perm)
+  let complement_vec = create dtype [| size |] complement_sign
   let dual_perm = Array.init size (fun i -> full lxor i)
 
   let dual_sign =
@@ -309,25 +309,25 @@ module Make (S : SIGNATURE) (K : SCALAR) = struct
       let m = metric_factor i full in
       float_of_int (s * m))
 
-  let dual_idx = Nx.create Nx.int64 [| size |] (Array.map Int64.of_int dual_perm)
-  let dual_vec = Nx.create dtype [| size |] dual_sign
-  let undual_vec = Nx.create dtype [| size |] undual_sign
+  let dual_idx = create int64 [| size |] (Array.map Int64.of_int dual_perm)
+  let dual_vec = create dtype [| size |] dual_sign
+  let undual_vec = create dtype [| size |] undual_sign
 
   let grade_mask =
     Array.init (n + 1) (fun k ->
-      Nx.create
+      create
         dtype
         [| size |]
         (Array.init size (fun i -> if blade_grade i = k then 1. else 0.)))
 
   let even_mask =
-    Nx.create
+    create
       dtype
       [| size |]
       (Array.init size (fun i -> if blade_grade i land 1 = 0 then 1. else 0.))
 
   let odd_mask =
-    Nx.create
+    create
       dtype
       [| size |]
       (Array.init size (fun i -> if blade_grade i land 1 = 1 then 1. else 0.))
@@ -344,12 +344,12 @@ module Make (S : SIGNATURE) (K : SCALAR) = struct
     if r = 0 then invalid "last_axis" "a multivector needs a blade axis";
     r - 1
 
-  let take_last idx a = Nx.take ~axis:(last_axis a) ~indices:idx a
+  let take_last idx a = take ~axis:(last_axis a) ~indices:idx a
 
   let scalar x =
     let a = Array.make size 0. in
     a.(0) <- x;
-    Nx.create dtype [| size |] a
+    create dtype [| size |] a
 
   let one = scalar 1.
   let zero = scalar 0.
@@ -359,7 +359,7 @@ module Make (S : SIGNATURE) (K : SCALAR) = struct
     if i < 0 || i >= size then invalid "basis" "blade index out of range";
     let a = Array.make size 0. in
     a.(i) <- 1.;
-    Nx.create dtype [| size |] a
+    create dtype [| size |] a
 
   let e i =
     if i < 1 || i > n then invalid "e" "basis vector index out of range";
@@ -369,7 +369,7 @@ module Make (S : SIGNATURE) (K : SCALAR) = struct
 
   let of_array a =
     if Array.length a <> size then invalid "of_array" "wrong number of coefficients";
-    Nx.create dtype [| size |] a
+    create dtype [| size |] a
 
   let to_array a =
     if batch_shape a <> [||] then invalid "to_array" "expected an unbatched multivector";
@@ -383,63 +383,63 @@ module Make (S : SIGNATURE) (K : SCALAR) = struct
 
   let to_nx x = x
   let shape a = Nx.shape a
-  let coeff a b = take_last (Nx.scalar Nx.int64 (Int64.of_int (Blade.to_int b))) a
+  let coeff a b = take_last (Nx.scalar int64 (Int64.of_int (Blade.to_int b))) a
 
   let with_coeff a b c =
     let batch = batch_shape a in
     let mask = Array.make size false in
     mask.(Blade.to_int b) <- true;
-    let mask = Nx.create Nx.bool [| size |] mask in
-    let c = Nx.broadcast_to batch c in
-    let c = Nx.reshape (Array.append batch [| 1 |]) c in
-    Nx.where mask c a
+    let mask = create bool [| size |] mask in
+    let c = broadcast_to batch c in
+    let c = reshape (Array.append batch [| 1 |]) c in
+    where mask c a
 
-  let grade k a = if k < 0 || k > n then zero else Nx.mul a grade_mask.(k)
-  let even a = Nx.mul a even_mask
-  let odd a = Nx.mul a odd_mask
-  let reverse a = Nx.mul a rev_vec
-  let grade_involution a = Nx.mul a gi_vec
-  let conjugate a = Nx.mul a conj_vec
+  let grade k a = if k < 0 || k > n then zero else Infix.(a * grade_mask.(k))
+  let even a = Infix.(a * even_mask)
+  let odd a = Infix.(a * odd_mask)
+  let reverse a = Infix.(a * rev_vec)
+  let grade_involution a = Infix.(a * gi_vec)
+  let conjugate a = Infix.(a * conj_vec)
 
   let contract tbl a b =
     let a, b =
-      match Nx.broadcast_arrays [ a; b ] with
+      match broadcast_arrays [ a; b ] with
       | [ a; b ] -> a, b
       | _ -> assert false
     in
     let batch = batch_shape a in
     let bsz = product_shape batch in
-    let a2 = Nx.reshape [| bsz; size |] a in
-    let b2 = Nx.reshape [| bsz; size |] b in
-    let out = Nx.einsum "bi,bj,kij->bk" [| a2; b2; tbl |] in
-    Nx.reshape (Array.append batch [| size |]) out
+    let a2 = reshape [| bsz; size |] a in
+    let b2 = reshape [| bsz; size |] b in
+    let out = einsum "bi,bj,kij->bk" [| a2; b2; tbl |] in
+    reshape (Array.append batch [| size |]) out
 
   let gp a b = contract gp_tbl a b
   let op a b = contract op_tbl a b
   let inner a b = contract inner_tbl a b
-  let commutator a b = Nx.div (Nx.sub (gp a b) (gp b a)) (Nx.scalar dtype 2.)
+  let commutator a b = Infix.((gp a b - gp b a) / Nx.scalar dtype 2.)
 
   let dual a =
     if pseudoscalar_square = 0 then invalid "dual" "the signature is degenerate";
-    take_last dual_idx (Nx.mul a dual_vec)
+    take_last dual_idx Infix.(a * dual_vec)
 
   let undual a =
     if pseudoscalar_square = 0 then invalid "undual" "the signature is degenerate";
-    take_last dual_idx (Nx.mul a undual_vec)
+    take_last dual_idx Infix.(a * undual_vec)
 
-  let complement a = take_last complement_idx (Nx.mul a complement_vec)
+  let complement a = take_last complement_idx Infix.(a * complement_vec)
   let regressive a b = complement (op (complement a) (complement b))
   let scalar_prod a b = coeff (gp (reverse a) b) (Blade.of_int 0)
   let norm2 a = coeff (gp (reverse a) a) (Blade.of_int 0)
   let norm a = Nx.sqrt (Nx.abs (norm2 a))
-  let expand batch x = Nx.reshape (Array.append batch [| 1 |]) x
-  let normalize a = Nx.div a (expand (batch_shape a) (norm a))
-  let inverse a = Nx.div (reverse a) (expand (batch_shape a) (norm2 a))
+  let expand batch x = reshape (Array.append batch [| 1 |]) x
+  let normalize a = Infix.(a / expand (batch_shape a) (norm a))
+  let inverse a = Infix.(reverse a / expand (batch_shape a) (norm2 a))
   let sandwich v x = gp (gp v x) (inverse v)
 
   let adjoint v =
     let cols = Array.init size (fun k -> sandwich v (basis (Blade.of_int k))) in
-    Nx.stack ~axis:(-1) (Array.to_list cols)
+    stack ~axis:(-1) (Array.to_list cols)
 
   let pp ppf a =
     let sh = Nx.shape a in

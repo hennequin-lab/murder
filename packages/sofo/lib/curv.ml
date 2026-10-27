@@ -23,6 +23,8 @@
    [Rune.jacfwd' (Rune.grad' f)] of the corresponding mini loss [f] as a
    function of a free [y]. *)
 
+open Nx
+
 type t =
   | Scale of float
   | Diag : ('a, 'b) Nx.t -> t
@@ -34,20 +36,20 @@ type t =
 let apply : type c d. t -> (c, d) Nx.t -> (c, d) Nx.t =
   fun t v ->
   match t with
-  | Scale s -> Nx.mul_s v (Nx_dtype.of_float (Nx.dtype v) s)
-  | Diag w -> Nx.mul v (Nx.cast (Nx.dtype v) w)
+  | Scale s -> Infix.(v *$ Nx_dtype.of_float (Nx.dtype v) s)
+  | Diag w -> Infix.(v * cast (Nx.dtype v) w)
   | Softmax_ce (scale, Nx.P p) ->
     (* p⊙v − p (p·v), contracted per row over the class axis. *)
-    let p = Nx.cast (Nx.dtype v) p in
-    let pv = Nx.sum (Nx.mul p v) ~axes:[ -1 ] ~keepdims:true in
-    let hv = Nx.sub (Nx.mul p v) (Nx.mul p pv) in
-    if scale = 1.0 then hv else Nx.mul_s hv (Nx_dtype.of_float (Nx.dtype hv) scale)
+    let p = cast (Nx.dtype v) p in
+    let pv = Infix.(sum (p * v) ~axes:[ -1 ] ~keepdims:true) in
+    let hv = Infix.((p * v) - (p * pv)) in
+    if scale = 1.0 then hv else Infix.(hv *$ Nx_dtype.of_float (Nx.dtype hv) scale)
   | Hvp (f, dt) ->
     (match Nx_dtype.equal_witness dt (Nx.dtype v) with
      | Some Type.Equal ->
        (* The usual case: the closure is written at this very dtype. *)
        Rune.vmap' f v
-     | None -> Nx.cast (Nx.dtype v) (Rune.vmap' f (Nx.cast dt v)))
+     | None -> cast (Nx.dtype v) (Rune.vmap' f (cast dt v)))
 
 (* H = s·I: the curvature of a mean-squared loss, and of any loss whose second
    derivative in [y] is constant. The scalar is produced in the argument's own

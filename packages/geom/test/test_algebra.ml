@@ -8,6 +8,7 @@
    duals and analytic checks and a degenerate algebra for the documented
    failures. *)
 
+open Nx
 open Windtrap
 open Support
 module B = Geom.Blade
@@ -20,7 +21,7 @@ module A =
     (struct
       type kind = Nx.float32_elt
 
-      let dtype = Nx.float32
+      let dtype = float32
     end)
 
 module Q =
@@ -31,7 +32,7 @@ module Q =
     (struct
       type kind = Nx.float64_elt
 
-      let dtype = Nx.float64
+      let dtype = float64
     end)
 
 module P =
@@ -42,7 +43,7 @@ module P =
     (struct
       type kind = Nx.float32_elt
 
-      let dtype = Nx.float32
+      let dtype = float32
     end)
 
 let e i = A.e i
@@ -56,8 +57,7 @@ let e12 = b 0b11
 let e13 = b 0b101
 let e23 = b 0b110
 let e123 = b 0b111
-let neg a = Nx.mul_s a (-1.)
-let add = Nx.add
+let neg a = Infix.(a *$ -1.)
 let arr n f = Array.init n f
 let coeff a i = A.coeff a (B.of_int i)
 
@@ -86,7 +86,7 @@ let ref_gp i j =
 let test_construction () =
   equal ~msg:"n" int 3 A.n;
   equal ~msg:"size" int 8 A.size;
-  equal ~msg:"dtype" string "float32" (Format.asprintf "%a" Nx.pp_dtype A.dtype);
+  equal ~msg:"dtype" string "float32" (Format.asprintf "%a" pp_dtype A.dtype);
   equal_tensor
     ~msg:"scalar"
     (A.of_array [| 1.; 0.; 0.; 0.; 0.; 0.; 0.; 0. |])
@@ -105,12 +105,11 @@ let test_construction () =
     ~msg:"of_nx keeps the value"
     (array (float 1e-6))
     [| 1.; 2.; 3.; 4.; 5.; 6.; 7.; 8. |]
-    (A.to_array
-       (A.of_nx (Nx.create A.dtype [| 8 |] [| 1.; 2.; 3.; 4.; 5.; 6.; 7.; 8. |])));
+    (A.to_array (A.of_nx (create A.dtype [| 8 |] [| 1.; 2.; 3.; 4.; 5.; 6.; 7.; 8. |])));
   equal_tensor ~msg:"to_nx is the identity" e12 (A.to_nx e12)
 
 let test_shape () =
-  let batch = Nx.create A.dtype [| 2; 8 |] (arr 16 (fun i -> float_of_int i)) in
+  let batch = create A.dtype [| 2; 8 |] (arr 16 (fun i -> float_of_int i)) in
   equal ~msg:"shape" (array int) [| 2; 8 |] (A.shape batch);
   equal ~msg:"batch shape" (array int) [| 2 |] (A.batch_shape batch);
   equal ~msg:"unbatched shape" (array int) [| 8 |] (A.shape e1);
@@ -119,12 +118,12 @@ let test_shape () =
     ~msg:"coeff on a batch"
     (array (float 1e-6))
     [| 1.; 9. |]
-    (Nx.to_array (A.coeff batch (B.of_int 1)));
+    (to_array (A.coeff batch (B.of_int 1)));
   equal
     ~msg:"coeff shape is the batch shape"
     (array int)
     [| 2 |]
-    (Nx.shape (A.coeff batch (B.of_int 1)))
+    (shape (A.coeff batch (B.of_int 1)))
 
 let test_coefficients () =
   let a = A.of_array [| 1.; 2.; 3.; 4.; 5.; 6.; 7.; 8. |] in
@@ -139,27 +138,27 @@ let test_coefficients () =
     (A.of_array [| 1.; 9.; 3.; 4.; 5.; 6.; 7.; 8. |])
     (A.with_coeff a (B.of_int 1) (Nx.scalar A.dtype 9.));
   let batch =
-    Nx.create A.dtype [| 2; 8 |] (Array.concat [ A.to_array a; A.to_array (neg a) ])
+    create A.dtype [| 2; 8 |] (Array.concat [ A.to_array a; A.to_array (neg a) ])
   in
   let replaced =
-    A.with_coeff batch (B.of_int 2) (Nx.create A.dtype [| 2 |] [| 10.; 11. |])
+    A.with_coeff batch (B.of_int 2) (create A.dtype [| 2 |] [| 10.; 11. |])
   in
   equal
     ~msg:"with_coeff on a batch"
     (array (float 1e-5))
     [| 1.; 2.; 10.; 4.; 5.; 6.; 7.; 8.; -1.; -2.; 11.; -4.; -5.; -6.; -7.; -8. |]
-    (Nx.to_array replaced);
+    (to_array replaced);
   equal
     ~msg:"with_coeff can broadcast a scalar"
     (array (float 1e-5))
     [| 1.; 9.; 3.; 4.; 5.; 6.; 7.; 8.; 1.; 9.; 3.; 4.; 5.; 6.; 7.; 8. |]
     (let batch =
-       Nx.create
+       create
          A.dtype
          [| 2; 8 |]
          [| 1.; 2.; 3.; 4.; 5.; 6.; 7.; 8.; 1.; 2.; 3.; 4.; 5.; 6.; 7.; 8. |]
      in
-     A.with_coeff batch (B.of_int 1) (Nx.scalar A.dtype 9.) |> Nx.to_array)
+     A.with_coeff batch (B.of_int 1) (Nx.scalar A.dtype 9.) |> to_array)
 
 let test_grade () =
   let a = A.of_array [| 1.; 2.; 3.; 4.; 5.; 6.; 7.; 8. |] in
@@ -195,7 +194,7 @@ let test_grade () =
     (array (float 1e-6))
     [| 0.; 2.; 3.; 0.; 5.; 0.; 0.; 8. |]
     (A.to_array (A.odd a));
-  equal_tensor ~msg:"even plus odd" a (add (A.even a) (A.odd a))
+  equal_tensor ~msg:"even plus odd" a Infix.(A.even a + A.odd a)
 
 (* Products *)
 
@@ -241,12 +240,12 @@ let test_product_algebra () =
   equal_tensor ~msg:"op is associative" (A.op (A.op x y) z) (A.op x (A.op y z));
   equal_tensor
     ~msg:"gp distributes over addition on the left"
-    (A.gp x (add y z))
-    (add (A.gp x y) (A.gp x z));
+    (A.gp x Infix.(y + z))
+    Infix.(A.gp x y + A.gp x z);
   equal_tensor
     ~msg:"gp distributes over addition on the right"
-    (A.gp (add x y) z)
-    (add (A.gp x z) (A.gp y z));
+    (A.gp Infix.(x + y) z)
+    Infix.(A.gp x z + A.gp y z);
   equal_tensor ~msg:"one is neutral on the left" x (A.gp one x);
   equal_tensor ~msg:"one is neutral on the right" x (A.gp x one);
   equal_tensor ~msg:"zero absorbs on the left" zero (A.gp zero x);
@@ -298,7 +297,7 @@ let test_dual () =
   equal_tensor ~msg:"dual of the undual" e12 (A.dual (A.undual e12));
   let q1 = Q.e 1
   and q2 = Q.e 2 in
-  equal_tensor ~msg:"dual in Cl(2) sends e1 to -e2" (Nx.mul_s q2 (-1.)) (Q.dual q1);
+  equal_tensor ~msg:"dual in Cl(2) sends e1 to -e2" Infix.(q2 *$ -1.) (Q.dual q1);
   equal_tensor ~msg:"dual in Cl(2) sends e2 to e1" q1 (Q.dual q2);
   let x = A.of_array [| 1.; 0.5; -1.; 2.; 0.25; -0.5; 1.5; -2. |] in
   equal_tensor ~msg:"undual after dual is the identity" x (A.undual (A.dual x));
@@ -354,7 +353,7 @@ let test_norms () =
   let x = A.of_array [| 1.; 0.5; -1.; 2.; 0.25; -0.5; 1.5; -2. |] in
   equal_scalar
     ~msg:"norm2 is the scalar part of reverse times a"
-    (A.coeff (A.gp (A.reverse x) x) (B.of_int 0) |> Nx.item [])
+    (A.coeff (A.gp (A.reverse x) x) (B.of_int 0) |> item [])
     (A.norm2 x)
 
 (* Versor actions and adjoints *)
@@ -376,10 +375,8 @@ let test_adjoint () =
   let x = A.of_array [| 1.; 0.5; -1.; 2.; 0.25; -0.5; 1.5; -2. |] in
   let check name v =
     let adj = A.adjoint v in
-    equal ~msg:(name ^ " shape") (array int) [| A.size; A.size |] (Nx.shape adj);
-    let applied =
-      Nx.matmul adj (Nx.reshape [| A.size; 1 |] x) |> Nx.reshape [| A.size |]
-    in
+    equal ~msg:(name ^ " shape") (array int) [| A.size; A.size |] (shape adj);
+    let applied = Infix.(adj *@ reshape [| A.size; 1 |] x) |> reshape [| A.size |] in
     equal_tensor ~msg:(name ^ " acts like the sandwich") (A.sandwich v x) applied
   in
   check "adjoint of e1" e1;
@@ -387,33 +384,29 @@ let test_adjoint () =
   check "adjoint of e123" e123;
   let v = A.gp e1 e12 in
   check "adjoint of a product" v;
-  let adj_batch = A.adjoint (A.of_nx (Nx.stack ~axis:0 [ e1; e12 ])) in
-  equal
-    ~msg:"batched adjoint shape"
-    (array int)
-    [| 2; A.size; A.size |]
-    (Nx.shape adj_batch)
+  let adj_batch = A.adjoint (A.of_nx (stack ~axis:0 [ e1; e12 ])) in
+  equal ~msg:"batched adjoint shape" (array int) [| 2; A.size; A.size |] (shape adj_batch)
 
 (* Batching and broadcasting *)
 
-let take0 i a = Nx.take ~axis:0 ~indices:(Nx.scalar Nx.int64 (Int64.of_int i)) a
+let take0 i a = take ~axis:0 ~indices:(Nx.scalar Nx.int64 (Int64.of_int i)) a
 
 let test_batching () =
   let x = A.of_array [| 1.; 0.5; -1.; 2.; 0.25; -0.5; 1.5; -2. |] in
   let y = A.of_array [| -0.5; 1.; 0.75; -1.5; 2.; 0.5; -0.25; 1. |] in
   let z = A.of_array [| 2.; -1.; 0.5; 1.; -0.75; 1.5; 0.25; -0.5 |] in
-  let batch = A.of_nx (Nx.stack ~axis:0 [ x; y ]) in
+  let batch = A.of_nx (stack ~axis:0 [ x; y ]) in
   let prod = A.gp batch z in
   equal ~msg:"batch shape is kept" (array int) [| 2; A.size |] (A.shape prod);
   equal_tensor ~msg:"first row" (A.gp x z) (take0 0 prod);
   equal_tensor ~msg:"second row" (A.gp y z) (take0 1 prod);
-  let left = A.of_nx (Nx.stack ~axis:0 [ x; y ]) in
-  let right = A.of_nx (Nx.stack ~axis:0 [ z; y ]) in
+  let left = A.of_nx (stack ~axis:0 [ x; y ]) in
+  let right = A.of_nx (stack ~axis:0 [ z; y ]) in
   let batched = A.gp left right in
   equal_tensor ~msg:"both operands batched: first" (A.gp x z) (take0 0 batched);
   equal_tensor ~msg:"both operands batched: second" (A.gp y y) (take0 1 batched);
-  let grid_l = A.of_nx (Nx.reshape [| 2; 1; A.size |] (A.to_nx batch)) in
-  let grid_r = A.of_nx (Nx.reshape [| 1; 3; A.size |] (Nx.stack ~axis:0 [ z; y; x ])) in
+  let grid_l = A.of_nx (reshape [| 2; 1; A.size |] (A.to_nx batch)) in
+  let grid_r = A.of_nx (reshape [| 1; 3; A.size |] (stack ~axis:0 [ z; y; x ])) in
   let grid = A.gp grid_l grid_r in
   equal ~msg:"broadcast batch dims" (array int) [| 2; 3; A.size |] (A.shape grid);
   equal_tensor ~msg:"broadcast cell" (A.gp x y) (take0 1 (take0 0 grid))
@@ -426,8 +419,8 @@ let test_printing () =
     ~msg:"a sum separates its terms"
     string
     "1 + 1*e1"
-    (Format.asprintf "%a" A.pp (add one e1));
-  let batch = A.of_nx (Nx.stack ~axis:0 [ e1; e2 ]) in
+    (Format.asprintf "%a" A.pp Infix.(one + e1));
+  let batch = A.of_nx (stack ~axis:0 [ e1; e2 ]) in
   equal
     ~msg:"a batch prints its shape"
     string
@@ -435,7 +428,7 @@ let test_printing () =
     (Format.asprintf "%a" A.pp batch);
   (* A first batch axis equal to [size] must not be mistaken for the blade
      axis. *)
-  let square = A.of_nx (Nx.zeros A.dtype [| A.size; A.size |]) in
+  let square = A.of_nx (zeros A.dtype [| A.size; A.size |]) in
   equal
     ~msg:"a square batch prints its shape"
     string
@@ -464,11 +457,11 @@ let test_errors () =
   raises_match
     ~msg:"to_array refuses batched values"
     (Exn.invalid_arg ~substring:"unbatched")
-    (fun () -> ignore (A.to_array (A.of_nx (Nx.zeros A.dtype [| 2; A.size |]))));
+    (fun () -> ignore (A.to_array (A.of_nx (zeros A.dtype [| 2; A.size |]))));
   raises_match
     ~msg:"of_nx checks the blade axis"
     (Exn.invalid_arg ~substring:"blade axis")
-    (fun () -> ignore (A.of_nx (Nx.zeros A.dtype [| 7 |])));
+    (fun () -> ignore (A.of_nx (zeros A.dtype [| 7 |])));
   raises_match
     ~msg:"batch_shape needs a blade axis"
     (Exn.invalid_arg ~substring:"blade axis")
@@ -476,9 +469,9 @@ let test_errors () =
   raises_match ~msg:"with_coeff checks the coefficient shape" Exn.invalid_arg (fun () ->
     ignore
       (A.with_coeff
-         (A.of_nx (Nx.zeros A.dtype [| 2; A.size |]))
+         (A.of_nx (zeros A.dtype [| 2; A.size |]))
          (B.of_int 1)
-         (Nx.zeros A.dtype [| 3 |])))
+         (zeros A.dtype [| 3 |])))
 
 (* Properties *)
 
@@ -493,8 +486,7 @@ let test_properties =
     ; prop
         "gp distributes over addition"
         Gen.(triple a a a)
-        (fun (x, y, z) ->
-           Law.distributive (Support.tensor ()) A.gp ~over:Nx.add (x, y, z))
+        (fun (x, y, z) -> Law.distributive (Support.tensor ()) A.gp ~over:add (x, y, z))
     ; prop "reverse is an involution" a (fun x ->
         Law.involutive (Support.tensor ()) A.reverse x)
     ; prop "grade involution is an involution" a (fun x ->

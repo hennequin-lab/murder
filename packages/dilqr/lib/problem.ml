@@ -17,6 +17,7 @@
     respect to it. *)
 
 open Base
+open Nx
 
 (** The concrete tensor type: states, controls and losses at dtype ['w]. *)
 type 'w value = (float, 'w) Nx.t
@@ -58,25 +59,20 @@ type ('w, 'p) t =
     and every control of the initial guess. *)
 let inputs (type w p) (problem : (w, p) t) : (p, w value) Inputs.t Nx.Ptree.t =
   let module I = struct
-    type 'a t = (p, 'a) Inputs.t
-
-    let walk c ({ Inputs.theta; x0; us0 } : (p, 'a) Inputs.t) : (p, 'b) Inputs.t =
-      let open Nx.Ptree.Walk in
-      let theta = field c "theta" (structure problem.params) theta in
-      let x0 = field c "x0" leaf x0 in
-      let us0 =
-        field
-          c
-          "us0"
-          (fun c us0 ->
-             ignore (int c (Array.length us0));
-             Array.mapi us0 ~f:(fun i u -> index c i leaf u))
-          us0
-      in
-      { Inputs.theta; x0; us0 }
+    type 'a t =
+      { theta : p [@ptree.walk Nx.Ptree.Walk.structure problem.params]
+      ; x0 : 'a
+      ; us0 : 'a array
+      }
+    [@@deriving ptree]
   end
   in
-  Nx.Ptree.instantiate (module I)
+  Nx.Ptree.iso
+    (fun (i : w value I.t) : (p, w value) Inputs.t ->
+       { Inputs.theta = i.theta; x0 = i.x0; us0 = i.us0 })
+    (fun (i : (p, w value) Inputs.t) : w value I.t ->
+       { I.theta = i.theta; x0 = i.x0; us0 = i.us0 })
+    (Nx.Ptree.instantiate (module I))
 
 (** [slice_last t ~start ~stop] slices the last axis of [t], whatever leading
     batch axes it carries. The state and control dimensions are the last axis
@@ -84,8 +80,8 @@ let inputs (type w p) (problem : (w, p) t) : (p, w value) Inputs.t Nx.Ptree.t =
     components without knowing the batch rank: [slice_last x ~start:0 ~stop:1] is the position of [x].
 *)
 let slice_last t ~start ~stop =
-  let lead = Array.create ~len:(Array.length (Nx.shape t) - 1) Nx.A in
-  Nx.slice (Array.to_list (Array.append lead [| Nx.R (start, stop) |])) t
+  let lead = Array.create ~len:(Array.length (shape t) - 1) Nx.A in
+  slice (Array.to_list (Array.append lead [| Nx.R (start, stop) |])) t
 
 (** [taus_of problem xs us] stacks the trajectory into a [(K+1); n+m]
     tensor: row k is (x_k; u_k) for k < K, row K is (x_K; 0). This is the
@@ -94,23 +90,23 @@ let slice_last t ~start ~stop =
     so a batched trajectory ([batch...; n] states) stacks to
     [batch...; K+1; n+m]: the batch axes lead the horizon. *)
 let taus_of p xs us =
-  let zero_u = Nx.zeros_like us.(0) in
+  let zero_u = zeros_like us.(0) in
   let rows =
     Array.init (p.horizon + 1) ~f:(fun k ->
       if k < p.horizon
-      then Nx.concatenate ~axis:(-1) [ xs.(k); us.(k) ]
-      else Nx.concatenate ~axis:(-1) [ xs.(k); zero_u ])
+      then concatenate ~axis:(-1) [ xs.(k); us.(k) ]
+      else concatenate ~axis:(-1) [ xs.(k); zero_u ])
   in
-  let batch = Array.length (Nx.shape xs.(0)) - 1 in
-  Nx.stack ~axis:batch (Array.to_list rows)
+  let batch = Array.length (shape xs.(0)) - 1 in
+  stack ~axis:batch (Array.to_list rows)
 
 (** [split_taus problem taus] is ([xs], [us]) with [xs] of length
     [horizon + 1] and [us] of length [horizon]. *)
 let split_taus p taus =
-  let batch = Array.length (Nx.shape taus) - 2 in
+  let batch = Array.length (shape taus) - 2 in
   let row k =
     let lead = Array.create ~len:batch Nx.A in
-    Nx.slice (Array.to_list (Array.append lead [| Nx.I k |])) taus
+    slice (Array.to_list (Array.append lead [| Nx.I k |])) taus
   in
   let xs = Array.create ~len:(p.horizon + 1) taus in
   let us = Array.create ~len:p.horizon taus in
@@ -125,28 +121,28 @@ let split_taus p taus =
    over the stacked trajectory: one traced step for the whole horizon. *)
 let loss_of_taus_unbatched p theta taus =
   let horizon = p.horizon in
-  let ks = Nx.arange p.dtype 0 horizon 1 in
+  let ks = arange p.dtype 0 horizon 1 in
   let _, losses =
     Rune.scan
       Nx.Ptree.unit
       Nx.Ptree.(pair tensor tensor)
       Nx.Ptree.tensor
       ~f:(fun () (row, k) ->
-        let x = Nx.slice [ R (0, p.n) ] row in
-        let u = Nx.slice [ R (p.n, p.n + p.m) ] row in
+        let x = slice [ R (0, p.n) ] row in
+        let u = slice [ R (p.n, p.n + p.m) ] row in
         (), p.running_loss theta ~k ~x ~u)
       ~init:()
-      (Nx.slice [ R (0, horizon) ] taus, ks)
+      (slice [ R (0, horizon) ] taus, ks)
   in
-  let last = Nx.slice [ I horizon ] taus in
-  Nx.add (p.final_loss theta ~x:(Nx.slice [ R (0, p.n) ] last)) (Nx.sum losses)
+  let last = slice [ I horizon ] taus in
+  Infix.(p.final_loss theta ~x:(slice [ R (0, p.n) ] last) + sum losses)
 
 (** [loss_of_taus problem theta taus] evaluates the problem's own running +
     final losses along the trajectory. Useful for self-derivation checks and
     as a building block for user losses. A batched [theta] and a batched
     trajectory are evaluated member by member. Differentiable, traceable. *)
 let loss_of_taus p theta taus =
-  if Array.length (Nx.shape taus) <= 2
+  if Array.length (shape taus) <= 2
   then loss_of_taus_unbatched p theta taus
   else
     Rune.vmap

@@ -106,7 +106,9 @@ let circle_points ~center ~normal ~radius =
   let nseg = 96 in
   List.init nseg (fun i ->
     let t = 2. *. Float.pi *. float_of_int i /. float_of_int nseg in
-    P.add center (P.add (P.scale u (radius *. cos t)) (P.scale v (radius *. sin t))))
+    P.add
+      center
+      (P.add (P.scale u (radius *. Float.cos t)) (P.scale v (radius *. Float.sin t))))
 
 let silhouette (c : C.t) (s : P.sphere) =
   let dvec = P.sub (C.eye c) s.center in
@@ -116,7 +118,7 @@ let silhouette (c : C.t) (s : P.sphere) =
   else (
     let f = s.radius *. s.radius /. (d *. d) in
     let center = P.add s.center (P.scale dvec f) in
-    let radius = s.radius *. sqrt (max 0. (1. -. f)) in
+    let radius = s.radius *. Float.sqrt (Stdlib.max 0. (1. -. f)) in
     Some (P.Circle { center; normal = dvec; radius }))
 
 let representative_depth c = function
@@ -155,7 +157,7 @@ let draw_point c s p =
   match C.project c p with
   | None -> Picture.empty
   | Some (x, y, _) ->
-    let radius = max 2.5 (s.width +. 1.) in
+    let radius = Stdlib.max 2.5 (s.width +. 1.) in
     let circle = Path.circle (P2.v x y) radius in
     let fill =
       match s.fill with

@@ -4,6 +4,7 @@
   ---------------------------------------------------------------------------*)
 
 open Geom
+open Nx
 open Primitive
 
 (* Camera coordinates are +x right, +y up and +z toward the viewer. The
@@ -63,7 +64,7 @@ let create
   let right = normalize right0 in
   (* The second camera axis is the cross product, so it is already unit. *)
   let up_cam = cross back right in
-  let focal = height /. 2. /. tan (fov_y /. 2.) in
+  let focal = height /. 2. /. Float.tan (fov_y /. 2.) in
   let ortho_scale =
     match ortho_scale with
     | Some s when Float.is_finite s && s > 0. -> s
@@ -72,7 +73,7 @@ let create
   in
   let rows =
     Nx.create
-      Nx.float32
+      float32
       [| 3; 3 |]
       [| right.x
        ; right.y
@@ -180,7 +181,7 @@ let project_image_meet c p =
       let pcam = Pga.apply_motor c.view (Pga.point3 p.x p.y p.z) in
       let hit = Pga.meet (Pga.join eye_local pcam) (image_plane_local c) in
       let q = Pga.point_coords hit in
-      Some (Nx.item [ 0 ] q, Nx.item [ 1 ] q, -.zc)))
+      Some (item [ 0 ] q, item [ 1 ] q, -.zc)))
 
 let project_image c p = project_image_meet c p
 let project c p = Option.map (page_of_image c) (project_image c p)

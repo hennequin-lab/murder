@@ -24,6 +24,8 @@
 (* The map the sketch's directions live in, and the total its blocks are added
    to. The mark and the driver are the only users: a total collects the
    innermost open scope, so one library-wide total serves every sketch. *)
+open Nx
+
 let directions = Rune.axis ()
 let curvature : (float, Nx.float64_elt) Rune.Total.t = Rune.Total.make ()
 
@@ -35,16 +37,14 @@ let mark ~curv y =
        ( ()
        , fun dy ->
            let ys = Rune.lanes directions dy in
-           let rows t = Nx.reshape [| Nx.dim 0 t; -1 |] t in
+           let rows t = reshape [| dim 0 t; -1 |] t in
            let block =
-             Nx.cast
-               Nx.float64
-               (Nx.matmul (rows ys) (Nx.transpose (rows (Curv.apply curv ys))))
+             cast float64 Infix.(rows ys *@ transpose (rows (Curv.apply curv ys)))
            in
            (* Every block is symmetric by construction — YᵀHY with H symmetric — so
               the accumulator is symmetrized up to floating-point asymmetry, which
               later decompositions would rather not see. *)
-           let block = Nx.mul_s (Nx.add block (Nx.transpose block)) 0.5 in
+           let block = Infix.((block + transpose block) *$ 0.5) in
            Rune.Total.add curvature block ))
     y
 
@@ -55,13 +55,13 @@ let mark ~curv y =
    arithmetic defines both the value and the tangent of the loss the sketch
    returns. *)
 let observe ~y ~curv l =
-  if Nx.numel l <> 1
+  if numel l <> 1
   then
     invalid_arg
       (Format.asprintf
          "Sofo.observe: the mini loss must be a scalar (one element), got shape %a"
-         Nx.pp_shape
-         (Nx.shape l));
+         pp_shape
+         (shape l));
   mark ~curv y
 
 (* Packaged little losses: the value is computed with ordinary operations, so
@@ -72,36 +72,36 @@ let observe ~y ~curv l =
    [mean (w * (y - target)²)], marked with its exact curvature
    [diag (2 w / numel y)] — [Curv.scale (2 / numel y)] without weights. *)
 let mse ?w ~target y =
-  let shape_y = Nx.shape y in
-  if shape_y <> Nx.shape target
+  let shape_y = shape y in
+  if shape_y <> shape target
   then invalid_arg "Sofo.mse: prediction and target must have the same shape";
-  let n = float_of_int (Nx.numel y) in
-  let d = Nx.sub y target in
-  let sq = Nx.mul d d in
+  let n = float_of_int (numel y) in
+  let d = Infix.(y - target) in
+  let sq = Infix.(d * d) in
   let loss, curv =
     match w with
-    | None -> Nx.mean sq, Curv.scale (2.0 /. n)
+    | None -> mean sq, Curv.scale (2.0 /. n)
     | Some w ->
-      let w = Nx.cast (Nx.dtype y) w in
+      let w = cast (Nx.dtype y) w in
       let two_over_n = Nx_dtype.of_float (Nx.dtype y) (2.0 /. n) in
-      Nx.mean (Nx.mul w sq), Curv.diag (Nx.mul_s w two_over_n)
+      mean Infix.(w * sq), Curv.diag Infix.(w *$ two_over_n)
   in
   observe ~y ~curv loss;
   loss
 
 let sse ?w ~target y =
-  let shape_y = Nx.shape y in
-  if shape_y <> Nx.shape target
+  let shape_y = shape y in
+  if shape_y <> shape target
   then invalid_arg "Sofo.mse: prediction and target must have the same shape";
-  let d = Nx.sub y target in
-  let sq = Nx.mul d d in
+  let d = Infix.(y - target) in
+  let sq = Infix.(d * d) in
   let loss, curv =
     match w with
-    | None -> Nx.sum sq, Curv.scale 2.0
+    | None -> sum sq, Curv.scale 2.0
     | Some w ->
-      let w = Nx.cast (Nx.dtype y) w in
+      let w = cast (Nx.dtype y) w in
       let two_over_n = Nx_dtype.of_float (Nx.dtype y) 2.0 in
-      Nx.sum (Nx.mul w sq), Curv.diag (Nx.mul_s w two_over_n)
+      sum Infix.(w * sq), Curv.diag Infix.(w *$ two_over_n)
   in
   observe ~y ~curv loss;
   loss
@@ -112,19 +112,19 @@ let sse ?w ~target y =
    Hessian with respect to [y] is [1/rows] times [diag p − p pᵀ] per row, with
    [p = softmax y]. *)
 let softmax_ce y labels =
-  let shape_y = Nx.shape y in
+  let shape_y = shape y in
   let rank = Array.length shape_y in
   if rank = 0 then invalid_arg "Sofo.softmax_ce: the prediction must have a class axis";
   let labels_shape = Array.sub shape_y 0 (rank - 1) in
-  if Nx.shape labels <> labels_shape
+  if shape labels <> labels_shape
   then
     invalid_arg
       "Sofo.softmax_ce: labels must have the prediction's shape without its class axis";
   let rows = Array.fold_left ( * ) 1 labels_shape in
-  let p = Nx.softmax y in
-  let idx = Nx.reshape (Array.append labels_shape [| 1 |]) labels in
-  let picked = Nx.take_along_axis ~axis:(-1) ~indices:idx (Nx.log_softmax y) in
-  let loss = Nx.neg (Nx.mean picked) in
+  let p = softmax y in
+  let idx = reshape (Array.append labels_shape [| 1 |]) labels in
+  let picked = take_along_axis ~axis:(-1) ~indices:idx (log_softmax y) in
+  let loss = Infix.(-mean picked) in
   let curv = Curv.softmax_ce ~scale:(1.0 /. float_of_int rows) p in
   observe ~y ~curv loss;
   loss

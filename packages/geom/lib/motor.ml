@@ -3,9 +3,11 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
+open Nx
+
 type t = Nx.float32_t
 
-let dtype = Nx.float32
+let dtype = float32
 let size = 8
 
 module A =
@@ -16,7 +18,7 @@ module A =
     (struct
       type kind = Nx.float32_elt
 
-      let dtype = Nx.float32
+      let dtype = float32
     end)
 
 (* The packed basis in the dense Cl(4,1) algebra. The selected dense indices
@@ -52,8 +54,8 @@ let packed_table =
   done;
   t
 
-let packed_tbl = Nx.create dtype [| size; size; size |] packed_table
-let reverse_sign = Nx.create dtype [| size |] [| 1.; -1.; -1.; -1.; -1.; -1.; -1.; 1. |]
+let packed_tbl = create dtype [| size; size; size |] packed_table
+let reverse_sign = create dtype [| size |] [| 1.; -1.; -1.; -1.; -1.; -1.; -1.; 1. |]
 let rank a = Array.length (Nx.shape a)
 
 let batch_shape a =
@@ -66,14 +68,12 @@ let last_axis a =
   if r = 0 then invalid_arg "Motor: missing motor axis";
   r - 1
 
-let take_comp a i =
-  Nx.take ~axis:(last_axis a) ~indices:(Nx.scalar Nx.int64 (Int64.of_int i)) a
-
-let expand batch x = Nx.reshape (Array.append batch [| 1 |]) x
+let take_comp a i = take ~axis:(last_axis a) ~indices:(Nx.scalar int64 (Int64.of_int i)) a
+let expand batch x = reshape (Array.append batch [| 1 |]) x
 
 let of_array a =
   if Array.length a <> size then invalid_arg "Motor.of_array: expected 8 coefficients";
-  Nx.create dtype [| size |] a
+  create dtype [| size |] a
 
 let to_array m =
   if batch_shape m <> [||] then invalid_arg "Motor.to_array: expected an unbatched motor";
@@ -92,86 +92,74 @@ let zero = of_array [| 0.; 0.; 0.; 0.; 0.; 0.; 0.; 0. |]
 
 let contract a b =
   let a, b =
-    match Nx.broadcast_arrays [ a; b ] with
+    match broadcast_arrays [ a; b ] with
     | [ a; b ] -> a, b
     | _ -> assert false
   in
   let batch = batch_shape a in
   let bsz = Array.fold_left ( * ) 1 batch in
-  let a2 = Nx.reshape [| bsz; size |] a in
-  let b2 = Nx.reshape [| bsz; size |] b in
-  let out = Nx.einsum "bi,bj,kij->bk" [| a2; b2; packed_tbl |] in
-  Nx.reshape (Array.append batch [| size |]) out
+  let a2 = reshape [| bsz; size |] a in
+  let b2 = reshape [| bsz; size |] b in
+  let out = einsum "bi,bj,kij->bk" [| a2; b2; packed_tbl |] in
+  reshape (Array.append batch [| size |]) out
 
 let mul a b = contract a b
 let compose ms = List.fold_left mul one ms
-let reverse m = Nx.mul m reverse_sign
+let reverse m = Infix.(m * reverse_sign)
 let norm2 m = take_comp (mul m (reverse m)) 0
 let norm m = Nx.sqrt (Nx.abs (norm2 m))
-let normalize m = Nx.div m (expand (batch_shape m) (norm m))
-let inverse m = Nx.div (reverse m) (expand (batch_shape m) (norm2 m))
-let zero_comp batch = Nx.zeros dtype batch
-let one_comp batch = Nx.ones dtype batch
-let vector3 x y z = Nx.create dtype [| 3 |] [| x; y; z |]
+let normalize m = Infix.(m / expand (batch_shape m) (norm m))
+let inverse m = Infix.(reverse m / expand (batch_shape m) (norm2 m))
+let zero_comp batch = zeros dtype batch
+let one_comp batch = ones dtype batch
+let vector3 x y z = create dtype [| 3 |] [| x; y; z |]
 
 let translate v =
   let batch = Array.sub (Nx.shape v) 0 (Array.length (Nx.shape v) - 1) in
   let z = zero_comp batch in
   let o = one_comp batch in
-  let m = Nx.mul_s v (-0.5) in
-  Nx.stack ~axis:(-1) [ o; z; z; z; take_comp m 0; take_comp m 1; take_comp m 2; z ]
+  let m = Infix.(v *$ -0.5) in
+  stack ~axis:(-1) [ o; z; z; z; take_comp m 0; take_comp m 1; take_comp m 2; z ]
 
 let translate3 x y z = translate (vector3 x y z)
 
 let cross a b =
+  let open Infix in
   let ax = take_comp a 0
   and ay = take_comp a 1
   and az = take_comp a 2 in
   let bx = take_comp b 0
   and by = take_comp b 1
   and bz = take_comp b 2 in
-  Nx.stack
-    ~axis:(-1)
-    [ Nx.sub (Nx.mul ay bz) (Nx.mul az by)
-    ; Nx.sub (Nx.mul az bx) (Nx.mul ax bz)
-    ; Nx.sub (Nx.mul ax by) (Nx.mul ay bx)
-    ]
+  stack ~axis:(-1) [ (ay * bz) - (az * by); (az * bx) - (ax * bz); (ax * by) - (ay * bx) ]
 
 let rotate ~axis ~angle =
   let batch = batch_shape axis in
-  let n2 = Nx.sum ~axes:[ Array.length (Nx.shape axis) - 1 ] (Nx.mul axis axis) in
+  let n2 = sum ~axes:[ Array.length (Nx.shape axis) - 1 ] Infix.(axis * axis) in
   let n = Nx.sqrt n2 in
-  let axis = Nx.div axis (expand batch n) in
-  let half = Nx.mul_s angle 0.5 in
+  let open Infix in
+  let axis = axis / expand batch n in
+  let half = angle *$ 0.5 in
   let c = Nx.cos half
   and s = Nx.sin half in
   let nx = take_comp axis 0
   and ny = take_comp axis 1
   and nz = take_comp axis 2 in
   let z = zero_comp batch in
-  Nx.stack
-    ~axis:(-1)
-    [ c
-    ; Nx.mul_s (Nx.mul s nz) (-1.)
-    ; Nx.mul s ny
-    ; Nx.mul_s (Nx.mul s nx) (-1.)
-    ; z
-    ; z
-    ; z
-    ; z
-    ]
+  stack ~axis:(-1) [ c; s * nz *$ -1.; s * ny; s * nx *$ -1.; z; z; z; z ]
 
 let of_quaternion q =
   let batch = batch_shape q in
-  let n2 = Nx.sum ~axes:[ Array.length (Nx.shape q) - 1 ] (Nx.mul q q) in
+  let n2 = sum ~axes:[ Array.length (Nx.shape q) - 1 ] Infix.(q * q) in
   let n = Nx.sqrt n2 in
-  let q = Nx.div q (expand batch n) in
+  let open Infix in
+  let q = q / expand batch n in
   let w = take_comp q 0
   and x = take_comp q 1
   and y = take_comp q 2
   and z = take_comp q 3 in
   let zero = zero_comp batch in
-  Nx.stack ~axis:(-1) [ w; Nx.mul_s z (-1.); y; Nx.mul_s x (-1.); zero; zero; zero; zero ]
+  stack ~axis:(-1) [ w; z *$ -1.; y; x *$ -1.; zero; zero; zero; zero ]
 
 let to_quaternion m =
   let batch = batch_shape m in
@@ -179,11 +167,11 @@ let to_quaternion m =
   let e12 = take_comp m 1
   and e13 = take_comp m 2
   and e23 = take_comp m 3 in
-  let q = Nx.stack ~axis:(-1) [ w; Nx.mul_s e23 (-1.); e13; Nx.mul_s e12 (-1.) ] in
-  let n2 = Nx.sum ~axes:[ Array.length (Nx.shape q) - 1 ] (Nx.mul q q) in
-  let q = Nx.div q (expand batch (Nx.sqrt n2)) in
-  let negative = Nx.reshape (Array.append batch [| 1 |]) (Nx.less_s w 0.) in
-  Nx.where negative (Nx.neg q) q
+  let q = Infix.(stack ~axis:(-1) [ w; e23 *$ -1.; e13; e12 *$ -1. ]) in
+  let n2 = sum ~axes:[ Array.length (Nx.shape q) - 1 ] Infix.(q * q) in
+  let q = Infix.(q / expand batch (Nx.sqrt n2)) in
+  let negative = reshape (Array.append batch [| 1 |]) (less_s w 0.) in
+  where negative Infix.(-q) q
 
 let of_rotation r =
   let sh = Nx.shape r in
@@ -192,7 +180,7 @@ let of_rotation r =
   then invalid_arg "Motor.of_rotation: expected a 3x3 matrix on the last axes";
   let batch = Array.sub sh 0 (rk - 2) in
   let bsz = Array.fold_left ( * ) 1 batch in
-  let src = Nx.to_array (Nx.reshape [| bsz; 3; 3 |] r) in
+  let src = Nx.to_array (reshape [| bsz; 3; 3 |] r) in
   let out = Array.make (bsz * size) 0. in
   for b = 0 to bsz - 1 do
     let o = b * 9 in
@@ -209,18 +197,18 @@ let of_rotation r =
     let w, x, y, z =
       if tr > 0.
       then (
-        let s = 2. *. sqrt (tr +. 1.) in
+        let s = 2. *. Float.sqrt (tr +. 1.) in
         0.25 *. s, (m21 -. m12) /. s, (m02 -. m20) /. s, (m10 -. m01) /. s)
       else if m00 > m11 && m00 > m22
       then (
-        let s = 2. *. sqrt (1. +. m00 -. m11 -. m22) in
+        let s = 2. *. Float.sqrt (1. +. m00 -. m11 -. m22) in
         (m21 -. m12) /. s, 0.25 *. s, (m01 +. m10) /. s, (m02 +. m20) /. s)
       else if m11 > m22
       then (
-        let s = 2. *. sqrt (1. +. m11 -. m00 -. m22) in
+        let s = 2. *. Float.sqrt (1. +. m11 -. m00 -. m22) in
         (m02 -. m20) /. s, (m01 +. m10) /. s, 0.25 *. s, (m12 +. m21) /. s)
       else (
-        let s = 2. *. sqrt (1. +. m22 -. m00 -. m11) in
+        let s = 2. *. Float.sqrt (1. +. m22 -. m00 -. m11) in
         (m10 -. m01) /. s, (m02 +. m20) /. s, (m12 +. m21) /. s, 0.25 *. s)
     in
     (* q = (w, x, y, z) maps to packed [w, -z, y, -x, 0, 0, 0, 0]. *)
@@ -230,7 +218,7 @@ let of_rotation r =
     out.(o8 + 2) <- y;
     out.(o8 + 3) <- -.x
   done;
-  Nx.reshape (Array.append batch [| size |]) (Nx.create dtype [| bsz; size |] out)
+  reshape (Array.append batch [| size |]) (create dtype [| bsz; size |] out)
 
 let exp twist =
   let sh = Nx.shape twist in
@@ -238,42 +226,39 @@ let exp twist =
   then invalid_arg "Motor.exp: expected a twist on the last axis of length 6";
   let batch = Array.sub sh 0 (Array.length sh - 1) in
   let omega =
-    Nx.stack ~axis:(-1) [ take_comp twist 0; take_comp twist 1; take_comp twist 2 ]
+    stack ~axis:(-1) [ take_comp twist 0; take_comp twist 1; take_comp twist 2 ]
   in
-  let v =
-    Nx.stack ~axis:(-1) [ take_comp twist 3; take_comp twist 4; take_comp twist 5 ]
-  in
-  let theta2 = Nx.sum ~axes:[ Array.length (Nx.shape omega) - 1 ] (Nx.mul omega omega) in
+  let v = stack ~axis:(-1) [ take_comp twist 3; take_comp twist 4; take_comp twist 5 ] in
+  let theta2 = sum ~axes:[ Array.length (Nx.shape omega) - 1 ] Infix.(omega * omega) in
+  let open Infix in
   (* [sqrt] at zero has an infinite derivative. A forward-mode pass multiplies it
      by a zero tangent — which is exactly what a pure translation gives, so every
      prismatic joint — and gets a NaN, which then poisons everything the angle
      feeds. Lifting the radicand by [tiny] costs a relative 1e-12 on any nonzero
      angle and none of the accuracy: the closed forms below are analytic at the
      origin, and the [small] branch stays for the exact limits. *)
-  let theta = Nx.sqrt (Nx.add theta2 (Nx.scalar dtype 1e-12)) in
-  let small = Nx.less_s theta 2e-6 in
-  let one = Nx.ones_like theta in
-  let theta_safe = Nx.where small one theta in
-  let theta2_safe = Nx.mul theta_safe theta_safe in
-  let theta3_safe = Nx.mul theta2_safe theta_safe in
+  let theta = Nx.sqrt (theta2 + Nx.scalar dtype 1e-12) in
+  let small = less_s theta 2e-6 in
+  let one = ones_like theta in
+  let theta_safe = where small one theta in
+  let theta2_safe = theta_safe * theta_safe in
+  let theta3_safe = theta2_safe * theta_safe in
   let sin_t = Nx.sin theta
   and cos_t = Nx.cos theta in
-  let b0 = Nx.div (Nx.sub (Nx.ones_like cos_t) cos_t) theta2_safe in
-  let c0 = Nx.div (Nx.sub theta sin_t) theta3_safe in
-  let b = Nx.where small (Nx.mul_s one 0.5) b0 in
-  let c = Nx.where small (Nx.mul_s one (1. /. 6.)) c0 in
+  let b0 = (ones_like cos_t - cos_t) / theta2_safe in
+  let c0 = (theta - sin_t) / theta3_safe in
+  let b = where small (one *$ 0.5) b0 in
+  let c = where small (one *$ (1. /. 6.)) c0 in
   let cross1 = cross omega v in
   let cross2 = cross omega cross1 in
-  let t =
-    Nx.add v (Nx.add (Nx.mul cross1 (expand batch b)) (Nx.mul cross2 (expand batch c)))
-  in
-  let half = Nx.mul_s theta 0.5 in
+  let t = v + ((cross1 * expand batch b) + (cross2 * expand batch c)) in
+  let half = theta *$ 0.5 in
   let w = Nx.cos half in
   let s = Nx.sin half in
   (* [theta] rather than [theta_safe]: it is never zero, and [s / theta] tends to
      the half-angle it should as the rotation vanishes. *)
-  let xyz = Nx.mul omega (expand batch (Nx.div s theta)) in
-  let q = Nx.stack ~axis:(-1) [ w; take_comp xyz 0; take_comp xyz 1; take_comp xyz 2 ] in
+  let xyz = omega * expand batch (s / theta) in
+  let q = stack ~axis:(-1) [ w; take_comp xyz 0; take_comp xyz 1; take_comp xyz 2 ] in
   mul (translate t) (of_quaternion q)
 
 let raw_quaternion m =
@@ -281,10 +266,10 @@ let raw_quaternion m =
   let e12 = take_comp m 1
   and e13 = take_comp m 2
   and e23 = take_comp m 3 in
-  let q = Nx.stack ~axis:(-1) [ w; Nx.mul_s e23 (-1.); e13; Nx.mul_s e12 (-1.) ] in
+  let q = Infix.(stack ~axis:(-1) [ w; e23 *$ -1.; e13; e12 *$ -1. ]) in
   let batch = batch_shape m in
-  let n2 = Nx.sum ~axes:[ Array.length (Nx.shape q) - 1 ] (Nx.mul q q) in
-  Nx.div q (expand batch (Nx.sqrt n2))
+  let n2 = sum ~axes:[ Array.length (Nx.shape q) - 1 ] Infix.(q * q) in
+  Infix.(q / expand batch (Nx.sqrt n2))
 
 let translation_of_motor m =
   (* Use the rotation representative that belongs to [m] itself. [to_quaternion]
@@ -293,12 +278,8 @@ let translation_of_motor m =
   let q = raw_quaternion m in
   let r = of_quaternion q in
   let t = mul m (inverse r) in
-  Nx.stack
-    ~axis:(-1)
-    [ Nx.mul_s (take_comp t 4) (-2.)
-    ; Nx.mul_s (take_comp t 5) (-2.)
-    ; Nx.mul_s (take_comp t 6) (-2.)
-    ]
+  let open Infix in
+  stack ~axis:(-1) [ take_comp t 4 *$ -2.; take_comp t 5 *$ -2.; take_comp t 6 *$ -2. ]
 
 let log m =
   let q = to_quaternion m in
@@ -309,39 +290,31 @@ let log m =
   (* Both of these square roots vanish for a pure translation, and a vanishing
      radicand makes the derivative infinite and a forward-mode pass NaN; see the
      note in [exp]. *)
-  let qv =
-    Nx.sqrt
-      (Nx.add
-         (Nx.add (Nx.add (Nx.mul x x) (Nx.mul y y)) (Nx.mul z z))
-         (Nx.scalar dtype 1e-12))
+  let qv = Nx.sqrt Infix.((x * x) + (y * y) + (z * z) + Nx.scalar dtype 1e-12) in
+  let small = less_s qv 2e-6 in
+  let qv_safe = where small (ones_like qv) qv in
+  let theta = Infix.(Nx.atan2 qv w *$ 2.) in
+  let scale = where small Infix.(ones_like qv *$ 2.) Infix.(theta / qv_safe) in
+  let omega =
+    stack ~axis:(-1) [ Infix.(scale * x); Infix.(scale * y); Infix.(scale * z) ]
   in
-  let small = Nx.less_s qv 2e-6 in
-  let qv_safe = Nx.where small (Nx.ones_like qv) qv in
-  let theta = Nx.mul_s (Nx.atan2 qv w) 2. in
-  let scale = Nx.where small (Nx.mul_s (Nx.ones_like qv) 2.) (Nx.div theta qv_safe) in
-  let omega = Nx.stack ~axis:(-1) [ Nx.mul scale x; Nx.mul scale y; Nx.mul scale z ] in
   let t = translation_of_motor m in
-  let theta =
-    Nx.sqrt
-      (Nx.add
-         (Nx.sum ~axes:[ Array.length (Nx.shape omega) - 1 ] (Nx.mul omega omega))
-         (Nx.scalar dtype 1e-12))
-  in
-  let half = Nx.mul_s theta 0.5 in
+  let n2 = sum ~axes:[ Array.length (Nx.shape omega) - 1 ] Infix.(omega * omega) in
+  let open Infix in
+  let theta = Nx.sqrt (n2 + Nx.scalar dtype 1e-12) in
+  let half = theta *$ 0.5 in
   let sin_half = Nx.sin half
   and cos_half = Nx.cos half in
-  let small = Nx.less_s theta 2e-6 in
-  let sin_safe = Nx.where small (Nx.ones_like sin_half) sin_half in
-  let theta_safe = Nx.where small (Nx.ones_like theta) theta in
-  let cot = Nx.div cos_half sin_safe in
-  let d0 =
-    Nx.div (Nx.sub (Nx.ones_like theta) (Nx.mul half cot)) (Nx.mul theta_safe theta_safe)
-  in
-  let d = Nx.where small (Nx.mul_s (Nx.ones_like theta) (1. /. 12.)) d0 in
+  let small = less_s theta 2e-6 in
+  let sin_safe = where small (ones_like sin_half) sin_half in
+  let theta_safe = where small (ones_like theta) theta in
+  let cot = cos_half / sin_safe in
+  let d0 = (ones_like theta - (half * cot)) / (theta_safe * theta_safe) in
+  let d = where small (ones_like theta *$ (1. /. 12.)) d0 in
   let oxt = cross omega t in
   let oxt2 = cross omega oxt in
-  let v = Nx.add (Nx.sub t (Nx.mul_s oxt 0.5)) (Nx.mul oxt2 (expand (batch_shape t) d)) in
-  Nx.stack
+  let v = t - (oxt *$ 0.5) + (oxt2 * expand (batch_shape t) d) in
+  stack
     ~axis:(-1)
     [ take_comp omega 0
     ; take_comp omega 1
@@ -355,28 +328,28 @@ let slerp m0 m1 alpha =
   let rel = mul (inverse m0) m1 in
   let tw = log rel in
   let abatch = Nx.shape alpha in
-  mul m0 (exp (Nx.mul tw (Nx.reshape (Array.append abatch [| 1 |]) alpha)))
+  mul m0 (exp Infix.(tw * reshape (Array.append abatch [| 1 |]) alpha))
 
 let rotation_matrix q =
   let w = take_comp q 0
   and x = take_comp q 1
   and y = take_comp q 2
   and z = take_comp q 3 in
-  let r00 = Nx.sub_s (Nx.mul_s (Nx.add (Nx.mul y y) (Nx.mul z z)) 2.) 1. in
-  let r00 = Nx.mul_s r00 (-1.) in
-  let r01 = Nx.mul_s (Nx.sub (Nx.mul x y) (Nx.mul w z)) 2. in
-  let r02 = Nx.mul_s (Nx.add (Nx.mul x z) (Nx.mul w y)) 2. in
-  let r10 = Nx.mul_s (Nx.add (Nx.mul x y) (Nx.mul w z)) 2. in
-  let r11 = Nx.sub_s (Nx.mul_s (Nx.add (Nx.mul x x) (Nx.mul z z)) 2.) 1. in
-  let r11 = Nx.mul_s r11 (-1.) in
-  let r12 = Nx.mul_s (Nx.sub (Nx.mul y z) (Nx.mul w x)) 2. in
-  let r20 = Nx.mul_s (Nx.sub (Nx.mul x z) (Nx.mul w y)) 2. in
-  let r21 = Nx.mul_s (Nx.add (Nx.mul y z) (Nx.mul w x)) 2. in
-  let r22 = Nx.sub_s (Nx.mul_s (Nx.add (Nx.mul x x) (Nx.mul y y)) 2.) 1. in
-  let r22 = Nx.mul_s r22 (-1.) in
-  let row a b c = Nx.stack ~axis:(-1) [ a; b; c ] in
+  let r00 = Infix.((((y * y) + (z * z)) *$ 2.) -$ 1.) in
+  let r00 = Infix.(r00 *$ -1.) in
+  let r01 = Infix.(((x * y) - (w * z)) *$ 2.) in
+  let r02 = Infix.(((x * z) + (w * y)) *$ 2.) in
+  let r10 = Infix.(((x * y) + (w * z)) *$ 2.) in
+  let r11 = Infix.((((x * x) + (z * z)) *$ 2.) -$ 1.) in
+  let r11 = Infix.(r11 *$ -1.) in
+  let r12 = Infix.(((y * z) - (w * x)) *$ 2.) in
+  let r20 = Infix.(((x * z) - (w * y)) *$ 2.) in
+  let r21 = Infix.(((y * z) + (w * x)) *$ 2.) in
+  let r22 = Infix.((((x * x) + (y * y)) *$ 2.) -$ 1.) in
+  let r22 = Infix.(r22 *$ -1.) in
+  let row a b c = stack ~axis:(-1) [ a; b; c ] in
   let rows = [ row r00 r01 r02; row r10 r11 r12; row r20 r21 r22 ] in
-  Nx.stack ~axis:(Array.length (Nx.shape (List.hd rows)) - 1) rows
+  stack ~axis:(Array.length (Nx.shape (List.hd rows)) - 1) rows
 
 let translation m = translation_of_motor m
 let rotation m = rotation_matrix (to_quaternion m)
@@ -388,19 +361,19 @@ let adjoint m =
   let tx = take_comp t 0
   and ty = take_comp t 1
   and tz = take_comp t 2 in
-  let zero = Nx.zeros_like tx in
+  let zero = zeros_like tx in
   let skew =
-    let row a b c = Nx.stack ~axis:(-1) [ a; b; c ] in
+    let row a b c = stack ~axis:(-1) [ a; b; c ] in
     let rows =
-      [ row zero (Nx.neg tz) ty; row tz zero (Nx.neg tx); row (Nx.neg ty) tx zero ]
+      [ row zero Infix.(-tz) ty; row tz zero Infix.(-tx); row Infix.(-ty) tx zero ]
     in
-    Nx.stack ~axis:(Array.length (Nx.shape (List.hd rows)) - 1) rows
+    stack ~axis:(Array.length (Nx.shape (List.hd rows)) - 1) rows
   in
-  let skew_r = Nx.matmul skew r in
-  let z3 = Nx.zeros_like r in
-  let top = Nx.concatenate ~axis:(-1) [ r; z3 ] in
-  let bottom = Nx.concatenate ~axis:(-1) [ skew_r; r ] in
-  Nx.concatenate ~axis:(Array.length (Nx.shape top) - 2) [ top; bottom ]
+  let skew_r = Infix.(skew *@ r) in
+  let z3 = zeros_like r in
+  let top = concatenate ~axis:(-1) [ r; z3 ] in
+  let bottom = concatenate ~axis:(-1) [ skew_r; r ] in
+  concatenate ~axis:(Array.length (Nx.shape top) - 2) [ top; bottom ]
 
 let pp ppf m =
   let sh = Nx.shape m in

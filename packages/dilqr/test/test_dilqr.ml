@@ -13,6 +13,7 @@
    - JIT round-trips: compiled solve and compiled grad match eager results. *)
 
 open Base
+open Nx
 open Windtrap
 open Stdio
 module Nx = Nx
@@ -21,8 +22,8 @@ let dt = 0.1
 let require ~msg b = if not b then failwith ("assert failed: " ^ msg)
 
 let check_close ~msg ~tol got expected =
-  let g = Nx.to_array got
-  and e = Nx.to_array expected in
+  let g = to_array got
+  and e = to_array expected in
   require ~msg (Array.length g = Array.length e);
   Array.iteri g ~f:(fun i a ->
     let b = e.(i) in
@@ -40,18 +41,18 @@ let check_close ~msg ~tol got expected =
 (* Central finite difference of a scalar function of a [k]-dim float64
    vector. *)
 let fd_grad ~eps f (x : Nx.float64_t) : Nx.float64_t =
-  let n = (Nx.shape x).(0) in
+  let n = (shape x).(0) in
   let out = Array.create ~len:n 0.0 in
   for i = 0 to n - 1 do
     let xi = Nx.item [ i ] x in
-    let xp = Nx.set [ I i ] (Nx.scalar Nx.float64 (xi +. eps)) x in
-    let xm = Nx.set [ I i ] (Nx.scalar Nx.float64 (xi -. eps)) x in
+    let xp = set [ I i ] (scalar float64 (xi +. eps)) x in
+    let xm = set [ I i ] (scalar float64 (xi -. eps)) x in
     out.(i) <- (f xp -. f xm) /. (2.0 *. eps)
   done;
-  Nx.create Nx.float64 [| n |] out
+  create float64 [| n |] out
 
-let vec64 a = Nx.create Nx.float64 [| Array.length a |] a
-let scalar64 v = Nx.scalar Nx.float64 v
+let vec64 a = create float64 [| Array.length a |] a
+let scalar64 v = scalar float64 v
 let item t = Nx.item [] t
 
 let us_of (vs : float list list) : Nx.float64_t array =
@@ -74,31 +75,29 @@ module Integrator = struct
   let verbose = false
 
   let dynamics { Params.mass } ~k:_ ~x ~u =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    let force = Nx.div u mass in
-    Nx.concatenate
-      ~axis:0
-      [ Nx.add pos (Nx.mul_s vel dt); Nx.add vel (Nx.mul_s force dt) ]
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    let force = u / mass in
+    concatenate ~axis:0 [ pos + (vel *$ dt); vel + (force *$ dt) ]
 
   (* The state cost ramps with the step: [k] reaches the loss as data, so
      the scans carry time with their rows. *)
   let running_loss _ ~k ~x ~u =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    let weight = Nx.add_s (Nx.mul_s k 0.05) 1.0 in
-    Nx.sum
-      (Nx.add
-         (Nx.mul_s (Nx.mul (Nx.add (Nx.mul pos pos) (Nx.mul vel vel)) weight) 0.5)
-         (Nx.mul_s (Nx.mul u u) 0.05))
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    let weight = (k *$ 0.05) +$ 1.0 in
+    sum ((((pos * pos) + (vel * vel)) * weight *$ 0.5) + (u * u *$ 0.05))
 
   let final_loss _ ~x =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    Nx.mul_s (Nx.sum (Nx.add (Nx.mul pos pos) (Nx.mul vel vel))) 5.0
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    sum ((pos * pos) + (vel * vel)) *$ 5.0
 
   let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
-    { dtype = Nx.float64
+    { dtype = float64
     ; n
     ; m
     ; horizon
@@ -129,32 +128,30 @@ module Pendulum = struct
   let target = 3.14159265358979
 
   let dynamics { Params.gravity; mass; length } ~k:_ ~x ~u =
-    let theta = Nx.slice [ R (0, 1) ] x
-    and omega = Nx.slice [ R (1, 2) ] x in
-    let ml2 = Nx.mul mass (Nx.mul length length) in
-    let grav_torque = Nx.mul (Nx.mul gravity (Nx.mul mass length)) (Nx.sin theta) in
-    let acc = Nx.div (Nx.sub u (Nx.add grav_torque (Nx.mul_s omega 0.1))) ml2 in
-    Nx.concatenate
-      ~axis:0
-      [ Nx.add theta (Nx.mul_s omega dt); Nx.add omega (Nx.mul_s acc dt) ]
+    let open Infix in
+    let theta = slice [ R (0, 1) ] x
+    and omega = slice [ R (1, 2) ] x in
+    let ml2 = mass * (length * length) in
+    let grav_torque = gravity * (mass * length) * sin theta in
+    let acc = (u - (grav_torque + (omega *$ 0.1))) / ml2 in
+    concatenate ~axis:0 [ theta + (omega *$ dt); omega + (acc *$ dt) ]
 
   let running_loss _ ~k:_ ~x ~u =
-    let theta = Nx.slice [ R (0, 1) ] x
-    and omega = Nx.slice [ R (1, 2) ] x in
-    let dtheta = Nx.sub_s theta target in
-    Nx.sum
-      (Nx.add
-         (Nx.mul_s (Nx.add (Nx.mul dtheta dtheta) (Nx.mul omega omega)) 0.5)
-         (Nx.mul_s (Nx.mul u u) 0.01))
+    let open Infix in
+    let theta = slice [ R (0, 1) ] x
+    and omega = slice [ R (1, 2) ] x in
+    let dtheta = theta -$ target in
+    sum ((((dtheta * dtheta) + (omega * omega)) *$ 0.5) + (u * u *$ 0.01))
 
   let final_loss _ ~x =
-    let theta = Nx.slice [ R (0, 1) ] x
-    and omega = Nx.slice [ R (1, 2) ] x in
-    let dtheta = Nx.sub_s theta target in
-    Nx.mul_s (Nx.sum (Nx.add (Nx.mul dtheta dtheta) (Nx.mul omega omega))) 5.0
+    let open Infix in
+    let theta = slice [ R (0, 1) ] x
+    and omega = slice [ R (1, 2) ] x in
+    let dtheta = theta -$ target in
+    sum ((dtheta * dtheta) + (omega * omega)) *$ 5.0
 
   let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
-    { dtype = Nx.float64
+    { dtype = float64
     ; n
     ; m
     ; horizon
@@ -185,30 +182,28 @@ module Batched = struct
   let verbose = false
 
   let dynamics { Params.mass; _ } ~k:_ ~x ~u =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    let force = Nx.div u mass in
-    Nx.concatenate
-      ~axis:0
-      [ Nx.add pos (Nx.mul_s vel dt); Nx.add vel (Nx.mul_s force dt) ]
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    let force = u / mass in
+    concatenate ~axis:0 [ pos + (vel *$ dt); vel + (force *$ dt) ]
 
   let running_loss { Params.target; _ } ~k:_ ~x ~u =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    let err = Nx.sub pos target in
-    Nx.sum
-      (Nx.add
-         (Nx.mul_s (Nx.add (Nx.mul err err) (Nx.mul vel vel)) 0.5)
-         (Nx.mul_s (Nx.mul u u) 0.05))
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    let err = pos - target in
+    sum ((((err * err) + (vel * vel)) *$ 0.5) + (u * u *$ 0.05))
 
   let final_loss { Params.target; _ } ~x =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    let err = Nx.sub pos target in
-    Nx.mul_s (Nx.sum (Nx.add (Nx.mul err err) (Nx.mul vel vel))) 5.0
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    let err = pos - target in
+    sum ((err * err) + (vel * vel)) *$ 5.0
 
   let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
-    { dtype = Nx.float64
+    { dtype = float64
     ; n
     ; m
     ; horizon
@@ -224,11 +219,11 @@ end
    float64 wave folded into the shape and cast to the leaf's dtype. Test inputs
    only — no generator, so a failing case reproduces. *)
 let pattern ~seed ~(like : ('a, 'b) Nx.t) : ('a, 'b) Nx.t =
-  let s = Nx.shape like in
+  let s = shape like in
   let numel = Array.fold s ~init:1 ~f:(fun a b -> a * b) in
-  let flat = Nx.arange_f Nx.float64 0.0 (Float.of_int numel) 1.0 in
-  let wave = Nx.sin (Nx.add_s (Nx.mul_s flat 1.7) seed) in
-  Nx.cast (Nx.dtype like) (Nx.reshape s wave)
+  let flat = arange_f float64 0.0 (Float.of_int numel) 1.0 in
+  let wave = sin Infix.((flat *$ 1.7) +$ seed) in
+  Nx.cast (Nx.dtype like) (reshape s wave)
 
 (* The same, one leaf at a time: a tangent seed, or a cotangent on the inputs. *)
 let pattern_inputs ~seed (structure : 'p Nx.Ptree.t) (value : 'p) : 'p =
@@ -239,10 +234,10 @@ let pattern_lanes ~seed ~k (structure : 'p Nx.Ptree.t) (value : 'p) : 'p =
   Nx.Ptree.map
     structure
     (fun _ leaf ->
-       Nx.concatenate
+       concatenate
          ~axis:0
          (List.init k ~f:(fun i ->
-            Nx.unsqueeze
+            unsqueeze
               ~axes:[ 0 ]
               (pattern ~seed:(seed +. (1.3 *. Float.of_int i)) ~like:leaf))))
     value
@@ -269,8 +264,8 @@ let test_regularisation () =
    accumulators the retry tests. *)
 let test_a_failed_factorization_is_nan () =
   let open Dilqr.Lqr in
-  let one s = Nx.reshape s (Nx.scalar Nx.float64 1.0)
-  and zero s = Nx.zeros Nx.float64 s in
+  let one s = reshape s (scalar float64 1.0)
+  and zero s = zeros float64 s in
   let blocks =
     Rows.
       { a = one [| 1; 1; 1 |]
@@ -278,19 +273,17 @@ let test_a_failed_factorization_is_nan () =
       ; lx = zero [| 1; 1 |]
       ; lu = zero [| 1; 1 |]
       ; lxx = zero [| 1; 1; 1 |]
-      ; luu = Nx.reshape [| 1; 1; 1 |] (Nx.scalar Nx.float64 (-1.0))
+      ; luu = reshape [| 1; 1; 1 |] (scalar float64 (-1.0))
       ; lux = zero [| 1; 1; 1 |]
       }
   in
   let tape = { blocks; fx = zero [| 1 |]; fxx = zero [| 1; 1 |] } in
-  let finite d1 d2 =
-    Nx.item [] (Nx.all (Nx.isfinite d1)) && Nx.item [] (Nx.all (Nx.isfinite d2))
-  in
+  let finite d1 d2 = Nx.item [] (all (isfinite d1)) && Nx.item [] (all (isfinite d2)) in
   let _, d1, d2 = backward tape ~lin:(lin_of_tape tape) in
   require
     ~msg:"an indefinite Quu has NaN expected-decrease accumulators"
     (not (finite d1 d2));
-  let _, d1, d2 = backward ~mu:(Nx.scalar Nx.float64 2.0) tape ~lin:(lin_of_tape tape) in
+  let _, d1, d2 = backward ~mu:(scalar float64 2.0) tape ~lin:(lin_of_tape tape) in
   require ~msg:"regularization makes Quu positive definite" (finite d1 d2)
 
 (* The costate is the hand recursion: on a two-step tape with a closed form,
@@ -298,24 +291,24 @@ let test_a_failed_factorization_is_nan () =
    [λ_1; …; λ_K]. *)
 let test_costate () =
   let open Dilqr.Lqr in
-  let one s v = Nx.mul_s (Nx.ones Nx.float64 s) v in
+  let one s v = Infix.(ones float64 s *$ v) in
   let blocks =
     Rows.
       { a = one [| 2; 1; 1 |] 0.5
       ; b = one [| 2; 1; 2 |] 1.0
-      ; lx = Nx.create Nx.float64 [| 2; 1 |] [| 1.0; 2.0 |]
-      ; lu = Nx.zeros Nx.float64 [| 2; 2 |]
-      ; lxx = Nx.zeros Nx.float64 [| 2; 1; 1 |]
-      ; luu = Nx.zeros Nx.float64 [| 2; 2; 2 |]
-      ; lux = Nx.zeros Nx.float64 [| 2; 2; 1 |]
+      ; lx = create float64 [| 2; 1 |] [| 1.0; 2.0 |]
+      ; lu = zeros float64 [| 2; 2 |]
+      ; lxx = zeros float64 [| 2; 1; 1 |]
+      ; luu = zeros float64 [| 2; 2; 2 |]
+      ; lux = zeros float64 [| 2; 2; 1 |]
       }
   in
-  let tape = { blocks; fx = one [| 1 |] 3.0; fxx = Nx.zeros Nx.float64 [| 1; 1 |] } in
+  let tape = { blocks; fx = one [| 1 |] 3.0; fxx = zeros float64 [| 1; 1 |] } in
   check_close
     ~msg:"costate"
     ~tol:1e-12
     (costate tape)
-    (Nx.create Nx.float64 [| 2; 1 |] [| 3.5; 3.0 |])
+    (create float64 [| 2; 1 |] [| 3.5; 3.0 |])
 
 (* Stationarity of the double-integrator solution: the autodiff gradient of
    the total cost w.r.t. each control vanishes. Autodiff through the true
@@ -356,7 +349,7 @@ let test_pendulum_converges () =
   let cost1 = item sol.cost in
   require ~msg:"pendulum reduces cost" Float.(cost1 < 0.5 *. cost0);
   let xf = sol.xs.(Array.length sol.xs - 1) in
-  let err = Float.abs (Nx.item [ 0 ] (Nx.slice [ R (0, 1) ] xf) -. P.target) in
+  let err = Float.abs (Nx.item [ 0 ] (slice [ R (0, 1) ] xf) -. P.target) in
   require ~msg:"pendulum reaches upright" Float.(err < 0.1)
 
 (* Implicit gradient vs. central finite differences, w.r.t. x0 and theta, on
@@ -376,11 +369,10 @@ let test_implicit_gradient_matches_fd () =
     let xs, us = Dilqr.split_taus P.problem taus in
     let xf = xs.(Array.length xs - 1) in
     let ctrl =
-      Array.fold us ~init:(scalar64 0.0) ~f:(fun a u ->
-        Nx.add a (Nx.mul_s (Nx.sum (Nx.mul u u)) 0.5))
+      Array.fold us ~init:(scalar64 0.0) ~f:(fun a u -> Infix.(a + (sum (u * u) *$ 0.5)))
     in
-    let err = Nx.sub_s (Nx.slice [ R (0, 1) ] xf) P.target in
-    Nx.add ctrl (Nx.mul_s (Nx.sum (Nx.mul err err)) 1.0)
+    let err = Infix.(slice [ R (0, 1) ] xf -$ P.target) in
+    Infix.(ctrl + (sum (err * err) *$ 1.0))
   in
   let value inputs =
     item (loss (Dilqr.solve_ilqr P.problem ~max_iter:100 ~conv_threshold:1e-10 inputs))
@@ -400,7 +392,7 @@ let test_implicit_gradient_matches_fd () =
   let fd_theta base f =
     fd_grad
       ~eps
-      (fun v -> value { inputs with theta = f (base +. item (Nx.slice [ I 0 ] v)) })
+      (fun v -> value { inputs with theta = f (base +. item (slice [ I 0 ] v)) })
       (vec64 [| 0.0 |])
   in
   check_close
@@ -487,9 +479,9 @@ let test_jit_grad () =
   let loss taus =
     let xs, us = Dilqr.split_taus P.problem taus in
     let xf = xs.(Array.length xs - 1) in
-    Nx.add
-      (Nx.sum (Array.fold us ~init:(scalar64 0.0) ~f:(fun a u -> Nx.add a (Nx.mul u u))))
-      (Nx.mul_s (Nx.sum (Nx.mul xf xf)) 5.0)
+    Infix.(
+      sum (Array.fold us ~init:(scalar64 0.0) ~f:(fun a u -> a + (u * u)))
+      + (sum (xf * xf) *$ 5.0))
   in
   let eager_grad =
     Rune.grad
@@ -516,23 +508,23 @@ let batched_setup () =
   let module P = Batched in
   let b = 3 in
   let theta : Nx.float64_t P.Params.t =
-    { mass = Nx.create Nx.float64 [| b |] [| 1.0; 1.0; 1.0 |]
-    ; target = Nx.create Nx.float64 [| b; 1 |] [| 1.0; -0.5; 0.8 |]
+    { mass = create float64 [| b |] [| 1.0; 1.0; 1.0 |]
+    ; target = create float64 [| b; 1 |] [| 1.0; -0.5; 0.8 |]
     }
   in
-  let x0 = Nx.create Nx.float64 [| b; 2 |] [| 1.0; 0.0; 1.0; 0.0; 1.0; 0.0 |] in
-  let us0 = Array.init P.horizon ~f:(fun _ -> Nx.zeros Nx.float64 [| b; 1 |]) in
+  let x0 = create float64 [| b; 2 |] [| 1.0; 0.0; 1.0; 0.0; 1.0; 0.0 |] in
+  let us0 = Array.init P.horizon ~f:(fun _ -> zeros float64 [| b; 1 |]) in
   b, theta, x0, us0
 
 (* Member [i]'s slice of a batched setup. *)
 let batched_member (theta : Nx.float64_t Batched.Params.t) x0 us0 i =
   let theta_i : Nx.float64_t Batched.Params.t =
-    { mass = Nx.slice [ I i ] theta.Batched.Params.mass
-    ; target = Nx.slice [ I i ] theta.Batched.Params.target
+    { mass = slice [ I i ] theta.Batched.Params.mass
+    ; target = slice [ I i ] theta.Batched.Params.target
     }
   in
-  let x0_i = Nx.slice [ I i ] x0 in
-  let us0_i = Array.map us0 ~f:(fun u -> Nx.slice [ I i ] u) in
+  let x0_i = slice [ I i ] x0 in
+  let us0_i = Array.map us0 ~f:(fun u -> slice [ I i ] u) in
   theta_i, x0_i, us0_i
 
 (* A batched fixed solve gives, member by member, what the unbatched solve
@@ -541,13 +533,13 @@ let test_batched_fixed_solve () =
   let module P = Batched in
   let b, theta, x0, us0 = batched_setup () in
   let sol = Dilqr.Solver.solve_fixed P.problem ~iters:8 theta x0 us0 in
-  require ~msg:"batched cost shape" (Array.length (Nx.shape sol.cost) = 1);
-  require ~msg:"batched cost size" ((Nx.shape sol.cost).(0) = b);
+  require ~msg:"batched cost shape" (Array.length (shape sol.cost) = 1);
+  require ~msg:"batched cost size" ((shape sol.cost).(0) = b);
   (* the stacked trajectory leads with the batch and then the horizon *)
   let taus = Dilqr.taus_of P.problem sol.xs sol.us in
   require
     ~msg:"batched taus shape"
-    (Array.equal Int.equal (Nx.shape taus) [| b; P.horizon + 1; P.n + P.m |]);
+    (Array.equal Int.equal (shape taus) [| b; P.horizon + 1; P.n + P.m |]);
   let xs, us = Dilqr.split_taus P.problem taus in
   (* the trajectory helpers are batched too *)
   let xs_b, cost_b = Dilqr.Solver.rollout P.problem theta x0 us0 in
@@ -560,29 +552,29 @@ let test_batched_fixed_solve () =
     check_close
       ~msg:(Printf.sprintf "batched cost %d" i)
       ~tol:1e-10
-      (Nx.slice [ I i ] sol.cost)
+      (slice [ I i ] sol.cost)
       sol_i.cost;
     Array.iteri sol.xs ~f:(fun k t ->
       check_close
         ~msg:(Printf.sprintf "batched xs %d.%d" i k)
         ~tol:1e-10
-        (Nx.slice [ I i ] t)
+        (slice [ I i ] t)
         sol_i.xs.(k);
       check_close
         ~msg:(Printf.sprintf "batched taus %d.%d" i k)
         ~tol:1e-10
-        (Nx.slice [ I i ] xs.(k))
+        (slice [ I i ] xs.(k))
         sol_i.xs.(k));
     Array.iteri sol.us ~f:(fun k t ->
       check_close
         ~msg:(Printf.sprintf "batched us %d.%d" i k)
         ~tol:1e-10
-        (Nx.slice [ I i ] t)
+        (slice [ I i ] t)
         sol_i.us.(k);
       check_close
         ~msg:(Printf.sprintf "batched taus us %d.%d" i k)
         ~tol:1e-10
-        (Nx.slice [ I i ] us.(k))
+        (slice [ I i ] us.(k))
         sol_i.us.(k));
     (* batched rollout and blocks *)
     let xs_i, cost_i = Dilqr.Solver.rollout P.problem theta_i x0_i us0_i in
@@ -590,18 +582,18 @@ let test_batched_fixed_solve () =
     check_close
       ~msg:(Printf.sprintf "batched rollout cost %d" i)
       ~tol:1e-10
-      (Nx.slice [ I i ] cost_b)
+      (slice [ I i ] cost_b)
       cost_i;
     Array.iteri xs_i ~f:(fun k x ->
       check_close
         ~msg:(Printf.sprintf "batched rollout xs %d.%d" i k)
         ~tol:1e-10
-        (Nx.slice [ I i ] xs_b.(k))
+        (slice [ I i ] xs_b.(k))
         x);
     check_close
       ~msg:(Printf.sprintf "batched blocks a %d" i)
       ~tol:1e-10
-      (Nx.slice [ I i ] tape_b.Dilqr.Lqr.blocks.a)
+      (slice [ I i ] tape_b.Dilqr.Lqr.blocks.a)
       tape_i.Dilqr.Lqr.blocks.a
   done
 
@@ -614,7 +606,7 @@ let test_batched_grad () =
     { Dilqr.Inputs.theta; x0; us0 }
   in
   let objective i =
-    Nx.sum
+    sum
       (Dilqr.loss_of_taus
          P.problem
          i.Dilqr.Inputs.theta
@@ -630,17 +622,17 @@ let test_batched_grad () =
     check_close
       ~msg:(Printf.sprintf "batched grad target %d" i)
       ~tol:1e-9
-      (Nx.slice [ I i ] g.theta.target)
+      (slice [ I i ] g.theta.target)
       g_i.theta.target;
     check_close
       ~msg:(Printf.sprintf "batched grad mass %d" i)
       ~tol:1e-9
-      (Nx.slice [ I i ] g.theta.mass)
+      (slice [ I i ] g.theta.mass)
       g_i.theta.mass;
     check_close
       ~msg:(Printf.sprintf "batched grad x0 %d" i)
       ~tol:1e-9
-      (Nx.slice [ I i ] g.x0)
+      (slice [ I i ] g.x0)
       g_i.x0
   done;
   Array.iter g.us0 ~f:(fun u ->
@@ -744,14 +736,12 @@ let test_jvp_is_the_transpose_of_the_vjp () =
   let module P = Pendulum in
   let inputs = pendulum_inputs () in
   let structure = Dilqr.inputs P.problem in
-  let ybar =
-    pattern ~seed:0.3 ~like:(Nx.zeros Nx.float64 [| P.horizon + 1; P.n + P.m |])
-  in
+  let ybar = pattern ~seed:0.3 ~like:(zeros float64 [| P.horizon + 1; P.n + P.m |]) in
   let dinputs = pattern_inputs ~seed:1.1 structure inputs in
   let grads =
     Rune.grad
       structure
-      (fun i -> Nx.sum (Nx.mul ybar (Dilqr.solve_ilqr_fixed P.problem ~iters:6 i)))
+      (fun i -> sum Infix.(ybar * Dilqr.solve_ilqr_fixed P.problem ~iters:6 i))
       inputs
   in
   let dtaus =
@@ -763,8 +753,8 @@ let test_jvp_is_the_transpose_of_the_vjp () =
          inputs
          dinputs)
   in
-  let lhs = Nx.Ptree.dot structure Nx.float64 grads dinputs in
-  let rhs = Nx.sum (Nx.mul ybar dtaus) in
+  let lhs = Nx.Ptree.dot structure float64 grads dinputs in
+  let rhs = sum Infix.(ybar * dtaus) in
   check_close ~msg:"<grad, v> = <cotangent, JVP v>" ~tol:1e-8 lhs rhs
 
 (* The forward mode against central differences of the adaptive solve, one
@@ -785,11 +775,10 @@ let test_jvp_matches_finite_differences () =
     let xs, us = Dilqr.split_taus P.problem taus in
     let xf = xs.(Array.length xs - 1) in
     let ctrl =
-      Array.fold us ~init:(scalar64 0.0) ~f:(fun a u ->
-        Nx.add a (Nx.mul_s (Nx.sum (Nx.mul u u)) 0.5))
+      Array.fold us ~init:(scalar64 0.0) ~f:(fun a u -> Infix.(a + (sum (u * u) *$ 0.5)))
     in
-    let err = Nx.sub_s (Nx.slice [ R (0, 1) ] xf) P.target in
-    Nx.add ctrl (Nx.mul_s (Nx.sum (Nx.mul err err)) 1.0)
+    let err = Infix.(slice [ R (0, 1) ] xf -$ P.target) in
+    Infix.(ctrl + (sum (err * err) *$ 1.0))
   in
   let taus = solve inputs in
   let ybar = Rune.grad' loss taus in
@@ -802,7 +791,7 @@ let test_jvp_matches_finite_differences () =
         ; length = scalar64 0.0
         }
     ; x0
-    ; us0 = Array.map inputs.us0 ~f:Nx.zeros_like
+    ; us0 = Array.map inputs.us0 ~f:zeros_like
     }
   in
   let shift d s =
@@ -814,22 +803,20 @@ let test_jvp_matches_finite_differences () =
         ; mass = theta.Pendulum.Params.mass
         ; length = theta.Pendulum.Params.length
         }
-    ; x0 = Nx.add inputs.x0 (Nx.mul_s d.Dilqr.Inputs.x0 s)
+    ; x0 = Infix.(inputs.x0 + (d.Dilqr.Inputs.x0 *$ s))
     }
   in
   let jvp d =
-    item
-      (Nx.sum
-         (Nx.mul
-            ybar
-            (snd
-               (Rune.jvp
-                  structure
-                  Nx.Ptree.tensor
-                  (fun i ->
-                     Dilqr.solve_ilqr_jvp P.problem ~max_iter:100 ~conv_threshold:1e-10 i)
-                  inputs
-                  d))))
+    let tangent =
+      snd
+        (Rune.jvp
+           structure
+           Nx.Ptree.tensor
+           (fun i -> Dilqr.solve_ilqr_jvp P.problem ~max_iter:100 ~conv_threshold:1e-10 i)
+           inputs
+           d)
+    in
+    item (sum Infix.(ybar * tangent))
   in
   let eps = 1e-5 in
   let check ~msg d =
@@ -841,7 +828,7 @@ let test_jvp_matches_finite_differences () =
     printf "%s: jvp %g vs finite differences %g\n" msg j fd;
     require ~msg Float.(Float.abs (j -. fd) < 5e-3 +. (5e-3 *. Float.abs fd))
   in
-  check ~msg:"gravity direction" (direction 1.0 (Nx.zeros_like inputs.x0));
+  check ~msg:"gravity direction" (direction 1.0 (zeros_like inputs.x0));
   check ~msg:"initial state direction" (direction 0.0 (pattern ~seed:0.9 ~like:inputs.x0))
 
 (* The streaming tangent solve and the tape-based one are the same map: the
@@ -900,11 +887,11 @@ let test_batched_forward_mode () =
   in
   require
     ~msg:"one lane per direction"
-    (Array.equal Int.equal (Nx.shape lanes) [| 3; P.horizon + 1; P.n + P.m |]);
+    (Array.equal Int.equal (shape lanes) [| 3; P.horizon + 1; P.n + P.m |]);
   for i = 0 to 2 do
     let one (value : 'p) : 'p =
       (* pick lane [i] of every tensor leaf *)
-      Nx.Ptree.map structure (fun _ leaf -> Nx.slice [ I i ] leaf) value
+      Nx.Ptree.map structure (fun _ leaf -> slice [ I i ] leaf) value
     in
     let dtaus =
       snd
@@ -915,11 +902,7 @@ let test_batched_forward_mode () =
            inputs
            (one dirs))
     in
-    check_close
-      ~msg:(Printf.sprintf "lane %d" i)
-      ~tol:1e-10
-      (Nx.slice [ I i ] lanes)
-      dtaus
+    check_close ~msg:(Printf.sprintf "lane %d" i) ~tol:1e-10 (slice [ I i ] lanes) dtaus
   done;
   let compiled =
     Rune.jit
@@ -955,12 +938,12 @@ let test_local_model_is_a_fixed_point () =
   let gains, d1, _ =
     Dilqr.Lqr.backward_lin ~common ~tape ~lin:(Dilqr.Lqr.lin_of_tape tape)
   in
-  let worst = item (Nx.max (Nx.abs gains.Dilqr.Lqr.feedforward)) in
+  let worst = item (max (abs gains.Dilqr.Lqr.feedforward)) in
   printf "worst feedforward gain at the solution: %g\n" worst;
   require ~msg:"feedforward gain vanishes" Float.(worst < 1e-6);
   require ~msg:"modelled decrease vanishes" Float.(Float.abs (item d1) < 1e-6);
   let (zerosol : (float, Nx.float64_elt) Dilqr.Lqr.solution) =
-    Dilqr.Lqr.solve tape ~x0:(Nx.zeros Nx.float64 [| P.n |])
+    Dilqr.Lqr.solve tape ~x0:(zeros float64 [| P.n |])
   in
   require
     ~msg:"the local model's solution is the zero deviation"

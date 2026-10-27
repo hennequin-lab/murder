@@ -1,5 +1,6 @@
 open Geom
 open Geom_viz
+open Nx
 module P = Primitive
 
 let p3 = P.p3
@@ -42,7 +43,7 @@ let () =
   in
   let sphere_obj =
     Cga.sphere
-      ~center:(Nx.create Cga.dtype [| 3 |] [| 0.; 0.; 1.0 |])
+      ~center:(create Cga.dtype [| 3 |] [| 0.; 0.; 1.0 |])
       ~radius:(Nx.scalar Cga.dtype 0.45)
   in
   let point_objs =
@@ -59,7 +60,9 @@ let () =
   let radius = 0.65 in
   let pt t =
     let p =
-      P.add cc (P.add (P.scale uu (radius *. cos t)) (P.scale vv (radius *. sin t)))
+      P.add
+        cc
+        (P.add (P.scale uu (radius *. Float.cos t)) (P.scale vv (radius *. Float.sin t)))
     in
     Cga.point3 p.P.x p.P.y p.P.z
   in
@@ -121,11 +124,11 @@ let () =
     Printf.printf "wrote viz/demo/out/%s.{png,svg,mp4}\n" name
   in
   let dilation t =
-    Cga.dilator (Nx.scalar Cga.dtype (0.30 *. sin (2. *. Float.pi *. t)))
+    Cga.dilator (Nx.scalar Cga.dtype (0.30 *. Float.sin (2. *. Float.pi *. t)))
   in
   let transversion t =
     Cga.transversion
-      (Nx.create Cga.dtype [| 3 |] [| 0.25 *. sin (2. *. Float.pi *. t); 0.; 0. |])
+      (create Cga.dtype [| 3 |] [| 0.25 *. Float.sin (2. *. Float.pi *. t); 0.; 0. |])
   in
   render "conformal-dilation" dilation;
   render "conformal-transversion" transversion

@@ -10,6 +10,7 @@
    compiler works with lists of components; each carries one factor. *)
 
 open Base
+open Nx
 
 type t =
   | Single of Term.t
@@ -38,8 +39,7 @@ let coefficient ~dims comp data =
   match comp with
   | Single c -> coef c data
   | Sum cs ->
-    List.fold cs ~init:(Nx.scalar Nx.float32 0.0) ~f:(fun accu c ->
-      Nx.add accu (coef c data))
+    List.fold cs ~init:(scalar float32 0.0) ~f:(fun accu c -> Infix.(accu + coef c data))
 
 (* The Gram matrix of the components, [B_ij = <c_i, c_j>]. Symmetric and
    positive semidefinite by construction, positive definite when the
@@ -50,4 +50,4 @@ let design_matrix ~dims components =
   List.iteri components ~f:(fun i c1 ->
     List.iteri components ~f:(fun j c2 ->
       entries.((i * n) + j) <- inner_product ~dims c1 c2));
-  Nx.create Nx.float32 [| n; n |] entries
+  create float32 [| n; n |] entries

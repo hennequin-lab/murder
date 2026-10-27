@@ -11,6 +11,7 @@
    solve maps them over the leading batch axis. *)
 
 open Base
+open Nx
 open Stdio
 module Nx = Nx
 
@@ -31,30 +32,28 @@ module Integrator = struct
   let verbose = false
 
   let dynamics { Params.mass; _ } ~k:_ ~x ~u =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    let force = Nx.div u mass in
-    Nx.concatenate
-      ~axis:0
-      [ Nx.add pos (Nx.mul_s vel dt); Nx.add vel (Nx.mul_s force dt) ]
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    let force = u / mass in
+    concatenate ~axis:0 [ pos + (vel *$ dt); vel + (force *$ dt) ]
 
   let running_loss { Params.target; _ } ~k:_ ~x ~u =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    let err = Nx.sub pos target in
-    Nx.sum
-      (Nx.add
-         (Nx.mul_s (Nx.add (Nx.mul err err) (Nx.mul vel vel)) 0.5)
-         (Nx.mul_s (Nx.mul u u) 0.05))
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    let err = pos - target in
+    sum ((((err * err) + (vel * vel)) *$ 0.5) + (u * u *$ 0.05))
 
   let final_loss { Params.target; _ } ~x =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    let err = Nx.sub pos target in
-    Nx.mul_s (Nx.sum (Nx.add (Nx.mul err err) (Nx.mul vel vel))) 5.0
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    let err = pos - target in
+    sum ((err * err) + (vel * vel)) *$ 5.0
 
   let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
-    { dtype = Nx.float64
+    { dtype = float64
     ; n
     ; m
     ; horizon
@@ -66,17 +65,17 @@ module Integrator = struct
     }
 end
 
-let scalar64 v = Nx.scalar Nx.float64 v
+let scalar64 v = scalar float64 v
 let b = 4
 let targets = [| 1.0; -0.6; 0.3; 1.5 |]
 
 let theta : Nx.float64_t Integrator.Params.t =
-  { mass = Nx.broadcast_to [| b |] (scalar64 1.0)
-  ; target = Nx.create Nx.float64 [| b; 1 |] targets
+  { mass = broadcast_to [| b |] (scalar64 1.0)
+  ; target = create float64 [| b; 1 |] targets
   }
 
-let x0 = Nx.create Nx.float64 [| b; 2 |] [| 1.0; 0.0; 1.0; 0.0; 1.0; 0.0; 1.0; 0.0 |]
-let us0 = Array.init Integrator.horizon ~f:(fun _ -> Nx.zeros Nx.float64 [| b; 1 |])
+let x0 = create float64 [| b; 2 |] [| 1.0; 0.0; 1.0; 0.0; 1.0; 0.0; 1.0; 0.0 |]
+let us0 = Array.init Integrator.horizon ~f:(fun _ -> zeros float64 [| b; 1 |])
 
 let inputs : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t =
   { Dilqr.Inputs.theta; x0; us0 }
@@ -94,12 +93,12 @@ let () =
       "member %d: target %6.3f  final position %8.4f  cost %8.4f\n%!"
       i
       targets.(i)
-      (Nx.item [ i; 0 ] xf)
-      (Nx.item [ i ] sol.cost)
+      (item [ i; 0 ] xf)
+      (item [ i ] sol.cost)
   done;
   (* the gradient of the summed costs w.r.t. every member's target, compiled *)
   let total (i : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t) =
-    Nx.sum
+    sum
       (Dilqr.loss_of_taus
          Integrator.problem
          i.Dilqr.Inputs.theta
@@ -113,8 +112,5 @@ let () =
   in
   printf "compiled gradient of the total cost w.r.t. the targets:\n%!";
   for i = 0 to b - 1 do
-    printf
-      "  target %6.3f -> %10.4f\n%!"
-      targets.(i)
-      (Nx.item [ i; 0 ] grads.theta.target)
+    printf "  target %6.3f -> %10.4f\n%!" targets.(i) (item [ i; 0 ] grads.theta.target)
   done

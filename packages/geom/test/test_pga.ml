@@ -5,6 +5,7 @@
 
 (* Tests for Geom.Pga: Cl(3,0,1), the plane-based projective model. *)
 
+open Nx
 open Windtrap
 open Support
 module P = Geom.Pga
@@ -27,15 +28,15 @@ let test_points () =
   equal_scalar
     ~msg:"a rescaled point has the scaled weight"
     3.
-    (P.weight (Nx.mul_s (point 1. 2. 3.) 3.));
+    (P.weight Infix.(point 1. 2. 3. *$ 3.));
   check_point
     ~msg:"normalize_point keeps the coordinates"
-    (P.normalize_point (Nx.mul_s (point 1. 2. 3.) 3.))
+    (P.normalize_point Infix.(point 1. 2. 3. *$ 3.))
     (1., 2., 3.);
   equal_scalar
     ~msg:"normalize_point gives unit weight"
     1.
-    (P.weight (P.normalize_point (Nx.mul_s (point 1. 2. 3.) 3.)));
+    (P.weight (P.normalize_point Infix.(point 1. 2. 3. *$ 3.)));
   equal_bool ~msg:"a finite point is not ideal" false (P.is_ideal (point 1. 2. 3.));
   let d = vec3 1. 2. 3. in
   let ideal = P.ideal_point d in
@@ -45,13 +46,12 @@ let test_points () =
     ~msg:"point accepts a batch"
     (array int)
     [| 2; 16 |]
-    (P.shape (P.point (Nx.create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 0.5 |])));
+    (P.shape (P.point (create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 0.5 |])));
   equal
     ~msg:"point_coords keeps the batch shape"
     (array int)
     [| 2; 3 |]
-    (Nx.shape
-       (coords (P.point (Nx.create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 0.5 |]))))
+    (shape (coords (P.point (create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 0.5 |]))))
 
 let test_planes () =
   let pi = plane 0. 0. 1. 1. in
@@ -80,8 +80,8 @@ let test_planes () =
     [| 2; 16 |]
     (P.shape
        (P.plane
-          ~normal:(Nx.create f32 [| 2; 3 |] [| 1.; 0.; 0.; 0.; 1.; 0. |])
-          ~offset:(Nx.create f32 [| 2 |] [| 1.; 2. |])))
+          ~normal:(create f32 [| 2; 3 |] [| 1.; 0.; 0.; 0.; 1.; 0. |])
+          ~offset:(create f32 [| 2 |] [| 1.; 2. |])))
 
 (* Lines *)
 
@@ -89,14 +89,15 @@ let test_lines () =
   let p = point 1. 2. 3.
   and q = point 1. 2. 4. in
   let l = P.line_through p q in
-  let d = P.line_direction l |> Nx.to_array in
-  let m = P.line_moment l |> Nx.to_array in
+  let d = P.line_direction l |> to_array in
+  let m = P.line_moment l |> to_array in
   equal_tensor ~msg:"a line is a bivector" l (P.grade 2 l);
   equal
     ~msg:"the line has a unit direction"
     bool
     true
-    (absf (sqrt ((d.(0) *. d.(0)) +. (d.(1) *. d.(1)) +. (d.(2) *. d.(2))) -. 1.) < 1e-4);
+    (absf (Float.sqrt ((d.(0) *. d.(0)) +. (d.(1) *. d.(1)) +. (d.(2) *. d.(2))) -. 1.)
+     < 1e-4);
   equal
     ~msg:"the direction is along z"
     bool
@@ -114,7 +115,7 @@ let test_lines () =
   equal_bool ~msg:"the midpoint is on the line" true (P.point_on_line (point 1. 2. 3.5) l);
   equal_bool ~msg:"a point off the line" false (P.point_on_line (point 0. 2. 3.) l);
   let l0 = P.line_through (point 0. 0. 0.) (point 1. 0. 0.) in
-  let d0 = P.line_direction l0 |> Nx.to_array in
+  let d0 = P.line_direction l0 |> to_array in
   equal_floats
     ~msg:"the x-axis has no moment"
     ~eps:1e-4
@@ -201,15 +202,15 @@ let test_motors () =
   equal_bool ~msg:"the original incidence" true (P.point_on_plane p pi);
   let batch =
     P.apply_motor
-      (M.translate (Nx.create f32 [| 2; 3 |] [| 0.; 0.; 1.; 1.; 0.; 0. |]))
-      (P.point (Nx.create f32 [| 2; 3 |] [| 0.; 0.; 0.; 1.; 0.; 0. |]))
+      (M.translate (create f32 [| 2; 3 |] [| 0.; 0.; 1.; 1.; 0.; 0. |]))
+      (P.point (create f32 [| 2; 3 |] [| 0.; 0.; 0.; 1.; 0.; 0. |]))
   in
   equal
     ~msg:"a batch of points through a batch of motors"
     (array int)
     [| 2; 16 |]
     (P.shape batch);
-  equal ~msg:"the batch coordinates" (array int) [| 2; 3 |] (Nx.shape (coords batch))
+  equal ~msg:"the batch coordinates" (array int) [| 2; 3 |] (shape (coords batch))
 
 let test_inherited () =
   raises_match
@@ -225,26 +226,26 @@ let test_inherited () =
 
 let vec_gen =
   Gen.map
-    (fun v -> Nx.create f32 [| 3 |] v)
+    (fun v -> create f32 [| 3 |] v)
     Gen.(array ~size:(constant 3) (float_range (-2.) 2.))
 
 let point_gen = Gen.map P.point vec_gen
 
 let axis_gen =
   Gen.map
-    (fun (x, y) -> Nx.create f32 [| 3 |] [| x; y; 1. |])
+    (fun (x, y) -> create f32 [| 3 |] [| x; y; 1. |])
     Gen.(pair (float_range (-1.) 1.) (float_range (-1.) 1.))
 
 let plane_gen =
   Gen.map
     (fun (n, d) ->
-       P.plane ~normal:(Nx.create f32 [| 3 |] [| n.(0); n.(1); 1. |]) ~offset:(scalar d))
+       P.plane ~normal:(create f32 [| 3 |] [| n.(0); n.(1); 1. |]) ~offset:(scalar d))
     Gen.(pair (array ~size:(constant 3) (float_range (-1.) 1.)) (float_range (-2.) 2.))
 
 let motor_gen =
   Gen.map
     (fun (t, axis, a) ->
-       M.mul (M.translate (Nx.create f32 [| 3 |] t)) (M.rotate ~axis ~angle:(scalar a)))
+       M.mul (M.translate (create f32 [| 3 |] t)) (M.rotate ~axis ~angle:(scalar a)))
     Gen.(
       triple
         (array ~size:(constant 3) (float_range (-1.) 1.))
@@ -255,23 +256,23 @@ let test_properties =
   group
     "properties"
     [ prop "point_coords inverts point" vec_gen (fun v ->
-        equal_floats (Nx.to_array v) (coords (P.point v)))
+        equal_floats (to_array v) (coords (P.point v)))
     ; prop "both endpoints lie on their line" vec_gen (fun v ->
         let p = P.point v in
-        let q = P.point (Nx.add v (vec3 1. 0.5 0.25)) in
+        let q = P.point Infix.(v + vec3 1. 0.5 0.25) in
         let l = P.line_through p q in
         equal_bool true (P.point_on_line p l);
         equal_bool true (P.point_on_line q l);
         let d = P.line_direction l in
-        equal_scalar ~eps:1e-4 1. (Nx.sqrt (Nx.sum ~axes:[ 0 ] (Nx.mul d d))))
+        equal_scalar ~eps:1e-4 1. (Nx.sqrt (sum ~axes:[ 0 ] Infix.(d * d))))
     ; prop
         "a motor preserves incidence"
         Gen.(pair motor_gen (pair point_gen plane_gen))
         (fun (m, (p, pi)) ->
            equal
              (array bool)
-             (Nx.to_array (P.point_on_plane p pi))
-             (Nx.to_array (P.point_on_plane (P.apply_motor m p) (P.apply_motor m pi))))
+             (to_array (P.point_on_plane p pi))
+             (to_array (P.point_on_plane (P.apply_motor m p) (P.apply_motor m pi))))
     ; prop
         "the motor action is a homomorphism"
         Gen.(pair motor_gen (pair motor_gen point_gen))

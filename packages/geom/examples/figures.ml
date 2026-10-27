@@ -7,6 +7,7 @@
 
 open Geom
 open Geom_viz
+open Nx
 module P = Primitive
 module C = Camera
 module Gg = Hugin_gg
@@ -70,7 +71,7 @@ let arrow2d ?(color = ink) ?(width = 2.2) ?(head = 10.) (c : C.t) a b =
   | Some (x0, y0), Some (x1, y1) ->
     let dx = x1 -. x0
     and dy = y1 -. y0 in
-    let len = sqrt ((dx *. dx) +. (dy *. dy)) in
+    let len = Float.sqrt ((dx *. dx) +. (dy *. dy)) in
     if len < 1e-6
     then Vg.Picture.empty
     else (
@@ -156,7 +157,7 @@ let save name picture =
 let scene_picture scene = Draw.picture_at scene ~time:0.
 
 let p3_of_coords t =
-  let a = Nx.to_array t in
+  let a = to_array t in
   p3 a.(0) a.(1) a.(2)
 
 let p3_of_cga p = p3_of_coords (Cga.coords p)
@@ -189,17 +190,15 @@ let figure_e3 () =
   let angle = 2. *. Float.pi /. 3. in
   let rotor =
     E3.rotor
-      ~axis:(Nx.create Nx.float32 [| 3 |] [| 0.; 0.; 1. |])
-      ~angle:(Nx.scalar Nx.float32 angle)
+      ~axis:(create float32 [| 3 |] [| 0.; 0.; 1. |])
+      ~angle:(Nx.scalar float32 angle)
   in
-  let rotated =
-    E3.apply_rotor rotor (E3.vector3 1. 0. 0.) |> E3.to_vector |> Nx.to_array
-  in
+  let rotated = E3.apply_rotor rotor (E3.vector3 1. 0. 0.) |> E3.to_vector |> to_array in
   let rotated = p3 rotated.(0) rotated.(1) rotated.(2) in
   let arc =
     List.init 33 (fun i ->
       let a = angle *. float_of_int i /. 32. in
-      p3 (cos a) (sin a) 0.002)
+      p3 (Float.cos a) (Float.sin a) 0.002)
   in
   let origin = p3 0. 0. 0. in
   let dots =
@@ -231,7 +230,7 @@ let figure_e3 () =
           ~dx:8.
           ~dy:14.
           camera
-          (p3 (0.62 *. cos (angle /. 2.)) (0.62 *. sin (angle /. 2.)) 0.)
+          (p3 (0.62 *. Float.cos (angle /. 2.)) (0.62 *. Float.sin (angle /. 2.)) 0.)
           "120 deg"
       ; label2d
           ~color:muted
@@ -258,8 +257,8 @@ let figure_cga () =
       ~height
       ()
   in
-  let v3 x y z = Nx.create Nx.float32 [| 3 |] [| x; y; z |] in
-  let sc x = Nx.scalar Nx.float32 x in
+  let v3 x y z = create float32 [| 3 |] [| x; y; z |] in
+  let sc x = Nx.scalar float32 x in
   let p = Cga.point3 in
   let sphere_obj = Cga.sphere ~center:(v3 1.0 (-0.45) 0.78) ~radius:(sc 0.45) in
   let plane_obj = Cga.plane ~normal:(v3 1. 0. 0.) ~offset:(sc (-1.3)) in
@@ -271,7 +270,9 @@ let figure_cga () =
   let radius = 0.82 in
   let on_circle t =
     let q =
-      P.add center (P.add (P.scale u (radius *. cos t)) (P.scale v (radius *. sin t)))
+      P.add
+        center
+        (P.add (P.scale u (radius *. Float.cos t)) (P.scale v (radius *. Float.sin t)))
     in
     p q.P.x q.P.y q.P.z
   in
@@ -365,14 +366,14 @@ let figure_pga () =
   let pi2 = Pga.plane3 0. 1. 0. 0. in
   let pi3 = Pga.plane3 0. 0. 1. 1.9 in
   let l = Pga.meet pi1 pi2 in
-  let d = Pga.line_direction l |> Nx.to_array in
-  let m = Pga.line_moment l |> Nx.to_array in
+  let d = Pga.line_direction l |> to_array in
+  let m = Pga.line_moment l |> to_array in
   let cx = (d.(1) *. m.(2)) -. (d.(2) *. m.(1))
   and cy = (d.(2) *. m.(0)) -. (d.(0) *. m.(2))
   and cz = (d.(0) *. m.(1)) -. (d.(1) *. m.(0)) in
   let on_line = p3 cx cy (cz +. 0.8) in
   let corner = Pga.meet (Pga.meet pi1 pi2) pi3 in
-  let corner = Pga.point_coords corner |> Nx.to_array in
+  let corner = Pga.point_coords corner |> to_array in
   let corner = p3 corner.(0) corner.(1) corner.(2) in
   let pi1_patch = [ p3 0. (-1.6) 0.; p3 0. 1.6 0.; p3 0. 1.6 1.9; p3 0. (-1.6) 1.9 ] in
   let pi2_patch = [ p3 (-1.6) 0. 0.; p3 1.6 0. 0.; p3 1.6 0. 1.9; p3 (-1.6) 0. 1.9 ] in
@@ -441,8 +442,8 @@ let figure_slerp () =
       ~height
       ()
   in
-  let v3 x y z = Nx.create Nx.float32 [| 3 |] [| x; y; z |] in
-  let sc x = Nx.scalar Nx.float32 x in
+  let v3 x y z = create float32 [| 3 |] [| x; y; z |] in
+  let sc x = Nx.scalar float32 x in
   let axis = v3 0. 0. 1. in
   let m1 =
     Motor.mul
@@ -454,7 +455,7 @@ let figure_slerp () =
   let origin t =
     Cga.apply_motor (pose t) (Cga.point3 0. 0. 0.)
     |> Cga.coords
-    |> Nx.to_array
+    |> to_array
     |> fun a -> p3 a.(0) a.(1) a.(2)
   in
   let frame_at t size =
@@ -462,7 +463,7 @@ let figure_slerp () =
     let dir x y z =
       Cga.apply_motor m (Cga.point3 x y z)
       |> Cga.coords
-      |> Nx.to_array
+      |> to_array
       |> fun a -> p3 a.(0) a.(1) a.(2)
     in
     P.Frame
@@ -556,8 +557,8 @@ let figure_arm () =
       ~height
       ()
   in
-  let v3 x y z = Nx.create Nx.float32 [| 3 |] [| x; y; z |] in
-  let sc x = Nx.scalar Nx.float32 x in
+  let v3 x y z = create float32 [| 3 |] [| x; y; z |] in
+  let sc x = Nx.scalar float32 x in
   let axis i = if i land 1 = 0 then v3 0. 0. 1. else v3 0. 1. 0. in
   let motors =
     let rec go i m acc =
@@ -574,7 +575,7 @@ let figure_arm () =
   let pos m =
     Cga.apply_motor m (Cga.point3 0. 0. 0.)
     |> Cga.coords
-    |> Nx.to_array
+    |> to_array
     |> fun a -> p3 a.(0) a.(1) a.(2)
   in
   let tips = List.map pos motors in
@@ -614,7 +615,7 @@ let figure_arm () =
            let dir x y z =
              Cga.apply_motor end_motor (Cga.point3 x y z)
              |> Cga.coords
-             |> Nx.to_array
+             |> to_array
              |> fun a -> p3 a.(0) a.(1) a.(2)
            in
            P.Frame

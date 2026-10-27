@@ -4,6 +4,7 @@
   ---------------------------------------------------------------------------*)
 
 open Base
+open Nx
 open Types
 
 type ('w, 'p) t =
@@ -26,7 +27,7 @@ let randn ?key dtype shape =
 (* [readout c x] is [x @ cᵀ] for a state row or a batch of rows: the last axis
    of [x] is contracted with the second axis of [c], whatever leading axes [x]
    carries. *)
-let readout c x = Nx.matmul x (Nx.matrix_transpose c)
+let readout c x = Infix.(x *@ matrix_transpose c)
 
 (* {1 Gaussian} *)
 
@@ -55,36 +56,35 @@ module Gaussian = struct
     if not (Float.( > ) sigma2 0.0)
     then invalid_arg "Likelihood.Gaussian.make: sigma2 must be positive";
     let c =
-      Nx.mul_s (randn ?key dtype [| n_output; n |]) (scale /. Float.sqrt (Float.of_int n))
+      Infix.(randn ?key dtype [| n_output; n |] *$ (scale /. Float.sqrt (Float.of_int n)))
     in
     let c =
       match c_mask with
       | None -> c
-      | Some mask -> Nx.mul c mask
+      | Some mask -> Infix.(c * mask)
     in
-    let mean p x = Nx.add (readout p.c x) p.bias in
+    let mean p x = Infix.(readout p.c x + p.bias) in
     (* The residual is [mean − o] rather than [o − mean]. Squaring makes the
        two identical, but the constant-first subtraction makes tolk's
        bottom-up rewrite cycle on the graph the encoder's scans build. *)
     let logp_t p ~k:_ ~x ~o =
-      let diff = Nx.sub (mean p x) o in
-      let variances = Nx.exp p.log_variances in
-      let term =
-        Nx.add (Nx.div (Nx.mul diff diff) variances) (Nx.add_s (Nx.log variances) log_2pi)
-      in
-      Nx.mul_s (Nx.sum ~axes:[ -1 ] term) (-0.5)
+      let open Infix in
+      let diff = mean p x - o in
+      let variances = exp p.log_variances in
+      let term = (diff * diff / variances) + (log variances +$ log_2pi) in
+      sum ~axes:[ -1 ] term *$ -0.5
     in
     let sample p ~key ~mean =
-      let noise = Nx.Rng.normal key dtype (Nx.shape mean) in
-      Nx.add mean (Nx.mul noise (Nx.sqrt (Nx.exp p.log_variances)))
+      let noise = Nx.Rng.normal key dtype (shape mean) in
+      Infix.(mean + (noise * sqrt (exp p.log_variances)))
     in
     { n
     ; n_output
     ; structure = structure ()
     ; params =
         { c
-        ; bias = Nx.full dtype [| n_output |] bias
-        ; log_variances = Nx.full dtype [| n_output |] (Float.log sigma2)
+        ; bias = full dtype [| n_output |] bias
+        ; log_variances = full dtype [| n_output |] (Float.log sigma2)
         }
     ; logp_t
     ; mean
@@ -110,7 +110,7 @@ module Poisson = struct
         let walk = walk_params
       end)
 
-  let default_link x = Nx.add_s (Nx.exp x) 1e-3
+  let default_link x = Infix.(exp x +$ 1e-3)
 
   let make ?key ?c_mask ?link ?(dt = 1.0) ~n ~n_output dtype =
     if n <= 0 then invalid_arg "Likelihood.Poisson.make: n must be positive";
@@ -118,35 +118,34 @@ module Poisson = struct
     if not (Float.( > ) dt 0.0)
     then invalid_arg "Likelihood.Poisson.make: dt must be positive";
     let link = Option.value link ~default:default_link in
-    let dt = Nx.scalar dtype dt in
+    let dt = scalar dtype dt in
     let c =
-      Nx.mul_s (randn ?key dtype [| n_output; n |]) (1.0 /. Float.sqrt (Float.of_int n))
+      Infix.(randn ?key dtype [| n_output; n |] *$ (1.0 /. Float.sqrt (Float.of_int n)))
     in
     let c =
       match c_mask with
       | None -> c
-      | Some mask -> Nx.mul c mask
+      | Some mask -> Infix.(c * mask)
     in
     let mean p x =
-      let drive = Nx.add (readout p.c x) p.bias in
-      Nx.mul (Nx.mul (link drive) (Nx.exp p.log_gain)) dt
+      let open Infix in
+      let drive = readout p.c x + p.bias in
+      link drive * exp p.log_gain * dt
     in
     let logp_t p ~k:_ ~x ~o =
+      let open Infix in
       let rate = mean p x in
-      let log_rate = Nx.log rate in
-      let ll = Nx.sum ~axes:[ -1 ] (Nx.sub (Nx.mul o log_rate) rate) in
-      let log_factorial = Nx.sum ~axes:[ -1 ] (Special.lgamma (Nx.add_s o 1.0)) in
-      Nx.sub ll log_factorial
+      let log_rate = log rate in
+      let ll = sum ~axes:[ -1 ] ((o * log_rate) - rate) in
+      let log_factorial = sum ~axes:[ -1 ] (Special.lgamma (o +$ 1.0)) in
+      ll - log_factorial
     in
-    let sample _p ~key ~mean = Nx.cast dtype (Nx.Rng.poisson key mean) in
+    let sample _p ~key ~mean = cast dtype (Nx.Rng.poisson key mean) in
     { n
     ; n_output
     ; structure = structure ()
     ; params =
-        { c
-        ; bias = Nx.zeros dtype [| n_output |]
-        ; log_gain = Nx.zeros dtype [| n_output |]
-        }
+        { c; bias = zeros dtype [| n_output |]; log_gain = zeros dtype [| n_output |] }
     ; logp_t
     ; mean
     ; sample

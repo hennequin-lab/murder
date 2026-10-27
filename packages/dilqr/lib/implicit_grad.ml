@@ -30,6 +30,7 @@
    idealized solve is a fixed point and does not depend on it. *)
 
 open Base
+open Nx
 
 type ('p, 'a) residual =
   { theta : 'p (* problem parameters the solve was seeded with *)
@@ -44,28 +45,26 @@ type ('p, 'a) residual =
 let taus_of_stacked p (xs : 'w Problem.value) (us : 'w Problem.value) : 'w Problem.value =
   let horizon = p.Problem.horizon in
   let last =
-    Nx.concatenate
-      ~axis:(-1)
-      [ Nx.slice [ I horizon ] xs; Nx.zeros_like (Nx.slice [ I 0 ] us) ]
+    concatenate ~axis:(-1) [ slice [ I horizon ] xs; zeros_like (slice [ I 0 ] us) ]
   in
-  let body = Nx.concatenate ~axis:(-1) [ Nx.slice [ R (0, horizon) ] xs; us ] in
-  Nx.concatenate ~axis:0 [ body; Nx.unsqueeze ~axes:[ 0 ] last ]
+  let body = concatenate ~axis:(-1) [ slice [ R (0, horizon) ] xs; us ] in
+  concatenate ~axis:0 [ body; unsqueeze ~axes:[ 0 ] last ]
 
 (* [outer a b] is [a bᵀ], batched over every leading axis. *)
-let outer a b = Nx.matmul (Nx.unsqueeze ~axes:[ -1 ] a) (Nx.unsqueeze ~axes:[ -2 ] b)
+let outer a b = Infix.(unsqueeze ~axes:[ -1 ] a *@ unsqueeze ~axes:[ -2 ] b)
 
 (* [matvec m v] is [m @ v] for a batch of matrices and a batch of vectors. *)
-let matvec m v = Nx.squeeze ~axes:[ -1 ] (Nx.matmul m (Nx.unsqueeze ~axes:[ -1 ] v))
+let matvec m v = squeeze ~axes:[ -1 ] Infix.(m *@ unsqueeze ~axes:[ -1 ] v)
 
 (* [row t k] is the k-th step of a stacked tensor. *)
-let row (t : ('a, 'b) Nx.t) k = Nx.slice [ I k ] t
+let row (t : ('a, 'b) Nx.t) k = slice [ I k ] t
 
 (* [flip x] reverses the horizon axis. *)
 let flip x = Nx.flip ~axes:[ 0 ] x
 
 (* [stack_array ts] stacks the steps of [ts] along a new leading axis. *)
 let stack_array (ts : ('a, 'b) Nx.t array) : ('a, 'b) Nx.t =
-  Nx.stack ~axis:0 (Array.to_list ts)
+  stack ~axis:0 (Array.to_list ts)
 
 (* The implicit VJP. [ybar] is the cotangent on the stacked trajectory; the
    result holds cotangents on (theta, x0, us0). *)
@@ -79,20 +78,18 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
   let xs_t = stack_array xs
   and us_t = stack_array us in
   let tape = Solver.blocks_t p theta xs_t us_t in
-  let zero_n = Nx.zeros_like xs.(0) in
+  let zero_n = zeros_like xs.(0) in
   (* Cotangent slices: ȳ_x,k. *)
-  let yx k = Nx.slice [ I k; R (0, n) ] ybar in
+  let yx k = slice [ I k; R (0, n) ] ybar in
   (* Step 1: solve the adjoint KKT system M z = (ȳ; 0) with the Riccati
      machinery. Linear cost terms = ȳ (except ȳ_x,0: x₀ is not a free
      variable), homogeneous linearized rollout from δx₀ = 0. *)
   let lin =
     { Lqr.rlx =
-        Nx.concatenate
+        concatenate
           ~axis:0
-          [ Nx.zeros p.Problem.dtype [| 1; n |]
-          ; Nx.slice [ R (1, horizon); R (0, n) ] ybar
-          ]
-    ; rlu = Nx.slice [ R (0, horizon); R (n, n + m) ] ybar
+          [ zeros p.Problem.dtype [| 1; n |]; slice [ R (1, horizon); R (0, n) ] ybar ]
+    ; rlu = slice [ R (0, horizon); R (n, n + m) ] ybar
     ; rfx = yx horizon
     }
   in
@@ -109,19 +106,17 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
         pair (pair tensor tensor) (pair tensor (pair tensor (pair tensor tensor))))
       Nx.Ptree.tensor
       ~f:(fun dl ((a, lxx), (lux, (dx_k, (du_k, yx_k)))) ->
+        let open Infix in
         let dl_k =
-          Nx.add
-            (matvec (Nx.matrix_transpose a) dl)
-            (Nx.add
-               (matvec lxx dx_k)
-               (Nx.add (matvec (Nx.matrix_transpose lux) du_k) yx_k))
+          matvec (matrix_transpose a) dl
+          + (matvec lxx dx_k + (matvec (matrix_transpose lux) du_k + yx_k))
         in
         dl_k, dl)
-      ~init:(Nx.add (matvec tape.fxx (row dx horizon)) (yx horizon))
+      ~init:Infix.(matvec tape.fxx (row dx horizon) + yx horizon)
       ( (flip tape.Lqr.blocks.a, flip tape.Lqr.blocks.lxx)
       , ( flip tape.Lqr.blocks.lux
-        , ( flip (Nx.slice [ R (0, horizon) ] dx)
-          , (flip du, flip (Nx.slice [ R (0, horizon); R (0, n) ] ybar)) ) ) )
+        , ( flip (slice [ R (0, horizon) ] dx)
+          , (flip du, flip (slice [ R (0, horizon); R (0, n) ] ybar)) ) ) )
   in
   let dl1 = flip dl1 in
   (* Step 2: block cotangents, following the reference formulation (the VJP of
@@ -130,23 +125,23 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
      cotangent is a stacked tensor: one batched product per block, whatever the
      horizon. *)
   let lm1 = Lqr.costate tape in
-  let x = Nx.slice [ R (0, horizon) ] xs_t in
-  let dxk = Nx.slice [ R (0, horizon) ] dx in
+  let x = slice [ R (0, horizon) ] xs_t in
+  let dxk = slice [ R (0, horizon) ] dx in
   let dx_last = row dx horizon in
-  let cot_A = Nx.add (outer dl1 x) (outer lm1 dxk) in
-  let cot_B = Nx.add (outer dl1 us_t) (outer lm1 du) in
+  let cot_A = Infix.(outer dl1 x + outer lm1 dxk) in
+  let cot_B = Infix.(outer dl1 us_t + outer lm1 du) in
   let cot_cx = dxk
   and cot_cu = du in
   let cot_lxx = Lqr.sym (outer dxk x) in
   let cot_luu = Lqr.sym (outer du us_t) in
-  let cot_lux = Nx.add (outer du x) (Nx.matrix_transpose (outer dxk us_t)) in
+  let cot_lux = Infix.(outer du x + matrix_transpose (outer dxk us_t)) in
   let cot_fx = dx_last in
   let cot_fxx = Lqr.sym (outer dx_last xs.(horizon)) in
   let grad_x0 = dl0 in
   (* Step 3: chain the block cotangents to θ with a nested grad over a
      scalar surrogate that recomputes the blocks from θ exactly like the
      forward pass, so derived quantities (a_k, c_k) propagate couplings. *)
-  let ks = Nx.arange p.Problem.dtype 0 horizon 1 in
+  let ks = arange p.Problem.dtype 0 horizon 1 in
   let grad_theta =
     Rune.grad
       p.Problem.params
@@ -163,15 +158,15 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
                 ~init:()
                 ((x, us_t), ks))
          in
-         let acc = ref (Nx.scalar_like xs.(0) 0.0) in
-         let term t cot = acc := Nx.add !acc (Nx.sum (Nx.mul t cot)) in
+         let acc = ref (scalar_like xs.(0) 0.0) in
+         let term t cot = acc := Infix.(!acc + sum (t * cot)) in
          term tape.Lqr.blocks.a cot_A;
          term tape.Lqr.blocks.b cot_B;
          term f dl1;
          (* a_k = f_k − A x̄ − B ū *)
          term
-           (Nx.add (matvec tape.Lqr.blocks.a x) (matvec tape.Lqr.blocks.b us_t))
-           (Nx.neg dl1);
+           Infix.(matvec tape.Lqr.blocks.a x + matvec tape.Lqr.blocks.b us_t)
+           Infix.(-dl1);
          term tape.Lqr.blocks.lxx cot_lxx;
          term tape.Lqr.blocks.luu cot_luu;
          term tape.Lqr.blocks.lux cot_lux;
@@ -179,23 +174,23 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
          term tape.Lqr.blocks.lx cot_cx;
          term tape.Lqr.blocks.lu cot_cu;
          term
-           (Nx.add
-              (matvec tape.Lqr.blocks.lxx x)
-              (matvec (Nx.matrix_transpose tape.Lqr.blocks.lux) us_t))
-           (Nx.neg cot_cx);
+           Infix.(
+             matvec tape.Lqr.blocks.lxx x
+             + matvec (matrix_transpose tape.Lqr.blocks.lux) us_t)
+           Infix.(-cot_cx);
          term
-           (Nx.add (matvec tape.Lqr.blocks.luu us_t) (matvec tape.Lqr.blocks.lux x))
-           (Nx.neg cot_cu);
+           Infix.(matvec tape.Lqr.blocks.luu us_t + matvec tape.Lqr.blocks.lux x)
+           Infix.(-cot_cu);
          (* Terminal: c_K = fx − fxx x̄_K, C_K,xx = fxx. *)
          term tape.fx cot_fx;
          term tape.fxx cot_fxx;
-         term (Nx.matmul tape.fxx xs.(horizon)) (Nx.neg cot_fx);
+         term Infix.(tape.fxx *@ xs.(horizon)) Infix.(-cot_fx);
          !acc)
       theta
   in
   { Problem.Inputs.theta = grad_theta
   ; x0 = grad_x0
-  ; us0 = Array.map ~f:Nx.zeros_like res.us0
+  ; us0 = Array.map ~f:zeros_like res.us0
   }
 
 (* The adaptive solve, wrapped with its implicit gradient. Eager only — do

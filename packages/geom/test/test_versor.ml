@@ -6,6 +6,7 @@
 (* Tests for Geom.Versor: the exponential and logarithm layer, instantiated
    over E3 for rotations and over CGA for dilations and transversions. *)
 
+open Nx
 open Windtrap
 open Support
 module B = Geom.Blade
@@ -16,17 +17,17 @@ module VC = Geom.Versor.Make (C)
 
 let e3_proj =
   Testable.make ~pp:E.pp ~equal:(fun a b ->
-    Support.close a b || Support.close a (Nx.mul_s b (-1.)))
+    Support.close a b || Support.close a Infix.(b *$ -1.))
 
 let check_proj ?msg expected actual = equal ?msg e3_proj expected actual
 
 (* Rotations in E3 *)
 
 let test_exp_simple_rotation () =
-  let b = Nx.mul_s (E.gp E.e1 E.e2) (-0.35) in
+  let b = Infix.(E.gp E.e1 E.e2 *$ -0.35) in
   let expected =
     let theta = 0.35 in
-    Nx.add (Nx.mul_s E.one (cos theta)) (Nx.mul_s b (sin theta /. theta))
+    Infix.((E.one *$ Float.cos theta) + (b *$ (Float.sin theta /. theta)))
   in
   equal_tensor
     ~msg:"the closed form for a negative-square bivector"
@@ -38,10 +39,10 @@ let test_exp_simple_rotation () =
     (E.rotor ~axis ~angle:(scalar 0.7))
     (V.exp_simple b);
   equal_tensor ~msg:"zero bivector is the identity" E.one (V.exp_simple E.zero);
-  let tiny = Nx.mul_s (E.gp E.e1 E.e2) 1e-9 in
+  let tiny = Infix.(E.gp E.e1 E.e2 *$ 1e-9) in
   equal_tensor
     ~msg:"the small-angle limit is 1 + b"
-    (Nx.add E.one tiny)
+    Infix.(E.one + tiny)
     (V.exp_simple tiny);
   equal_tensor
     ~msg:"the general exponential on a simple bivector"
@@ -51,9 +52,9 @@ let test_exp_simple_rotation () =
 let test_exp_simple_hyperbolic () =
   let k = 0.4 in
   let e45 = C.gp C.e4 C.e5 in
-  let b = Nx.mul_s e45 k in
+  let b = Infix.(e45 *$ k) in
   equal_scalar ~msg:"e45 has positive square" 1. (C.coeff (C.gp e45 e45) (B.of_int 0));
-  let expected = Nx.add (Nx.mul_s C.one (cosh k)) (Nx.mul_s b (sinh k /. k)) in
+  let expected = Infix.((C.one *$ Float.cosh k) + (b *$ (Float.sinh k /. k))) in
   equal_tensor
     ~msg:"the closed form for a positive-square bivector"
     expected
@@ -67,29 +68,27 @@ let test_exp_simple_hyperbolic () =
   equal_tensor
     ~msg:"the inverse boost matches the opposite dilator"
     (C.dilator (scalar (2. *. k)))
-    (VC.exp_simple (Nx.mul_s b (-1.)));
+    (VC.exp_simple Infix.(b *$ -1.));
   equal_tensor ~msg:"the general exponential on a boost" (VC.exp b) (VC.exp_simple b)
 
 let test_exp_simple_null () =
   let a = 0.6 in
-  let b = Nx.mul_s (C.op C.e1 C.e0) (-.a) in
+  let b = Infix.(C.op C.e1 C.e0 *$ -.a) in
   equal_scalar ~msg:"the generator is null" 0. (C.norm2 b);
   equal_tensor
     ~msg:"a null bivector exponentiates to 1 + b"
-    (Nx.add C.one b)
+    Infix.(C.one + b)
     (VC.exp_simple b);
   equal_tensor
     ~msg:"a transversion is a null exponential"
     (C.transversion (vec3 a 0. 0.))
     (VC.exp_simple b);
   let t = vec3 0.2 (-0.3) 0.5 in
-  let tx = Nx.item [ 0 ] t
-  and ty = Nx.item [ 1 ] t
-  and tz = Nx.item [ 2 ] t in
+  let tx = item [ 0 ] t
+  and ty = item [ 1 ] t
+  and tz = item [ 2 ] t in
   let generator =
-    Nx.add
-      (Nx.add (Nx.mul_s (C.op C.e1 C.e0) (-.tx)) (Nx.mul_s (C.op C.e2 C.e0) (-.ty)))
-      (Nx.mul_s (C.op C.e3 C.e0) (-.tz))
+    Infix.((C.op C.e1 C.e0 *$ -.tx) + (C.op C.e2 C.e0 *$ -.ty) + (C.op C.e3 C.e0 *$ -.tz))
   in
   equal_tensor
     ~msg:"a general transversion generator"
@@ -101,27 +100,27 @@ let test_exp_general () =
   equal_tensor
     ~msg:"exp of a rotation generator"
     (E.rotor ~axis:(vec3 1. 0. 0.) ~angle:(scalar 0.5))
-    (V.exp (Nx.mul_s (E.gp E.e2 E.e3) (-0.25)));
+    (V.exp Infix.(E.gp E.e2 E.e3 *$ -0.25));
   (* e12 and e34 commute, so exp(b1 + b2) = exp(b1) exp(b2). *)
-  let b12 = Nx.mul_s (C.gp C.e1 C.e2) 0.3
-  and b34 = Nx.mul_s (C.gp C.e3 C.e4) (-0.2) in
+  let b12 = Infix.(C.gp C.e1 C.e2 *$ 0.3)
+  and b34 = Infix.(C.gp C.e3 C.e4 *$ -0.2) in
   equal_tensor
     ~msg:"commuting generators multiply their exponentials"
     (C.gp (VC.exp b12) (VC.exp b34))
-    (VC.exp (Nx.add b12 b34))
+    (VC.exp Infix.(b12 + b34))
 
 (* Logarithms *)
 
 let test_log () =
   equal_tensor ~msg:"log of one is zero" E.zero (V.log E.one);
-  let b = Nx.mul_s (E.gp E.e1 E.e2) (-0.35) in
+  let b = Infix.(E.gp E.e1 E.e2 *$ -0.35) in
   equal_tensor ~msg:"exp_simple then log" b (V.log (V.exp_simple b));
   let axis = vec3 1. 2. 3. in
   let angle = 0.7 in
   let r = E.rotor ~axis ~angle:(scalar angle) in
   equal_tensor ~msg:"exp of log of a rotor" r (V.exp (V.log r));
   equal_tensor ~msg:"exp_simple of log of a rotor" r (V.exp_simple (V.log r));
-  let c = VC.exp_simple (Nx.mul_s (C.gp C.e4 C.e5) 0.4) in
+  let c = VC.exp_simple Infix.(C.gp C.e4 C.e5 *$ 0.4) in
   equal_tensor ~msg:"exp of log of a boost" c (VC.exp (VC.log c));
   equal_tensor ~msg:"exp_simple of log of a boost" c (VC.exp_simple (VC.log c))
 
@@ -141,11 +140,11 @@ let test_slerp () =
     ~msg:"slerp interpolates a one-parameter family"
     (E.rotor ~axis:az ~angle:(scalar 0.5))
     (V.slerp s0 s1 (scalar 0.5));
-  let alphas = Nx.create f32 [| 2 |] [| 0.; 1. |] in
+  let alphas = create f32 [| 2 |] [| 0.; 1. |] in
   let batch = V.slerp r0 r1 alphas in
   equal ~msg:"a batch of parameters" (array int) [| 2; 8 |] (E.shape batch);
-  let d = C.dilator (scalar (log 2.)) in
-  let d2 = C.dilator (scalar (log 4.)) in
+  let d = C.dilator (scalar (Float.log 2.)) in
+  let d2 = C.dilator (scalar (Float.log 4.)) in
   equal_tensor ~msg:"slerp of dilations" d (VC.slerp d d2 (scalar 0.));
   equal_tensor ~msg:"slerp of dilations at one" d2 (VC.slerp d d2 (scalar 1.))
 
@@ -153,9 +152,7 @@ let test_slerp () =
 
 let test_batches () =
   let b =
-    Nx.stack
-      ~axis:0
-      [ Nx.mul_s (E.gp E.e1 E.e2) (-0.1); Nx.mul_s (E.gp E.e1 E.e2) (-0.3) ]
+    stack ~axis:0 [ Infix.(E.gp E.e1 E.e2 *$ -0.1); Infix.(E.gp E.e1 E.e2 *$ -0.3) ]
   in
   let r = V.exp_simple b in
   equal ~msg:"a batch of bivectors" (array int) [| 2; 8 |] (E.shape r);
@@ -181,10 +178,10 @@ let angle_gen = Gen.float_range (-2.5) 2.5
 let bivector_gen =
   Gen.map
     (fun (axis, a) ->
-       let n = Nx.mul_s axis (1. /. Nx.item [] (E.norm (E.vector axis))) in
-       let nx = Nx.item [ 0 ] n
-       and ny = Nx.item [ 1 ] n
-       and nz = Nx.item [ 2 ] n in
+       let n = Infix.(axis *$ (1. /. item [] (E.norm (E.vector axis)))) in
+       let nx = item [ 0 ] n
+       and ny = item [ 1 ] n
+       and nz = item [ 2 ] n in
        (* Blade order is [1; e1; e2; e12; e3; e13; e23; e123]. The rotation
           bivector for the axis [n] is
           -(a/2) (nz e12 - ny e13 + nx e23). *)
@@ -202,7 +199,7 @@ let test_properties =
     ; prop "log inverts exp_simple on E3 bivectors" bivector_gen (fun b ->
         equal_tensor ~msg:"log (exp_simple b)" b (V.log (V.exp_simple b)))
     ; prop "exp_simple of minus b is the inverse" bivector_gen (fun b ->
-        equal_tensor E.one (E.gp (V.exp_simple b) (V.exp_simple (Nx.mul_s b (-1.)))))
+        equal_tensor E.one (E.gp (V.exp_simple b) (V.exp_simple Infix.(b *$ -1.))))
     ; prop
         "slerp starts at its first versor"
         Gen.(pair rotor_gen rotor_gen)

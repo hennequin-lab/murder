@@ -22,6 +22,7 @@
    block tables are compile-time constants. *)
 
 open Base
+open Nx
 
 module type Model = sig
   include Nx.Ptree.S
@@ -119,7 +120,7 @@ let offsets sizes =
 (* Split a flat vector at the given boundaries; [starts] has one entry per
    leaf, in traversal order. *)
 let split_flat starts dense =
-  Nx.array_split ~axis:0 (`Indices (List.tl_exn (Array.to_list starts))) dense
+  array_split ~axis:0 (`Indices (List.tl_exn (Array.to_list starts))) dense
   |> Array.of_list
 
 (* [extend ~groups ~all_groups kind] is [kind], a tuple over [groups], written
@@ -201,14 +202,14 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       P.map2
         (module M)
         (fun _ c x ->
-           c.Compiler.estimate_factors (`Outer_product (x, Nx.scalar Nx.float32 1.0)))
+           c.Compiler.estimate_factors (`Outer_product (x, scalar float32 1.0)))
         large
         x
 
     let dense_of_factors factors =
       P.map2 (module M) (fun _ c f -> c.Compiler.dense_block ~factors:f) large factors
       |> to_list
-      |> Nx.concatenate ~axis:0
+      |> concatenate ~axis:0
 
     let factors_of_dense dense =
       let pieces = split_flat (offsets (Array.to_list leaf_size_full)) dense in
@@ -222,8 +223,8 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       P.map2
         (module M)
         (fun _ c f ->
-           c.Compiler.apply_block ~factors:f (Nx.ones Nx.float32 [| 1 |])
-           |> Nx.reshape (Array.of_list c.Compiler.dims.left))
+           c.Compiler.apply_block ~factors:f (ones float32 [| 1 |])
+           |> reshape (Array.of_list c.Compiler.dims.left))
         large
         factors
 
@@ -265,7 +266,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
      the permutation uniform for every practical [n], and the eager and
      jitted draws agree exactly. *)
   let random_permutation ~key n =
-    Nx.argsort (Nx.Rng.uniform key Nx.float64 [| n |]) ~axis:0 ~descending:false
+    argsort (Nx.Rng.uniform key float64 [| n |]) ~axis:0 ~descending:false
 
   (* Draw the group element and apply it leafwise: each compiler's
      [group_ids] selects the permutations its own axes are tied to, so leaves
@@ -338,13 +339,13 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
              Array.map2_exn row f_arr.(i) ~f:(fun c f ->
                c.Compiler.dense_block ~factors:f)
              |> Array.to_list
-             |> Nx.concatenate ~axis:1)
+             |> concatenate ~axis:1)
           cs
           leaf_index
         |> to_list
       in
-      let dense = Nx.concatenate ~axis:0 rows in
-      if symmetric then Nx.mul_s (Nx.add dense (Nx.transpose dense)) 0.5 else dense
+      let dense = concatenate ~axis:0 rows in
+      if symmetric then Infix.((dense + transpose dense) *$ 0.5) else dense
 
     let factors_of_dense ?(symmetric = true) dense =
       let cs = large ~symmetric () in
@@ -355,10 +356,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
         (fun _ compilers i ->
            let dense_row = row_pieces.(i) in
            let col_pieces =
-             Nx.array_split
-               ~axis:1
-               (`Indices (List.tl_exn (Array.to_list starts)))
-               dense_row
+             array_split ~axis:1 (`Indices (List.tl_exn (Array.to_list starts))) dense_row
              |> Array.of_list
            in
            Array.mapi compilers ~f:(fun j c ->
@@ -377,12 +375,12 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
              Array.fold2_exn
                row
                f_arr.(i)
-               ~init:(0, Nx.scalar Nx.float32 0.0)
+               ~init:(0, scalar float32 0.0)
                ~f:(fun (j, acc) c f ->
                  let vj = v_arr.(j) in
-                 let vj = Nx.unsqueeze ~axes:[ 0 ] vj in
+                 let vj = unsqueeze ~axes:[ 0 ] vj in
                  let z = c.Compiler.apply_block ~factors:f vj in
-                 j + 1, Nx.add acc (Nx.reshape (Array.of_list c.Compiler.dims.left) z))
+                 j + 1, Infix.(acc + reshape (Array.of_list c.Compiler.dims.left) z))
            in
            acc)
         cs
@@ -476,9 +474,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
                     | None -> None
                     | Some local -> Some pair_matrices.(i).(j).(local)))
               in
-              Some (Nx.concatenate ~axis:1 cols)))
+              Some (concatenate ~axis:1 cols)))
         in
-        Nx.concatenate ~axis:0 rows)
+        concatenate ~axis:0 rows)
 
     let factors_of_blocks ?(symmetric = true) blocks =
       let pair_blocks = pair_blocks ~symmetric () in
@@ -498,8 +496,8 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
                    let r = leaf_size.(gk).(i)
                    and c = leaf_size.(gk).(j) in
                    if Int.equal r 0 || Int.equal c 0
-                   then Nx.zeros Nx.float32 [| r; c |]
-                   else Nx.slice [ Nx.R (rows, rows + r); Nx.R (cols, cols + c) ] matrix)
+                   then zeros float32 [| r; c |]
+                   else slice [ Nx.R (rows, rows + r); Nx.R (cols, cols + c) ] matrix)
              in
              Blocks.of_blocks b (Blocks.blocks_of_matrices b matrices)))
         large_sym
@@ -526,9 +524,9 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
         List.concat
           (List.map (Array.to_list f_arr) ~f:(fun row ->
              List.map (Array.to_list row) ~f:(fun fs ->
-               List.map fs ~f:(fun f -> Nx.reshape [| -1 |] f) |> Nx.concatenate ~axis:0)))
+               List.map fs ~f:(fun f -> reshape [| -1 |] f) |> concatenate ~axis:0)))
       in
-      Nx.concatenate ~axis:0 pieces
+      concatenate ~axis:0 pieces
 
     let unpack flat =
       (* Walk the layout in the same order as [pack]. *)
@@ -542,8 +540,8 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
           let size = f_l * f_r in
           for c = 0 to d - 1 do
             let start = !offset + (c * size) in
-            let x = Nx.slice [ Nx.R (start, start + size) ] flat in
-            chunks := Nx.reshape shape x :: !chunks
+            let x = slice [ Nx.R (start, start + size) ] flat in
+            chunks := reshape shape x :: !chunks
           done;
           offset := !offset + (d * size)));
       let chunks = List.rev !chunks in

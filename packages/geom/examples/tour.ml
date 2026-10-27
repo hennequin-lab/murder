@@ -5,11 +5,12 @@
    The values printed here are the values the README shows. *)
 
 open Geom
+open Nx
 
-let pi = 4. *. atan 1.
-let v3 x y z = Nx.create Nx.float32 [| 3 |] [| x; y; z |]
-let v6 a b c d e f = Nx.create Nx.float32 [| 6 |] [| a; b; c; d; e; f |]
-let sc x = Nx.scalar Nx.float32 x
+let pi = 4. *. Float.atan 1.
+let v3 x y z = create float32 [| 3 |] [| x; y; z |]
+let v6 a b c d e f = create float32 [| 6 |] [| a; b; c; d; e; f |]
+let sc x = Nx.scalar float32 x
 let item x = Nx.item [] x
 let bool b = if item b then "true" else "false"
 
@@ -39,7 +40,7 @@ let show ~n a =
 let clean x = if Float.abs x < 1e-6 then 0. else x
 
 let vec v =
-  Array.to_list (Nx.to_array v)
+  Array.to_list (to_array v)
   |> List.map (fun x -> Printf.sprintf "%.4g" (clean x))
   |> String.concat ", "
   |> Printf.sprintf "[%s]"
@@ -61,7 +62,7 @@ let section_e3 () =
     "show (gp e1 e2 e1 e2)"
     (show ~n:3 (E3.to_array (E3.gp (E3.gp e1 e2) (E3.gp e1 e2))));
   let u = E3.vector3 1. 0. 0. in
-  let v = E3.vector3 (1. /. sqrt 2.) (1. /. sqrt 2.) 0. in
+  let v = E3.vector3 (1. /. Float.sqrt 2.) (1. /. Float.sqrt 2.) 0. in
   out "u . v" (Printf.sprintf "%.4g" (item (E3.scalar_prod u v)));
   out "show (op u v)" (show ~n:3 (E3.to_array (E3.op u v)));
   out "show (gp u v)" (show ~n:3 (E3.to_array (E3.gp u v)));
@@ -161,8 +162,8 @@ let section_motor () =
   let rz = Motor.rotate ~axis:(v3 0. 0. 1.) ~angle:(sc (pi /. 2.)) in
   let tz = Motor.translate3 0. 0. 1. in
   let m = Motor.mul tz rz in
-  out "to_array rz" (vec (Nx.reshape [| 8 |] rz));
-  out "to_array (translate 0 0 1)" (vec (Nx.reshape [| 8 |] tz));
+  out "to_array rz" (vec (reshape [| 8 |] rz));
+  out "to_array (translate 0 0 1)" (vec (reshape [| 8 |] tz));
   out
     "coords (m (point 1 0 0))"
     (vec (Cga.coords (Cga.apply_motor m (Cga.point3 1. 0. 0.))));
@@ -215,14 +216,14 @@ let section_motor () =
 let section_stack () =
   header "Batching";
   let centers =
-    Nx.create Nx.float32 [| 4; 3 |] [| 0.; 0.; 0.; 1.; 0.; 0.; 0.; 1.; 0.; 0.; 0.; 1. |]
+    create float32 [| 4; 3 |] [| 0.; 0.; 0.; 1.; 0.; 0.; 0.; 1.; 0.; 0.; 0.; 1. |]
   in
   let xs = Cga.point centers in
   out
     "shape (point centers)"
     (Printf.sprintf
        "[%s]"
-       (Array.to_list (Nx.shape xs) |> List.map string_of_int |> String.concat "; "));
+       (Array.to_list (shape xs) |> List.map string_of_int |> String.concat "; "));
   out "distance2 xs origin" (vec (Cga.distance2 xs (Cga.point3 0. 0. 0.)));
   header "Autodiff";
   let f p = Cga.distance2 (Cga.point p) (Cga.point3 3. 4. 0.) in

@@ -37,14 +37,13 @@ let cloud =
   (* Seeded, so that the picture and the fraction it reports do not move between
      runs of an unchanged program. *)
   let q =
-    Rng.with_key (Rng.key 3) (fun () -> Nx.mul_s (Nx.randn f32 [| samples; 6 |]) 2.4)
+    Rng.with_key (Rng.key 3) (fun () -> Infix.(randn f32 [| samples; 6 |] *$ 2.4))
   in
-  let positions = Nx.to_array (M.translation (R.pose model ~frame:tool q)) in
+  let positions = to_array (M.translation (R.pose model ~frame:tool q)) in
   (* sigma_min of the geometric Jacobian: how far this configuration is from
      losing a degree of freedom. *)
   let sigma_min =
-    Nx.to_array
-      (Nx.cast f32 (Nx.slice [ A; I 5 ] (Nx.svdvals (R.jacobian model ~frame:tool q))))
+    to_array (cast f32 (slice [ A; I 5 ] (svdvals (R.jacobian model ~frame:tool q))))
   in
   Array.init samples (fun i ->
     let p =
@@ -80,7 +79,7 @@ let arm =
   V.entities
     ~layer:2
     drawn
-    (Nx.create f32 [| 6 |] [| 0.35; -0.75; 0.45; -0.95; 0.30; -0.50 |])
+    (create f32 [| 6 |] [| 0.35; -0.75; 0.45; -0.95; 0.30; -0.50 |])
 
 let worst_band = List.length (List.filter (fun (_, s) -> s < 0.02) (Array.to_list cloud))
 

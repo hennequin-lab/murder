@@ -4,6 +4,7 @@
   ---------------------------------------------------------------------------*)
 
 open Geom
+open Nx
 module R = Geom_robot.Robot
 module M = Motor
 module P = Geom_viz.Primitive
@@ -71,7 +72,7 @@ let model t = t.model
 let origins t q =
   let lm = R.link_motors t.model q in
   Array.init (R.link_count t.model) (fun i ->
-    P.p3_of_tensor (M.translation (Nx.slice [ I i ] lm)))
+    P.p3_of_tensor (M.translation (slice [ I i ] lm)))
 
 let origin_of_frame t ~frame q = P.p3_of_tensor (M.translation (R.pose t.model ~frame q))
 
@@ -79,7 +80,7 @@ let origin_of_frame t ~frame q = P.p3_of_tensor (M.translation (R.pose t.model ~
 
 let links t q =
   let o = origins t q in
-  List.init (max 0 (Array.length o - 1)) (fun i -> P.Segment (o.(i), o.(i + 1)))
+  List.init (Int.max 0 (Array.length o - 1)) (fun i -> P.Segment (o.(i), o.(i + 1)))
 
 let joints t q =
   let radius i = if i = 0 then 1.4 *. t.joint_radius else t.joint_radius in
@@ -153,7 +154,7 @@ let animated ?(layer = 1) t ~q ?frame ?trail:trail_qs ?target:target_pose ?(fps 
   let positions = memo (fun time -> origins t (q time)) in
   let links =
     List.init
-      (max 0 (R.link_count t.model - 1))
+      (Int.max 0 (R.link_count t.model - 1))
       (fun i ->
          Draw.moving_with
            ~layer:(layer + 1)
@@ -192,7 +193,7 @@ let animated ?(layer = 1) t ~q ?frame ?trail:trail_qs ?target:target_pose ?(fps 
           ~layer:(layer + 2)
           ~style:t.style.trail
           ~motion:(fun time _ ->
-            let k = max 0 (min last (int_of_float (time *. float_of_int fps))) in
+            let k = Int.max 0 (Int.min last (int_of_float (time *. float_of_int fps))) in
             P.Polyline (List.init (k + 1) (fun i -> origin_of_frame t ~frame qs.(i))))
           (trail t ~frame qs)
       ]
@@ -220,8 +221,8 @@ let camera
 
 let sample ?(fps = 24) qs time =
   let last = Array.length qs - 1 in
-  qs.(max 0 (min last (int_of_float (time *. float_of_int fps))))
+  qs.(Int.max 0 (Int.min last (int_of_float (time *. float_of_int fps))))
 
 let linear_path from to_ ~n k =
-  let alpha = float_of_int k /. float_of_int (max 1 (n - 1)) in
-  Nx.add from (Nx.mul_s (Nx.sub to_ from) alpha)
+  let alpha = float_of_int k /. float_of_int (Int.max 1 (n - 1)) in
+  Infix.(from + ((to_ - from) *$ alpha))

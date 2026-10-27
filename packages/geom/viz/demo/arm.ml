@@ -1,5 +1,6 @@
 open Geom
 open Geom_viz
+open Nx
 module P = Primitive
 
 let p3 = P.p3
@@ -10,14 +11,14 @@ let phases = [| 0.0; 0.7; 1.3; 2.0; 0.4; 1.1 |]
 
 let axis i =
   let x, y, z = if i land 1 = 0 then 0., 0., 1. else 0., 1., 0. in
-  Nx.create Motor.dtype [| 3 |] [| x; y; z |]
+  create Motor.dtype [| 3 |] [| x; y; z |]
 
 let origin_of m =
-  let p = Cga.apply_motor m (Cga.point3 0. 0. 0.) |> Cga.coords |> Nx.to_array in
+  let p = Cga.apply_motor m (Cga.point3 0. 0. 0.) |> Cga.coords |> to_array in
   p3 p.(0) p.(1) p.(2)
 
 let kinematics t =
-  let q i = amps.(i) *. sin ((omegas.(i) *. t) +. phases.(i)) in
+  let q i = amps.(i) *. Float.sin ((omegas.(i) *. t) +. phases.(i)) in
   let rec go i m acc =
     if i >= 6
     then List.rev (m :: acc)
@@ -102,7 +103,7 @@ let () =
         let origins, m = kinematics t in
         let origin = List.nth origins 6 in
         let dir x y z =
-          let p = Cga.apply_motor m (Cga.point3 x y z) |> Cga.coords |> Nx.to_array in
+          let p = Cga.apply_motor m (Cga.point3 x y z) |> Cga.coords |> to_array in
           p3 p.(0) p.(1) p.(2)
         in
         ignore origin;

@@ -8,6 +8,7 @@
    sum the symbolic inner products the compiler computes directly. *)
 
 open Base
+open Nx
 
 let dims ~left ~right = { Symo.Sides.left; right }
 
@@ -67,5 +68,5 @@ let coefficient_brute ~dims (term : Symo.Term.t) data =
           List.Assoc.find_exn tuple i ~equal:Symo.Index.equal)
       in
       let idx = flat_index free_dims free_coords in
-      acc.(idx) <- acc.(idx) +. (norm *. Nx.item (List.map tuple ~f:snd) data)));
-  Nx.create Nx.float32 (Array.of_list free_dims) acc
+      acc.(idx) <- acc.(idx) +. (norm *. item (List.map tuple ~f:snd) data)));
+  create float32 (Array.of_list free_dims) acc

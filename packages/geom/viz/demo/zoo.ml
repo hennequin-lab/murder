@@ -1,9 +1,10 @@
 open Geom
 open Geom_viz
+open Nx
 module P = Primitive
 
 let p3 = P.p3
-let point_tensor x y z = Nx.create Cga.dtype [| 3 |] [| x; y; z |]
+let point_tensor x y z = create Cga.dtype [| 3 |] [| x; y; z |]
 
 let ghost =
   { Draw.default with
@@ -39,7 +40,7 @@ let () =
   let vv = P.cross nn uu in
   let r = 0.85 in
   let pt t =
-    let p = P.add (P.scale uu (r *. cos t)) (P.scale vv (r *. sin t)) in
+    let p = P.add (P.scale uu (r *. Float.cos t)) (P.scale vv (r *. Float.sin t)) in
     let q = P.add cc p in
     Cga.point3 q.P.x q.P.y q.P.z
   in
@@ -57,9 +58,9 @@ let () =
   in
   let motion t =
     let a = 2. *. Float.pi *. t in
-    let axis = Nx.create Motor.dtype [| 3 |] [| 0.; 0.; 1. |] in
+    let axis = create Motor.dtype [| 3 |] [| 0.; 0.; 1. |] in
     let rz = Motor.rotate ~axis ~angle:(Nx.scalar Motor.dtype a) in
-    let bob = Motor.translate3 0. 0. (0.12 *. sin a) in
+    let bob = Motor.translate3 0. 0. (0.12 *. Float.sin a) in
     Motor.mul bob rz
   in
   let moving style layer prim = Draw.moving ~layer ~style ~motion prim in

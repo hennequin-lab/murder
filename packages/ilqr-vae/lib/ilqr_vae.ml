@@ -3,6 +3,7 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
+open Nx
 module Types = Types
 module Covariance = Covariance
 module Initial = Initial
@@ -39,7 +40,7 @@ let integrate
   Dynamics.integrate
     model.Model.dynamics
     params.Model.dynamics
-    ~x0:(Nx.zeros model.Model.dtype [| model.Model.n |])
+    ~x0:(zeros model.Model.dtype [| model.Model.n |])
     ~u
 
 let integrate_from
@@ -59,7 +60,7 @@ let decode
       (params : (w, d, l, p, e, r) Model.params)
       (z : w value)
   =
-  let z_next = Nx.slice [ R (1, model.Model.n_steps + 1) ] z in
+  let z_next = slice [ R (1, model.Model.n_steps + 1) ] z in
   model.Model.likelihood.Likelihood.mean params.Model.likelihood z_next
 
 let sample_generative
@@ -80,8 +81,8 @@ let sample_generative
   in
   let x0 =
     match params.Model.initial_prior with
-    | None -> Nx.zeros model.Model.dtype [| model.Model.n |]
-    | Some p -> Nx.reshape [| model.Model.n |] (Initial.sample p ~key:key_x0 ~n_samples:1)
+    | None -> zeros model.Model.dtype [| model.Model.n |]
+    | Some p -> reshape [| model.Model.n |] (Initial.sample p ~key:key_x0 ~n_samples:1)
   in
   let z = integrate_from model params ~x0 ~u in
   let o =

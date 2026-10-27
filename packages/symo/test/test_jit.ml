@@ -11,6 +11,7 @@
    between the two halves is the estimator solve. *)
 
 open Base
+open Nx
 open Windtrap
 open Symo
 
@@ -27,31 +28,30 @@ end
 
 module M = Make (Mlp)
 
-let relu x = Nx.maximum x (Nx.zeros_like x)
-let xs = Nx.Rng.normal (Nx.Rng.key 7) Nx.float32 [| 8; 2 |]
+let relu x = maximum x (zeros_like x)
+let xs = Nx.Rng.normal (Nx.Rng.key 7) float32 [| 8; 2 |]
 
 let ys =
-  let w = Nx.create Nx.float32 [| 2; 1 |] [| 1.0; -0.5 |] in
-  Nx.add
-    (Nx.matmul xs w)
-    (Nx.mul_s (Nx.Rng.normal (Nx.Rng.key 8) Nx.float32 [| 8; 1 |]) 0.05)
+  let w = create float32 [| 2; 1 |] [| 1.0; -0.5 |] in
+  Infix.((xs *@ w) + (Nx.Rng.normal (Nx.Rng.key 8) float32 [| 8; 1 |] *$ 0.05))
 
 let mlp_loss (p : Nx.float32_t Mlp.t) =
-  let h = relu (Nx.matmul xs (Nx.transpose p.w1)) in
-  let out = Nx.matmul h (Nx.transpose p.w2) in
-  let d = Nx.sub out ys in
-  Nx.mean (Nx.mul d d)
+  let open Infix in
+  let h = relu (xs *@ transpose p.w1) in
+  let out = h *@ transpose p.w2 in
+  let d = out - ys in
+  mean (d * d)
 
 let config : M.config =
   { learning_rate = Some 0.3; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
 
 let params () =
-  { Mlp.w1 = Nx.Rng.normal (Nx.Rng.key 9) Nx.float32 [| 3; 2 |]
-  ; w2 = Nx.Rng.normal (Nx.Rng.key 10) Nx.float32 [| 1; 3 |]
+  { Mlp.w1 = Nx.Rng.normal (Nx.Rng.key 9) float32 [| 3; 2 |]
+  ; w2 = Nx.Rng.normal (Nx.Rng.key 10) float32 [| 1; 3 |]
   }
 
 let check_leaf ~msg ~tol (a : Nx.float32_t) (b : Nx.float32_t) =
-  equal ~msg (array (float tol)) (Nx.to_array a) (Nx.to_array b)
+  equal ~msg (array (float tol)) (to_array a) (to_array b)
 
 let check_tree ~msg ~tol (a : Nx.float32_t Mlp.t) (b : Nx.float32_t Mlp.t) =
   Nx.Ptree.Payload.map2 (module Mlp) (fun _ x y -> check_leaf ~msg ~tol x y) a b |> ignore
@@ -90,7 +90,7 @@ let test_state_threads () =
   let s2 = M.Compiled.step compiled ~config ~state:s1 ~grads:g1 in
   is_true
     ~msg:"loss is finite after two jitted steps"
-    (Float.is_finite (Nx.item [] (mlp_loss s2.M.State.theta)))
+    (Float.is_finite (item [] (mlp_loss s2.M.State.theta)))
 
 (* Tracing and compiling the two halves is a one-off cost: the first call pays
    it, every later call replays the compiled program. If calls retraced, ten

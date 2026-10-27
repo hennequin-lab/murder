@@ -38,8 +38,9 @@
 
     {[
       let loss params =
+        let open Infix in
         let y = predict params x in
-        Nx.add (Sofo.mse ~target y) (Nx.sum (Nx.mul w w))
+        Sofo.mse ~target y + sum (w * w)
       in
       let dirs = Sofo.Optim.directions params_ptree ~key ~k:32 params in
       let sk = Sofo.sketch params_ptree loss params dirs in

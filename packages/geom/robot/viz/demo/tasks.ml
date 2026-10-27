@@ -93,7 +93,7 @@ let task = T.primitive model ~frame:tool ~reference:(Cga.point3 0. 0. 0.) ~targe
 
 (* {1 The solve, and the path the film follows} *)
 
-let q_start = Nx.create f32 [| 6 |] [| 0.55; 0.35; -0.55; 0.75; -0.35; 0.45 |]
+let q_start = create f32 [| 6 |] [| 0.55; 0.35; -0.55; 0.75; -0.35; 0.45 |]
 
 (* The solver converges geometrically, so animating its iterates would spend the
    first tenth of the film on the whole approach and the rest on a still. Solve
@@ -106,7 +106,7 @@ let qs = Array.init nframes (fun k -> V.linear_path q_start q_end ~n:nframes k)
    along that path. *)
 let travelled =
   let points =
-    Array.map (fun q -> Nx.to_array (M.translation (R.pose model ~frame:tool q))) qs
+    Array.map (fun q -> to_array (M.translation (R.pose model ~frame:tool q))) qs
   in
   let total = ref 0. in
   for i = 1 to Array.length points - 1 do
@@ -162,9 +162,9 @@ let () =
   let residual = T.norm task qs.(nframes - 1) in
   (* An independent check that the picture is not lying: the tool point against
      the circle's own centre and radius, as the library extracts them. *)
-  let circle_centre = Nx.to_array (Cga.coords (Cga.circle_center circle)) in
-  let circle_radius = Float.sqrt (Nx.item [] (Cga.circle_radius2 circle)) in
-  let p = Nx.to_array (M.translation (R.pose model ~frame:tool qs.(nframes - 1))) in
+  let circle_centre = to_array (Cga.coords (Cga.circle_center circle)) in
+  let circle_radius = Float.sqrt (item [] (Cga.circle_radius2 circle)) in
+  let p = to_array (M.translation (R.pose model ~frame:tool qs.(nframes - 1))) in
   let distance =
     Float.sqrt
       (((p.(0) -. circle_centre.(0)) ** 2.)
@@ -176,7 +176,7 @@ let () =
      what "the movie moves" means, numerically. *)
   let distance_at k =
     let q = qs.(k) in
-    let p = Nx.to_array (M.translation (R.pose model ~frame:tool q)) in
+    let p = to_array (M.translation (R.pose model ~frame:tool q)) in
     Float.sqrt
       (((p.(0) -. circle_centre.(0)) ** 2.)
        +. ((p.(1) -. circle_centre.(1)) ** 2.)
@@ -192,7 +192,7 @@ let () =
     "task %a: residual %.3e, final distance %.3e, tool travelled %.3f@."
     T.pp
     task
-    (Nx.item [] residual)
+    (item [] residual)
     distance
     travelled;
   let spec = { Movie.duration; fps; scene; density = 1.5 } in

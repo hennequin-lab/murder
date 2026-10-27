@@ -23,6 +23,7 @@
      tests. *)
 
 open Base
+open Nx
 open Windtrap
 module Nx = Nx
 module C = Ilqr_vae.Covariance
@@ -37,13 +38,13 @@ module Lf = R.Lfads
 module M = Ilqr_vae.Model
 module El = Ilqr_vae.Elbo
 
-let dtype = Nx.float64
-let phi = Nx.tanh
+let dtype = float64
+let phi = tanh
 let require ~msg b = if not b then failwith ("assert failed: " ^ msg)
 
 let check_close ~msg ~tol got expected =
-  let g = Nx.to_array got
-  and e = Nx.to_array expected in
+  let g = to_array got
+  and e = to_array expected in
   require ~msg (Array.length g = Array.length e);
   Array.iteri g ~f:(fun i a ->
     let b = e.(i) in
@@ -59,10 +60,10 @@ let check_close ~msg ~tol got expected =
         tol;
     require ~msg Float.(abs (a -. b) <= tol +. (tol *. abs b)))
 
-let vec values = Nx.create dtype [| List.length values |] (Array.of_list values)
+let vec values = create dtype [| List.length values |] (Array.of_list values)
 let scalar v = Nx.scalar dtype v
 let item t = Nx.item [] t
-let max_abs t = item (Nx.max (Nx.abs t))
+let max_abs t = item (max (abs t))
 
 (* ──────────────────────────────────────────────────────────────────────────
    Concrete dtypes for the test models.
@@ -162,14 +163,14 @@ let setup_lfads
   model, M.init model
 
 let data_of ~n_output ~t_steps values =
-  Nx.create dtype [| t_steps; n_output |] (Array.of_list values)
+  create dtype [| t_steps; n_output |] (Array.of_list values)
 
 (* A hand-rolled MGU rollout: the reference for the encoder tests. *)
 let run_mgu ~phi (p : mgu_params) ~init inputs =
-  let t_steps = (Nx.shape inputs).(0) in
+  let t_steps = (shape inputs).(0) in
   let x = ref init in
   for k = 0 to t_steps - 1 do
-    x := D.Mgu.dyn ~phi p ~k:(scalar (Float.of_int k)) ~x:!x ~u:(Nx.get [ k ] inputs)
+    x := D.Mgu.dyn ~phi p ~k:(scalar (Float.of_int k)) ~x:!x ~u:(get [ k ] inputs)
   done;
   !x
 
@@ -181,15 +182,15 @@ let test_covariance () =
   let n = 3 in
   let p = C.make ~sigma2:2.0 ~n dtype in
   let l = C.factor p in
-  let arr = Nx.to_array l in
+  let arr = to_array l in
   for i = 0 to n - 1 do
     for j = 0 to i - 1 do
       let index = (i * n) + j in
       require ~msg:"factor is upper triangular" (Float.equal arr.(index) 0.0)
     done
   done;
-  let sigma = Nx.matmul l (Nx.matrix_transpose l) in
-  check_close ~msg:"sigma diagonal" ~tol:1e-12 (Nx.diag sigma) (vec [ 2.0; 2.0; 2.0 ]);
+  let sigma = Infix.(l *@ matrix_transpose l) in
+  check_close ~msg:"sigma diagonal" ~tol:1e-12 (diag sigma) (vec [ 2.0; 2.0; 2.0 ]);
   check_close
     ~msg:"log det"
     ~tol:1e-12
@@ -197,14 +198,14 @@ let test_covariance () =
     (scalar (Float.of_int n *. Float.log 2.0));
   (* a non-diagonal factor: check Σ = L Lᵀ elementwise and its log det *)
   let p =
-    { C.d = vec [ 0.5; 2.0 ]; t = Nx.create dtype [| 2; 2 |] [| 0.0; 0.3; 0.0; 0.0 |] }
+    { C.d = vec [ 0.5; 2.0 ]; t = create dtype [| 2; 2 |] [| 0.0; 0.3; 0.0; 0.0 |] }
   in
   let l = C.factor p in
-  let sigma = Nx.matmul l (Nx.matrix_transpose l) in
+  let sigma = Infix.(l *@ matrix_transpose l) in
   check_close
     ~msg:"sigma from factor"
     ~tol:1e-12
-    (Nx.reshape [| 4 |] sigma)
+    (reshape [| 4 |] sigma)
     (vec [ 0.34; 0.6; 0.6; 4.0 ]);
   check_close
     ~msg:"non-diagonal log det"
@@ -228,7 +229,7 @@ let test_initial_prior () =
     ~tol:1e-12
     (I.logp p (vec [ 1.0; -0.5 ]))
     (scalar (density 1.0 +. density (-0.5)));
-  let batch = Nx.create dtype [| 2; 2 |] [| 1.0; -0.5; 0.0; 0.5 |] in
+  let batch = create dtype [| 2; 2 |] [| 1.0; -0.5; 0.0; 0.5 |] in
   check_close
     ~msg:"initial log density, batched"
     ~tol:1e-12
@@ -237,12 +238,13 @@ let test_initial_prior () =
   (* the sampler reproduces the mean and standard deviation *)
   let n_samples = 40_000 in
   let s = I.sample p ~key:(Nx.Rng.key 3) ~n_samples in
-  require ~msg:"initial sample shape" Poly.(Nx.shape s = [| n_samples; n |]);
+  require ~msg:"initial sample shape" Poly.(shape s = [| n_samples; n |]);
   let mean = Nx.mean ~axes:[ 0 ] s in
   check_close ~msg:"initial sample mean" ~tol:0.05 mean (vec [ 0.5; 0.5 ]);
   let sd =
-    let centered = Nx.sub s (Nx.reshape [| 1; n |] (Nx.mean ~axes:[ 0 ] s)) in
-    Nx.sqrt (Nx.mean ~axes:[ 0 ] (Nx.mul centered centered))
+    let open Infix in
+    let centered = s - reshape [| 1; n |] (Nx.mean ~axes:[ 0 ] s) in
+    sqrt (Nx.mean ~axes:[ 0 ] (centered * centered))
   in
   check_close ~msg:"initial sample sd" ~tol:0.05 sd (vec [ 2.0; 2.0 ])
 
@@ -253,8 +255,8 @@ let test_initial_prior () =
 let dense_covariance ~t_steps ~m time_params space_params =
   let lt = C.factor time_params
   and ls = C.factor space_params in
-  let st = Nx.to_array (Nx.matmul lt (Nx.matrix_transpose lt))
-  and ss = Nx.to_array (Nx.matmul ls (Nx.matrix_transpose ls)) in
+  let st = to_array Infix.(lt *@ matrix_transpose lt)
+  and ss = to_array Infix.(ls *@ matrix_transpose ls) in
   let size = t_steps * m in
   let out = Array.create ~len:(size * size) 0.0 in
   for t = 0 to t_steps - 1 do
@@ -267,7 +269,7 @@ let dense_covariance ~t_steps ~m time_params space_params =
       done
     done
   done;
-  Nx.create dtype [| size; size |] out
+  create dtype [| size; size |] out
 
 let test_recognition_sampling () =
   let t_steps = 4
@@ -276,32 +278,31 @@ let test_recognition_sampling () =
   let time_cov =
     { C.d = vec [ 0.5; 1.0; 1.5; 2.0 ]
     ; t =
-        Nx.create
+        create
           dtype
           [| 4; 4 |]
           [| 0.; 0.4; 0.; 0.; 0.; 0.; 0.3; 0.; 0.; 0.; 0.; 0.; 0.; 0.; 0.; 0. |]
     }
   in
   let space_cov =
-    { C.d = vec [ 0.7; 1.3 ]; t = Nx.create dtype [| 2; 2 |] [| 0.; -0.2; 0.; 0. |] }
+    { C.d = vec [ 0.7; 1.3 ]; t = create dtype [| 2; 2 |] [| 0.; -0.2; 0.; 0. |] }
   in
   let params =
     { params with M.recognition = ({ Il.space_cov; time_cov } : Nx.float64_t Il.params) }
   in
   let n_samples = 40_000 in
-  let data = Nx.zeros dtype [| t_steps; 2 |] in
+  let data = zeros dtype [| t_steps; 2 |] in
   let posterior = M.infer model params ~iters:4 ~n_samples ~key:(Nx.Rng.key 17) data in
   require
     ~msg:"posterior u shape"
-    Poly.(Nx.shape posterior.R.u = [| t_steps; n_samples; m |]);
+    Poly.(shape posterior.R.u = [| t_steps; n_samples; m |]);
   (* empirical covariance over samples, laid out like the dense one *)
   let u2 =
-    Nx.reshape [| t_steps; m; n_samples |] (Nx.transpose ~axes:[ 0; 2; 1 ] posterior.R.u)
-    |> Nx.reshape [| t_steps * m; n_samples |]
+    reshape [| t_steps; m; n_samples |] (transpose ~axes:[ 0; 2; 1 ] posterior.R.u)
+    |> reshape [| t_steps * m; n_samples |]
   in
-  let empirical =
-    Nx.mul_s (Nx.matmul u2 (Nx.matrix_transpose u2)) (1.0 /. Float.of_int (n_samples - 1))
-  in
+  let scale = 1.0 /. Float.of_int (n_samples - 1) in
+  let empirical = Infix.(u2 *@ matrix_transpose u2 *$ scale) in
   let dense = dense_covariance ~t_steps ~m time_cov space_cov in
   check_close ~msg:"sampling covariance" ~tol:0.05 empirical dense
 
@@ -311,52 +312,47 @@ let test_recognition_log_prob () =
   let model, params = setup ~n:2 ~m ~t_steps ~n_output:2 () in
   let time_cov =
     { C.d = vec [ 1.0; 0.8; 1.2 ]
-    ; t = Nx.create dtype [| 3; 3 |] [| 0.; 0.2; 0.3; 0.; 0.; -0.1; 0.; 0.; 0. |]
+    ; t = create dtype [| 3; 3 |] [| 0.; 0.2; 0.3; 0.; 0.; -0.1; 0.; 0.; 0. |]
     }
   in
   let space_cov =
-    { C.d = vec [ 1.1; 0.9 ]; t = Nx.create dtype [| 2; 2 |] [| 0.; 0.4; 0.; 0. |] }
+    { C.d = vec [ 1.1; 0.9 ]; t = create dtype [| 2; 2 |] [| 0.; 0.4; 0.; 0. |] }
   in
   let params =
     { params with M.recognition = ({ Il.space_cov; time_cov } : Nx.float64_t Il.params) }
   in
-  let data = Nx.create dtype [| t_steps; 2 |] [| 0.1; -0.2; 0.3; 0.0; -0.4; 0.2 |] in
+  let data = create dtype [| t_steps; 2 |] [| 0.1; -0.2; 0.3; 0.0; -0.4; 0.2 |] in
   let mu = (M.mean model params ~iters:60 data).R.u in
-  let u = Nx.create dtype [| 3; 2 |] [| 0.0; 0.1; -0.2; 0.3; 0.5; -0.1 |] in
+  let u = create dtype [| 3; 2 |] [| 0.0; 0.1; -0.2; 0.3; 0.5; -0.1 |] in
   let log_q =
-    M.log_prob model params ~iters:60 data { R.x0 = Nx.zeros dtype [| 1; 2 |]; u }
+    M.log_prob model params ~iters:60 data { R.x0 = zeros dtype [| 1; 2 |]; u }
   in
   (* dense Gaussian log density, same covariance and mean *)
-  let mu2 = Nx.reshape [| t_steps; m |] mu in
+  let mu2 = reshape [| t_steps; m |] mu in
   let dense = dense_covariance ~t_steps ~m time_cov space_cov in
-  let diff = Nx.reshape [| t_steps * m |] (Nx.sub u mu2) in
-  let factor = Nx.cholesky dense in
-  let solved = Nx.solve factor diff in
-  let quadratic = item (Nx.sum (Nx.mul solved solved)) in
-  let log_det = item (Nx.mul_s (Nx.sum (Nx.log (Nx.diag factor))) 2.0) in
+  let diff = reshape [| t_steps * m |] Infix.(u - mu2) in
+  let factor = cholesky dense in
+  let solved = solve factor diff in
+  let quadratic = item (sum Infix.(solved * solved)) in
+  let log_det = item Infix.(sum (log (diag factor)) *$ 2.0) in
   let dim = Float.of_int (t_steps * m) in
   let expected = -0.5 *. (quadratic +. log_det +. (dim *. Float.log (2.0 *. Float.pi))) in
   check_close ~msg:"log q" ~tol:1e-9 log_q (scalar expected);
   (* a batch of two sequences gives one value per sequence *)
   let u_batch =
-    Nx.concatenate
+    concatenate
       ~axis:1
-      [ Nx.unsqueeze ~axes:[ 1 ] u; Nx.unsqueeze ~axes:[ 1 ] (Nx.add_s u 0.1) ]
+      [ unsqueeze ~axes:[ 1 ] u; unsqueeze ~axes:[ 1 ] Infix.(u +$ 0.1) ]
   in
   let batch =
-    M.log_prob
-      model
-      params
-      ~iters:60
-      data
-      { R.x0 = Nx.zeros dtype [| 2; 2 |]; u = u_batch }
+    M.log_prob model params ~iters:60 data { R.x0 = zeros dtype [| 2; 2 |]; u = u_batch }
   in
-  require ~msg:"batched log q shape" Poly.(Nx.shape batch = [| 2 |]);
+  require ~msg:"batched log q shape" Poly.(shape batch = [| 2 |]);
   check_close
     ~msg:"batched log q"
     ~tol:1e-9
     batch
-    (Nx.stack
+    (stack
        ~axis:0
        [ log_q
        ; M.log_prob
@@ -364,7 +360,7 @@ let test_recognition_log_prob () =
            params
            ~iters:60
            data
-           { R.x0 = Nx.zeros dtype [| 1; 2 |]; u = Nx.add_s u 0.1 }
+           { R.x0 = zeros dtype [| 1; 2 |]; u = Infix.(u +$ 0.1) }
        ])
 
 (* ──────────────────────────────────────────────────────────────────────────
@@ -424,10 +420,9 @@ let test_prior_densities () =
     let total = ref 0.0 in
     for i = 1 to n_keys do
       let u = prior.P.sample prior.P.params ~key:(Nx.Rng.key i) ~n_steps in
-      let x = Nx.slice [ R (1, n_steps) ] u |> Nx.reshape [| n_steps - 1 |] in
-      total
-      := !total
-         +. item (Nx.mul_s (Nx.sum (Nx.mul x x)) (1.0 /. Float.of_int (n_steps - 1)))
+      let x = slice [ R (1, n_steps) ] u |> reshape [| n_steps - 1 |] in
+      let scale = 1.0 /. Float.of_int (n_steps - 1) in
+      total := !total +. item Infix.(sum (x * x) *$ scale)
     done;
     !total /. Float.of_int n_keys
   in
@@ -451,13 +446,13 @@ let test_kl () =
   let prior = P.Gaussian.make ~spatial_std:1.5 ~first_bin:0.5 ~m dtype in
   let time_cov =
     { C.d = vec [ 0.7; 1.0; 1.3 ]
-    ; t = Nx.create dtype [| 3; 3 |] [| 0.; 0.2; 0.1; 0.; 0.; -0.3; 0.; 0.; 0. |]
+    ; t = create dtype [| 3; 3 |] [| 0.; 0.2; 0.1; 0.; 0.; -0.3; 0.; 0.; 0. |]
     }
   in
   let space_cov =
-    { C.d = vec [ 1.1; 0.9 ]; t = Nx.create dtype [| 2; 2 |] [| 0.; 0.4; 0.; 0. |] }
+    { C.d = vec [ 1.1; 0.9 ]; t = create dtype [| 2; 2 |] [| 0.; 0.4; 0.; 0. |] }
   in
-  let mu = Nx.create dtype [| 3; 2 |] [| 0.2; -0.1; 0.4; 0.0; -0.3; 0.5 |] in
+  let mu = create dtype [| 3; 2 |] [| 0.2; -0.1; 0.4; 0.0; -0.3; 0.5 |] in
   let got =
     (Option.value_exn prior.P.kl_to_gaussian)
       prior.P.params
@@ -466,7 +461,7 @@ let test_kl () =
       ~time_factor:(C.factor time_cov)
   in
   let dense_q = dense_covariance ~t_steps ~m time_cov space_cov in
-  let spatial = Nx.to_array (Nx.exp prior.P.params.P.Gaussian.log_spatial_stds) in
+  let spatial = to_array (exp prior.P.params.P.Gaussian.log_spatial_stds) in
   let first_bin = Float.exp (item prior.P.params.P.Gaussian.log_first_bin) in
   let d = t_steps * m in
   let prior_var r =
@@ -476,8 +471,8 @@ let test_kl () =
     let sigma_t = if t = 0 then first_bin else 1.0 in
     sigma_t *. s *. sigma_t *. s
   in
-  let q = Nx.to_array dense_q
-  and mu_arr = Nx.to_array mu in
+  let q = to_array dense_q
+  and mu_arr = to_array mu in
   let trace = ref 0.0
   and quadratic = ref 0.0
   and log_det_p = ref 0.0 in
@@ -487,7 +482,7 @@ let test_kl () =
     quadratic := !quadratic +. (mu_arr.(r) *. mu_arr.(r) /. v);
     log_det_p := !log_det_p +. Float.log v
   done;
-  let log_det_q = item (Nx.mul_s (Nx.sum (Nx.log (Nx.diag (Nx.cholesky dense_q)))) 2.0) in
+  let log_det_q = item Infix.(sum (log (diag (cholesky dense_q))) *$ 2.0) in
   let expected =
     0.5 *. (!trace +. !quadratic +. !log_det_p -. log_det_q -. Float.of_int d)
   in
@@ -499,7 +494,7 @@ let test_kl () =
       P.params =
         { prior.P.params with
           P.Gaussian.log_spatial_stds =
-            Nx.sub_s prior.P.params.P.Gaussian.log_spatial_stds 1.0
+            Infix.(prior.P.params.P.Gaussian.log_spatial_stds -$ 1.0)
         }
     }
   in
@@ -513,12 +508,12 @@ let test_kl () =
   require ~msg:"narrower prior, larger KL" Float.(item narrow_kl > item got);
   (* mu = 0 and q matching the prior factor gives no KL at all. *)
   let matching_prior = P.Gaussian.make ~spatial_std:1.0 ~first_bin:1.0 ~m dtype in
-  let identity_space = { C.d = vec [ 1.0; 1.0 ]; t = Nx.zeros dtype [| 2; 2 |] } in
-  let identity_time = { C.d = vec [ 1.0; 1.0; 1.0 ]; t = Nx.zeros dtype [| 3; 3 |] } in
+  let identity_space = { C.d = vec [ 1.0; 1.0 ]; t = zeros dtype [| 2; 2 |] } in
+  let identity_time = { C.d = vec [ 1.0; 1.0; 1.0 ]; t = zeros dtype [| 3; 3 |] } in
   let zero_kl =
     (Option.value_exn matching_prior.P.kl_to_gaussian)
       matching_prior.P.params
-      ~mu:(Nx.zeros dtype [| t_steps; m |])
+      ~mu:(zeros dtype [| t_steps; m |])
       ~space_factor:(C.factor identity_space)
       ~time_factor:(C.factor identity_time)
   in
@@ -533,8 +528,8 @@ let test_likelihoods () =
   and n_output = 2 in
   let likelihood = L.Gaussian.make ~n ~n_output dtype in
   let params : lik_params =
-    { L.Gaussian.c = Nx.eye dtype n
-    ; bias = Nx.zeros dtype [| n_output |]
+    { L.Gaussian.c = eye dtype n
+    ; bias = zeros dtype [| n_output |]
     ; log_variances = vec [ Float.log 0.5; Float.log 2.0 ]
     }
   in
@@ -554,7 +549,7 @@ let test_likelihoods () =
   check_close ~msg:"gaussian mean" ~tol:1e-12 mean (vec [ 2.0; 3.0 ]);
   let poisson = L.Poisson.make ~n ~n_output ~dt:0.1 dtype in
   let poisson_params : poisson_params =
-    { L.Poisson.c = Nx.eye dtype n
+    { L.Poisson.c = eye dtype n
     ; bias = vec [ 0.0; 0.0 ]
     ; log_gain = vec [ 0.0; Float.log 2.0 ]
     }
@@ -582,12 +577,12 @@ let test_likelihoods () =
   in
   check_close ~msg:"poisson log p" ~tol:1e-9 logp (scalar expected);
   let counts =
-    poisson.L.sample poisson_params ~key:(Nx.Rng.key 5) ~mean:(Nx.full dtype [| 5 |] 3.0)
+    poisson.L.sample poisson_params ~key:(Nx.Rng.key 5) ~mean:(full dtype [| 5 |] 3.0)
   in
-  require ~msg:"poisson sample shape" Poly.(Nx.shape counts = [| 5 |]);
-  let arr = Nx.to_array counts in
+  require ~msg:"poisson sample shape" Poly.(shape counts = [| 5 |]);
+  let arr = to_array counts in
   Array.iter arr ~f:(fun v -> require ~msg:"poisson sample non-negative" Float.(v >= 0.0));
-  let mean = item (Nx.mul_s (Nx.sum counts) (1.0 /. 5.0)) in
+  let mean = item Infix.(sum counts *$ (1.0 /. 5.0)) in
   require ~msg:"poisson sample mean near rate" Float.(Float.abs (mean -. 3.0) < 2.5)
 
 (* ──────────────────────────────────────────────────────────────────────────
@@ -600,7 +595,7 @@ let test_dynamics () =
   let dynamics = D.Linear.make ~n ~m dtype in
   let params =
     { dynamics.D.params with
-      w = Nx.create dtype [| 2; 2 |] [| 0.8; 0.2; 0.0; 0.9 |]
+      w = create dtype [| 2; 2 |] [| 0.8; 0.2; 0.0; 0.9 |]
     ; dt_over_tau = 1.0
     }
   in
@@ -608,7 +603,7 @@ let test_dynamics () =
   check_close
     ~msg:"linear matrix"
     ~tol:1e-12
-    (Nx.reshape [| 4 |] matrix)
+    (reshape [| 4 |] matrix)
     (vec [ 0.8; 0.2; 0.0; 0.9 ]);
   let x = vec [ 1.0; 2.0 ]
   and u = vec [ 0.5; -0.5 ] in
@@ -625,38 +620,38 @@ let test_dynamics () =
   (* a rollout matches a hand-written loop *)
   let t_steps = 5 in
   let u =
-    Nx.create
+    create
       dtype
       [| t_steps; m |]
       [| 0.1; 0.0; 0.2; -0.1; 0.0; 0.3; -0.2; 0.1; 0.05; 0.0 |]
   in
-  let z = D.integrate dynamics params ~x0:(Nx.zeros dtype [| n |]) ~u in
-  require ~msg:"rollout shape" Poly.(Nx.shape z = [| t_steps + 1; n |]);
+  let z = D.integrate dynamics params ~x0:(zeros dtype [| n |]) ~u in
+  require ~msg:"rollout shape" Poly.(shape z = [| t_steps + 1; n |]);
   let expected =
-    let xs = Array.create ~len:(t_steps + 1) (Nx.zeros dtype [| n |]) in
+    let xs = Array.create ~len:(t_steps + 1) (zeros dtype [| n |]) in
     for k = 0 to t_steps - 1 do
       xs.(k + 1)
-      <- dynamics.D.dyn params ~k:(scalar (Float.of_int k)) ~x:xs.(k) ~u:(Nx.get [ k ] u)
+      <- dynamics.D.dyn params ~k:(scalar (Float.of_int k)) ~x:xs.(k) ~u:(get [ k ] u)
     done;
-    Nx.stack ~axis:0 (Array.to_list xs)
+    stack ~axis:0 (Array.to_list xs)
   in
   check_close ~msg:"rollout" ~tol:1e-12 z expected;
   (* the tanh RNN rolls out, batched and unbatched, with the same values *)
-  let rnn = D.Linear_nonlinear.make ~n ~nh:4 ~m ~dt:0.1 ~tau:1.0 ~phi:Nx.tanh dtype in
+  let rnn = D.Linear_nonlinear.make ~n ~nh:4 ~m ~dt:0.1 ~tau:1.0 ~phi:tanh dtype in
   let batched =
     D.integrate
       rnn
       rnn.D.params
-      ~x0:(Nx.zeros dtype [| 2; n |])
-      ~u:(Nx.broadcast_to [| t_steps; 2; m |] (Nx.unsqueeze ~axes:[ 1 ] u))
+      ~x0:(zeros dtype [| 2; n |])
+      ~u:(broadcast_to [| t_steps; 2; m |] (unsqueeze ~axes:[ 1 ] u))
   in
-  require ~msg:"batched rollout shape" Poly.(Nx.shape batched = [| t_steps + 1; 2; n |]);
-  let first = Nx.slice [ A; I 0 ] batched in
+  require ~msg:"batched rollout shape" Poly.(shape batched = [| t_steps + 1; 2; n |]);
+  let first = slice [ A; I 0 ] batched in
   check_close
     ~msg:"batched rollout member"
     ~tol:1e-10
     first
-    (D.integrate rnn rnn.D.params ~x0:(Nx.zeros dtype [| n |]) ~u)
+    (D.integrate rnn rnn.D.params ~x0:(zeros dtype [| n |]) ~u)
 
 (* The paper's MGU (Appendix B.2, with the [z_{t-1}] subscript typo of (S9)
    corrected): the input is additive in the candidate and does not enter the
@@ -667,9 +662,9 @@ let test_mgu () =
   and m = 2 in
   let dynamics = D.Mgu.make ~n ~m ~key:(Nx.Rng.key 4) ~phi dtype in
   let params : mgu_params =
-    { uf = Nx.create dtype [| n; n |] [| 0.5; 0.0; 0.0; -0.5 |]
-    ; uh = Nx.create dtype [| n; n |] [| 0.25; 0.0; 0.0; 0.25 |]
-    ; w = Nx.create dtype [| m; n |] [| 1.0; 0.5; -0.5; 1.0 |]
+    { uf = create dtype [| n; n |] [| 0.5; 0.0; 0.0; -0.5 |]
+    ; uh = create dtype [| n; n |] [| 0.25; 0.0; 0.0; 0.25 |]
+    ; w = create dtype [| m; n |] [| 1.0; 0.5; -0.5; 1.0 |]
     ; bf = vec [ 0.3; -0.1 ]
     ; bh = vec [ 0.0; 0.2 ]
     }
@@ -690,7 +685,7 @@ let test_mgu () =
   check_close ~msg:"mgu step" ~tol:1e-12 (dynamics.D.dyn params ~k ~x ~u) (vec [ z1; z2 ]);
   (* the same step under the ReLU activation: the paper's gate and candidate
      with [phi = relu] *)
-  let relu x = Nx.maximum x (Nx.zeros_like x) in
+  let relu x = maximum x (zeros_like x) in
   let r = Float.max 0.0 in
   let f1r = r ((0.5 *. 1.0) +. 0.3)
   and f2r = r ((-0.5 *. -2.0) -. 0.1) in
@@ -706,47 +701,45 @@ let test_mgu () =
   let u' = vec [ -0.25; 0.75 ] in
   let z_u = dynamics.D.dyn params ~k ~x ~u in
   let z_u' = dynamics.D.dyn params ~k ~x ~u:u' in
-  let z_zero = dynamics.D.dyn params ~k ~x ~u:(Nx.zeros dtype [| m |]) in
-  let z_sum = dynamics.D.dyn params ~k ~x ~u:(Nx.add u u') in
+  let z_zero = dynamics.D.dyn params ~k ~x ~u:(zeros dtype [| m |]) in
+  let z_sum = dynamics.D.dyn params ~k ~x ~u:Infix.(u + u') in
   check_close
     ~msg:"mgu input additivity"
     ~tol:1e-12
-    (Nx.sub z_sum z_zero)
-    (Nx.add (Nx.sub z_u z_zero) (Nx.sub z_u' z_zero));
+    Infix.(z_sum - z_zero)
+    Infix.(z_u - z_zero + (z_u' - z_zero));
   (* a rollout matches a hand-written loop, and a batched rollout its
      members *)
   let t_steps = 4 in
   let us =
-    Nx.create dtype [| t_steps; m |] [| 0.5; -1.0; 0.25; 0.0; -0.75; 0.5; 0.0; 0.25 |]
+    create dtype [| t_steps; m |] [| 0.5; -1.0; 0.25; 0.0; -0.75; 0.5; 0.0; 0.25 |]
   in
   let x0 = vec [ 0.3; -0.4 ] in
   let z = D.integrate dynamics params ~x0 ~u:us in
-  require ~msg:"mgu rollout shape" Poly.(Nx.shape z = [| t_steps + 1; n |]);
+  require ~msg:"mgu rollout shape" Poly.(shape z = [| t_steps + 1; n |]);
   let expected =
     let xs = Array.create ~len:(t_steps + 1) x0 in
     for k = 0 to t_steps - 1 do
       xs.(k + 1)
-      <- dynamics.D.dyn params ~k:(scalar (Float.of_int k)) ~x:xs.(k) ~u:(Nx.get [ k ] us)
+      <- dynamics.D.dyn params ~k:(scalar (Float.of_int k)) ~x:xs.(k) ~u:(get [ k ] us)
     done;
-    Nx.stack ~axis:0 (Array.to_list xs)
+    stack ~axis:0 (Array.to_list xs)
   in
   check_close ~msg:"mgu rollout" ~tol:1e-12 z expected;
   let batched =
     D.integrate
       dynamics
       params
-      ~x0:(Nx.broadcast_to [| 2; n |] x0)
-      ~u:(Nx.broadcast_to [| t_steps; 2; m |] (Nx.unsqueeze ~axes:[ 1 ] us))
+      ~x0:(broadcast_to [| 2; n |] x0)
+      ~u:(broadcast_to [| t_steps; 2; m |] (unsqueeze ~axes:[ 1 ] us))
   in
-  require
-    ~msg:"mgu batched rollout shape"
-    Poly.(Nx.shape batched = [| t_steps + 1; 2; n |]);
-  check_close ~msg:"mgu batched rollout member" ~tol:1e-10 (Nx.slice [ A; I 0 ] batched) z;
+  require ~msg:"mgu batched rollout shape" Poly.(shape batched = [| t_steps + 1; 2; n |]);
+  check_close ~msg:"mgu batched rollout member" ~tol:1e-10 (slice [ A; I 0 ] batched) z;
   (* the dynamics is differentiable in every parameter *)
   match
     Rune.check_grads
       (D.Mgu.structure ())
-      (fun p -> Nx.sum (D.integrate dynamics p ~x0 ~u:us))
+      (fun p -> sum (D.integrate dynamics p ~x0 ~u:us))
       params
   with
   | Ok () -> ()
@@ -760,38 +753,40 @@ let test_mgu () =
    likelihood of unit variance and an isotropic Gaussian encoder prior:
    [½ Σ_k ‖u_k‖² + ½ Σ_{k≥1} ‖x_k − o_{k−1}‖² + ½ ‖x_T − o_{T−1}‖²]. *)
 let lqr_cost ~a ~o ~t_steps u =
-  let x = ref (Nx.zeros dtype [| (Nx.shape a).(0) |]) in
+  let x = ref (zeros dtype [| (shape a).(0) |]) in
   let total = ref (scalar 0.0) in
   for k = 0 to t_steps - 1 do
     if k >= 1
     then (
-      let diff = Nx.sub !x (Nx.get [ k - 1 ] o) in
-      total := Nx.add !total (Nx.mul_s (Nx.sum (Nx.mul diff diff)) 0.5));
-    let u_k = Nx.get [ k ] u in
-    total := Nx.add !total (Nx.mul_s (Nx.sum (Nx.mul u_k u_k)) 0.5);
-    x := Nx.add (Nx.matmul !x a) u_k
+      let prev = k - 1 in
+      let diff = Infix.(!x - get [ prev ] o) in
+      total := Infix.(!total + (sum (diff * diff) *$ 0.5)));
+    let u_k = get [ k ] u in
+    (total := Infix.(!total + (sum (u_k * u_k) *$ 0.5)));
+    x := Infix.((!x *@ a) + u_k)
   done;
-  let diff = Nx.sub !x (Nx.get [ t_steps - 1 ] o) in
-  Nx.add !total (Nx.mul_s (Nx.sum (Nx.mul diff diff)) 0.5)
+  let last = t_steps - 1 in
+  let diff = Infix.(!x - get [ last ] o) in
+  Infix.(!total + (sum (diff * diff) *$ 0.5))
 
 let lqr_setup () =
   let n = 2
   and m = 2
   and t_steps = 5 in
   let model, params = setup ~n ~m ~t_steps ~n_output:2 () in
-  let w = Nx.create dtype [| 2; 2 |] [| 0.8; 0.2; 0.0; 0.9 |] in
+  let w = create dtype [| 2; 2 |] [| 0.8; 0.2; 0.0; 0.9 |] in
   let params : iilqr_params =
     { params with
       M.dynamics = { params.M.dynamics with w; dt_over_tau = 1.0 }
     ; likelihood =
-        { L.Gaussian.c = Nx.eye dtype n
-        ; bias = Nx.zeros dtype [| 2 |]
-        ; log_variances = Nx.zeros dtype [| 2 |]
+        { L.Gaussian.c = eye dtype n
+        ; bias = zeros dtype [| 2 |]
+        ; log_variances = zeros dtype [| 2 |]
         }
     }
   in
   let o =
-    Nx.create
+    create
       dtype
       [| t_steps; 2 |]
       [| 1.0; 0.0; 0.5; -0.5; -0.2; 0.7; 0.3; 0.1; -0.6; 0.4 |]
@@ -803,10 +798,10 @@ let test_encoder_stationarity () =
   let generative = M.generative model
   and gparams = M.gparams params in
   let mu = Il.posterior_mean generative gparams ~max_iter:100 ~conv_threshold:1e-14 o in
-  require ~msg:"posterior mean shape" Poly.(Nx.shape mu = [| 5; 2 |]);
+  require ~msg:"posterior mean shape" Poly.(shape mu = [| 5; 2 |]);
   let a = D.Linear.matrix params.M.dynamics in
   let grad = Rune.grad' (fun u -> lqr_cost ~a ~o ~t_steps:5 u) mu in
-  let max_grad = item (Nx.max (Nx.abs grad)) in
+  let max_grad = item (max (abs grad)) in
   if not Float.(max_grad < 1e-6)
   then Stdio.printf "encoder stationarity: max |grad| = %.3g\n%!" max_grad;
   require ~msg:"iLQR solves the LQR problem" Float.(max_grad < 1e-6);
@@ -817,7 +812,7 @@ let test_encoder_stationarity () =
   check_close
     ~msg:"model mean matches the encoder"
     ~tol:1e-6
-    (Nx.reshape [| 5; 2 |] via_model)
+    (reshape [| 5; 2 |] via_model)
     mu
 
 (* ──────────────────────────────────────────────────────────────────────────
@@ -836,9 +831,9 @@ let test_lfads_shapes_and_density () =
   let model, params = setup_lfads ~n ~m ~t_steps ~n_output:2 () in
   let data = lfads_data ~t_steps ~n_output:2 () in
   let posterior = M.infer model params ~n_samples:3 ~key:(Nx.Rng.key 11) data in
-  require ~msg:"lfads x0 shape" Poly.(Nx.shape posterior.R.x0 = [| 3; n |]);
-  require ~msg:"lfads u shape" Poly.(Nx.shape posterior.R.u = [| t_steps; 3; m |]);
-  require ~msg:"lfads log_prob shape" Poly.(Nx.shape posterior.R.log_prob = [| 3 |]);
+  require ~msg:"lfads x0 shape" Poly.(shape posterior.R.x0 = [| 3; n |]);
+  require ~msg:"lfads u shape" Poly.(shape posterior.R.u = [| t_steps; 3; m |]);
+  require ~msg:"lfads log_prob shape" Poly.(shape posterior.R.log_prob = [| 3 |]);
   (* the standalone density replays the same trajectory: same value *)
   let replay =
     M.log_prob model params data { R.x0 = posterior.R.x0; u = posterior.R.u }
@@ -850,7 +845,7 @@ let test_lfads_shapes_and_density () =
   let other = M.infer model params ~n_samples:3 ~key:(Nx.Rng.key 12) data in
   require
     ~msg:"different keys draw differently"
-    Float.(max_abs (Nx.sub other.R.u posterior.R.u) > 1e-6);
+    Float.(max_abs Infix.(other.R.u - posterior.R.u) > 1e-6);
   (* without inferred inputs the inputs are the point mass at zero *)
   let model0, params0 = setup_lfads ~n ~m ~t_steps ~n_output:2 ~with_inputs:false () in
   let posterior0 = M.infer model0 params0 ~n_samples:3 ~key:(Nx.Rng.key 13) data in
@@ -858,11 +853,11 @@ let test_lfads_shapes_and_density () =
     ~msg:"lfads without inputs, u = 0"
     ~tol:1e-12
     posterior0.R.u
-    (Nx.zeros dtype [| t_steps; 3; m |]);
+    (zeros dtype [| t_steps; 3; m |]);
   (* the mean is a batch of one *)
   let mean = M.mean model params data in
-  require ~msg:"lfads mean x0 shape" Poly.(Nx.shape mean.R.x0 = [| 1; n |]);
-  require ~msg:"lfads mean u shape" Poly.(Nx.shape mean.R.u = [| t_steps; 1; m |])
+  require ~msg:"lfads mean x0 shape" Poly.(shape mean.R.x0 = [| 1; n |]);
+  require ~msg:"lfads mean u shape" Poly.(shape mean.R.u = [| t_steps; 1; m |])
 
 (* The initial-condition encoder against a hand-rolled MGU rollout: a readout
    that selects the forward (resp. backward) encoder's final state must give
@@ -877,10 +872,9 @@ let test_lfads_encoder () =
   let p = params.M.recognition in
   let selector rows =
     (* [h = e_ic · readout]; map [e_ic] entries [rows] onto the mean head. *)
-    let r = Nx.zeros dtype [| 2 * 4; 2 * n |] in
+    let r = zeros dtype [| 2 * 4; 2 * n |] in
     let built = ref r in
-    List.iteri rows ~f:(fun j i ->
-      built := Nx.set [ I i; I j ] (Nx.ones dtype [||]) !built);
+    List.iteri rows ~f:(fun j i -> built := set [ I i; I j ] (ones dtype [||]) !built);
     !built
   in
   let with_readout rows =
@@ -888,31 +882,31 @@ let test_lfads_encoder () =
       M.recognition =
         { p with
           Lf.ic_readout = selector rows
-        ; Lf.ic_readout_bias = Nx.zeros dtype [| 2 * n |]
+        ; Lf.ic_readout_bias = zeros dtype [| 2 * n |]
         }
     }
   in
   let forward_expected =
-    Nx.slice [ R (0, n) ] (run_mgu ~phi p.Lf.ic_fwd ~init:p.Lf.ic_fwd_init data)
+    slice [ R (0, n) ] (run_mgu ~phi p.Lf.ic_fwd ~init:p.Lf.ic_fwd_init data)
   in
   let fwd_params = with_readout [ 0; 1 ] in
   let fwd = M.mean model fwd_params data in
   check_close
     ~msg:"forward initial-condition encoder"
     ~tol:1e-12
-    (Nx.reshape [| n |] fwd.R.x0)
+    (reshape [| n |] fwd.R.x0)
     forward_expected;
   let backward_expected =
-    Nx.slice
+    slice
       [ R (0, n) ]
-      (run_mgu ~phi p.Lf.ic_bwd ~init:p.Lf.ic_bwd_init (Nx.flip ~axes:[ 0 ] data))
+      (run_mgu ~phi p.Lf.ic_bwd ~init:p.Lf.ic_bwd_init (flip ~axes:[ 0 ] data))
   in
   let bwd_params = with_readout [ 4; 5 ] in
   let bwd = M.mean model bwd_params data in
   check_close
     ~msg:"backward initial-condition encoder"
     ~tol:1e-12
-    (Nx.reshape [| n |] bwd.R.x0)
+    (reshape [| n |] bwd.R.x0)
     backward_expected
 
 (* The controller against a hand-rolled generator rollout: a zero input
@@ -930,26 +924,26 @@ let test_lfads_controller () =
     { params with
       M.recognition =
         { p with
-          Lf.u_readout = Nx.zeros dtype [| (Nx.shape p.Lf.u_readout).(0); 2 * m |]
-        ; Lf.u_readout_bias = Nx.concatenate ~axis:0 [ c; Nx.zeros dtype [| m |] ]
+          Lf.u_readout = zeros dtype [| (shape p.Lf.u_readout).(0); 2 * m |]
+        ; Lf.u_readout_bias = concatenate ~axis:0 [ c; zeros dtype [| m |] ]
         }
     }
   in
   let mean = M.mean model params data in
-  let expected_u = Nx.broadcast_to [| t_steps; 1; m |] (Nx.reshape [| 1; 1; m |] c) in
+  let expected_u = broadcast_to [| t_steps; 1; m |] (reshape [| 1; 1; m |] c) in
   check_close ~msg:"push-mean inputs" ~tol:1e-12 mean.R.u expected_u;
   let z, _ = Ilqr_vae.predictions_deterministic model params mean in
-  let x = ref (Nx.reshape [| n |] mean.R.x0) in
+  let x = ref (reshape [| n |] mean.R.x0) in
   let states = ref [ !x ] in
   for k = 0 to t_steps - 1 do
     x := D.Mgu.dyn ~phi params.M.dynamics ~k:(scalar (Float.of_int k)) ~x:!x ~u:c;
     states := !x :: !states
   done;
-  let expected_z = Nx.stack ~axis:0 (List.rev !states) in
+  let expected_z = stack ~axis:0 (List.rev !states) in
   check_close
     ~msg:"push-mean rollout"
     ~tol:1e-12
-    (Nx.reshape [| t_steps + 1; n |] z)
+    (reshape [| t_steps + 1; n |] z)
     expected_z
 
 (* When the posterior is exactly the prior, the sampled KL is identically
@@ -1001,16 +995,16 @@ let test_lfads_sticking_the_landing () =
   (* q(x0) = p(x0) and q(u_t) = p(u_t) for every t. *)
   let recognition_params =
     { p with
-      Lf.ic_readout = Nx.zeros dtype [| 2 * 4; 2 * n |]
+      Lf.ic_readout = zeros dtype [| 2 * 4; 2 * n |]
     ; Lf.ic_readout_bias =
-        Nx.concatenate
+        concatenate
           ~axis:0
-          [ initial_prior.I.mean; Nx.mul_s initial_prior.I.log_stds 2.0 ]
-    ; Lf.u_readout = Nx.zeros dtype [| (Nx.shape p.Lf.u_readout).(0); 2 * m |]
+          [ initial_prior.I.mean; Infix.(initial_prior.I.log_stds *$ 2.0) ]
+    ; Lf.u_readout = zeros dtype [| (shape p.Lf.u_readout).(0); 2 * m |]
     ; Lf.u_readout_bias =
-        Nx.concatenate
+        concatenate
           ~axis:0
-          [ Nx.zeros dtype [| m |]; Nx.full dtype [| m |] (2.0 *. Float.log spatial_std) ]
+          [ zeros dtype [| m |]; full dtype [| m |] (2.0 *. Float.log spatial_std) ]
     }
   in
   let params = { params with M.recognition = recognition_params } in
@@ -1034,7 +1028,7 @@ let test_lfads_sticking_the_landing () =
   let live_kl params =
     let posterior = M.infer model params ~n_samples:4 ~key data in
     Nx.mean
-      (Nx.sub
+      (sub
          (M.log_prob model params data { R.x0 = posterior.R.x0; u = posterior.R.u })
          (El.log_prior model params ~x0:posterior.R.x0 ~u:posterior.R.u))
   in
@@ -1067,7 +1061,7 @@ let plain_objective
   let samples : w R.samples = { R.x0 = posterior.R.x0; u = posterior.R.u } in
   let log_prob = M.log_prob model params ~iters data samples in
   let posterior = { posterior with R.log_prob } in
-  Nx.neg (El.compute model params ~posterior data).El.elbo
+  Infix.(-(El.compute model params ~posterior data).El.elbo)
 
 let test_lfads_gradients () =
   let t_steps = 3
@@ -1144,9 +1138,7 @@ let test_elbo_gradient () =
   and m = 2
   and t_steps = 4 in
   let model, params = setup ~n ~m ~t_steps ~n_output:2 () in
-  let o =
-    Nx.create dtype [| t_steps; 2 |] [| 1.0; 0.0; 0.5; -0.5; -0.2; 0.7; 0.3; 0.1 |]
-  in
+  let o = create dtype [| t_steps; 2 |] [| 1.0; 0.0; 0.5; -0.5; -0.2; 0.7; 0.3; 0.1 |] in
   let structure = M.structure model in
   let key = Nx.Rng.key 1 in
   (* the whole objective, with its live density: the gradient of the encoder
@@ -1171,9 +1163,7 @@ let test_elbo_terms () =
   and m = 2
   and t_steps = 4 in
   let model, params = setup ~n ~m ~t_steps ~n_output:2 () in
-  let o =
-    Nx.create dtype [| t_steps; 2 |] [| 1.0; 0.0; 0.5; -0.5; -0.2; 0.7; 0.3; 0.1 |]
-  in
+  let o = create dtype [| t_steps; 2 |] [| 1.0; 0.0; 0.5; -0.5; -0.2; 0.7; 0.3; 0.1 |] in
   let structure = M.structure model in
   let posterior = M.infer model params ~iters:12 ~n_samples:4 ~key:(Nx.Rng.key 2) o in
   let terms = El.compute model params ~posterior o in
@@ -1181,22 +1171,22 @@ let test_elbo_terms () =
     ~msg:"elbo = ll − beta kl"
     ~tol:1e-10
     terms.El.elbo
-    (Nx.sub terms.El.log_likelihood terms.El.kl);
+    Infix.(terms.El.log_likelihood - terms.El.kl);
   let loss = El.loss model params ~iters:12 ~key:(Nx.Rng.key 2) ~n_samples:4 o in
-  check_close ~msg:"loss is the negated elbo" ~tol:1e-12 loss (Nx.neg terms.El.elbo);
+  check_close ~msg:"loss is the negated elbo" ~tol:1e-12 loss Infix.(-terms.El.elbo);
   (* beta scales the KL term *)
   let half = El.compute model params ~beta:(scalar 0.5) ~posterior o in
   check_close
     ~msg:"beta scales the KL"
     ~tol:1e-10
     half.El.elbo
-    (Nx.sub terms.El.log_likelihood (Nx.mul_s terms.El.kl 0.5));
+    Infix.(terms.El.log_likelihood - (terms.El.kl *$ 0.5));
   (* the prior enters the KL: a wider prior has a larger KL *)
   let wide =
     { params with
       M.prior =
         { params.M.prior with
-          log_spatial_stds = Nx.add_s params.M.prior.log_spatial_stds 1.0
+          log_spatial_stds = Infix.(params.M.prior.log_spatial_stds +$ 1.0)
         }
     }
   in
@@ -1271,7 +1261,7 @@ let test_kl_schedule () =
     (scalar (Schedule.value custom 3))
     (scalar 0.75);
   let beta = Schedule.at sched 5 in
-  require ~msg:"beta is a scalar tensor" Poly.(Nx.shape beta = [||]);
+  require ~msg:"beta is a scalar tensor" Poly.(shape beta = [||]);
   (* beta = 0 leaves the log likelihood alone *)
   let posterior = M.infer model params ~iters:6 ~n_samples:3 ~key:(Nx.Rng.key 30) o in
   let zero = El.compute model params ~beta:(Schedule.at sched 0) ~posterior o in
@@ -1321,9 +1311,7 @@ let test_jit () =
   and m = 2
   and t_steps = 4 in
   let model, params = setup ~n ~m ~t_steps ~n_output:2 () in
-  let o =
-    Nx.create dtype [| t_steps; 2 |] [| 1.0; 0.0; 0.5; -0.5; -0.2; 0.7; 0.3; 0.1 |]
-  in
+  let o = create dtype [| t_steps; 2 |] [| 1.0; 0.0; 0.5; -0.5; -0.2; 0.7; 0.3; 0.1 |] in
   let key = Nx.Rng.key 3 in
   let structure = M.structure model in
   let eager = El.loss_fixed model params ~key ~n_samples:4 ~iters:4 o in
@@ -1489,7 +1477,7 @@ let test_training_smoke () =
   for _ = 1 to 40 do
     let _, grads = Rune.value_and_grad structure objective !params in
     let step : 'a 'b. Nx.Ptree.Path.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t =
-      fun _ p g -> Nx.sub p (Nx.mul (Nx.cast (Nx.dtype p) (Nx.scalar Nx.float64 lr)) g)
+      fun _ p g -> Infix.(p - (cast (Nx.dtype p) (Nx.scalar float64 lr) * g))
     in
     params := Nx.Ptree.map2 structure step !params grads
   done;
@@ -1498,21 +1486,21 @@ let test_training_smoke () =
   require ~msg:"training decreases the loss" Float.(final < initial);
   (* generative and predictive shapes *)
   let x0, u, z, o = Ilqr_vae.sample_generative model !params ~key:(Nx.Rng.key 9) in
-  require ~msg:"generative x0 shape" Poly.(Nx.shape x0 = [| n |]);
-  require ~msg:"generative u shape" Poly.(Nx.shape u = [| t_steps; m |]);
-  require ~msg:"generative z shape" Poly.(Nx.shape z = [| t_steps + 1; n |]);
-  require ~msg:"generative o shape" Poly.(Nx.shape o = [| t_steps; 2 |]);
+  require ~msg:"generative x0 shape" Poly.(shape x0 = [| n |]);
+  require ~msg:"generative u shape" Poly.(shape u = [| t_steps; m |]);
+  require ~msg:"generative z shape" Poly.(shape z = [| t_steps + 1; n |]);
+  require ~msg:"generative o shape" Poly.(shape o = [| t_steps; 2 |]);
   let posterior =
     M.infer model !params ~iters:4 ~n_samples:5 ~key:(Nx.Rng.key 10) (Array.get trials 0)
   in
   let u, z, o = Ilqr_vae.predictions model !params posterior in
-  require ~msg:"predictions u shape" Poly.(Nx.shape u = [| t_steps; 5; m |]);
-  require ~msg:"predictions z shape" Poly.(Nx.shape z = [| t_steps + 1; 5; n |]);
-  require ~msg:"predictions o shape" Poly.(Nx.shape o = [| t_steps; 5; 2 |]);
+  require ~msg:"predictions u shape" Poly.(shape u = [| t_steps; 5; m |]);
+  require ~msg:"predictions z shape" Poly.(shape z = [| t_steps + 1; 5; n |]);
+  require ~msg:"predictions o shape" Poly.(shape o = [| t_steps; 5; 2 |]);
   let mean = M.mean model !params (Array.get trials 0) in
   let z, o = Ilqr_vae.predictions_deterministic model !params mean in
-  require ~msg:"deterministic z shape" Poly.(Nx.shape z = [| t_steps + 1; 1; n |]);
-  require ~msg:"deterministic o shape" Poly.(Nx.shape o = [| t_steps; 1; 2 |])
+  require ~msg:"deterministic z shape" Poly.(shape z = [| t_steps + 1; 1; n |]);
+  require ~msg:"deterministic o shape" Poly.(shape o = [| t_steps; 1; 2 |])
 
 let test_lfads_training_smoke () =
   let n = 2
@@ -1535,7 +1523,7 @@ let test_lfads_training_smoke () =
   for _ = 1 to 25 do
     let _, grads = Rune.value_and_grad structure objective !params in
     let step : 'a 'b. Nx.Ptree.Path.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t =
-      fun _ p g -> Nx.sub p (Nx.mul (Nx.cast (Nx.dtype p) (Nx.scalar Nx.float64 lr)) g)
+      fun _ p g -> Infix.(p - (cast (Nx.dtype p) (Nx.scalar float64 lr) * g))
     in
     params := Nx.Ptree.map2 structure step !params grads
   done;

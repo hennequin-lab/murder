@@ -6,6 +6,7 @@
 (* Tests for Geom_viz.Camera: the PGA image plane, view rays and the
    agreement between the meet projection and the closed-form pinhole path. *)
 
+open Nx
 open Windtrap
 open Geom
 module C = Geom_viz.Camera
@@ -48,7 +49,7 @@ let equal_triple ?(eps = 5e-3) ?msg (x, y, d) actual =
     equal_float ~eps ~msg:"y" y ay;
     equal_float ~eps ~msg:"depth" d ad
 
-let coords p = Nx.to_array (Pga.point_coords p)
+let coords p = to_array (Pga.point_coords p)
 let pga (p : P.p3) = Pga.point3 p.x p.y p.z
 
 let world_of_camera c (q : P.p3) =
@@ -65,15 +66,15 @@ let cross3 a b =
   , (a.(0) *. b.(1)) -. (a.(1) *. b.(0)) )
 
 let line_distance (p : P.p3) l =
-  let d = Nx.to_array (Pga.line_direction l) in
-  let m = Nx.to_array (Pga.line_moment l) in
+  let d = to_array (Pga.line_direction l) in
+  let m = to_array (Pga.line_moment l) in
   let c0, c1, c2 = cross3 [| p.x; p.y; p.z |] d in
-  sqrt (((c0 -. m.(0)) ** 2.) +. ((c1 -. m.(1)) ** 2.) +. ((c2 -. m.(2)) ** 2.))
+  Float.sqrt (((c0 -. m.(0)) ** 2.) +. ((c1 -. m.(1)) ** 2.) +. ((c2 -. m.(2)) ** 2.))
 
 let plane_residual (p : P.p3) pi =
   let pi = Pga.normalize_plane pi in
-  let n = Nx.to_array (Pga.plane_normal pi) in
-  let d = Nx.item [] (Pga.plane_offset pi) in
+  let n = to_array (Pga.plane_normal pi) in
+  let d = item [] (Pga.plane_offset pi) in
   (n.(0) *. p.x) +. (n.(1) *. p.y) +. (n.(2) *. p.z) -. d
 
 let on_line ?(eps = 1e-3) ?msg p l = equal_float ~eps ?msg 0. (line_distance p l)
@@ -181,7 +182,10 @@ let test_accessors () =
   equal_float ~msg:"height" height (C.height c);
   equal_float ~msg:"near" 0.1 (C.near c);
   equal_float ~msg:"far" 1000. (C.far c);
-  equal_float ~msg:"the focal length" (height /. 2. /. tan (Float.pi /. 8.)) (C.focal c);
+  equal_float
+    ~msg:"the focal length"
+    (height /. 2. /. Float.tan (Float.pi /. 8.))
+    (C.focal c);
   equal_bool ~msg:"perspective by default" false (C.is_orthographic c);
   equal_float ~msg:"the default orthographic scale" (height /. 4.) (C.ortho_scale c);
   let r = C.right c
@@ -218,7 +222,7 @@ let test_view_motor () =
   equal_float ~msg:"the target lies on the optical axis" 0. target_cam.(1);
   equal_float ~msg:"the target is in front" (-.distance) target_cam.(2);
   (* The camera axes are the rows of the rotation part of the view motor. *)
-  let origin = Nx.to_array (Pga.point_coords (world_of_camera c (p3 0. 0. 0.))) in
+  let origin = to_array (Pga.point_coords (world_of_camera c (p3 0. 0. 0.))) in
   equal_float ~msg:"the inverse view maps the origin to the eye" (C.eye c).x origin.(0);
   equal_float ~msg:"the inverse view maps the origin to the eye" (C.eye c).y origin.(1);
   equal_float ~msg:"the inverse view maps the origin to the eye" (C.eye c).z origin.(2)
@@ -229,19 +233,19 @@ let test_image_plane () =
   let focal = C.focal c in
   let back = P.scale (C.forward c) (-1.) in
   let expected_offset = P.dot back (C.eye c) -. focal in
-  let normal = Nx.to_array (Pga.plane_normal pi) in
+  let normal = to_array (Pga.plane_normal pi) in
   equal_float ~msg:"the image plane normal is the camera back axis" back.x normal.(0);
   equal_float ~msg:"the image plane normal is the camera back axis" back.y normal.(1);
   equal_float ~msg:"the image plane normal is the camera back axis" back.z normal.(2);
   equal_float
     ~msg:"the image plane offset"
     expected_offset
-    (Nx.item [] (Pga.plane_offset pi));
+    (item [] (Pga.plane_offset pi));
   (* A point of the image plane, carried to world space, is on the plane. *)
   let q = p3 30. (-20.) (-.focal) in
   let w = world_of_camera c q in
   let w_p3 =
-    let q = Nx.to_array (Pga.point_coords w) in
+    let q = to_array (Pga.point_coords w) in
     p3 q.(0) q.(1) q.(2)
   in
   on_plane ~msg:"a camera image point lies on the image plane" w_p3 pi;
@@ -253,11 +257,11 @@ let test_image_plane () =
   let direct =
     Pga.normalize_plane
       (Pga.plane
-         ~normal:(Nx.create Nx.float32 [| 3 |] [| back.x; back.y; back.z |])
-         ~offset:(Nx.scalar Nx.float32 expected_offset))
+         ~normal:(create float32 [| 3 |] [| back.x; back.y; back.z |])
+         ~offset:(Nx.scalar float32 expected_offset))
   in
-  let a = Nx.to_array (Pga.normalize_plane pi) in
-  let b = Nx.to_array direct in
+  let a = to_array (Pga.normalize_plane pi) in
+  let b = to_array direct in
   Array.iter2 (fun x y -> equal_float ~msg:"the plane coefficients" ~eps:1e-4 x y) a b
 
 (* The meet projection and the pinhole evaluation are the same function. *)
@@ -352,12 +356,12 @@ let test_rays () =
   let yi = (height /. 2.) -. y in
   let image_world = world_of_camera c (p3 xi yi (-.focal)) in
   let image_world_p3 =
-    let q = Nx.to_array (Pga.point_coords image_world) in
+    let q = to_array (Pga.point_coords image_world) in
     p3 q.(0) q.(1) q.(2)
   in
   on_line ~msg:"the image point is on the ray" image_world_p3 r;
   let image_p3 =
-    let q = Nx.to_array (Pga.point_coords image_world) in
+    let q = to_array (Pga.point_coords image_world) in
     p3 q.(0) q.(1) q.(2)
   in
   match C.project c image_p3 with
@@ -369,7 +373,7 @@ let test_rays () =
     let center = C.ray c ~x:(width /. 2.) ~y:(height /. 2.) in
     let target = p3 0. 0. 0.5 in
     on_line ~msg:"the optical axis goes through the target" target center;
-    let dir = Nx.to_array (Pga.line_direction center) in
+    let dir = to_array (Pga.line_direction center) in
     equal_float ~msg:"the ray points forward" (C.forward c).x dir.(0);
     equal_float ~msg:"the ray points forward" (C.forward c).y dir.(1);
     equal_float ~msg:"the ray points forward" (C.forward c).z dir.(2)
@@ -392,7 +396,7 @@ let test_orthographic () =
    | _ -> failwith "both orthographic paths must project");
   (* The ray is parallel to the view axis. *)
   let r = C.ray c ~x:300. ~y:200. in
-  let dir = Nx.to_array (Pga.line_direction r) in
+  let dir = to_array (Pga.line_direction r) in
   equal_float
     ~msg:"an orthographic ray is parallel to the view axis"
     (C.forward c).x
@@ -409,7 +413,7 @@ let test_orthographic () =
   let yc = ((height /. 2.) -. 200.) /. s in
   let image_world = world_of_camera c (p3 xc yc (-1.)) in
   let image_world_p3 =
-    let q = Nx.to_array (Pga.point_coords image_world) in
+    let q = to_array (Pga.point_coords image_world) in
     p3 q.(0) q.(1) q.(2)
   in
   on_line ~msg:"the orthographic ray goes through the pixel" image_world_p3 r

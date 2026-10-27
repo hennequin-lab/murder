@@ -6,13 +6,14 @@
 (* Tests for Geom.Motor: the packed dual quaternion of SE(3). The coefficient
    order is [1, e12, e13, e23, e1 einf, e2 einf, e3 einf, e123 einf]. *)
 
+open Nx
 open Windtrap
 open Support
 module M = Geom.Motor
 
 let z_axis = vec3 0. 0. 1.
 let x_axis = vec3 1. 0. 0.
-let q w x y z = Nx.create f32 [| 4 |] [| w; x; y; z |]
+let q w x y z = create f32 [| 4 |] [| w; x; y; z |]
 let rot ~axis a = M.rotate ~axis ~angle:(scalar a)
 let translation v = M.translate v
 let check_motor = equal_tensor
@@ -20,24 +21,24 @@ let check_motor = equal_tensor
 (* A motor and its negative are the same rigid motion. *)
 let motor_proj =
   Testable.make ~pp:M.pp ~equal:(fun a b ->
-    Support.close a b || Support.close a (Nx.mul_s b (-1.)))
+    Support.close a b || Support.close a Infix.(b *$ -1.))
 
 let check_motor_proj ?msg expected actual = equal ?msg motor_proj expected actual
 
 (* Rodrigues' formula, used to build matrices independently of [Motor.rotate]
    so that [of_rotation] is checked against a second construction. *)
 let rotation_matrix ~axis ~angle =
-  let x = Nx.item [ 0 ] axis
-  and y = Nx.item [ 1 ] axis
-  and z = Nx.item [ 2 ] axis in
-  let n = sqrt ((x *. x) +. (y *. y) +. (z *. z)) in
+  let x = item [ 0 ] axis
+  and y = item [ 1 ] axis
+  and z = item [ 2 ] axis in
+  let n = Float.sqrt ((x *. x) +. (y *. y) +. (z *. z)) in
   let x = x /. n
   and y = y /. n
   and z = z /. n in
-  let c = cos angle
-  and s = sin angle
-  and t = 1. -. cos angle in
-  Nx.create
+  let c = Float.cos angle
+  and s = Float.sin angle
+  and t = 1. -. Float.cos angle in
+  create
     f32
     [| 3; 3 |]
     [| (t *. x *. x) +. c
@@ -55,7 +56,7 @@ let rotation_matrix ~axis ~angle =
 
 let test_representation () =
   equal ~msg:"size" int 8 M.size;
-  equal ~msg:"dtype" string "float32" (Format.asprintf "%a" Nx.pp_dtype M.dtype);
+  equal ~msg:"dtype" string "float32" (Format.asprintf "%a" pp_dtype M.dtype);
   equal
     ~msg:"one"
     (array (float 1e-6))
@@ -79,14 +80,14 @@ let test_representation () =
   raises_match
     ~msg:"to_array refuses a batch"
     (Exn.invalid_arg ~substring:"unbatched")
-    (fun () -> ignore (M.to_array (M.of_nx (Nx.zeros M.dtype [| 2; 8 |]))));
+    (fun () -> ignore (M.to_array (M.of_nx (zeros M.dtype [| 2; 8 |]))));
   raises_match
     ~msg:"of_nx checks the motor axis"
     (Exn.invalid_arg ~substring:"8")
-    (fun () -> ignore (M.of_nx (Nx.zeros M.dtype [| 7 |])));
+    (fun () -> ignore (M.of_nx (zeros M.dtype [| 7 |])));
   equal ~msg:"shape" (array int) [| 8 |] (M.shape M.one);
   equal ~msg:"batch shape" (array int) [||] (M.batch_shape M.one);
-  let batch = M.translate (Nx.create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 1. |]) in
+  let batch = M.translate (create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 1. |]) in
   equal ~msg:"a batched translation" (array int) [| 2; 8 |] (M.shape batch);
   equal ~msg:"its batch shape" (array int) [| 2 |] (M.batch_shape batch)
 
@@ -109,12 +110,12 @@ let test_motion_constructors () =
   equal
     ~msg:"a quarter turn about z"
     (array (float 1e-6))
-    [| cos (Float.pi /. 4.); -.sin (Float.pi /. 4.); 0.; 0.; 0.; 0.; 0.; 0. |]
+    [| Float.cos (Float.pi /. 4.); -.Float.sin (Float.pi /. 4.); 0.; 0.; 0.; 0.; 0.; 0. |]
     (M.to_array (rot ~axis:z_axis (Float.pi /. 2.)));
   equal
     ~msg:"a turn about x"
     (array (float 1e-6))
-    [| cos (Float.pi /. 4.); 0.; 0.; -.sin (Float.pi /. 4.); 0.; 0.; 0.; 0. |]
+    [| Float.cos (Float.pi /. 4.); 0.; 0.; -.Float.sin (Float.pi /. 4.); 0.; 0.; 0.; 0. |]
     (M.to_array (rot ~axis:x_axis (Float.pi /. 2.)));
   equal
     ~msg:"the axis is normalized"
@@ -137,17 +138,23 @@ let test_quaternions () =
     ~msg:"a quarter turn about z from a quaternion"
     (array (float 1e-6))
     (M.to_array (rot ~axis:z_axis (Float.pi /. 2.)))
-    (M.to_array (M.of_quaternion (q (cos (Float.pi /. 4.)) 0. 0. (sin (Float.pi /. 4.)))));
+    (M.to_array
+       (M.of_quaternion
+          (q (Float.cos (Float.pi /. 4.)) 0. 0. (Float.sin (Float.pi /. 4.)))));
   equal
     ~msg:"quaternions are normalized"
     (array (float 1e-6))
     (M.to_array M.one)
     (M.to_array (M.of_quaternion (q 2. 0. 0. 0.)));
   let r = rot ~axis:(vec3 1. 2. 3.) 0.7 in
-  let n = 1. /. sqrt 14. in
+  let n = 1. /. Float.sqrt 14. in
   equal_floats
     ~msg:"to_quaternion of a rotation"
-    [| cos 0.35; sin 0.35 *. n; 2. *. sin 0.35 *. n; 3. *. sin 0.35 *. n |]
+    [| Float.cos 0.35
+     ; Float.sin 0.35 *. n
+     ; 2. *. Float.sin 0.35 *. n
+     ; 3. *. Float.sin 0.35 *. n
+    |]
     (M.to_quaternion r);
   check_motor
     ~msg:"of_quaternion inverts to_quaternion"
@@ -160,14 +167,14 @@ let test_quaternions () =
     (Nx.to_array (M.to_quaternion (M.mul (translation (vec3 1. 2. 3.)) r)))
 
 let test_rotation_matrices () =
-  let identity = Nx.create f32 [| 3; 3 |] [| 1.; 0.; 0.; 0.; 1.; 0.; 0.; 0.; 1. |] in
+  let identity = create f32 [| 3; 3 |] [| 1.; 0.; 0.; 0.; 1.; 0.; 0.; 0.; 1. |] in
   check_motor ~msg:"the identity matrix" M.one (M.of_rotation identity);
-  let rz90 = Nx.create f32 [| 3; 3 |] [| 0.; -1.; 0.; 1.; 0.; 0.; 0.; 0.; 1. |] in
+  let rz90 = create f32 [| 3; 3 |] [| 0.; -1.; 0.; 1.; 0.; 0.; 0.; 0.; 1. |] in
   check_motor
     ~msg:"a quarter turn about z"
     (rot ~axis:z_axis (Float.pi /. 2.))
     (M.of_rotation rz90);
-  let rx90 = Nx.create f32 [| 3; 3 |] [| 1.; 0.; 0.; 0.; 0.; -1.; 0.; 1.; 0. |] in
+  let rx90 = create f32 [| 3; 3 |] [| 1.; 0.; 0.; 0.; 0.; -1.; 0.; 1.; 0. |] in
   check_motor
     ~msg:"a quarter turn about x"
     (rot ~axis:x_axis (Float.pi /. 2.))
@@ -175,31 +182,31 @@ let test_rotation_matrices () =
   raises_match
     ~msg:"of_rotation checks the matrix shape"
     (Exn.invalid_arg ~substring:"3x3")
-    (fun () -> ignore (M.of_rotation (Nx.zeros M.dtype [| 2; 3 |])));
-  let batch = Nx.stack ~axis:0 [ identity; rz90 ] in
+    (fun () -> ignore (M.of_rotation (zeros M.dtype [| 2; 3 |])));
+  let batch = stack ~axis:0 [ identity; rz90 ] in
   let m = M.of_rotation batch in
   equal ~msg:"a batch of rotation matrices" (array int) [| 2; 8 |] (M.shape m);
   check_motor
     ~msg:"the first matrix"
     M.one
-    (M.of_nx (Nx.take ~axis:0 ~indices:(Nx.scalar Nx.int64 0L) m));
+    (M.of_nx (take ~axis:0 ~indices:(Nx.scalar Nx.int64 0L) m));
   check_motor
     ~msg:"the second matrix"
     (rot ~axis:z_axis (Float.pi /. 2.))
-    (M.of_nx (Nx.take ~axis:0 ~indices:(Nx.scalar Nx.int64 1L) m));
+    (M.of_nx (take ~axis:0 ~indices:(Nx.scalar Nx.int64 1L) m));
   (* Half turns have trace -1, so [of_rotation] takes one of its three
      diagonal branches instead of the trace branch. *)
-  let rx180 = Nx.create f32 [| 3; 3 |] [| 1.; 0.; 0.; 0.; -1.; 0.; 0.; 0.; -1. |] in
+  let rx180 = create f32 [| 3; 3 |] [| 1.; 0.; 0.; 0.; -1.; 0.; 0.; 0.; -1. |] in
   check_motor_proj
     ~msg:"a half turn about x from a matrix"
     (rot ~axis:x_axis Float.pi)
     (M.of_rotation rx180);
-  let ry180 = Nx.create f32 [| 3; 3 |] [| -1.; 0.; 0.; 0.; 1.; 0.; 0.; 0.; -1. |] in
+  let ry180 = create f32 [| 3; 3 |] [| -1.; 0.; 0.; 0.; 1.; 0.; 0.; 0.; -1. |] in
   check_motor_proj
     ~msg:"a half turn about y from a matrix"
     (rot ~axis:(vec3 0. 1. 0.) Float.pi)
     (M.of_rotation ry180);
-  let rz180 = Nx.create f32 [| 3; 3 |] [| -1.; 0.; 0.; 0.; -1.; 0.; 0.; 0.; 1. |] in
+  let rz180 = create f32 [| 3; 3 |] [| -1.; 0.; 0.; 0.; -1.; 0.; 0.; 0.; 1. |] in
   check_motor_proj
     ~msg:"a half turn about z from a matrix"
     (rot ~axis:z_axis Float.pi)
@@ -251,11 +258,11 @@ let test_translation_algebra () =
   and b = vec3 (-0.5) 0.25 4. in
   check_motor
     ~msg:"translations add"
-    (translation (Nx.add a b))
+    (translation Infix.(a + b))
     (M.mul (translation a) (translation b));
   check_motor
     ~msg:"the inverse translation"
-    (translation (Nx.mul_s a (-1.)))
+    (translation Infix.(a *$ -1.))
     (M.inverse (translation a))
 
 let test_rotation_algebra () =
@@ -269,7 +276,7 @@ let test_rotation_algebra () =
   check_motor ~msg:"a product is not generally commutative" (M.mul r1 rx) (M.mul r1 rx);
   check_motor
     ~msg:"a half turn squares to minus one"
-    (Nx.mul_s M.one (-1.))
+    Infix.(M.one *$ -1.)
     (M.mul (rot ~axis:z_axis Float.pi) (rot ~axis:z_axis Float.pi))
 
 (* Exponential and logarithm *)
@@ -291,7 +298,7 @@ let test_exp () =
   raises_match
     ~msg:"exp checks the twist axis"
     (Exn.invalid_arg ~substring:"6")
-    (fun () -> ignore (M.exp (Nx.create f32 [| 5 |] [| 0.; 0.; 0.; 0.; 0. |])));
+    (fun () -> ignore (M.exp (create f32 [| 5 |] [| 0.; 0.; 0.; 0.; 0. |])));
   let twists =
     [ vec6 0. 0. 0. 0. 0. 1.
     ; vec6 0. 0. 0.5 0. 0. 0.
@@ -302,7 +309,7 @@ let test_exp () =
   in
   List.iter
     (fun tw ->
-       let name = Format.asprintf "%a" Nx.pp tw in
+       let name = Format.asprintf "%a" pp tw in
        equal_floats
          ~msg:("log (exp twist) for " ^ name)
          ~eps:2e-5
@@ -358,7 +365,7 @@ let test_slerp () =
   and b = vec3 (-1.) 0. 2. in
   check_motor
     ~msg:"slerp of translations is linear"
-    (translation (Nx.add (Nx.mul_s a 0.75) (Nx.mul_s b 0.25)))
+    (translation Infix.((a *$ 0.75) + (b *$ 0.25)))
     (M.slerp (translation a) (translation b) (scalar 0.25));
   let r0 = rot ~axis:z_axis 0.3
   and r1 = rot ~axis:z_axis 0.7 in
@@ -372,9 +379,9 @@ let test_slerp () =
   check_motor
     ~msg:"the midpoint is equidistant in the group"
     mid
-    (let half = M.exp (Nx.mul_s (M.log (M.mul (M.inverse b0) b1)) 0.5) in
+    (let half = M.exp Infix.(M.log (M.mul (M.inverse b0) b1) *$ 0.5) in
      M.mul b0 half);
-  let alpha = Nx.create f32 [| 2 |] [| 0.; 1. |] in
+  let alpha = create f32 [| 2 |] [| 0.; 1. |] in
   let batch = M.slerp m0 m1 alpha in
   equal ~msg:"slerp accepts a batch of parameters" (array int) [| 2; 8 |] (M.shape batch)
 
@@ -397,9 +404,7 @@ let test_ad_at_pure_translation () =
     (Array.for_all Float.is_finite (Nx.to_array tangent));
   let h = 1e-3 in
   let finite_difference =
-    Nx.div_s
-      (Nx.sub (M.exp (Nx.mul_s twist (1. +. h))) (M.exp (Nx.mul_s twist (1. -. h))))
-      (2. *. h)
+    Infix.((M.exp (twist *$ (1. +. h)) - M.exp (twist *$ (1. -. h))) /$ (2. *. h))
   in
   equal_tensor ~msg:"exp: and it is the derivative" ~rel:2e-3 tangent finite_difference;
   let m = M.translate3 0.1 (-0.2) 0.3 in
@@ -407,9 +412,9 @@ let test_ad_at_pure_translation () =
   (* Move the motor along a trajectory whose velocity is [tw], and differentiate
      [log] along that direction: the direction itself is a central difference,
      which is what the tangent of the argument is. *)
-  let plus = M.mul m (M.exp (Nx.mul_s tw h))
-  and minus = M.mul m (M.exp (Nx.mul_s tw (-.h))) in
-  let direction = Nx.div_s (Nx.sub plus minus) (2. *. h) in
+  let plus = M.mul m (M.exp Infix.(tw *$ h))
+  and minus = M.mul m (M.exp Infix.(tw *$ -.h)) in
+  let direction = Infix.((plus - minus) /$ (2. *. h)) in
   let _, log_tangent = Rune.jvp' M.log m direction in
   equal
     ~msg:"log: a finite tangent where the rotation vanishes"
@@ -420,7 +425,7 @@ let test_ad_at_pure_translation () =
     ~msg:"log: and it is the derivative"
     ~rel:5e-3
     log_tangent
-    (Nx.div_s (Nx.sub (M.log plus) (M.log minus)) (2. *. h))
+    Infix.((M.log plus - M.log minus) /$ (2. *. h))
 
 (* Components *)
 
@@ -442,31 +447,25 @@ let test_components () =
   and b = M.mul (translation (vec3 (-0.1) 0.4 0.2)) (rot ~axis:x_axis (-1.1)) in
   equal_tensor
     ~msg:"rotation is a homomorphism"
-    (Nx.matmul (M.rotation a) (M.rotation b))
+    Infix.(M.rotation a *@ M.rotation b)
     (M.rotation (M.mul a b));
   (* The translation of a composition is [t + R u]: the frame is carried by its
      own rotation of [u] on top of its position. *)
   let u = vec3 0.3 (-0.4) 0.2 in
   let expected =
-    Nx.add
-      (M.translation a)
-      (Nx.reshape [| 3 |] (Nx.matmul (M.rotation a) (Nx.reshape [| 3; 1 |] u)))
+    Infix.(M.translation a + reshape [| 3 |] (M.rotation a *@ reshape [| 3; 1 |] u))
   in
   equal_tensor
     ~msg:"translation composes through the rotation"
     expected
     (M.translation (M.mul a (translation u)));
-  let batch = Nx.stack ~axis:0 [ a; b ] in
+  let batch = stack ~axis:0 [ a; b ] in
   equal
     ~msg:"a batch of translations"
     (array int)
     [| 2; 3 |]
-    (Nx.shape (M.translation batch));
-  equal
-    ~msg:"a batch of rotations"
-    (array int)
-    [| 2; 3; 3 |]
-    (Nx.shape (M.rotation batch))
+    (shape (M.translation batch));
+  equal ~msg:"a batch of rotations" (array int) [| 2; 3; 3 |] (shape (M.rotation batch))
 
 (* Adjoint *)
 
@@ -476,21 +475,19 @@ let test_adjoint () =
   let tw = vec6 0.1 (-0.2) 0.3 0.2 0.1 (-0.1) in
   let conjugates name m =
     let left = M.log (M.mul (M.mul m (M.exp tw)) (M.inverse m)) in
-    let right =
-      Nx.matmul (M.adjoint m) (Nx.reshape [| 6; 1 |] tw) |> Nx.reshape [| 6 |]
-    in
+    let right = Infix.(M.adjoint m *@ reshape [| 6; 1 |] tw) |> reshape [| 6 |] in
     equal ~msg:name (array (float 2e-4)) (Nx.to_array left) (Nx.to_array right)
   in
   conjugates "the adjoint of a translation" m0;
   conjugates "the adjoint of a rotation" m1;
-  equal ~msg:"the adjoint shape" (array int) [| 6; 6 |] (Nx.shape (M.adjoint m1));
+  equal ~msg:"the adjoint shape" (array int) [| 6; 6 |] (shape (M.adjoint m1));
   let product = M.mul m0 m1 in
   equal_tensor
     ~msg:"the adjoint is a homomorphism"
     (M.adjoint product)
-    (Nx.matmul (M.adjoint m0) (M.adjoint m1));
-  let batch = M.adjoint (M.of_nx (Nx.stack ~axis:0 [ m0; m1 ])) in
-  equal ~msg:"a batch of adjoints" (array int) [| 2; 6; 6 |] (Nx.shape batch)
+    Infix.(M.adjoint m0 *@ M.adjoint m1);
+  let batch = M.adjoint (M.of_nx (stack ~axis:0 [ m0; m1 ])) in
+  equal ~msg:"a batch of adjoints" (array int) [| 2; 6; 6 |] (shape batch)
 
 (* Printing *)
 
@@ -504,18 +501,18 @@ let test_printing () =
     ~msg:"a batch prints its shape"
     string
     "<motor 2x8>"
-    (Format.asprintf "%a" M.pp (M.of_nx (Nx.stack ~axis:0 [ M.one; M.one ])));
+    (Format.asprintf "%a" M.pp (M.of_nx (stack ~axis:0 [ M.one; M.one ])));
   equal
     ~msg:"a square batch prints its shape"
     string
     "<motor 8x8>"
-    (Format.asprintf "%a" M.pp (M.of_nx (Nx.zeros M.dtype [| 8; 8 |])))
+    (Format.asprintf "%a" M.pp (M.of_nx (zeros M.dtype [| 8; 8 |])))
 
 (* Properties *)
 
 let motor_gen =
   Gen.map
-    (fun tw -> M.exp (Nx.create f32 [| 6 |] tw))
+    (fun tw -> M.exp (create f32 [| 6 |] tw))
     Gen.(array ~size:(constant 6) (float_range (-1.5) 1.5))
 
 let test_properties =
@@ -533,7 +530,7 @@ let test_properties =
         "exp and log are inverse"
         Gen.(array ~size:(constant 6) (float_range (-1.) 1.))
         (fun tw ->
-           let tw = Nx.create f32 [| 6 |] tw in
+           let tw = create f32 [| 6 |] tw in
            equal (array (float 2e-4)) (Nx.to_array tw) (Nx.to_array (M.log (M.exp tw))))
     ; prop
         "translations commute"
@@ -542,9 +539,9 @@ let test_properties =
             (array ~size:(constant 3) (float_range (-2.) 2.))
             (array ~size:(constant 3) (float_range (-2.) 2.)))
         (fun (a, b) ->
-           let a = Nx.create f32 [| 3 |] a
-           and b = Nx.create f32 [| 3 |] b in
-           check_motor (M.translate (Nx.add a b)) (M.mul (M.translate a) (M.translate b)))
+           let a = create f32 [| 3 |] a
+           and b = create f32 [| 3 |] b in
+           check_motor (M.translate Infix.(a + b)) (M.mul (M.translate a) (M.translate b)))
     ; prop
         "slerp starts at its first motor"
         Gen.(pair motor_gen motor_gen)
@@ -557,7 +554,7 @@ let test_properties =
         "the adjoint is a homomorphism"
         Gen.(pair motor_gen motor_gen)
         (fun (a, b) ->
-           equal_tensor (M.adjoint (M.mul a b)) (Nx.matmul (M.adjoint a) (M.adjoint b)))
+           equal_tensor (M.adjoint (M.mul a b)) Infix.(M.adjoint a *@ M.adjoint b))
     ; prop
         "of_rotation agrees with rotate"
         Gen.(

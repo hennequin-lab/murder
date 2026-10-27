@@ -9,6 +9,7 @@
    it to GPU). *)
 
 open Base
+open Nx
 open Stdio
 module Nx = Nx
 
@@ -25,28 +26,26 @@ module Integrator = struct
   let verbose = true
 
   let dynamics { Params.mass } ~k:_ ~x ~u =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    let force = Nx.div u mass in
-    Nx.concatenate
-      ~axis:0
-      [ Nx.add pos (Nx.mul_s vel dt); Nx.add vel (Nx.mul_s force dt) ]
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    let force = u / mass in
+    concatenate ~axis:0 [ pos + (vel *$ dt); vel + (force *$ dt) ]
 
   let running_loss _ ~k:_ ~x ~u =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    Nx.sum
-      (Nx.add
-         (Nx.mul_s (Nx.add (Nx.mul pos pos) (Nx.mul vel vel)) 0.5)
-         (Nx.mul_s (Nx.mul u u) 0.05))
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    sum ((((pos * pos) + (vel * vel)) *$ 0.5) + (u * u *$ 0.05))
 
   let final_loss _ ~x =
-    let pos = Nx.slice [ R (0, 1) ] x
-    and vel = Nx.slice [ R (1, 2) ] x in
-    Nx.mul_s (Nx.sum (Nx.add (Nx.mul pos pos) (Nx.mul vel vel))) 5.0
+    let open Infix in
+    let pos = slice [ R (0, 1) ] x
+    and vel = slice [ R (1, 2) ] x in
+    sum ((pos * pos) + (vel * vel)) *$ 5.0
 
   let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
-    { dtype = Nx.float64
+    { dtype = float64
     ; n
     ; m
     ; horizon
@@ -58,8 +57,8 @@ module Integrator = struct
     }
 end
 
-let vec64 a = Nx.create Nx.float64 [| Array.length a |] a
-let scalar64 v = Nx.scalar Nx.float64 v
+let vec64 a = create float64 [| Array.length a |] a
+let scalar64 v = scalar float64 v
 let item t = Nx.item [] t
 let inputs_ptree = Dilqr.inputs Integrator.problem
 
@@ -88,9 +87,7 @@ let () =
   printf "── double-integrator MPC ──\n%!";
   let theta : Nx.float64_t Integrator.Params.t = { mass = scalar64 1.0 } in
   let x0 = ref (vec64 [| 1.0; 0.0 |]) in
-  let us =
-    Array.init Integrator.horizon ~f:(fun _ -> Nx.create Nx.float64 [| 1 |] [| 0.0 |])
-  in
+  let us = Array.init Integrator.horizon ~f:(fun _ -> create float64 [| 1 |] [| 0.0 |]) in
   (* warm-start the receding-horizon solves from the previous solution *)
   let rec mpc step =
     if step = 0

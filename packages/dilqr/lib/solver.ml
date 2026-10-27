@@ -21,6 +21,7 @@
    dtype phantom is a type parameter, never a module member. *)
 
 open Base
+open Nx
 
 type 'a t =
   { xs : 'a array (** states, length [horizon + 1] *)
@@ -33,16 +34,15 @@ let stack (ts : ('a, 'b) Nx.t array) : ('a, 'b) Nx.t = Nx.stack ~axis:0 (Array.t
 
 (* [unstack len t] is the rows of [t], as views. *)
 let unstack len (t : ('a, 'b) Nx.t) : ('a, 'b) Nx.t array =
-  Array.init len ~f:(fun k -> Nx.slice [ I k ] t)
+  Array.init len ~f:(fun k -> slice [ I k ] t)
 
 (* [is_batched x0 us0] is [true] when the state and every control carry a
    leading batch axis. *)
 let is_batched x0 us0 =
-  Array.length (Nx.shape x0) > 1
-  || Array.exists us0 ~f:(fun u -> Array.length (Nx.shape u) > 1)
+  Array.length (shape x0) > 1 || Array.exists us0 ~f:(fun u -> Array.length (shape u) > 1)
 
 (* [ks p] is the step index of each step, a scalar row per step. *)
-let ks p = Nx.arange p.Problem.dtype 0 p.Problem.horizon 1
+let ks p = arange p.Problem.dtype 0 p.Problem.horizon 1
 let dyn p theta ~k x u = p.Problem.dynamics theta ~k ~x ~u
 
 (* [states p theta x0 us] integrates the dynamics over the controls [us]
@@ -59,7 +59,7 @@ let states p theta (x0 : 'w Problem.value) (us : 'w Problem.value) : 'w Problem.
       ~init:x0
       (us, ks p)
   in
-  Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] x0; x ]
+  concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] x0; x ]
 
 (* [cost_of p theta xs us] is the running + final loss along the trajectory
    ([horizon + 1; n]) under the controls ([horizon; m]), as one scan. *)
@@ -71,11 +71,9 @@ let cost_of p theta (xs : 'w Problem.value) (us : 'w Problem.value) : 'w Problem
       Nx.Ptree.tensor
       ~f:(fun () ((x, u), k) -> (), p.Problem.running_loss theta ~k ~x ~u)
       ~init:()
-      ((Nx.slice [ R (0, p.Problem.horizon) ] xs, us), ks p)
+      ((slice [ R (0, p.Problem.horizon) ] xs, us), ks p)
   in
-  Nx.add
-    (p.Problem.final_loss theta ~x:(Nx.slice [ I p.Problem.horizon ] xs))
-    (Nx.sum losses)
+  Infix.(p.Problem.final_loss theta ~x:(slice [ I p.Problem.horizon ] xs) + sum losses)
 
 (* [rollout_unbatched p theta x0 us] integrates the dynamics, returning the
    state path and the total cost (running + final, a scalar tensor). *)
@@ -117,13 +115,7 @@ module Step_rows = struct
     ; u : 'a
     ; k : 'a
     }
-
-  let walk c { x; u; k } =
-    let open Nx.Ptree.Walk in
-    let x = field c "x" leaf x in
-    let u = field c "u" leaf u in
-    let k = field c "k" leaf k in
-    { x; u; k }
+  [@@deriving ptree]
 end
 
 (* Functions, not values: a structure built with [instantiate] is an
@@ -173,9 +165,7 @@ let step_blocks p theta (row : 'w Problem.value Step_rows.t) : 'w Problem.value 
 let blocks_t p theta (xs : 'w Problem.value) (us : 'w Problem.value)
   : (float, 'w) Lqr.tape
   =
-  let rows =
-    { Step_rows.x = Nx.slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p }
-  in
+  let rows = { Step_rows.x = slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p } in
   let _, blocks =
     Rune.scan
       Nx.Ptree.unit
@@ -185,7 +175,7 @@ let blocks_t p theta (xs : 'w Problem.value) (us : 'w Problem.value)
       ~init:()
       rows
   in
-  let xf = Nx.slice [ I p.Problem.horizon ] xs in
+  let xf = slice [ I p.Problem.horizon ] xs in
   let fx = Rune.grad' (fun x -> p.Problem.final_loss theta ~x) xf in
   let fxx =
     Rune.jacfwd' (fun x -> Rune.grad' (fun y -> p.Problem.final_loss theta ~x:y) x) xf
@@ -212,15 +202,15 @@ let blocks p theta (xs : 'w Problem.value array) (us : 'w Problem.value array)
   : (float, 'w) Lqr.tape
   =
   let batched =
-    Array.exists xs ~f:(fun x -> Array.length (Nx.shape x) > 1)
-    || Array.exists us ~f:(fun u -> Array.length (Nx.shape u) > 1)
+    Array.exists xs ~f:(fun x -> Array.length (shape x) > 1)
+    || Array.exists us ~f:(fun u -> Array.length (shape u) > 1)
   in
   if not batched
   then blocks_unbatched p theta xs us
   else (
     (* Stack after the batch axes so that each member is a [horizon; n] row
        for the vmap. *)
-    let batch = Array.length (Nx.shape xs.(0)) - 1 in
+    let batch = Array.length (shape xs.(0)) - 1 in
     let xs = Nx.stack ~axis:batch (Array.to_list xs)
     and us = Nx.stack ~axis:batch (Array.to_list us) in
     Rune.vmap
@@ -238,15 +228,7 @@ module Tangent_data_rows = struct
     ; dlx : 'a
     ; dlu : 'a
     }
-
-  let walk c { da; db; df; dlx; dlu } =
-    let open Nx.Ptree.Walk in
-    let da = field c "da" leaf da in
-    let db = field c "db" leaf db in
-    let df = field c "df" leaf df in
-    let dlx = field c "dlx" leaf dlx in
-    let dlu = field c "dlu" leaf dlu in
-    { da; db; df; dlx; dlu }
+  [@@deriving ptree]
 end
 
 let tangent_data_rows () = Nx.Ptree.instantiate (module Tangent_data_rows)
@@ -286,9 +268,7 @@ let step_tangent p theta ~dtheta (row : 'w Problem.value Step_rows.t)
 let tangent_t p theta ~dtheta (xs : 'w Problem.value) (us : 'w Problem.value)
   : (float, 'w) Lqr.tangent
   =
-  let rows =
-    { Step_rows.x = Nx.slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p }
-  in
+  let rows = { Step_rows.x = slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p } in
   let _, t =
     Rune.scan
       Nx.Ptree.unit
@@ -298,7 +278,7 @@ let tangent_t p theta ~dtheta (xs : 'w Problem.value) (us : 'w Problem.value)
       ~init:()
       rows
   in
-  let xf = Nx.slice [ I p.Problem.horizon ] xs in
+  let xf = slice [ I p.Problem.horizon ] xs in
   let dfx =
     snd
       (Rune.jvp
@@ -338,20 +318,7 @@ module Tangent_stream_rows = struct
     ; lx : 'a
     ; fb : 'a
     }
-
-  let walk c { x; u; k; g; a; b; lxx; lux; lx; fb } =
-    let open Nx.Ptree.Walk in
-    let x = field c "x" leaf x in
-    let u = field c "u" leaf u in
-    let k = field c "k" leaf k in
-    let g = field c "g" leaf g in
-    let a = field c "a" leaf a in
-    let b = field c "b" leaf b in
-    let lxx = field c "lxx" leaf lxx in
-    let lux = field c "lux" leaf lux in
-    let lx = field c "lx" leaf lx in
-    let fb = field c "fb" leaf fb in
-    { x; u; k; g; a; b; lxx; lux; lx; fb }
+  [@@deriving ptree]
 end
 
 let tangent_stream_rows () = Nx.Ptree.instantiate (module Tangent_stream_rows)
@@ -408,7 +375,7 @@ let tangent_solve
   and us = stack us in
   let tape = blocks_t p theta xs us in
   let common = Lqr.backward_common tape in
-  let x0s = Nx.slice [ R (0, horizon) ] xs in
+  let x0s = slice [ R (0, horizon) ] xs in
   (* 1. The tangent trajectory, driven by the tangent of the dynamics. *)
   let _, g_next =
     Rune.scan
@@ -425,18 +392,18 @@ let tangent_solve
                theta
                dtheta)
         in
-        let g' = Nx.add (Lqr.matvec a g) df in
+        let g' = Infix.(Lqr.matvec a g + df) in
         g', g')
       ~init:dx0
       ({ Step_rows.x = x0s; u = us; k = ks p }, tape.Lqr.blocks.a)
   in
-  let g = Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] dx0; g_next ] in
+  let g = concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] dx0; g_next ] in
   (* 2. The tangent backward pass, against the primal's factors. *)
   let rows =
     { Tangent_stream_rows.x = flip x0s
     ; u = flip us
     ; k = flip (ks p)
-    ; g = flip (Nx.slice [ R (0, horizon) ] g)
+    ; g = flip (slice [ R (0, horizon) ] g)
     ; a = flip tape.Lqr.blocks.a
     ; b = flip tape.Lqr.blocks.b
     ; lxx = flip tape.Lqr.blocks.lxx
@@ -451,11 +418,11 @@ let tangent_solve
          p.Problem.params
          Nx.Ptree.tensor
          (fun th ->
-            Rune.grad' (fun x -> p.Problem.final_loss th ~x) (Nx.slice [ I horizon ] xs))
+            Rune.grad' (fun x -> p.Problem.final_loss th ~x) (slice [ I horizon ] xs))
          theta
          dtheta)
   in
-  let e_last = Nx.add dfx (Lqr.matvec tape.Lqr.fxx (Nx.slice [ I horizon ] g)) in
+  let e_last = Infix.(dfx + Lqr.matvec tape.Lqr.fxx (slice [ I horizon ] g)) in
   let _, q_hat =
     Rune.scan
       Nx.Ptree.tensor
@@ -492,7 +459,7 @@ let tangent_solve
       ~f:(fun v row ->
         let du, v' = Lqr.tangent_roll_step ~v row in
         v', (du, v'))
-      ~init:(Nx.zeros_like dx0)
+      ~init:(zeros_like dx0)
       { Lqr.Tangent_roll_rows.a = tape.Lqr.blocks.a
       ; b = tape.Lqr.blocks.b
       ; chol = common.Lqr.quu_chol
@@ -500,22 +467,20 @@ let tangent_solve
       ; q = flip q_hat
       }
   in
-  let v =
-    Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] (Nx.zeros_like dx0); v_next ]
-  in
-  { Lqr.xs = Nx.add g v; us = du }
+  let v = concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] (zeros_like dx0); v_next ] in
+  { Lqr.xs = Infix.(g + v); us = du }
 
 (* [pick ~w ~batched] selects one slice along axis 0 of a batched trajectory
    with a one-hot weight vector [w]. Pure tensor ops. *)
 let pick ~w ~(batched : ('a, 'b) Nx.t) : ('a, 'b) Nx.t =
   let extra =
-    Array.create ~len:(Array.length (Nx.shape batched) - Array.length (Nx.shape w)) 1
+    Array.create ~len:(Array.length (shape batched) - Array.length (shape w)) 1
   in
-  let w = Nx.reshape (Array.append (Nx.shape w) extra) w in
-  Nx.sum ~axes:[ 0 ] (Nx.mul batched w)
+  let w = reshape (Array.append (shape w) extra) w in
+  sum ~axes:[ 0 ] Infix.(batched * w)
 
 (* Scalar-read helper for the adaptive solver. *)
-let item_f t = Nx.item [] t
+let item_f t = item [] t
 
 let log p (fmt : ('a, Stdlib.Format.formatter, unit) format) : 'a =
   if p.Problem.verbose
@@ -541,7 +506,7 @@ let solve_fixed_unbatched
   let alphas = Array.of_list alphas in
   (* A host float becomes a scalar tensor for the LQR core; zero means no
      damping terms at all, which is cheaper than regularizing by zero. *)
-  let mu = if Float.equal mu 0.0 then None else Some (Nx.scalar_like x0 mu) in
+  let mu = if Float.equal mu 0.0 then None else Some (scalar_like x0 mu) in
   let us = ref (stack us0) in
   let xs = ref (states p theta x0 !us) in
   let cost = ref (cost_of p theta !xs !us) in
@@ -567,14 +532,10 @@ let solve_fixed_unbatched
     (* Modelled cost change: alpha*d1 + 0.5*alpha^2*d2, <= 0 for useful
        trials. Accept trials that beat [cost + c1 * model]. *)
     let alphas_t =
-      Nx.stack ~axis:0 (Array.to_list (Array.map ~f:(Nx.scalar_like !cost) alphas))
+      Nx.stack ~axis:0 (Array.to_list (Array.map ~f:(scalar_like !cost) alphas))
     in
-    let pred =
-      Nx.add
-        (Nx.mul alphas_t d1)
-        (Nx.mul (Nx.mul_s (Nx.mul alphas_t alphas_t) (0.5 *. c1)) d2)
-    in
-    let accept = Nx.less_equal costs (Nx.add !cost (Nx.mul_s pred c1)) in
+    let pred = Infix.((alphas_t * d1) + (alphas_t * alphas_t *$ (0.5 *. c1) * d2)) in
+    let accept = less_equal costs Infix.(!cost + (pred *$ c1)) in
     (* [any] is true only when a trial was accepted. The argmin of an
        all-infinity score vector returns 0, so testing [sum w] instead would
        select trial 0 — possibly a non-finite rejected rollout — whenever no
@@ -582,25 +543,25 @@ let solve_fixed_unbatched
        before any weighted sum: a NaN rejected trial must not reach the
        result, nor the backward pass through [pick]. *)
     let any = Nx.any accept in
-    let costs = Nx.where accept costs (Nx.full_like costs 0.0) in
-    let scores = Nx.where accept costs (Nx.full_like costs Float.infinity) in
-    let best = Nx.cast Nx.int32 (Nx.argmin ~axis:0 scores) in
-    let w = Nx.cast (Nx.dtype !cost) (Nx.equal (Nx.arange Nx.int32 0 n_alpha 1) best) in
+    let costs = where accept costs (full_like costs 0.0) in
+    let scores = where accept costs (full_like costs Float.infinity) in
+    let best = cast int32 (argmin ~axis:0 scores) in
+    let w = cast (Nx.dtype !cost) (Nx.equal (arange int32 0 n_alpha 1) best) in
     let mask =
-      Nx.reshape
+      reshape
         (Array.append
            [| n_alpha |]
-           (Array.create ~len:(Array.length (Nx.shape us_all) - 1) 1))
+           (Array.create ~len:(Array.length (shape us_all) - 1) 1))
         accept
     in
-    let us_all = Nx.where mask us_all (Nx.broadcast_to (Nx.shape us_all) !us) in
-    let xs_all = Nx.where mask xs_all (Nx.broadcast_to (Nx.shape xs_all) !xs) in
+    let us_all = where mask us_all (broadcast_to (shape us_all) !us) in
+    let xs_all = where mask xs_all (broadcast_to (shape xs_all) !xs) in
     let us_sel = pick ~w ~batched:us_all in
     let xs_sel = pick ~w ~batched:xs_all in
-    let cost_sel = Nx.sum (Nx.mul costs w) in
-    let us' = Nx.where any us_sel !us in
-    let xs' = Nx.where any xs_sel !xs in
-    let cost' = Nx.where any cost_sel !cost in
+    let cost_sel = sum Infix.(costs * w) in
+    let us' = where any us_sel !us in
+    let xs' = where any xs_sel !xs in
+    let cost' = where any cost_sel !cost in
     us := us';
     xs := xs';
     cost := cost'
@@ -794,12 +755,12 @@ let solve_with
     let rec retry attempts =
       if attempts > 30
       then failwith "dilqr: Quu could not be regularized to positive definiteness";
-      let mu = Nx.scalar_like x0 !reg.Regularisation.mu in
+      let mu = scalar_like x0 !reg.Regularisation.mu in
       let gains, d1, d2 = kernels.backward theta !xs !us mu in
       (* A non-positive-definite [Quu] gives a NaN Cholesky factor, and the
          NaN runs through the sweep into the gains and the expected-decrease
          accumulators. *)
-      if Nx.item [] (Nx.all (Nx.isfinite d1)) && Nx.item [] (Nx.all (Nx.isfinite d2))
+      if item [] (all (isfinite d1)) && item [] (all (isfinite d2))
       then gains, d1, d2
       else (
         reg := Regularisation.increase !reg;
@@ -828,7 +789,7 @@ let solve_with
           let rec try_alphas = function
             | [] -> None
             | alpha :: tl ->
-              let alpha_t = Nx.scalar_like x0 alpha in
+              let alpha_t = scalar_like x0 alpha in
               let xs_t, us_t, cost_t' = kernels.trial theta x0 !xs !us gains alpha_t in
               let fv : float = item_f cost_t' in
               let model = (alpha *. d1) +. (0.5 *. alpha *. alpha *. d2) in

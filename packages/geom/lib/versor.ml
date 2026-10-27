@@ -1,3 +1,5 @@
+open Nx
+
 module type VERSOR = sig
   (** The scalar kind of the underlying algebra. *)
   type kind
@@ -56,37 +58,37 @@ module Make (A : Algebra.ALGEBRA) = struct
   type kind = A.kind
   type t = A.t
 
-  let expand batch x = Nx.reshape (Array.append batch [| 1 |]) x
+  let expand batch x = reshape (Array.append batch [| 1 |]) x
 
   let exp_simple b =
     let batch = A.batch_shape b in
     let b2 = A.coeff (A.gp b b) (Blade.of_int 0) in
     let theta = Nx.sqrt (Nx.abs b2) in
-    let small = Nx.less_s theta 1e-6 in
-    let theta_safe = Nx.where small (Nx.ones_like theta) theta in
-    let neg = Nx.less_s b2 0. in
-    let pos = Nx.greater_s b2 0. in
-    let one = Nx.ones_like theta in
+    let small = less_s theta 1e-6 in
+    let theta_safe = where small (ones_like theta) theta in
+    let neg = less_s b2 0. in
+    let pos = greater_s b2 0. in
+    let one = ones_like theta in
     let c_neg = Nx.cos theta
     and c_pos = Nx.cosh theta in
-    let c0 = Nx.where neg c_neg (Nx.where pos c_pos one) in
-    let c = Nx.where small one c0 in
-    let s_neg = Nx.div (Nx.sin theta) theta_safe in
-    let s_pos = Nx.div (Nx.sinh theta) theta_safe in
-    let f0 = Nx.where neg s_neg (Nx.where pos s_pos one) in
-    let f = Nx.where small one f0 in
-    Nx.add (Nx.mul (expand batch c) A.one) (Nx.mul (expand batch f) b)
+    let c0 = where neg c_neg (where pos c_pos one) in
+    let c = where small one c0 in
+    let s_neg = Infix.(Nx.sin theta / theta_safe) in
+    let s_pos = Infix.(Nx.sinh theta / theta_safe) in
+    let f0 = where neg s_neg (where pos s_pos one) in
+    let f = where small one f0 in
+    Infix.((expand batch c * A.one) + (expand batch f * b))
 
   let exp b =
     (* Scaling and squaring with a fixed 12-term Taylor series. This handles a
        general bivector, including the non-simple case. *)
     let factor = 1. /. 256. in
-    let bs = Nx.mul_s b factor in
+    let bs = Infix.(b *$ factor) in
     let term = ref A.one
     and sum = ref A.one in
     for k = 1 to 12 do
-      term := Nx.div_s (A.gp !term bs) (float_of_int k);
-      sum := Nx.add !sum !term
+      (term := Infix.(A.gp !term bs /$ float_of_int k));
+      sum := Infix.(!sum + !term)
     done;
     let acc = ref !sum in
     for _ = 1 to 8 do
@@ -99,22 +101,19 @@ module Make (A : Algebra.ALGEBRA) = struct
     let b = A.grade 2 v in
     let b2 = A.coeff (A.gp b b) (Blade.of_int 0) in
     let nb = Nx.sqrt (Nx.abs b2) in
-    let small = Nx.less_s nb 1e-6 in
+    let small = less_s nb 1e-6 in
     let theta_rot = Nx.atan2 nb c in
-    let theta_hyp = Nx.atanh (Nx.div nb c) in
+    let theta_hyp = atanh Infix.(nb / c) in
     let theta =
-      Nx.where
-        (Nx.less_s b2 0.)
-        theta_rot
-        (Nx.where (Nx.greater_s b2 0.) theta_hyp (Nx.zeros_like b2))
+      where (less_s b2 0.) theta_rot (where (greater_s b2 0.) theta_hyp (zeros_like b2))
     in
-    let nb_safe = Nx.where small (Nx.ones_like nb) nb in
-    let scale = Nx.where small (Nx.ones_like nb) (Nx.div theta nb_safe) in
-    Nx.mul b (expand (A.batch_shape b) scale)
+    let nb_safe = where small (ones_like nb) nb in
+    let scale = where small (ones_like nb) Infix.(theta / nb_safe) in
+    Infix.(b * expand (A.batch_shape b) scale)
 
   let slerp v0 v1 alpha =
     let rel = A.gp (A.inverse v0) v1 in
     let tw = log rel in
-    let abatch = Nx.shape alpha in
-    A.gp v0 (exp (Nx.mul tw (Nx.reshape (Array.append abatch [| 1 |]) alpha)))
+    let abatch = shape alpha in
+    A.gp v0 (exp Infix.(tw * reshape (Array.append abatch [| 1 |]) alpha))
 end

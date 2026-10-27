@@ -4,6 +4,7 @@
   ---------------------------------------------------------------------------*)
 
 open Geom
+open Nx
 
 type p3 =
   { x : float
@@ -23,7 +24,7 @@ let cross a b =
   ; z = (a.x *. b.y) -. (a.y *. b.x)
   }
 
-let norm a = sqrt (dot a a)
+let norm a = Float.sqrt (dot a a)
 
 let normalize a =
   let n = norm a in
@@ -64,10 +65,10 @@ type t =
   | Frame of frame
 
 let p3_of_tensor t =
-  let a = Nx.to_array t in
+  let a = to_array t in
   { x = a.(0); y = a.(1); z = a.(2) }
 
-let scalar_of_tensor t = Nx.item [] t
+let scalar_of_tensor t = item [] t
 
 let transform_point (m : Motor.t) (p : p3) =
   let y = Pga.apply_motor m (Pga.point3 p.x p.y p.z) in
@@ -106,7 +107,7 @@ let of_cga_point p = Point (p3_of_tensor (Cga.coords p))
 
 let of_cga_sphere s =
   let center = p3_of_tensor (Cga.coords (Cga.sphere_center s)) in
-  let radius = sqrt (scalar_of_tensor (Cga.sphere_radius2 s)) in
+  let radius = Float.sqrt (scalar_of_tensor (Cga.sphere_radius2 s)) in
   Sphere { center; radius }
 
 let plane_patch ~normal ~offset =
@@ -136,7 +137,7 @@ let of_cga_line ?(extent = 2.5) l =
 let of_cga_circle c =
   let center = p3_of_tensor (Cga.coords (Cga.circle_center c)) in
   let normal = p3_of_tensor (Cga.circle_normal c) in
-  let radius = sqrt (scalar_of_tensor (Cga.circle_radius2 c)) in
+  let radius = Float.sqrt (scalar_of_tensor (Cga.circle_radius2 c)) in
   Circle { center; normal; radius }
 
 let of_pga_point p = Point (p3_of_tensor (Pga.point_coords p))

@@ -1,5 +1,6 @@
 open Geom
 open Geom_viz
+open Nx
 module P = Primitive
 
 let p3 = P.p3
@@ -45,14 +46,14 @@ let () =
           ; stroke = None
           ; width = 1.0
           }
-        (P.Point (p3 (1.5 *. cos t) (1.5 *. sin t) 0.03)))
+        (P.Point (p3 (1.5 *. Float.cos t) (1.5 *. Float.sin t) 0.03)))
   in
   let motion t =
     let a = 2. *. Float.pi *. t in
-    let axis = Nx.create Motor.dtype [| 3 |] [| 0.; 0.; 1. |] in
+    let axis = create Motor.dtype [| 3 |] [| 0.; 0.; 1. |] in
     let angle = Nx.scalar Motor.dtype a in
     Motor.mul
-      (Motor.translate3 (1.5 *. cos a) (1.5 *. sin a) 0.6)
+      (Motor.translate3 (1.5 *. Float.cos a) (1.5 *. Float.sin a) 0.6)
       (Motor.rotate ~axis ~angle)
   in
   let sphere =

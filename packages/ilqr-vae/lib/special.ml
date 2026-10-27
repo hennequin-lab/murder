@@ -10,6 +10,7 @@
    differentiates like everything else. *)
 
 open Base
+open Nx
 
 let coefficients =
   [| 0.99999999999980993
@@ -27,14 +28,11 @@ let g = Float.of_int 7
 
 (* [lgamma x] is log Γ(x) for x > 0, elementwise. *)
 let lgamma (x : (float, 'w) Nx.t) : (float, 'w) Nx.t =
-  let z = Nx.sub_s x 1.0 in
-  let a = ref (Nx.full_like x coefficients.(0)) in
+  let z = Infix.(x -$ 1.0) in
+  let a = ref (full_like x coefficients.(0)) in
   for i = 1 to Array.length coefficients - 1 do
-    a
-    := Nx.add !a (Nx.div (Nx.full_like x coefficients.(i)) (Nx.add_s z (Float.of_int i)))
+    a := Infix.(!a + (full_like x coefficients.(i) / (z +$ Float.of_int i)))
   done;
-  let t = Nx.add_s z (g +. 0.5) in
+  let t = Infix.(z +$ (g +. 0.5)) in
   let half_log_2pi = 0.5 *. Float.log (2.0 *. Float.pi) in
-  Nx.add
-    (Nx.add (Nx.mul (Nx.add_s z 0.5) (Nx.log t)) (Nx.add (Nx.neg t) (Nx.log !a)))
-    (Nx.add_s (Nx.zeros_like x) half_log_2pi)
+  Infix.(((z +$ 0.5) * log t) + (-t + log !a) + (zeros_like x +$ half_log_2pi))

@@ -17,6 +17,7 @@
    phases — prepare, host solve, finish — without [Rune.jit]). *)
 
 open Base
+open Nx
 open Symo
 
 module Mlp = struct
@@ -39,31 +40,31 @@ end
 
 module S = Symo.Make (Mlp)
 
-let relu x = Nx.maximum x (Nx.zeros_like x)
+let relu x = maximum x (zeros_like x)
 let batch = 128
 let steps = 500
 let print_every = 50
-let inputs = Nx.Rng.normal (Nx.Rng.key 0) Nx.float32 [| batch; Mlp.input_dim |]
+let inputs = Nx.Rng.normal (Nx.Rng.key 0) float32 [| batch; Mlp.input_dim |]
 
 let init key =
-  let w1 =
-    Nx.Rng.normal (Nx.Rng.fold_in key 0) Nx.float32 [| Mlp.hidden; Mlp.input_dim |]
-  in
-  let w2 = Nx.Rng.normal (Nx.Rng.fold_in key 1) Nx.float32 [| 1; Mlp.hidden |] in
-  { Mlp.w1 = Nx.mul_s w1 (1. /. Float.sqrt (Float.of_int Mlp.hidden))
-  ; w2 = Nx.mul_s w2 0.5
+  let w1 = Nx.Rng.normal (Nx.Rng.fold_in key 0) float32 [| Mlp.hidden; Mlp.input_dim |] in
+  let w2 = Nx.Rng.normal (Nx.Rng.fold_in key 1) float32 [| 1; Mlp.hidden |] in
+  { Mlp.w1 = Infix.(w1 *$ (1. /. Float.sqrt (Float.of_int Mlp.hidden)))
+  ; w2 = Infix.(w2 *$ 0.5)
   }
 
 let forward (p : Nx.float32_t Mlp.t) x =
-  let h = relu (Nx.matmul x (Nx.transpose p.w1)) in
-  Nx.matmul h (Nx.transpose p.w2)
+  let open Infix in
+  let h = relu (x *@ transpose p.w1) in
+  h *@ transpose p.w2
 
 let teacher = init (Nx.Rng.key 42)
 let targets = forward teacher inputs
 
 let loss (p : Nx.float32_t Mlp.t) =
-  let d = Nx.sub (forward p inputs) targets in
-  Nx.mean (Nx.mul d d)
+  let open Infix in
+  let d = forward p inputs - targets in
+  mean (d * d)
 
 let () =
   let config : S.config =
@@ -77,10 +78,10 @@ let () =
     Mlp.input_dim
     batch;
   Stdio.printf "%8s  %12s\n" "step" "mse";
-  Stdio.printf "%8d  %12.6f\n" 0 (Nx.item [] (loss !state.S.State.theta));
+  Stdio.printf "%8d  %12.6f\n" 0 (item [] (loss !state.S.State.theta));
   for step = 1 to steps do
     let _, grads = Rune.value_and_grad S.ptree loss !state.S.State.theta in
     state := S.Compiled.step compiled ~config ~state:!state ~grads;
     if Int.(step % print_every = 0)
-    then Stdio.printf "%8d  %12.6f\n" step (Nx.item [] (loss !state.S.State.theta))
+    then Stdio.printf "%8d  %12.6f\n" step (item [] (loss !state.S.State.theta))
   done

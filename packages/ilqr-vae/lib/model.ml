@@ -4,6 +4,7 @@
   ---------------------------------------------------------------------------*)
 
 open Base
+open Nx
 open Types
 
 type ('w, 'd, 'l, 'p, 'e, 'r) t =
@@ -122,7 +123,7 @@ let make
             "Model.make: the %s recognition fixes x_0 = 0; it must not be given an \
              initial_prior"
             recognition.Recognition.name);
-     let size = Array.get (Nx.shape p.Initial.mean) 0 in
+     let size = Array.get (shape p.Initial.mean) 0 in
      if not (Int.equal size n)
      then
        invalid_arg

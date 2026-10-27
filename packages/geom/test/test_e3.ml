@@ -5,6 +5,7 @@
 
 (* Tests for Geom.E3: the Euclidean Cl(3,0,0) model, its vectors and rotors. *)
 
+open Nx
 open Windtrap
 open Support
 module E = Geom.E3
@@ -15,7 +16,7 @@ let y_axis = vec3 0. 1. 0.
 let z_axis = vec3 0. 0. 1.
 let angle a = scalar a
 let rotor ~axis a = E.rotor ~axis ~angle:(angle a)
-let vector_of a = E.to_vector a |> Nx.to_array
+let vector_of a = E.to_vector a |> to_array
 
 (* Construction *)
 
@@ -38,13 +39,12 @@ let test_basis_and_vectors () =
     ~msg:"a batch of vectors"
     (array int)
     [| 2; 8 |]
-    (E.shape (E.vector (Nx.create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 2. |])));
+    (E.shape (E.vector (create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 2. |])));
   equal
     ~msg:"to_vector keeps the batch shape"
     (array int)
     [| 2; 3 |]
-    (Nx.shape
-       (E.to_vector (E.vector (Nx.create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 2. |]))));
+    (shape (E.to_vector (E.vector (create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 2. |]))));
   equal
     ~msg:"to_vector ignores higher grades"
     (array (float 1e-6))
@@ -54,7 +54,7 @@ let test_basis_and_vectors () =
 let test_vector_products () =
   equal_tensor ~msg:"e1 e1 = 1" E.one (E.gp E.e1 E.e1);
   equal_tensor ~msg:"e1 e2 = e12" (E.gp E.e1 E.e2) (E.op E.e1 E.e2);
-  equal_tensor ~msg:"e2 e1 = -e12" (E.gp E.e2 E.e1) (Nx.mul_s (E.op E.e1 E.e2) (-1.));
+  equal_tensor ~msg:"e2 e1 = -e12" (E.gp E.e2 E.e1) Infix.(E.op E.e1 E.e2 *$ -1.);
   equal_tensor ~msg:"the dot product of orthogonal vectors" E.zero (E.inner E.e1 E.e2);
   equal_scalar
     ~msg:"the dot product of parallel vectors"
@@ -73,17 +73,17 @@ let test_rotor_basics () =
   equal_tensor ~msg:"a zero angle is the identity" E.one r;
   let r90 = rotor ~axis:z_axis (Float.pi /. 2.) in
   equal_tensor ~msg:"rotate e1 to e2" E.e2 (E.apply_rotor r90 E.e1);
-  equal_tensor ~msg:"rotate e2 to -e1" (Nx.mul_s E.e1 (-1.)) (E.apply_rotor r90 E.e2);
+  equal_tensor ~msg:"rotate e2 to -e1" Infix.(E.e1 *$ -1.) (E.apply_rotor r90 E.e2);
   equal_tensor ~msg:"rotate e3 to e3" E.e3 (E.apply_rotor r90 E.e3);
   equal_scalar ~msg:"a rotor has unit norm" 1. (E.norm2 r90);
   equal_tensor ~msg:"a rotor times its reverse is one" E.one (E.gp r90 (E.reverse r90));
   let r180 = rotor ~axis:z_axis Float.pi in
   equal_tensor
     ~msg:"a half turn reflects the plane"
-    (Nx.mul_s E.e1 (-1.))
+    Infix.(E.e1 *$ -1.)
     (E.apply_rotor r180 E.e1);
   let r360 = rotor ~axis:z_axis (2. *. Float.pi) in
-  equal_tensor ~msg:"a full turn is -1 as a rotor" (Nx.mul_s E.one (-1.)) r360;
+  equal_tensor ~msg:"a full turn is -1 as a rotor" Infix.(E.one *$ -1.) r360;
   equal_tensor ~msg:"a full turn fixes a vector" E.e1 (E.apply_rotor r360 E.e1);
   let scaled = rotor ~axis:(vec3 0. 0. 2.) (Float.pi /. 2.) in
   equal_tensor ~msg:"the axis is normalized" r90 scaled
@@ -112,13 +112,13 @@ let test_rotor_composition () =
     (E.apply_rotor (E.reverse r) (E.apply_rotor r x))
 
 let test_rotor_batch () =
-  let axes = Nx.create f32 [| 2; 3 |] [| 0.; 0.; 1.; 1.; 0.; 0. |] in
-  let angles = Nx.create f32 [| 2 |] [| Float.pi /. 2.; Float.pi /. 2. |] in
+  let axes = create f32 [| 2; 3 |] [| 0.; 0.; 1.; 1.; 0.; 0. |] in
+  let angles = create f32 [| 2 |] [| Float.pi /. 2.; Float.pi /. 2. |] in
   let r = E.rotor ~axis:axes ~angle:angles in
   equal ~msg:"batched rotor shape" (array int) [| 2; 8 |] (E.shape r);
-  let x = Nx.create f32 [| 2; 3 |] [| 1.; 0.; 0.; 0.; 0.; 1. |] |> E.vector in
+  let x = create f32 [| 2; 3 |] [| 1.; 0.; 0.; 0.; 0.; 1. |] |> E.vector in
   let y = E.apply_rotor r x in
-  equal ~msg:"batched action shape" (array int) [| 2; 3 |] (Nx.shape (E.to_vector y));
+  equal ~msg:"batched action shape" (array int) [| 2; 3 |] (shape (E.to_vector y));
   equal_floats ~msg:"first batch element" [| 0.; 1.; 0.; 0.; -1.; 0. |] (E.to_vector y);
   let single = rotor ~axis:z_axis (Float.pi /. 2.) in
   let y = E.apply_rotor single x in
@@ -126,7 +126,7 @@ let test_rotor_batch () =
     ~msg:"a single rotor broadcasts over a batch"
     (array int)
     [| 2; 3 |]
-    (Nx.shape (E.to_vector y));
+    (shape (E.to_vector y));
   equal_floats ~msg:"broadcast result" [| 0.; 1.; 0.; 0.; 0.; 1. |] (E.to_vector y)
 
 (* Properties *)
@@ -140,7 +140,7 @@ let angle_gen = Gen.float_range (-.Float.pi) Float.pi
 
 let vector_gen =
   Gen.map
-    (fun a -> E.vector (Nx.create f32 [| 3 |] a))
+    (fun a -> E.vector (create f32 [| 3 |] a))
     Gen.(array ~size:(constant 3) (float_range (-2.) 2.))
 
 let rotor_gen = Gen.map (fun (axis, a) -> rotor ~axis a) (Gen.pair axis_gen angle_gen)
@@ -154,20 +154,20 @@ let test_properties =
         (fun (r, x) ->
            equal_scalar
              ~msg:"norm2 before and after"
-             (Nx.item [] (E.norm2 x))
+             (item [] (E.norm2 x))
              (E.norm2 (E.apply_rotor r x)))
     ; prop
         "a rotor is linear"
         Gen.(pair rotor_gen (pair vector_gen vector_gen))
         (fun (r, (x, y)) ->
            equal_tensor
-             (E.apply_rotor r (Nx.add x y))
-             (Nx.add (E.apply_rotor r x) (E.apply_rotor r y)))
+             (E.apply_rotor r Infix.(x + y))
+             Infix.(E.apply_rotor r x + E.apply_rotor r y))
     ; prop
         "a rotor preserves the inner product"
         Gen.(pair rotor_gen (pair vector_gen vector_gen))
         (fun (r, (x, y)) ->
-           let dot a b = Nx.item [] (E.coeff (E.inner a b) (B.of_int 0)) in
+           let dot a b = item [] (E.coeff (E.inner a b) (B.of_int 0)) in
            equal (float 1e-4) (dot x y) (dot (E.apply_rotor r x) (E.apply_rotor r y)))
     ; prop
         "a rotor and its inverse cancel"

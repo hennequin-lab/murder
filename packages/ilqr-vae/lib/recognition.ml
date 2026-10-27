@@ -4,6 +4,7 @@
   ---------------------------------------------------------------------------*)
 
 open Base
+open Nx
 open Types
 
 (* A recognition model is the [q] of the VAE: a distribution over a trial's
@@ -182,26 +183,23 @@ let scaled_randn ?key ~sigma dtype shape =
   let draw =
     match key with
     | Some key -> Nx.Rng.normal key dtype shape
-    | None -> Nx.randn dtype shape
+    | None -> randn dtype shape
   in
-  Nx.mul_s draw sigma
+  Infix.(draw *$ sigma)
 
 (* [split2 ~axis t] splits [t] into two equal halves along [axis]. The
    readouts below always emit a mean and a log-variance head side by side. *)
 let split2 ~axis t =
-  match Nx.split ~axis 2 t with
+  match split ~axis 2 t with
   | [ a; b ] -> a, b
   | _ -> assert false
 
 (* [gaussian_logp ~x ~mu ~logvar] is the diagonal Gaussian log density of [x]
    summed over the last axis: one value per row of a batch. *)
 let gaussian_logp ~x ~mu ~logvar =
-  let scaled = Nx.div (Nx.sub x mu) (Nx.exp (Nx.mul_s logvar 0.5)) in
-  Nx.mul_s
-    (Nx.sum
-       ~axes:[ -1 ]
-       (Nx.add (Nx.mul scaled scaled) (Nx.add logvar (Nx.scalar_like logvar log_2pi))))
-    (-0.5)
+  let open Infix in
+  let scaled = (x - mu) / exp (logvar *$ 0.5) in
+  sum ~axes:[ -1 ] ((scaled * scaled) + (logvar + scalar_like logvar log_2pi)) *$ -0.5
 
 (* {1 iLQR recognition} *)
 
@@ -241,18 +239,18 @@ module Iilqr = struct
   (* [controls_of gen tau] is the control part of a stacked trajectory: rows
      [0 … n_steps − 1], columns [n … n + m − 1]. *)
   let controls_of (type w) (gen : (w, _, _, _, _) generative) (tau : w value) =
-    Nx.slice [ R (0, gen.n_steps); R (gen.n, gen.n + gen.m) ] tau
+    slice [ R (0, gen.n_steps); R (gen.n, gen.n + gen.m) ] tau
 
   let initial_controls (type w) (gen : (w, _, _, _, _) generative) u_init =
     match u_init with
-    | None -> Array.init gen.n_steps ~f:(fun _ -> Nx.zeros gen.dtype [| gen.m |])
+    | None -> Array.init gen.n_steps ~f:(fun _ -> zeros gen.dtype [| gen.m |])
     | Some u ->
       if
         Array.length (Nx.shape u) <> 2
         || (not (Int.equal (Nx.shape u).(0) gen.n_steps))
         || not (Int.equal (Nx.shape u).(1) gen.m)
       then invalid_arg "Recognition.Iilqr: u_init must be [n_steps; m]";
-      Array.init gen.n_steps ~f:(fun k -> Nx.get [ k ] u)
+      Array.init gen.n_steps ~f:(fun k -> get [ k ] u)
 
   (** [problem gen gp data] is the encoder's control problem for one trial:
       horizon [n_steps], state [n], control [m], dynamics from
@@ -274,9 +272,9 @@ module Iilqr = struct
     and n_output = gen.n_output
     and dtype = gen.dtype in
     check_data ~n_steps:t_steps ~n_output data;
-    let zero = Nx.scalar dtype 0.0
-    and one = Nx.scalar dtype 1.0 in
-    let last = Nx.get [ t_steps - 1 ] data in
+    let zero = scalar dtype 0.0
+    and one = scalar dtype 1.0 in
+    let last = get [ t_steps - 1 ] data in
     (* The running loss at step [k] carries the encoder prior on [u_k] and —
        from step 1 on — the likelihood of [o_{k−1}] at [x_k]; the terminal
        loss carries the last observation. [o] is selected at the traced step
@@ -289,22 +287,22 @@ module Iilqr = struct
           ~(u : w value)
       =
       let prior_term =
-        Nx.neg (gen.encoder_prior.Prior.logp_t theta.encoder_prior ~k ~u)
+        Infix.(-gen.encoder_prior.Prior.logp_t theta.encoder_prior ~k ~u)
       in
-      let index = Nx.maximum (Nx.sub k one) zero in
+      let index = maximum Infix.(k - one) zero in
       (* [take] with a 0-d [indices] removes the axis, so the row is
          [n_output]. *)
-      let o = Nx.take ~axis:0 ~indices:(Nx.cast Nx.int64 index) data in
+      let o = take ~axis:0 ~indices:(cast int64 index) data in
       let likelihood_term =
-        Nx.neg (gen.likelihood.Likelihood.logp_t theta.likelihood ~k ~x ~o)
+        Infix.(-gen.likelihood.Likelihood.logp_t theta.likelihood ~k ~x ~o)
       in
-      Nx.add prior_term (Nx.where (Nx.equal k zero) zero likelihood_term)
+      Infix.(prior_term + where (Nx.equal k zero) zero likelihood_term)
     in
     let final_loss (theta : (w, d, l, p, e) gparams) ~(x : w value) =
-      Nx.neg
+      neg
         (gen.likelihood.Likelihood.logp_t
            theta.likelihood
-           ~k:(Nx.scalar dtype (Float.of_int t_steps))
+           ~k:(scalar dtype (Float.of_int t_steps))
            ~x
            ~o:last)
     in
@@ -327,10 +325,7 @@ module Iilqr = struct
   let posterior_mean gen gp ?u_init ?max_iter ?conv_threshold data =
     let p = problem gen gp data in
     let inputs : (_, _) Dilqr.Problem.Inputs.t =
-      { theta = gp
-      ; x0 = Nx.zeros gen.dtype [| gen.n |]
-      ; us0 = initial_controls gen u_init
-      }
+      { theta = gp; x0 = zeros gen.dtype [| gen.n |]; us0 = initial_controls gen u_init }
     in
     controls_of gen (Dilqr.solve_ilqr p ?max_iter ?conv_threshold inputs)
 
@@ -340,10 +335,7 @@ module Iilqr = struct
   let posterior_mean_fixed gen gp ?u_init ~iters ?alphas ?mu ?c1 data =
     let p = problem gen gp data in
     let inputs : (_, _) Dilqr.Problem.Inputs.t =
-      { theta = gp
-      ; x0 = Nx.zeros gen.dtype [| gen.n |]
-      ; us0 = initial_controls gen u_init
-      }
+      { theta = gp; x0 = zeros gen.dtype [| gen.n |]; us0 = initial_controls gen u_init }
     in
     controls_of gen (Dilqr.solve_ilqr_fixed p ~iters ?alphas ?mu ?c1 inputs)
 
@@ -365,13 +357,12 @@ module Iilqr = struct
     let l_time = Covariance.factor p.time_cov in
     let l_space = Covariance.factor p.space_cov in
     let xi = Nx.Rng.normal key gen.dtype [| t_steps; n_samples; m |] in
-    let along_time = Nx.matmul l_time (Nx.reshape [| t_steps; n_samples * m |] xi) in
+    let cols = n_samples * m in
+    let along_time = Infix.(l_time *@ reshape [| t_steps; cols |] xi) in
     let noise =
-      Nx.matmul
-        (Nx.reshape [| t_steps; n_samples; m |] along_time)
-        (Nx.matrix_transpose l_space)
+      Infix.(reshape [| t_steps; n_samples; m |] along_time *@ matrix_transpose l_space)
     in
-    Nx.add (Nx.unsqueeze ~axes:[ 1 ] mu) noise
+    Infix.(unsqueeze ~axes:[ 1 ] mu + noise)
 
   (* [log_prob_u gen p ~mu u] is log q(u) for an input sequence of shape
      [[n_steps; m]], or one value per sequence for a batch
@@ -394,32 +385,29 @@ module Iilqr = struct
     let batch = Array.fold batch_dims ~init:1 ~f:( * ) in
     let l_time = Covariance.factor p.time_cov in
     let l_space = Covariance.factor p.space_cov in
-    let u3 =
-      Nx.reshape (Array.append [| t_steps |] (Array.append [| batch |] [| m |])) u
-    in
-    let diff = Nx.sub u3 (Nx.reshape [| t_steps; 1; m |] mu) in
+    let u3 = reshape (Array.append [| t_steps |] (Array.append [| batch |] [| m |])) u in
+    let diff = Infix.(u3 - reshape [| t_steps; 1; m |] mu) in
     (* [(u − μ)ᵀ Σ⁻¹ (u − μ) = ‖L_time⁻¹ (u − μ) L_space⁻ᵀ‖²_F], two triangular
        solves: one down the time axis, one down the input axis. *)
-    let along_time = Nx.reshape [| t_steps; batch * m |] diff in
-    let solved_time = Nx.solve_triangular ~upper:true l_time along_time in
-    let rows = Nx.reshape [| t_steps * batch; m |] solved_time in
+    let along_time = reshape [| t_steps; batch * m |] diff in
+    let solved_time = solve_triangular ~upper:true l_time along_time in
+    let rows = reshape [| t_steps * batch; m |] solved_time in
     let solved_space =
-      Nx.matrix_transpose
-        (Nx.solve_triangular ~upper:true l_space (Nx.matrix_transpose rows))
+      matrix_transpose (solve_triangular ~upper:true l_space (matrix_transpose rows))
     in
     let quadratic =
-      Nx.reshape
+      reshape
         (Array.append [| t_steps |] batch_dims)
-        (Nx.sum ~axes:[ -1 ] (Nx.mul solved_space solved_space))
-      |> Nx.sum ~axes:[ 0 ]
+        (sum ~axes:[ -1 ] Infix.(solved_space * solved_space))
+      |> sum ~axes:[ 0 ]
     in
     let log_det =
-      Nx.add
-        (Nx.mul_s (Covariance.log_det p.time_cov) (Float.of_int m))
-        (Nx.mul_s (Covariance.log_det p.space_cov) (Float.of_int t_steps))
+      Infix.(
+        (Covariance.log_det p.time_cov *$ Float.of_int m)
+        + (Covariance.log_det p.space_cov *$ Float.of_int t_steps))
     in
     let dim = Float.of_int (t_steps * m) in
-    Nx.mul_s (Nx.add quadratic (Nx.add log_det (Nx.scalar dtype (dim *. log_2pi)))) (-0.5)
+    Infix.((quadratic + (log_det + scalar dtype (dim *. log_2pi))) *$ -0.5)
 
   let solve
         (type w d l p e)
@@ -459,10 +447,10 @@ module Iilqr = struct
     =
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
     let mu_u = solve gen gp ?iters data in
-    let x0 = Nx.zeros gen.dtype [| gen.n |] in
+    let x0 = zeros gen.dtype [| gen.n |] in
     let u = sample_u gen params ~mu:mu_u ~n_samples ~key in
     let log_prob = log_prob_u gen (stopped params) ~mu:(Rune.detach mu_u) u in
-    { x0 = Nx.broadcast_to [| n_samples; gen.n |] x0; u; log_prob }
+    { x0 = broadcast_to [| n_samples; gen.n |] x0; u; log_prob }
 
   let mean
         (type w d l p e)
@@ -475,8 +463,8 @@ module Iilqr = struct
     let _ = params in
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
     let mu_u = solve gen gp ?iters data in
-    { x0 = Nx.reshape [| 1; gen.n |] (Nx.zeros gen.dtype [| gen.n |])
-    ; u = Nx.reshape [| gen.n_steps; 1; gen.m |] mu_u
+    { x0 = reshape [| 1; gen.n |] (zeros gen.dtype [| gen.n |])
+    ; u = reshape [| gen.n_steps; 1; gen.m |] mu_u
     }
 
   let log_prob
@@ -579,7 +567,7 @@ module Lfads = struct
      of shape [T; n_state]. *)
   let run_mgu ~phi (p : 'w value Dynamics.Mgu.params) ~(init : 'w value) inputs =
     let t_steps = (Nx.shape inputs).(0) in
-    let ks = Nx.arange (Nx.dtype inputs) 0 t_steps 1 in
+    let ks = arange (Nx.dtype inputs) 0 t_steps 1 in
     let _, ys =
       Rune.scan
         Nx.Ptree.tensor
@@ -598,28 +586,24 @@ module Lfads = struct
      backward encoder reads the reversed data. *)
   let encode_ic ~phi (p : 'w value params) data =
     let t_steps = (Nx.shape data).(0) in
-    let data_rev = Nx.flip ~axes:[ 0 ] data in
+    let data_rev = flip ~axes:[ 0 ] data in
     let ic_fwd = run_mgu ~phi p.ic_fwd ~init:p.ic_fwd_init data in
     let ic_bwd = run_mgu ~phi p.ic_bwd ~init:p.ic_bwd_init data_rev in
-    Nx.concatenate
-      ~axis:0
-      [ Nx.get [ t_steps - 1 ] ic_fwd; Nx.get [ t_steps - 1 ] ic_bwd ]
+    concatenate ~axis:0 [ get [ t_steps - 1 ] ic_fwd; get [ t_steps - 1 ] ic_bwd ]
 
   (* [encode_con ~phi p data] holds, at row [t], the concatenation of the
      controller-input encoders' states at time [t], of shape [[T; 2 n_ci]].
      The backward encoder's outputs are flipped back to time order. *)
   let encode_con ~phi (p : 'w value params) data =
-    let data_rev = Nx.flip ~axes:[ 0 ] data in
+    let data_rev = flip ~axes:[ 0 ] data in
     let ci_fwd = run_mgu ~phi p.ci_fwd ~init:p.ci_fwd_init data in
-    let ci_bwd =
-      Nx.flip ~axes:[ 0 ] (run_mgu ~phi p.ci_bwd ~init:p.ci_bwd_init data_rev)
-    in
-    Nx.concatenate ~axis:1 [ ci_fwd; ci_bwd ]
+    let ci_bwd = flip ~axes:[ 0 ] (run_mgu ~phi p.ci_bwd ~init:p.ci_bwd_init data_rev) in
+    concatenate ~axis:1 [ ci_fwd; ci_bwd ]
 
   (* [ic_posterior p e_ic] is the mean and log-variance of [x_0], of shape
      [[n]] each. *)
   let ic_posterior (p : 'w value params) e_ic =
-    split2 ~axis:0 (Nx.add (Nx.matmul e_ic p.ic_readout) p.ic_readout_bias)
+    split2 ~axis:0 Infix.((e_ic *@ p.ic_readout) + p.ic_readout_bias)
 
   (* [rollout ~phi gen gp p ~e_con ~x0 ~eps] runs the controller and the
      generator forward in time over a batch of [n_samples] trajectories:
@@ -640,16 +624,14 @@ module Lfads = struct
     let n_samples = (Nx.shape x0).(0) in
     let n_ctrl = Array.get (Nx.shape p.con_init) 0 in
     let t_steps = gen.n_steps in
-    let ks = Nx.arange gen.dtype 0 t_steps 1 in
-    let c0 = Nx.broadcast_to [| n_samples; n_ctrl |] p.con_init in
+    let ks = arange gen.dtype 0 t_steps 1 in
+    let c0 = broadcast_to [| n_samples; n_ctrl |] p.con_init in
     let step (g, c) ((e_con_t, eps_t), k) =
-      let e = Nx.broadcast_to [| n_samples; (Nx.shape e_con_t).(0) |] e_con_t in
-      let inp = Nx.concatenate ~axis:1 [ e; g ] in
+      let e = broadcast_to [| n_samples; (Nx.shape e_con_t).(0) |] e_con_t in
+      let inp = concatenate ~axis:1 [ e; g ] in
       let c' = Dynamics.Mgu.dyn ~phi p.con ~k ~x:c ~u:inp in
-      let mu, logvar =
-        split2 ~axis:1 (Nx.add (Nx.matmul c' p.u_readout) p.u_readout_bias)
-      in
-      let u = Nx.add mu (Nx.mul eps_t (Nx.exp (Nx.mul_s logvar 0.5))) in
+      let mu, logvar = split2 ~axis:1 Infix.((c' *@ p.u_readout) + p.u_readout_bias) in
+      let u = Infix.(mu + (eps_t * exp (logvar *$ 0.5))) in
       let g' = gen.dynamics.Dynamics.dyn gp.dynamics ~k ~x:g ~u in
       (g', c'), (u, (mu, logvar))
     in
@@ -682,15 +664,13 @@ module Lfads = struct
     let n_samples = (Nx.shape x0).(0) in
     let n_ctrl = Array.get (Nx.shape p.con_init) 0 in
     let t_steps = gen.n_steps in
-    let ks = Nx.arange gen.dtype 0 t_steps 1 in
-    let c0 = Nx.broadcast_to [| n_samples; n_ctrl |] p.con_init in
+    let ks = arange gen.dtype 0 t_steps 1 in
+    let c0 = broadcast_to [| n_samples; n_ctrl |] p.con_init in
     let step (g, c) ((e_con_t, u_t), k) =
-      let e = Nx.broadcast_to [| n_samples; (Nx.shape e_con_t).(0) |] e_con_t in
-      let inp = Nx.concatenate ~axis:1 [ e; g ] in
+      let e = broadcast_to [| n_samples; (Nx.shape e_con_t).(0) |] e_con_t in
+      let inp = concatenate ~axis:1 [ e; g ] in
       let c' = Dynamics.Mgu.dyn ~phi p.con ~k ~x:c ~u:inp in
-      let mu, logvar =
-        split2 ~axis:1 (Nx.add (Nx.matmul c' p.u_readout) p.u_readout_bias)
-      in
+      let mu, logvar = split2 ~axis:1 Infix.((c' *@ p.u_readout) + p.u_readout_bias) in
       let lp = gaussian_logp ~x:u_t ~mu ~logvar in
       let g' = gen.dynamics.Dynamics.dyn gp.dynamics ~k ~x:g ~u:u_t in
       (g', c'), lp
@@ -704,7 +684,7 @@ module Lfads = struct
         ~init:(x0, c0)
         ((e_con, u), ks)
     in
-    Nx.sum ~axes:[ 0 ] lps
+    sum ~axes:[ 0 ] lps
 
   let infer
         (type w d l p e)
@@ -723,11 +703,11 @@ module Lfads = struct
     if n_samples <= 0 then invalid_arg "Recognition.Lfads: n_samples must be positive";
     let e_ic = encode_ic ~phi params data in
     let ic_mean, ic_logvar = ic_posterior params e_ic in
-    let ic_mean = Nx.reshape [| 1; gen.n |] ic_mean
-    and ic_logvar = Nx.reshape [| 1; gen.n |] ic_logvar in
+    let ic_mean = reshape [| 1; gen.n |] ic_mean
+    and ic_logvar = reshape [| 1; gen.n |] ic_logvar in
     let keys = Nx.Rng.split ~n:2 key in
     let eps_ic = Nx.Rng.normal keys.(0) gen.dtype [| n_samples; gen.n |] in
-    let x0 = Nx.add ic_mean (Nx.mul eps_ic (Nx.exp (Nx.mul_s ic_logvar 0.5))) in
+    let x0 = Infix.(ic_mean + (eps_ic * exp (ic_logvar *$ 0.5))) in
     (* The densities are evaluated with the Gaussian means and log-variances
        detached, so that the gradient of the bound reaches the encoder and
        controller only through the sampled latents: the path-derivative
@@ -738,20 +718,17 @@ module Lfads = struct
     in
     if not with_inputs
     then
-      { x0
-      ; u = Nx.zeros gen.dtype [| gen.n_steps; n_samples; gen.m |]
-      ; log_prob = ic_logp
-      }
+      { x0; u = zeros gen.dtype [| gen.n_steps; n_samples; gen.m |]; log_prob = ic_logp }
     else (
       let e_con = encode_con ~phi params data in
       let eps = Nx.Rng.normal keys.(1) gen.dtype [| gen.n_steps; n_samples; gen.m |] in
       let u, mus, logvars = rollout ~phi gen gp params ~e_con ~x0 ~eps in
       let u_logp =
-        Nx.sum
+        sum
           ~axes:[ 0 ]
           (gaussian_logp ~x:u ~mu:(Rune.detach mus) ~logvar:(Rune.detach logvars))
       in
-      { x0; u; log_prob = Nx.add ic_logp u_logp })
+      { x0; u; log_prob = Infix.(ic_logp + u_logp) })
 
   let mean
         (type w d l p e)
@@ -767,12 +744,12 @@ module Lfads = struct
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
     let e_ic = encode_ic ~phi params data in
     let ic_mean, _ = ic_posterior params e_ic in
-    let x0 = Nx.reshape [| 1; gen.n |] ic_mean in
+    let x0 = reshape [| 1; gen.n |] ic_mean in
     if not with_inputs
-    then { x0; u = Nx.zeros gen.dtype [| gen.n_steps; 1; gen.m |] }
+    then { x0; u = zeros gen.dtype [| gen.n_steps; 1; gen.m |] }
     else (
       let e_con = encode_con ~phi params data in
-      let eps = Nx.zeros gen.dtype [| gen.n_steps; 1; gen.m |] in
+      let eps = zeros gen.dtype [| gen.n_steps; 1; gen.m |] in
       let u, _, _ = rollout ~phi gen gp params ~e_con ~x0 ~eps in
       { x0; u })
 
@@ -794,14 +771,14 @@ module Lfads = struct
     let ic_logp =
       gaussian_logp
         ~x:samples.x0
-        ~mu:(Nx.reshape [| 1; gen.n |] ic_mean)
-        ~logvar:(Nx.reshape [| 1; gen.n |] ic_logvar)
+        ~mu:(reshape [| 1; gen.n |] ic_mean)
+        ~logvar:(reshape [| 1; gen.n |] ic_logvar)
     in
     if not with_inputs
     then ic_logp
     else (
       let e_con = encode_con ~phi params data in
-      Nx.add ic_logp (replay ~phi gen gp params ~e_con ~x0:samples.x0 ~u:samples.u))
+      Infix.(ic_logp + replay ~phi gen gp params ~e_con ~x0:samples.x0 ~u:samples.u))
 
   (** [make ?n_ic ?n_ci ?n_ctrl ?with_inputs ?phi ?key ~n ~m ~n_steps ~n_output dtype] is the LFADS recognition. [n_ic] (default [64]) and
       [n_ci] (default [n_ic]) are the encoder state sizes, [n_ctrl] (default
@@ -814,7 +791,7 @@ module Lfads = struct
         ?n_ci
         ?(n_ctrl = 32)
         ?(with_inputs = true)
-        ?(phi = Nx.tanh)
+        ?(phi = tanh)
         ?key
         ~n
         ~m
@@ -835,25 +812,25 @@ module Lfads = struct
       ; ci_fwd = cell (sub 2) ~n:n_ci ~m:n_output
       ; ci_bwd = cell (sub 3) ~n:n_ci ~m:n_output
       ; con = cell (sub 4) ~n:n_ctrl ~m:((2 * n_ci) + n)
-      ; ic_fwd_init = Nx.zeros dtype [| n_ic |]
-      ; ic_bwd_init = Nx.zeros dtype [| n_ic |]
-      ; ci_fwd_init = Nx.zeros dtype [| n_ci |]
-      ; ci_bwd_init = Nx.zeros dtype [| n_ci |]
-      ; con_init = Nx.zeros dtype [| n_ctrl |]
+      ; ic_fwd_init = zeros dtype [| n_ic |]
+      ; ic_bwd_init = zeros dtype [| n_ic |]
+      ; ci_fwd_init = zeros dtype [| n_ci |]
+      ; ci_bwd_init = zeros dtype [| n_ci |]
+      ; con_init = zeros dtype [| n_ctrl |]
       ; ic_readout =
           scaled_randn
             ?key:(sub 5)
             ~sigma:(1.0 /. Float.sqrt (Float.of_int (2 * n_ic)))
             dtype
             [| 2 * n_ic; 2 * n |]
-      ; ic_readout_bias = Nx.zeros dtype [| 2 * n |]
+      ; ic_readout_bias = zeros dtype [| 2 * n |]
       ; u_readout =
           scaled_randn
             ?key:(sub 6)
             ~sigma:(1e-2 /. Float.sqrt (Float.of_int n_ctrl))
             dtype
             [| n_ctrl; 2 * m |]
-      ; u_readout_bias = Nx.zeros dtype [| 2 * m |]
+      ; u_readout_bias = zeros dtype [| 2 * m |]
       }
     in
     { dims = { n; m; n_steps; n_output }

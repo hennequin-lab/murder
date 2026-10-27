@@ -56,8 +56,8 @@ let () =
   let points =
     List.init 9 (fun i ->
       let t = 2. *. Float.pi *. float_of_int i /. 9. in
-      let x = 1.5 *. cos t
-      and y = 1.5 *. sin t in
+      let x = 1.5 *. Float.cos t
+      and y = 1.5 *. Float.sin t in
       Draw.static
         ~layer:2
         ~style:

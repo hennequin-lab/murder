@@ -13,28 +13,29 @@
    the difference between a float32 evaluation and a float64 difference, not
    the float32 noise of the model itself. *)
 
+open Nx
 open Windtrap
 module M = Geom.Motor
 module R = Geom_robot.Robot
 
-let f32 = Nx.float32
-let f64 = Nx.float64
+let f32 = float32
+let f64 = float64
 let scalar x = Nx.scalar f32 x
 let item idx x = Nx.item idx x
-let vec3 x y z = Nx.create f32 [| 3 |] [| x; y; z |]
-let q_of l = Nx.create f32 [| List.length l |] (Array.of_list l)
+let vec3 x y z = create f32 [| 3 |] [| x; y; z |]
+let q_of l = create f32 [| List.length l |] (Array.of_list l)
 
 let cfg rows =
   (* A batch of configurations, one list per row. *)
   let dof = List.length (List.hd rows) in
   let flat = List.concat rows in
-  Nx.reshape
+  reshape
     [| List.length rows; dof |]
-    (Nx.create f32 [| List.length flat |] (Array.of_list flat))
+    (create f32 [| List.length flat |] (Array.of_list flat))
 
-let to64 x = Nx.cast f64 x
-let arr64 x = Nx.to_array (to64 x)
-let arr32 x = Nx.to_array x
+let to64 x = cast f64 x
+let arr64 x = to_array (to64 x)
+let arr32 x = to_array x
 let rel = 2e-4
 let abs = 2e-4
 
@@ -44,8 +45,8 @@ let close_scalar ?(rel = rel) ?(abs = abs) a b =
   || Float.abs (a -. b) <= rel *. Float.max (Float.abs a) (Float.abs b)
 
 let close ?(rel = rel) ?(abs = abs) a b =
-  let sa = Nx.shape a
-  and sb = Nx.shape b in
+  let sa = shape a
+  and sb = shape b in
   Array.length sa = Array.length sb
   && Array.for_all2 Int.equal sa sb
   &&
@@ -54,7 +55,7 @@ let close ?(rel = rel) ?(abs = abs) a b =
   Array.length a = Array.length b && Array.for_all2 (close_scalar ~rel ~abs) a b
 
 let equal_tensor ?msg ?(rel = rel) ?(abs = abs) expected actual =
-  equal ?msg (Testable.make ~pp:Nx.pp ~equal:(close ~rel ~abs)) expected actual
+  equal ?msg (Testable.make ~pp ~equal:(close ~rel ~abs)) expected actual
 
 let equal_floats ?msg ?(eps = 1e-4) expected actual =
   equal ?msg (array (float eps)) expected (arr64 actual)
@@ -130,7 +131,7 @@ let six_matrix q =
 let bump dof i h =
   let a = Array.make dof 0. in
   a.(i) <- h;
-  Nx.create f32 [| dof |] a
+  create f32 [| dof |] a
 
 (* -- Generative helper: a model with branches, a fixed joint and a prismatic
    joint, used by several tests. ------------------------------------------ *)
@@ -185,24 +186,24 @@ let test_screw_generator () =
   let q = q_of [ 0.7; -0.4 ] in
   let h = 1e-2 in
   let fd =
-    let plus = R.pose m ~frame:fr (Nx.add q (bump 2 0 h)) in
-    let minus = R.pose m ~frame:fr (Nx.sub q (bump 2 0 h)) in
-    Nx.div_s (Nx.sub plus minus) (2. *. h)
+    let plus = R.pose m ~frame:fr Infix.(q + bump 2 0 h) in
+    let minus = R.pose m ~frame:fr Infix.(q - bump 2 0 h) in
+    Infix.((plus - minus) /$ (2. *. h))
   in
   equal_tensor
     ~msg:"d/dq of a revolute joint"
     ~rel:2e-3
-    (Nx.slice [ A; I 0 ] (R.motion_jacobian m ~frame:fr q))
+    (slice [ A; I 0 ] (R.motion_jacobian m ~frame:fr q))
     fd;
   let fd =
-    let plus = R.pose m ~frame:fr (Nx.add q (bump 2 1 h)) in
-    let minus = R.pose m ~frame:fr (Nx.sub q (bump 2 1 h)) in
-    Nx.div_s (Nx.sub plus minus) (2. *. h)
+    let plus = R.pose m ~frame:fr Infix.(q + bump 2 1 h) in
+    let minus = R.pose m ~frame:fr Infix.(q - bump 2 1 h) in
+    Infix.((plus - minus) /$ (2. *. h))
   in
   equal_tensor
     ~msg:"d/dq of a prismatic joint"
     ~rel:2e-3
-    (Nx.slice [ A; I 1 ] (R.motion_jacobian m ~frame:fr q))
+    (slice [ A; I 1 ] (R.motion_jacobian m ~frame:fr q))
     fd
 
 (* The planar arm's forward kinematics, from the closed form. *)
@@ -225,7 +226,7 @@ let test_planar2 () =
        equal_floats
          ~msg:(Printf.sprintf "tip orientation at (%g, %g)" a b)
          [| 0.; 0.; a +. b |]
-         (Nx.slice [ R (0, 3) ] (M.log pose)))
+         (slice [ R (0, 3) ] (M.log pose)))
     [ 0., 0.; 0.3, 0.; 0., -0.9; -1.2, 2.1 ]
 
 (* The six-joint arm, against a 4x4 matrix chain. *)
@@ -261,7 +262,7 @@ let test_frames () =
   let m = branch_model () in
   let q = cfg [ [ 0.3; 0.2 ]; [ -1.0; -0.5 ] ] in
   let all = R.frame_motors m q in
-  equal ~msg:"frame stack shape" (array int) [| 2; 2; 8 |] (Nx.shape all);
+  equal ~msg:"frame stack shape" (array int) [| 2; 2; 8 |] (shape all);
   Array.iteri
     (fun i name ->
        let fr = R.frame m name in
@@ -269,16 +270,16 @@ let test_frames () =
        equal_tensor
          ~msg:(Printf.sprintf "frame %s of a batch" name)
          one
-         (Nx.slice [ A; I i ] all))
+         (slice [ A; I i ] all))
     (R.frame_names m);
   let links = R.link_motors m q in
-  equal ~msg:"link stack shape" (array int) [| 2; 4; 8 |] (Nx.shape links);
+  equal ~msg:"link stack shape" (array int) [| 2; 4; 8 |] (shape links);
   (* The root is the identity, and the tool frame sits at the slider's pose
      carried by the mount's fixed translation. *)
   equal_tensor
     ~msg:"the root link is the identity"
-    (Nx.broadcast_to [| 2; 8 |] M.one)
-    (Nx.slice [ A; I 0 ] links)
+    (broadcast_to [| 2; 8 |] M.one)
+    (slice [ A; I 0 ] links)
 
 (* Batching is a tensor axis, not a loop: a batch of configurations gives row
    by row what the unbatched query gives. *)
@@ -293,7 +294,7 @@ let test_batching () =
        equal_tensor
          ~msg:(Printf.sprintf "row %d of a batch" i)
          (R.pose m ~frame:fr (q_of row))
-         (Nx.slice [ I i ] batch))
+         (slice [ I i ] batch))
     rows
 
 (* Relative poses compose: [pose a * relative a b = pose b]. *)
@@ -316,8 +317,8 @@ let test_relative () =
 let fd_jacobian m fr q i =
   let dof = R.dof m in
   let h = 5e-3 in
-  let plus = R.pose m ~frame:fr (Nx.add q (bump dof i h)) in
-  let minus = R.pose m ~frame:fr (Nx.sub q (bump dof i h)) in
+  let plus = R.pose m ~frame:fr Infix.(q + bump dof i h) in
+  let minus = R.pose m ~frame:fr Infix.(q - bump dof i h) in
   let diff x = x /. (2. *. h) in
   let dp =
     Array.map2
@@ -347,10 +348,10 @@ let fd_jacobian m fr q i =
 let test_geometric_jacobian () =
   let check name m fr q =
     let j = R.jacobian m ~frame:fr q in
-    equal ~msg:(name ^ ": shape") (array int) [| 6; R.dof m |] (Nx.shape j);
+    equal ~msg:(name ^ ": shape") (array int) [| 6; R.dof m |] (shape j);
     for i = 0 to R.dof m - 1 do
       let omega, dp = fd_jacobian m fr q i in
-      let column = arr64 (Nx.slice [ A; I i ] j) in
+      let column = arr64 (slice [ A; I i ] j) in
       for k = 0 to 2 do
         equal
           ~msg:(Printf.sprintf "%s: omega %d of column %d" name k i)
@@ -385,11 +386,11 @@ let test_body_jacobian () =
     (fun (q, dq) ->
        let h = 1e-3 in
        let body = R.jacobian ~space:`Body m ~frame:fr q in
-       equal ~msg:"shape" (array int) [| 6; 6 |] (Nx.shape body);
-       let predicted = Nx.reshape [| 6 |] (Nx.matmul body (Nx.reshape [| 6; 1 |] dq)) in
+       equal ~msg:"shape" (array int) [| 6; 6 |] (shape body);
+       let predicted = reshape [| 6 |] Infix.(body *@ reshape [| 6; 1 |] dq) in
        let current = R.pose m ~frame:fr q in
-       let moved = R.pose m ~frame:fr (Nx.add q (Nx.mul_s dq h)) in
-       let measured = Nx.div_s (M.log (M.mul (M.inverse current) moved)) h in
+       let moved = R.pose m ~frame:fr Infix.(q + (dq *$ h)) in
+       let measured = Infix.(M.log (M.mul (M.inverse current) moved) /$ h) in
        equal_tensor
          ~msg:"the body twist is the right-trivialised derivative"
          ~rel:2e-3
@@ -407,13 +408,13 @@ let test_motion_jacobian () =
   let fr = R.frame m "ee" in
   let q = q_of [ 0.4; -0.3; 0.8; 0.2; -0.5; 0.9 ] in
   let j = R.motion_jacobian m ~frame:fr q in
-  equal ~msg:"shape" (array int) [| 8; 6 |] (Nx.shape j);
+  equal ~msg:"shape" (array int) [| 8; 6 |] (shape j);
   let h = 1e-2 in
   for i = 0 to 5 do
-    let plus = R.pose m ~frame:fr (Nx.add q (bump 6 i h)) in
-    let minus = R.pose m ~frame:fr (Nx.sub q (bump 6 i h)) in
-    let fd = Nx.div_s (Nx.sub plus minus) (2. *. h) in
-    equal_tensor ~msg:(Printf.sprintf "column %d" i) ~rel:1e-3 (Nx.slice [ A; I i ] j) fd
+    let plus = R.pose m ~frame:fr Infix.(q + bump 6 i h) in
+    let minus = R.pose m ~frame:fr Infix.(q - bump 6 i h) in
+    let fd = Infix.((plus - minus) /$ (2. *. h)) in
+    equal_tensor ~msg:(Printf.sprintf "column %d" i) ~rel:1e-3 (slice [ A; I i ] j) fd
   done
 
 (* The tangent map is linear in its direction and equals the chain rule applied
@@ -471,7 +472,7 @@ let test_ad () =
     (R.pose_diff m ~frame:fr q);
   (* Reverse mode transposes the rule's tangent map, so a gradient through the
      rule agrees with one through the branches it replaces. *)
-  let scalar_of p = Nx.sum (Nx.mul p p) in
+  let scalar_of p = sum Infix.(p * p) in
   let by_branches = Rune.grad' (fun q -> scalar_of (R.pose m ~frame:fr q)) q in
   let by_rule = Rune.grad' (fun q -> scalar_of (R.pose_diff m ~frame:fr q)) q in
   equal_tensor ~msg:"grad through the custom rule" ~rel:2e-3 by_branches by_rule
@@ -484,15 +485,15 @@ let test_ad () =
    difference of the velocity, which is its definition, and the Jacobian's time
    derivative against both. *)
 
-let qd_of l = Nx.create f32 [| List.length l |] (Array.of_list l)
+let qd_of l = create f32 [| List.length l |] (Array.of_list l)
 
 (* The derivative of a twist along the trajectory through [q] with velocity
    [qdot], by central differences: what [bias] is defined to be. *)
 let fd_twist m ~frame ~space q qdot =
   let h = 1e-3 in
-  let plus = R.twist ~space m ~frame (Nx.add q (Nx.mul_s qdot h)) qdot
-  and minus = R.twist ~space m ~frame (Nx.sub q (Nx.mul_s qdot h)) qdot in
-  Nx.div_s (Nx.sub plus minus) (2. *. h)
+  let plus = R.twist ~space m ~frame Infix.(q + (qdot *$ h)) qdot
+  and minus = R.twist ~space m ~frame Infix.(q - (qdot *$ h)) qdot in
+  Infix.((plus - minus) /$ (2. *. h))
 
 let space_name = function
   | `World -> "world"
@@ -500,7 +501,7 @@ let space_name = function
 
 let qdot_of m seed =
   (* A velocity with every coordinate moving, distinct per model. *)
-  Nx.create
+  create
     f32
     [| R.dof m |]
     (Array.init (R.dof m) (fun i -> seed *. (1. +. Float.of_int i)))
@@ -513,9 +514,7 @@ let check_velocities name m ~frame =
     (fun space ->
        (* The twist is J qdot: two routes, one recursion and one sum. *)
        let jac = R.jacobian ~space m ~frame q in
-       let from_jacobian =
-         Nx.reshape [| 6 |] (Nx.matmul jac (Nx.reshape [| dof; 1 |] qdot))
-       in
+       let from_jacobian = reshape [| 6 |] Infix.(jac *@ reshape [| dof; 1 |] qdot) in
        equal_tensor
          ~msg:(Printf.sprintf "%s: the %s twist is J qdot" name (space_name space))
          from_jacobian
@@ -534,11 +533,11 @@ let check_velocities name m ~frame =
          ~msg:(Printf.sprintf "%s: Jdot shape in %s" name (space_name space))
          (array int)
          [| 6; dof |]
-         (Nx.shape jd);
+         (shape jd);
        equal_tensor
          ~msg:(Printf.sprintf "%s: Jdot qdot is the %s bias" name (space_name space))
          bias
-         (Nx.reshape [| 6 |] (Nx.matmul jd (Nx.reshape [| dof; 1 |] qdot))))
+         (reshape [| 6 |] Infix.(jd *@ reshape [| dof; 1 |] qdot)))
     [ `World; `Body ]
 
 let test_velocities () =
@@ -558,42 +557,42 @@ let test_link_twists () =
   let q = q_of [ 0.4; -0.3; 0.8; 0.2; -0.5; 0.9 ]
   and qdot = qd_of [ 0.1; 0.2; -0.3; 0.4; -0.5; 0.6 ] in
   let twists = R.link_twists ~space:`Body m q qdot in
-  equal ~msg:"one twist per link" (array int) [| 7; 6 |] (Nx.shape twists);
+  equal ~msg:"one twist per link" (array int) [| 7; 6 |] (shape twists);
   let h = 1e-3 in
   let lm = R.link_motors m q in
   Array.iteri
     (fun i _ ->
-       let w = Nx.slice [ I i ] lm in
-       let plus = Nx.slice [ I i ] (R.link_motors m (Nx.add q (Nx.mul_s qdot h))) in
-       let minus = Nx.slice [ I i ] (R.link_motors m (Nx.sub q (Nx.mul_s qdot h))) in
+       let w = slice [ I i ] lm in
+       let plus = slice [ I i ] (R.link_motors m Infix.(q + (qdot *$ h))) in
+       let minus = slice [ I i ] (R.link_motors m Infix.(q - (qdot *$ h))) in
        let fd =
          let forwards = M.log (M.mul (M.inverse w) plus)
          and backwards = M.log (M.mul (M.inverse minus) w) in
-         Nx.div_s (Nx.add forwards backwards) (2. *. h)
+         Infix.((forwards + backwards) /$ (2. *. h))
        in
        equal_tensor
          ~msg:(Printf.sprintf "link %d: the body twist is d/dt of its pose" i)
          ~rel:2e-3
-         (Nx.slice [ I i ] twists)
+         (slice [ I i ] twists)
          fd)
     (R.link_names m);
   (* The root does not move, and [`World] is the body twist rotated. *)
-  equal_tensor ~msg:"the root is at rest" (Nx.zeros f32 [| 6 |]) (Nx.slice [ I 0 ] twists);
+  equal_tensor ~msg:"the root is at rest" (zeros f32 [| 6 |]) (slice [ I 0 ] twists);
   let world = R.link_twists ~space:`World m q qdot in
   let rotate3 i =
-    let r = M.rotation (Nx.slice [ I i ] lm) in
-    let twist = Nx.reshape [| 6 |] (Nx.slice [ I i ] twists) in
-    let half from = Nx.slice [ R (from, from + 3) ] twist in
-    Nx.concatenate
+    let r = M.rotation (slice [ I i ] lm) in
+    let twist = reshape [| 6 |] (slice [ I i ] twists) in
+    let half from = slice [ R (from, from + 3) ] twist in
+    concatenate
       ~axis:0
-      [ Nx.reshape [| 3 |] (Nx.matmul r (Nx.reshape [| 3; 1 |] (half 0)))
-      ; Nx.reshape [| 3 |] (Nx.matmul r (Nx.reshape [| 3; 1 |] (half 3)))
+      [ reshape [| 3 |] Infix.(r *@ reshape [| 3; 1 |] (half 0))
+      ; reshape [| 3 |] Infix.(r *@ reshape [| 3; 1 |] (half 3))
       ]
   in
   equal_tensor
     ~msg:"[`World] is [`Body] rotated"
     ~rel:1e-4
-    (Nx.stack ~axis:0 (List.init 7 rotate3))
+    (stack ~axis:0 (List.init 7 rotate3))
     world
 
 (* Batches are tensor axes here too. *)
@@ -606,7 +605,7 @@ let test_velocity_batching () =
   List.iter
     (fun space ->
        let batch = R.twist ~space m ~frame:fr q qdot in
-       equal ~msg:"twist batch shape" (array int) [| 2; 6 |] (Nx.shape batch);
+       equal ~msg:"twist batch shape" (array int) [| 2; 6 |] (shape batch);
        List.iteri
          (fun i row ->
             let qi = q_of row in
@@ -614,21 +613,21 @@ let test_velocity_batching () =
             equal_tensor
               ~msg:(Printf.sprintf "row %d of the twist" i)
               (R.twist ~space m ~frame:fr qi qdi)
-              (Nx.slice [ I i ] batch))
+              (slice [ I i ] batch))
          rows)
     [ `World; `Body ];
   let bias = R.bias ~space:`World m ~frame:fr q qdot in
-  equal ~msg:"bias batch shape" (array int) [| 2; 6 |] (Nx.shape bias);
+  equal ~msg:"bias batch shape" (array int) [| 2; 6 |] (shape bias);
   equal_tensor
     ~msg:"row 0 of the bias"
     (R.bias ~space:`World m ~frame:fr (q_of (List.hd rows)) (q_of (List.hd rows)))
-    (Nx.slice [ I 0 ] bias);
+    (slice [ I 0 ] bias);
   let jd = R.jacobian_dot ~space:`World m ~frame:fr q qdot in
-  equal ~msg:"Jdot batch shape" (array int) [| 2; 6; 6 |] (Nx.shape jd);
+  equal ~msg:"Jdot batch shape" (array int) [| 2; 6; 6 |] (shape jd);
   equal_tensor
     ~msg:"row 0 of Jdot"
     (R.jacobian_dot ~space:`World m ~frame:fr (q_of (List.hd rows)) (q_of (List.hd rows)))
-    (Nx.slice [ I 0 ] jd)
+    (slice [ I 0 ] jd)
 
 (* {1 Conditioning} *)
 
@@ -637,7 +636,7 @@ let test_conditioning () =
   let fr = R.frame m "ee" in
   let q = q_of [ 0.4; -0.3; 0.8; 0.2; -0.5; 0.9 ] in
   let sv = R.singular_values m ~frame:fr q in
-  equal ~msg:"six singular values" (array int) [| 6 |] (Nx.shape sv);
+  equal ~msg:"six singular values" (array int) [| 6 |] (shape sv);
   let values = arr32 sv in
   equal
     ~msg:"singular values decrease"
@@ -652,13 +651,11 @@ let test_conditioning () =
   let w = Nx.item [] (R.manipulability m ~frame:fr q) in
   let product = Array.fold_left ( *. ) 1. values in
   equal ~msg:"manipulability is the product of the singular values" (float 1e-5) product w;
-  let jj =
-    Nx.matmul (R.jacobian m ~frame:fr q) (Nx.transpose (R.jacobian m ~frame:fr q))
-  in
+  let jj = Infix.(R.jacobian m ~frame:fr q *@ transpose (R.jacobian m ~frame:fr q)) in
   equal
     ~msg:"and sqrt (det (J J^T)) for a square Jacobian"
     (float 1e-5)
-    (Float.sqrt (Nx.item [] (Nx.det jj)))
+    (Float.sqrt (Nx.item [] (det jj)))
     w;
   (* A redundant pair of joints on one axis has one column twice, so it cannot
      move in every direction and the measure vanishes — the case it exists to
@@ -703,7 +700,8 @@ let test_conditioning () =
     ~msg:"and its smallest singular value is zero"
     bool
     true
-    (Array.fold_left min 1. (arr32 (R.singular_values coaxial ~frame:tip q2)) < 1e-4);
+    (Array.fold_left Stdlib.min 1. (arr32 (R.singular_values coaxial ~frame:tip q2))
+     < 1e-4);
   (* The batch case: a column of configurations gives a column of numbers. *)
   let batch =
     cfg [ [ 0.4; -0.3; 0.8; 0.2; -0.5; 0.9 ]; [ -0.2; 0.6; 0.1; -0.4; 0.3; 0.2 ] ]
@@ -713,7 +711,7 @@ let test_conditioning () =
     ~msg:"manipulability batch shape"
     (array int)
     [| 2 |]
-    (Nx.shape (R.manipulability m ~frame:fr batch));
+    (shape (R.manipulability m ~frame:fr batch));
   equal
     ~msg:"batch agrees with the rows"
     (float 1e-6)
@@ -817,7 +815,7 @@ let test_fixed_chain () =
     | Ok m -> m
     | Error msg -> failwith msg
   in
-  let q = Nx.zeros f32 [| 0 |] in
+  let q = zeros f32 [| 0 |] in
   equal ~msg:"dof" int 0 (R.dof m);
   let fr = R.frame m "ee" in
   equal_floats
@@ -828,15 +826,15 @@ let test_fixed_chain () =
     ~msg:"motor Jacobian shape"
     (array int)
     [| 8; 0 |]
-    (Nx.shape (R.motion_jacobian m ~frame:fr q));
+    (shape (R.motion_jacobian m ~frame:fr q));
   equal
     ~msg:"geometric Jacobian shape"
     (array int)
     [| 6; 0 |]
-    (Nx.shape (R.jacobian m ~frame:fr q));
+    (shape (R.jacobian m ~frame:fr q));
   equal_tensor
     ~msg:"a zero-width tangent is empty"
-    (Nx.zeros f32 [| 8 |])
+    (zeros f32 [| 8 |])
     (R.pose_tangent m ~frame:fr q q)
 
 (* A frame attached to the root: a base camera, a world frame, a sensor on the
@@ -880,15 +878,15 @@ let test_root_frame () =
     (R.pose m ~frame:cam q);
   equal_tensor
     ~msg:"its geometric Jacobian is zero"
-    (Nx.zeros f32 [| 6; 1 |])
+    (zeros f32 [| 6; 1 |])
     (R.jacobian m ~frame:cam q);
   equal_tensor
     ~msg:"its motor Jacobian is zero"
-    (Nx.zeros f32 [| 8; 1 |])
+    (zeros f32 [| 8; 1 |])
     (R.motion_jacobian m ~frame:cam q);
   equal_tensor
     ~msg:"its tangent is zero"
-    (Nx.zeros f32 [| 8 |])
+    (zeros f32 [| 8 |])
     (R.pose_tangent m ~frame:cam q q)
 
 (* Name handling: unknown frames are rejected with the list of names, and the

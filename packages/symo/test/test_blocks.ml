@@ -12,30 +12,31 @@
    sizes, and that the blockwise estimator agrees with the dense one. *)
 
 open Base
+open Nx
 open Windtrap
 open Symo
 
-let scalar x = Nx.scalar Nx.float32 x
+let scalar x = Nx.scalar float32 x
 
 let random_factors key d =
   List.init d ~f:(fun i ->
-    scalar (Nx.item [] (Nx.Rng.normal (Nx.Rng.fold_in key i) Nx.float32 [||])))
+    scalar (item [] (Nx.Rng.normal (Nx.Rng.fold_in key i) float32 [||])))
 
 let round4 x = Float.round (x *. 1e4) /. 1e4
 
 let distinct m =
-  let w, _ = Nx.eigh (Nx.cast Nx.float64 m) in
-  Array.to_list (Nx.to_array w)
+  let w, _ = eigh (cast float64 m) in
+  Array.to_list (to_array w)
   |> List.map ~f:round4
   |> List.dedup_and_sort ~compare:Float.compare
 
-let symmetrize m = Nx.mul_s (Nx.add m (Nx.transpose m)) 0.5
+let symmetrize m = Infix.((m + transpose m) *$ 0.5)
 
 let block_eigenvalues matrices =
   Array.to_list matrices
   |> List.concat_map ~f:(fun m ->
-    let w, _ = Nx.eigh (Nx.cast Nx.float64 (symmetrize m)) in
-    Array.to_list (Nx.to_array w) |> List.map ~f:round4)
+    let w, _ = eigh (cast float64 (symmetrize m)) in
+    Array.to_list (to_array w) |> List.map ~f:round4)
   |> List.dedup_and_sort ~compare:Float.compare
 
 let spec_k2 =
@@ -85,7 +86,7 @@ let test_blocks_round_trip () =
   let f = random_factors (Nx.Rng.key 13) d in
   let back = Blocks.of_blocks b (Blocks.to_blocks b f) in
   List.iter2_exn f back ~f:(fun a b ->
-    equal ~msg:"factor round trip" (float 1e-5) (Nx.item [] a) (Nx.item [] b))
+    equal ~msg:"factor round trip" (float 1e-5) (item [] a) (item [] b))
 
 (* Transport preserves the blocks (and hence the spectrum); multiplicities
    change with the size, so only the distinct values are compared. *)
@@ -101,11 +102,11 @@ let test_transport () =
   let fm = Blocks.transport ~from_:bn ~to_:bm f in
   let fn = Blocks.transport ~from_:bm ~to_:bn fm in
   List.iter2_exn f fn ~f:(fun a b ->
-    equal ~msg:"transport round trip" (float 1e-5) (Nx.item [] a) (Nx.item [] b));
+    equal ~msg:"transport round trip" (float 1e-5) (item [] a) (item [] b));
   let blocks_n = Blocks.to_blocks bn f
   and blocks_m = Blocks.to_blocks bm fm in
   List.iter2_exn blocks_n blocks_m ~f:(fun a b ->
-    equal ~msg:"transported block" (float 1e-5) (Nx.item [] a) (Nx.item [] b));
+    equal ~msg:"transported block" (float 1e-5) (item [] a) (item [] b));
   equal
     ~msg:"transported spectrum"
     (list (float 1e-4))
@@ -131,7 +132,7 @@ let test_free_axes () =
   let d = List.length c.Compiler.basis.components in
   let factors =
     List.init d ~f:(fun i ->
-      Nx.Rng.normal (Nx.Rng.fold_in (Nx.Rng.key 19) i) Nx.float32 [| f; f |])
+      Nx.Rng.normal (Nx.Rng.fold_in (Nx.Rng.key 19) i) float32 [| f; f |])
   in
   let dense = symmetrize (c.Compiler.dense_block ~factors) in
   let matrices = Blocks.block_matrices b (Blocks.to_blocks b factors) in
@@ -187,8 +188,8 @@ let test_blockwise_estimator () =
   equal
     ~msg:"blockwise H_inv"
     (array (float 1e-4))
-    (Nx.to_array (Nx.cast Nx.float64 dense))
-    (Nx.to_array (Nx.cast Nx.float64 reconstructed))
+    (to_array (cast float64 dense))
+    (to_array (cast float64 reconstructed))
 
 let tests =
   [ test "blocks reproduce the k=2 spectrum" test_blocks_spectrum

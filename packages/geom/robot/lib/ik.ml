@@ -24,8 +24,8 @@ let init ?(lambda = 1e-3) ~q:q0 () =
   let batch = batch_shape q0 in
   let lambda =
     match batch with
-    | [||] -> Nx.full float32 [||] lambda
-    | _ -> Nx.full float32 batch lambda
+    | [||] -> full float32 [||] lambda
+    | _ -> full float32 batch lambda
   in
   { q = q0; lambda; iterations = 0 }
 
@@ -40,11 +40,11 @@ let normal_equations ~lambda error jacobian =
   let e = reshape [| bsz; dim |] error in
   let jt = transpose ~axes:[ 0; 2; 1 ] j in
   let damping =
-    mul (reshape [| bsz; 1; 1 |] (reshape [| bsz |] lambda)) (eye float32 dof)
+    Infix.(reshape [| bsz; 1; 1 |] (reshape [| bsz |] lambda) * eye float32 dof)
   in
-  let h = add (matmul jt j) damping in
-  let g = matmul jt (reshape [| bsz; dim; 1 |] e) in
-  h, reshape [| bsz; dof |] (matmul (inv h) g), batch
+  let h = Infix.((jt *@ j) + damping) in
+  let g = Infix.(jt *@ reshape [| bsz; dim; 1 |] e) in
+  h, reshape [| bsz; dof |] Infix.(inv h *@ g), batch
 
 let batch_of x = Array.sub (shape x) 0 (Array.length (shape x) - 1)
 
@@ -57,9 +57,9 @@ let matvec m v =
   let rows = shape_m.(Array.length shape_m - 2)
   and cols = shape_m.(Array.length shape_m - 1) in
   let out =
-    matmul
-      (reshape [| bsz; rows; cols |] m)
-      (reshape [| bsz; cols; 1 |] (reshape (Array.append batch [| cols |]) v))
+    Infix.(
+      reshape [| bsz; rows; cols |] m
+      *@ reshape [| bsz; cols; 1 |] (reshape (Array.append batch [| cols |]) v))
   in
   reshape (Array.append batch [| rows |]) out
 
@@ -81,11 +81,11 @@ let iterate ?(step_limit = 0.5) ?lower ?upper task state =
   let step = reshape (Array.append batch [| dof |]) step in
   let largest = max ~axes:[ Array.length batch ] (abs step) in
   let cap =
-    div (scalar float32 step_limit) (reshape (Array.append batch [| 1 |]) largest)
+    Infix.(scalar float32 step_limit / reshape (Array.append batch [| 1 |]) largest)
   in
   let scale = minimum_s cap 1. in
-  let delta = mul scale step in
-  let candidate = project ?lower ?upper (sub q0 delta) in
+  let delta = Infix.(scale * step) in
+  let candidate = project ?lower ?upper Infix.(q0 - delta) in
   (* The gain ratio, not the bare improvement: the linear model predicts
      [before - |r + J dq|^2], and a step is kept only where the residual fell by
      a fair fraction of what the model promised. Comparing the two residual
@@ -95,19 +95,19 @@ let iterate ?(step_limit = 0.5) ?lower ?upper task state =
   let before = Task.squared task q0
   and after = Task.squared task candidate in
   let predicted =
-    let linear = Nx.add error (matvec jacobian delta) in
-    sub before (Nx.sum ~axes:[ Array.length batch ] (mul linear linear))
+    let linear = Infix.(error + matvec jacobian delta) in
+    Infix.(before - sum ~axes:[ Array.length batch ] (linear * linear))
   in
-  let actual = sub before after in
-  let gain = div actual (maximum_s predicted 1e-20) in
+  let actual = Infix.(before - after) in
+  let gain = Infix.(actual / maximum_s predicted 1e-20) in
   let better = logical_and (greater_s actual 0.) (greater_s gain 1e-3) in
   let better_col =
     if Array.length batch = 0 then better else reshape (Array.append batch [| 1 |]) better
   in
   let q = where better_col candidate q0 in
   let lambda =
-    let grow = mul_s state.lambda 4.
-    and shrink = mul_s state.lambda 0.5 in
+    let grow = Infix.(state.lambda *$ 4.)
+    and shrink = Infix.(state.lambda *$ 0.5) in
     maximum_s (minimum_s (where better shrink grow) 1e8) 1e-12
   in
   { q; lambda; iterations = state.iterations + 1 }
@@ -120,7 +120,7 @@ type result =
   ; converged : bool_t
   }
 
-let all_converged converged = Nx.item [] (Nx.all converged)
+let all_converged converged = item [] (all converged)
 
 let solve
       ?(max_iter = 100)

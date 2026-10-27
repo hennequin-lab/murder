@@ -9,6 +9,7 @@
    group, and the factor round trip through the design solve. *)
 
 open Base
+open Nx
 open Windtrap
 open Symo
 
@@ -33,7 +34,7 @@ let factor_shape ~dims (comp : Component.t) =
 
 let random_factors ~key ~dims components =
   List.mapi components ~f:(fun i comp ->
-    Nx.Rng.normal (Nx.Rng.fold_in key i) Nx.float32 (factor_shape ~dims comp))
+    Nx.Rng.normal (Nx.Rng.fold_in key i) float32 (factor_shape ~dims comp))
 
 let random_perms ~key ~dims group_axes =
   List.mapi group_axes ~f:(fun i ids ->
@@ -46,45 +47,46 @@ let check_coefficients ~dims components data =
       match comp with
       | Component.Single t -> Support.coefficient_brute ~dims t data
       | Component.Sum ts ->
-        List.fold ts ~init:(Nx.scalar Nx.float32 0.0) ~f:(fun acc t ->
-          Nx.add acc (Support.coefficient_brute ~dims t data))
+        List.fold ts ~init:(scalar float32 0.0) ~f:(fun acc t ->
+          Infix.(acc + Support.coefficient_brute ~dims t data))
     in
     let got = Component.coefficient ~dims comp (`Full data) in
-    equal ~msg:"coefficient" (array (float 1e-5)) (Nx.to_array expected) (Nx.to_array got));
+    equal ~msg:"coefficient" (array (float 1e-5)) (to_array expected) (to_array got));
   (* The outer-product entry point estimates the same coefficients from the
      two sides separately; it must agree with the dense path, which is what
      the brute force above checks. Regression: it used to materialize the
      [prod dims.left * prod dims.right] outer product. *)
-  let left = Nx.Rng.normal (Nx.Rng.key 16) Nx.float32 (Array.of_list dims.left) in
-  let right = Nx.Rng.normal (Nx.Rng.key 17) Nx.float32 (Array.of_list dims.right) in
+  let left = Nx.Rng.normal (Nx.Rng.key 16) float32 (Array.of_list dims.left) in
+  let right = Nx.Rng.normal (Nx.Rng.key 17) float32 (Array.of_list dims.right) in
   let full =
     let left_shape = Array.of_list (dims.left @ List.map dims.right ~f:(fun _ -> 1)) in
     let right_shape = Array.of_list (List.map dims.left ~f:(fun _ -> 1) @ dims.right) in
-    Nx.mul (Nx.reshape left_shape left) (Nx.reshape right_shape right)
+    Infix.(reshape left_shape left * reshape right_shape right)
   in
   List.iter components ~f:(fun comp ->
     equal
       ~msg:"outer-product coefficient"
       (array (float 1e-5))
-      (Nx.to_array (Component.coefficient ~dims comp (`Full full)))
-      (Nx.to_array (Component.coefficient ~dims comp (`Outer_product (left, right)))))
+      (to_array (Component.coefficient ~dims comp (`Full full)))
+      (to_array (Component.coefficient ~dims comp (`Outer_product (left, right)))))
 
 let check_basis ?(symmetric = false) ~name ~dims spec =
   let compiled = Compiler.compile ~symmetric ~dims spec in
   let components = compiled.basis.components in
   let data =
-    Nx.Rng.normal (Nx.Rng.key 11) Nx.float32 (Array.of_list (dims.left @ dims.right))
+    Nx.Rng.normal (Nx.Rng.key 11) float32 (Array.of_list (dims.left @ dims.right))
   in
   check_coefficients ~dims components data;
   let design = Component.design_matrix ~dims components in
-  let design64 = Nx.cast Nx.float64 design in
+  let design64 = cast float64 design in
   is_true
     ~msg:(name ^ ": design matrix is symmetric")
     Float.(
-      abs (Nx.item [] (Nx.max (Nx.abs (Nx.sub design (Nx.transpose design))))) < 1e-6);
+      Float.abs (Nx.item [] (Nx.max (Nx.abs (Nx.sub design (Nx.transpose design)))))
+      < 1e-6);
   let positive_definite =
-    let l = Nx.cholesky design64 in
-    Nx.item [] (Nx.all (Nx.isfinite l))
+    let l = cholesky design64 in
+    item [] (all (isfinite l))
   in
   let factors = random_factors ~key:(Nx.Rng.key 12) ~dims components in
   let block = compiled.dense_block ~factors in
@@ -94,8 +96,8 @@ let check_basis ?(symmetric = false) ~name ~dims spec =
   equal
     ~msg:(name ^ ": invariance")
     (array (float 1e-4))
-    (Nx.to_array block)
-    (Nx.to_array transformed);
+    (to_array block)
+    (to_array transformed);
   (* The factor round trip is exact when the design system is invertible. *)
   if positive_definite
   then (
@@ -104,18 +106,18 @@ let check_basis ?(symmetric = false) ~name ~dims spec =
       equal
         ~msg:(name ^ ": factor round trip")
         (array (float 1e-3))
-        (Nx.to_array expected)
-        (Nx.to_array got)));
+        (to_array expected)
+        (to_array got)));
   (* [apply_block] is the action of the dense block on one vector. *)
   let right_size = List.fold dims.right ~init:1 ~f:Int.( * ) in
-  let v = Nx.Rng.normal (Nx.Rng.key 14) Nx.float32 [| right_size |] in
-  let expected = Nx.matmul block (Nx.reshape [| right_size |] v) |> Nx.to_array in
+  let v = Nx.Rng.normal (Nx.Rng.key 14) float32 [| right_size |] in
+  let expected = Infix.(block *@ reshape [| right_size |] v) |> to_array in
   let got =
     compiled.apply_block
       ~factors
-      (Nx.reshape (Array.append [| 1 |] (Array.of_list dims.right)) v)
-    |> Nx.reshape [| -1 |]
-    |> Nx.to_array
+      (reshape (Array.append [| 1 |] (Array.of_list dims.right)) v)
+    |> reshape [| -1 |]
+    |> to_array
   in
   equal ~msg:(name ^ ": apply_block") (array (float 1e-4)) expected got
 
@@ -192,8 +194,8 @@ let test_compile_manual () =
   equal
     ~msg:"manual compilation matches"
     (array (float 1e-6))
-    (Nx.to_array (auto.dense_block ~factors))
-    (Nx.to_array (manual.dense_block ~factors))
+    (to_array (auto.dense_block ~factors))
+    (to_array (manual.dense_block ~factors))
 
 let tests =
   [ test "partitions enumerate set partitions of size >= 2" test_partitions

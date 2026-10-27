@@ -33,6 +33,7 @@
    is not invertible. *)
 
 open Base
+open Nx
 
 (* One kind per group, aligned with [Basis.group_ids]. *)
 type kind = Kind.t list
@@ -145,10 +146,8 @@ let build_group ~n ~lpos ~rpos =
   let right_kinds = Array.of_list (List.map vectors_r ~f:(fun (k, _, _) -> k)) in
   let right_copies = Array.of_list (List.map vectors_r ~f:(fun (_, c, _) -> c)) in
   let b_r = Array.length right_kinds in
-  let left_mat =
-    Nx.stack (List.map vectors_l ~f:(fun (_, _, v) -> Nx.reshape [| -1 |] v))
-  in
-  let right_batch = Nx.stack (List.map vectors_r ~f:(fun (_, _, v) -> v)) in
+  let left_mat = stack (List.map vectors_l ~f:(fun (_, _, v) -> reshape [| -1 |] v)) in
+  let right_batch = stack (List.map vectors_r ~f:(fun (_, _, v) -> v)) in
   let gram_of k vectors =
     let vs =
       List.filter_map vectors ~f:(fun (kind, _, v) ->
@@ -159,22 +158,21 @@ let build_group ~n ~lpos ~rpos =
     let entries = Array.create ~len:(m * m) 0.0 in
     Array.iteri vs ~f:(fun i vi ->
       Array.iteri vs ~f:(fun j vj ->
-        entries.((i * m) + j) <- Nx.item [] (Nx.sum (Nx.mul vi vj))));
-    Nx.create Nx.float32 [| m; m |] entries
+        entries.((i * m) + j) <- item [] (sum Infix.(vi * vj))));
+    create float32 [| m; m |] entries
   in
   let gram_l = Array.of_list (List.map common ~f:(fun k -> gram_of k vectors_l)) in
   let gram_r = Array.of_list (List.map common ~f:(fun k -> gram_of k vectors_r)) in
   let table =
     List.init d ~f:(fun i ->
       let factors =
-        List.init d ~f:(fun j ->
-          Nx.scalar Nx.float32 (if Int.equal i j then 1.0 else 0.0))
+        List.init d ~f:(fun j -> scalar float32 (if Int.equal i j then 1.0 else 0.0))
       in
       compiler.Compiler.apply_block ~factors right_batch
-      |> Nx.reshape [| b_r; -1 |]
-      |> fun out -> Nx.matmul left_mat (Nx.transpose out))
-    |> Nx.stack
-    |> Nx.to_array
+      |> reshape [| b_r; -1 |]
+      |> fun out -> Infix.(left_mat *@ transpose out))
+    |> stack
+    |> to_array
   in
   { n
   ; k_l
@@ -272,8 +270,8 @@ let build (compiler : Compiler.t) =
         gram.(i))
     in
     match mats with
-    | [] -> Nx.ones Nx.float32 [| 1; 1 |]
-    | m :: rest -> List.fold rest ~init:m ~f:Nx.kron
+    | [] -> ones float32 [| 1; 1 |]
+    | m :: rest -> List.fold rest ~init:m ~f:kron
   in
   let gram_l = Array.of_list (List.map kinds ~f:(gram_of `Left)) in
   let entries =
@@ -363,7 +361,7 @@ let build (compiler : Compiler.t) =
     let m_l = copies_l.(ki)
     and m_r = copies_r.(ki) in
     let offset = List.nth_exn offsets ki in
-    let ginv = Nx.inv (Nx.cast Nx.float64 gram_l.(ki)) |> Nx.to_array in
+    let ginv = inv (cast float64 gram_l.(ki)) |> to_array in
     for b = 0 to m_r - 1 do
       for a = 0 to m_l - 1 do
         for c = 0 to d - 1 do
@@ -375,8 +373,8 @@ let build (compiler : Compiler.t) =
         done
       done
     done);
-  let table = Nx.create Nx.float32 [| n_entries; d |] table in
-  let inverse = Nx.pinv ~rtol:1e-10 (Nx.cast Nx.float64 table) |> Nx.cast Nx.float32 in
+  let table = create float32 [| n_entries; d |] table in
+  let inverse = pinv ~rtol:1e-10 (cast float64 table) |> cast float32 in
   { group_ids; kinds; copies_l; copies_r; free_l; free_r; entries; table; inverse }
 
 (* ------------------------------------------------------------------------
@@ -386,18 +384,20 @@ let build (compiler : Compiler.t) =
 let to_blocks t (factors : Nx.float32_t list) =
   let d = List.length factors in
   let n_entries = Array.length t.entries in
-  let m = Nx.to_array t.table in
+  let m = to_array t.table in
   List.init n_entries ~f:(fun e ->
-    List.foldi factors ~init:(Nx.scalar Nx.float32 0.0) ~f:(fun c acc f ->
-      Nx.add acc (Nx.mul_s f m.((e * d) + c))))
+    List.foldi factors ~init:(scalar float32 0.0) ~f:(fun c acc f ->
+      let entry = m.((e * d) + c) in
+      Infix.(acc + (f *$ entry))))
 
 let of_blocks t (blocks : Nx.float32_t list) =
-  let d = (Nx.shape t.table).(1) in
+  let d = (shape t.table).(1) in
   let n_entries = Array.length t.entries in
-  let m = Nx.to_array t.inverse in
+  let m = to_array t.inverse in
   List.init d ~f:(fun c ->
-    List.foldi blocks ~init:(Nx.scalar Nx.float32 0.0) ~f:(fun e acc b ->
-      Nx.add acc (Nx.mul_s b m.((c * n_entries) + e))))
+    List.foldi blocks ~init:(scalar float32 0.0) ~f:(fun e acc b ->
+      let entry = m.((c * n_entries) + e) in
+      Infix.(acc + (b *$ entry))))
 
 (* ------------------------------------------------------------------------
    Block matrices
@@ -424,13 +424,12 @@ let block_matrices t blocks =
        and m_r = t.copies_r.(ki) in
        let offset = List.nth_exn offsets ki in
        List.sub blocks ~pos:offset ~len:(m_l * m_r)
-       |> List.map ~f:(fun e -> Nx.reshape [| f_l; f_r |] e)
-       |> Nx.stack
+       |> List.map ~f:(fun e -> reshape [| f_l; f_r |] e)
+       |> stack
        |> fun m ->
-       Nx.reshape [| m_l; m_r; f_l; f_r |] m
+       reshape [| m_l; m_r; f_l; f_r |] m
        |> fun m ->
-       Nx.transpose ~axes:[ 0; 2; 1; 3 ] m
-       |> fun m -> Nx.reshape [| m_l * f_l; m_r * f_r |] m))
+       transpose ~axes:[ 0; 2; 1; 3 ] m |> fun m -> reshape [| m_l * f_l; m_r * f_r |] m))
 
 (* The inverse of {!block_matrices}: entry tensors from per-kind matrices. *)
 let blocks_of_matrices t matrices =
@@ -440,11 +439,11 @@ let blocks_of_matrices t matrices =
     (Array.mapi matrices ~f:(fun ki m ->
        let m_l = t.copies_l.(ki)
        and m_r = t.copies_r.(ki) in
-       let m = Nx.reshape [| m_l; f_l; m_r; f_r |] m in
-       let m = Nx.transpose ~axes:[ 0; 2; 1; 3 ] m in
-       let m = Nx.reshape [| m_l * m_r; f_l; f_r |] m in
+       let m = reshape [| m_l; f_l; m_r; f_r |] m in
+       let m = transpose ~axes:[ 0; 2; 1; 3 ] m in
+       let m = reshape [| m_l * m_r; f_l; f_r |] m in
        List.init (m_l * m_r) ~f:(fun e ->
-         Nx.slice [ Nx.I e ] m |> fun x -> Nx.reshape free_shape x)))
+         slice [ Nx.I e ] m |> fun x -> reshape free_shape x)))
   |> List.concat
 
 (* [transport ~from_ ~to_ factors] is the factor list, at [to_]'s dims, of the

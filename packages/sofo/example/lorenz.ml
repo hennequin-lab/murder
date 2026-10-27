@@ -23,8 +23,8 @@ let placement = Placement.on device
 (* [Nx.relu] is gone from [Nx] and activations now live in [Kaun]; the example
    keeps its own rather than depend on [Kaun] for one line. *)
 let relu x =
-  let zero = Nx.scalar_like x 0. in
-  Nx.where (Nx.less_equal x zero) zero x
+  let zero = scalar_like x 0. in
+  where Infix.(x <= zero) zero x
 
 (* Parameters *)
 
@@ -42,7 +42,7 @@ let damping : Sofo.Optim.damping = `Relative_from_top 1e-5
 
 let lorenz_trajs =
   let file = in_dir "data.npy" in
-  try Nx.unpack float32 (Nx_io.load_npy file) with
+  try unpack float32 (Nx_io.load_npy file) with
   | _ ->
     let dt = 0.01 in
     let sigma = 10. in
@@ -129,7 +129,7 @@ module Model = struct
       Ptree.unit
       ~f:(fun x _t -> step theta x, ())
       ~init:x0
-      (Nx.zeros float32 [| horizon - 1 |])
+      (zeros float32 [| horizon - 1 |])
     |> fst
 end
 

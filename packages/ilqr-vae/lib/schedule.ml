@@ -4,6 +4,7 @@
   ---------------------------------------------------------------------------*)
 
 open Base
+open Nx
 (* The ELBO is [log p(o | z) − β · KL(q ‖ p)] ({!Elbo}). β = 1 is the
    variational bound, but a recognition trained from scratch can collapse
    onto the prior before it has learned to read the data, and the likelihood
@@ -52,4 +53,4 @@ let linear_warmup ?(start = 0.0) ?(stop = 1.0) ?(start_step = 0) ~steps dtype =
   { dtype; value }
 
 let value s step = s.value step
-let at s step = Nx.scalar s.dtype (s.value step)
+let at s step = scalar s.dtype (s.value step)

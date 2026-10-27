@@ -21,6 +21,7 @@
    whole state threaded through input/output leaves. *)
 
 open Base
+open Nx
 
 module Config = struct
   type t =
@@ -35,11 +36,9 @@ type config = Config.t
 
 (* [bump_tensor beta_t beta] decays a bias-correction counter by [beta] with a
    floor, so the debiasing denominator never reaches zero. *)
-let bump_tensor beta_t beta =
-  Nx.maximum (Nx.mul_s beta_t beta) (Nx.scalar Nx.float32 1e-4)
-
-let ema ~beta x avg = Nx.add (Nx.mul_s avg beta) (Nx.mul_s x (1. -. beta))
-let debias beta_t x = Nx.div x (Nx.sub (Nx.scalar Nx.float32 1.) beta_t)
+let bump_tensor beta_t beta = maximum Infix.(beta_t *$ beta) (scalar float32 1e-4)
+let ema ~beta x avg = Infix.((avg *$ beta) + (x *$ (1. -. beta)))
+let debias beta_t x = Infix.(x / (scalar float32 1. - beta_t))
 
 module type S = sig
   type 'a tree
@@ -132,13 +131,13 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
   type mid = Nx.float32_t Mid.t
 
   let init ~config theta =
-    let zero = map (fun _ x -> Nx.zeros_like x) theta in
+    let zero = map (fun _ x -> zeros_like x) theta in
     let zero_factors = O.Second_order.pack (O.Second_order.factors_of_pair zero zero) in
     { State.theta
     ; g_avg = zero
     ; sigma_g_avg = zero_factors
-    ; beta_1_t = Nx.scalar Nx.float32 config.beta_1
-    ; beta_2_t = Nx.scalar Nx.float32 config.beta_2
+    ; beta_1_t = scalar float32 config.beta_1
+    ; beta_2_t = scalar float32 config.beta_2
     }
 
   (* Everything the host solve needs, plus the pieces [finish] carries into
@@ -150,8 +149,8 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     let g_avg_debias = map (fun _ g -> debias state.State.beta_1_t g) g_avg in
     let theta_star = O.First_order.orbit_average state.State.theta in
     let g_star = O.First_order.orbit_average g_avg_debias in
-    let delta_w = map2 (fun _ t ts -> Nx.sub t ts) state.State.theta theta_star in
-    let delta_g = map2 (fun _ g gs -> Nx.sub g gs) g_avg_debias g_star in
+    let delta_w = map2 (fun _ t ts -> Infix.(t - ts)) state.State.theta theta_star in
+    let delta_g = map2 (fun _ g gs -> Infix.(g - gs)) g_avg_debias g_star in
     let sigma_w = O.Second_order.pack (O.Second_order.factors_of_pair delta_w delta_w) in
     let sigma_g_avg =
       O.Second_order.pack (O.Second_order.factors_of_pair delta_g delta_g)
@@ -171,7 +170,7 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
   (* The host solve: unpack the two packed factor lists, assemble the blocks,
      apply Eq. 10 blockwise, and pack the result. *)
   let solve ~damping mid =
-    let host = Nx.place Nx.Placement.host in
+    let host = place Nx.Placement.host in
     let sigma_w = O.Second_order.unpack (host mid.Mid.sigma_w) in
     let sigma_g = O.Second_order.unpack (host mid.Mid.sigma_g) in
     let blocks_w = O.Second_order.blocks_of_factors sigma_w in
@@ -186,7 +185,7 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     let theta =
       match config.learning_rate with
       | None -> mid.Mid.theta
-      | Some lr -> map2 (fun _ t d -> Nx.sub t (Nx.mul_s d lr)) mid.Mid.theta delta
+      | Some lr -> map2 (fun _ t d -> Infix.(t - (d *$ lr))) mid.Mid.theta delta
     in
     { State.theta
     ; g_avg = mid.Mid.g_avg

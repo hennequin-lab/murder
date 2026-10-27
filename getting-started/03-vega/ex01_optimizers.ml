@@ -3,11 +3,13 @@
  * Run with:
  *   dune exec getting-started/03-vega/ex01_optimizers.exe *)
 
+open Nx
+
 let p = Nx.Ptree.tensor
-let x0 () = Nx.create Nx.float32 [| 2 |] [| 5.; -3. |]
+let x0 () = create float32 [| 2 |] [| 5.; -3. |]
 
 (* f(x) = 0.5 * ||x||^2, so grad f(x) = x. *)
-let f x = Nx.mul_s (Nx.sum (Nx.square x)) 0.5
+let f x = Infix.(sum (square x) *$ 0.5)
 let steps = 50
 let report_every = 10
 
@@ -24,8 +26,8 @@ let run ~name ~init ~step =
         Printf.printf
           "  step %2d  f = %.6f  x = %s\n%!"
           i
-          (Nx.item [] (f params))
-          (Nx.to_string params);
+          (item [] (f params))
+          (to_string params);
       loop ~i:(i + 1) (params, state))
   in
   let params = x0 () in

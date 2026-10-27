@@ -26,6 +26,8 @@
    [update] return the two together and a loop threads one state rather than
    remembering to derive the next one. *)
 
+open Nx
+
 type damping =
   [ `Absolute of float
   | `Relative_from_top of float
@@ -68,7 +70,7 @@ let directions (type p) (structure : p Nx.Ptree.t) ?key ~k (params : p) : p =
   Nx.Rng.with_key key (fun () -> Sketch.sample structure ~k params)
 
 let apply (type p) (structure : p Nx.Ptree.t) ~k (thetas : p) (z : Nx.float64_t) : p =
-  let z = Nx.reshape [| k |] (Nx.contiguous z) in
+  let z = reshape [| k |] (contiguous z) in
   Nx.Ptree.map
     structure
     (fun _ theta ->
@@ -77,9 +79,9 @@ let apply (type p) (structure : p Nx.Ptree.t) ~k (thetas : p) (z : Nx.float64_t)
        if Nx_dtype.is Nx_dtype.Float (Nx.dtype theta)
        then Sketch.contract z theta
        else
-         Nx.zeros
+         zeros
            (Nx.dtype theta)
-           (Array.sub (Nx.shape theta) 1 (Array.length (Nx.shape theta) - 1)))
+           (Array.sub (shape theta) 1 (Array.length (shape theta) - 1)))
     thetas
 
 (* [params - lr * dw], leafwise, in each leaf's own dtype, for a scalar
@@ -94,7 +96,7 @@ let shift (type p) (structure : p Nx.Ptree.t) ~(lr : Nx.float64_t) (params : p) 
     structure
     (fun _ p d ->
        if Nx_dtype.is Nx_dtype.Float (Nx.dtype p)
-       then Nx.sub p (Nx.mul d (Nx.cast (Nx.dtype d) lr))
+       then Infix.(p - (d * cast (Nx.dtype d) lr))
        else p)
     params
     dw
@@ -112,13 +114,11 @@ let gram (type p) (structure : p Nx.Ptree.t) ~k (dirs : p) : Nx.float64_t =
     (fun _ leaf z ->
        if Nx_dtype.is Nx_dtype.Float (Nx.dtype leaf)
        then (
-         let m =
-           Nx.reshape [| k; Nx.numel leaf / k |] (Nx.contiguous (Nx.cast Nx.float64 leaf))
-         in
-         Nx.add z (Nx.matmul m (Nx.transpose m)))
+         let m = reshape [| k; numel leaf / k |] (contiguous (cast float64 leaf)) in
+         Infix.(z + (m *@ transpose m)))
        else z)
     dirs
-    (Nx.zeros Nx.float64 [| k; k |])
+    (zeros float64 [| k; k |])
 
 (* [spectrum z] is [(u, s, smax, smin)] for a symmetric matrix [z]: [z]'s
    singular vectors [u] and values [s], with the largest and smallest of [s].
@@ -128,9 +128,9 @@ let gram (type p) (structure : p Nx.Ptree.t) ~k (dirs : p) : Nx.float64_t =
    magnitudes keeps the SVD's semantics where rounding leaves an eigenvalue of
    a positive semi-definite matrix slightly negative. *)
 let spectrum (z : Nx.float64_t) =
-  let w, u = Nx.eigh z in
-  let s = Nx.abs w in
-  u, s, Nx.item [] (Nx.max s), Nx.item [] (Nx.min s)
+  let w, u = eigh z in
+  let s = abs w in
+  u, s, item [] (max s), item [] (min s)
 
 (* The whitening transform Q = Z^{-1/2} of a Gram matrix: the matrix that turns
    the tangents a sketch was drawn along into an orthonormal basis. Q is the
@@ -142,7 +142,7 @@ let spectrum (z : Nx.float64_t) =
    produce one: some drawn lanes span nothing, which is a statement about [k]
    against the number of parameters, so it raises. *)
 let inverse_sqrt (z : Nx.float64_t) : Nx.float64_t =
-  let k = (Nx.shape z).(0) in
+  let k = (shape z).(0) in
   let u, s, smax, smin = spectrum z in
   if smin <= 1e-12 *. smax
   then
@@ -154,8 +154,8 @@ let inverse_sqrt (z : Nx.float64_t) : Nx.float64_t =
           a direction as there are lanes."
          (if smax = 0.0 then 0.0 else smin /. smax)
          k);
-  let inv_sqrt = Nx.rsqrt s in
-  Nx.matmul (Nx.mul u (Nx.reshape [| 1; k |] inv_sqrt)) (Nx.transpose u)
+  let inv_sqrt = rsqrt s in
+  Infix.(u * reshape [| 1; k |] inv_sqrt *@ transpose u)
 
 (* ── the update (Alg. 1, lines 10–12) ────────────────────────────────────── *)
 
@@ -181,20 +181,20 @@ let coordinates
       (c : Nx.float64_t)
   : Nx.float64_t
   =
-  let k = (Nx.shape c).(0) in
+  let k = (shape c).(0) in
   let q = Option.map inverse_sqrt gram in
   let ggn =
     match q with
     | None -> ggn
-    | Some q -> Nx.matmul q (Nx.matmul ggn (Nx.transpose q))
+    | Some q -> Infix.(q *@ (ggn *@ transpose q))
   in
   let c =
     match q with
     | None -> c
-    | Some q -> Nx.matmul q c
+    | Some q -> Infix.(q *@ c)
   in
   let u, s, smax, smin = spectrum ggn in
-  let vt = Nx.transpose u in
+  let vt = transpose u in
   let gamma =
     match damping with
     | `Absolute value -> value
@@ -208,19 +208,19 @@ let coordinates
            the top instead";
       factor *. smin
   in
-  let damped = Nx.add_s s gamma in
+  let damped = Infix.(s +$ gamma) in
   let scale =
     match preconditioner with
     | `Inverse -> damped
-    | `Inverse_sqrt -> Nx.sqrt damped
+    | `Inverse_sqrt -> sqrt damped
   in
-  let rhs = Nx.matmul vt (Nx.reshape [| k; 1 |] c) in
-  let z = Nx.reshape [| k |] (Nx.matmul u (Nx.div rhs (Nx.reshape [| k; 1 |] scale))) in
+  let rhs = Infix.(vt *@ reshape [| k; 1 |] c) in
+  let z = reshape [| k |] Infix.(u *@ (rhs / reshape [| k; 1 |] scale)) in
   (* Back to the sketch's own coordinates, where [apply] contracts them: the
      step is Θ (Q z). *)
   match q with
   | None -> z
-  | Some q -> Nx.matmul (Nx.transpose q) z
+  | Some q -> Infix.(transpose q *@ z)
 
 let update_sketch
       (type p)
@@ -234,7 +234,7 @@ let update_sketch
   =
   let g = gram structure ~k:sk.k sk.dirs in
   let dw = sk.apply (coordinates ?damping ?preconditioner ~gram:g sk.ggn sk.c) in
-  shift structure ~lr:(Nx.scalar Nx.float64 lr) params dw
+  shift structure ~lr:(scalar float64 lr) params dw
 
 (* ── the eager step ──────────────────────────────────────────────────────── *)
 
@@ -303,7 +303,7 @@ let shift_by p =
     ~parallel:8
     Nx.Ptree.(p @-> p @-> tensor @-> tensor @-> returns p)
     (fun params dirs (z : Nx.float64_t) lr ->
-       shift p ~lr params (apply p ~k:(Nx.shape z).(0) dirs z))
+       shift p ~lr params (apply p ~k:(shape z).(0) dirs z))
 
 (* The step, and the state that produced it, advanced together: the caller
    threads one state through the loop, so the key the sketch consumed and the
@@ -311,7 +311,7 @@ let shift_by p =
    the host, which copies three k-sized tensors when the sketch ran on a
    GPU. *)
 let update ?(lr = 1.0) ?damping ?preconditioner placement p (st : state) params o =
-  let host = Nx.place Nx.Placement.host in
+  let host = place Nx.Placement.host in
   let z =
     coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
   in
@@ -319,6 +319,6 @@ let update ?(lr = 1.0) ?damping ?preconditioner placement p (st : state) params 
       p
       (Nx.Ptree.place p placement params)
       (Nx.Ptree.place p placement o.dirs)
-      (Nx.place placement z)
-      (Nx.scalar Nx.float64 lr)
+      (place placement z)
+      (scalar float64 lr)
   , next st )

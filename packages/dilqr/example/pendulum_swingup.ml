@@ -16,6 +16,7 @@
    VJP together). *)
 
 open Base
+open Nx
 open Stdio
 module Nx = Nx
 
@@ -40,32 +41,30 @@ module Pendulum = struct
   let target = 3.14159265358979
 
   let dynamics { Params.gravity; mass; length } ~k:_ ~x ~u =
-    let theta = Nx.slice [ R (0, 1) ] x
-    and omega = Nx.slice [ R (1, 2) ] x in
-    let ml2 = Nx.mul mass (Nx.mul length length) in
-    let grav_torque = Nx.mul (Nx.mul gravity (Nx.mul mass length)) (Nx.sin theta) in
-    let acc = Nx.div (Nx.sub u (Nx.add grav_torque (Nx.mul_s omega 0.1))) ml2 in
-    Nx.concatenate
-      ~axis:0
-      [ Nx.add theta (Nx.mul_s omega dt); Nx.add omega (Nx.mul_s acc dt) ]
+    let open Infix in
+    let theta = slice [ R (0, 1) ] x
+    and omega = slice [ R (1, 2) ] x in
+    let ml2 = mass * (length * length) in
+    let grav_torque = gravity * (mass * length) * sin theta in
+    let acc = (u - (grav_torque + (omega *$ 0.1))) / ml2 in
+    concatenate ~axis:0 [ theta + (omega *$ dt); omega + (acc *$ dt) ]
 
   let running_loss _ ~k:_ ~x ~u =
-    let theta = Nx.slice [ R (0, 1) ] x
-    and omega = Nx.slice [ R (1, 2) ] x in
-    let dtheta = Nx.sub_s theta target in
-    Nx.sum
-      (Nx.add
-         (Nx.mul_s (Nx.add (Nx.mul dtheta dtheta) (Nx.mul omega omega)) 0.5)
-         (Nx.mul_s (Nx.mul u u) 0.01))
+    let open Infix in
+    let theta = slice [ R (0, 1) ] x
+    and omega = slice [ R (1, 2) ] x in
+    let dtheta = theta -$ target in
+    sum ((((dtheta * dtheta) + (omega * omega)) *$ 0.5) + (u * u *$ 0.01))
 
   let final_loss _ ~x =
-    let theta = Nx.slice [ R (0, 1) ] x
-    and omega = Nx.slice [ R (1, 2) ] x in
-    let dtheta = Nx.sub_s theta target in
-    Nx.mul_s (Nx.sum (Nx.add (Nx.mul dtheta dtheta) (Nx.mul omega omega))) 5.0
+    let open Infix in
+    let theta = slice [ R (0, 1) ] x
+    and omega = slice [ R (1, 2) ] x in
+    let dtheta = theta -$ target in
+    sum ((dtheta * dtheta) + (omega * omega)) *$ 5.0
 
   let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
-    { dtype = Nx.float64
+    { dtype = float64
     ; n
     ; m
     ; horizon
@@ -77,8 +76,8 @@ module Pendulum = struct
     }
 end
 
-let vec64 a = Nx.create Nx.float64 [| Array.length a |] a
-let scalar64 v = Nx.scalar Nx.float64 v
+let vec64 a = create float64 [| Array.length a |] a
+let scalar64 v = scalar float64 v
 let item t = Nx.item [] t
 
 (* The user loss on the solve output: control effort + upright-tracking of
@@ -88,17 +87,16 @@ let loss ~target problem taus =
   let xs, us = Dilqr.split_taus problem taus in
   let xf = xs.(Array.length xs - 1) in
   let ctrl =
-    Array.fold us ~init:(scalar64 0.0) ~f:(fun a u ->
-      Nx.add a (Nx.mul_s (Nx.sum (Nx.mul u u)) 0.5))
+    Array.fold us ~init:(scalar64 0.0) ~f:(fun a u -> Infix.(a + (sum (u * u) *$ 0.5)))
   in
-  let err = Nx.sub_s (Nx.slice [ R (0, 1) ] xf) target in
-  Nx.add ctrl (Nx.mul_s (Nx.sum (Nx.mul err err)) 1.0)
+  let err = Infix.(slice [ R (0, 1) ] xf -$ target) in
+  Infix.(ctrl + (sum (err * err) *$ 1.0))
 
 let theta : Nx.float64_t Pendulum.Params.t =
   { gravity = scalar64 9.81; mass = scalar64 1.0; length = scalar64 1.0 }
 
 let x0 = vec64 [| 0.0; 0.0 |]
-let us0 = Array.init Pendulum.horizon ~f:(fun _ -> Nx.create Nx.float64 [| 1 |] [| 0.0 |])
+let us0 = Array.init Pendulum.horizon ~f:(fun _ -> create float64 [| 1 |] [| 0.0 |])
 
 let inputs : (Nx.float64_t Pendulum.Params.t, Nx.float64_t) Dilqr.Inputs.t =
   { Dilqr.Inputs.theta; x0; us0 }
@@ -118,9 +116,9 @@ let solve_adaptive () =
   let xf = xs.(Array.length xs - 1) in
   printf
     "final state: theta = %g (target %g), omega = %g\n"
-    (Nx.item [ 0 ] (Nx.slice [ R (0, 1) ] xf))
+    (Nx.item [ 0 ] (slice [ R (0, 1) ] xf))
     Pendulum.target
-    (Nx.item [ 0 ] (Nx.slice [ R (1, 2) ] xf));
+    (Nx.item [ 0 ] (slice [ R (1, 2) ] xf));
   printf
     "first few controls: %g %g %g %g\n"
     (Nx.item [ 0 ] us.(0))
@@ -195,7 +193,7 @@ let solve_compiled adaptive =
   let xs, _ = Dilqr.split_taus Pendulum.problem taus in
   printf
     "jitted solve (10 iterations) final theta: %g\n%!"
-    (Nx.item [ 0 ] (Nx.slice [ R (0, 1) ] xs.(Array.length xs - 1)));
+    (Nx.item [ 0 ] (slice [ R (0, 1) ] xs.(Array.length xs - 1)));
   (* sanity: the compiled gradient matches the eager one for the same map *)
   let eager =
     Rune.grad

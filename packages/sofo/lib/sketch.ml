@@ -37,6 +37,8 @@
    [vmap]'s lanes, so a mark may sit in nested functions, in recurrences,
    inside [Rune.remat] or inside the caller's own maps. *)
 
+open Nx
+
 type 'p t =
   { k : int (** The number of sketch directions. *)
   ; loss : Nx.float64_t (** The primal total loss, as a float64 scalar. *)
@@ -71,8 +73,8 @@ let sample (type p) (structure : p Nx.Ptree.t) ~k (params : p) : p =
     (fun _ leaf ->
        let shape = Array.append [| k |] (Nx.shape leaf) in
        if Nx_dtype.is Nx_dtype.Float (Nx.dtype leaf)
-       then Nx.cast (Nx.dtype leaf) (Nx.randn Nx.float64 shape)
-       else Nx.zeros (Nx.dtype leaf) shape)
+       then cast (Nx.dtype leaf) (randn float64 shape)
+       else zeros (Nx.dtype leaf) shape)
     params
 
 (* [contract z theta] contracts the lane axis of a parameter leaf's tangent
@@ -80,8 +82,8 @@ let sample (type p) (structure : p Nx.Ptree.t) ~k (params : p) : p =
 let contract z theta =
   let s = Nx.shape theta in
   let lead = Array.make (Array.length s - 1) 1 in
-  let zr = Nx.reshape (Array.concat [ [| Nx.numel z |]; lead ]) z in
-  Nx.sum (Nx.mul (Nx.cast (Nx.dtype theta) zr) theta) ~axes:[ 0 ]
+  let zr = reshape (Array.concat [ [| numel z |]; lead ]) z in
+  sum Infix.(cast (Nx.dtype theta) zr * theta) ~axes:[ 0 ]
 
 (* The number of lanes: the leading length of the first tensor leaf of
    [dirs]. *)
@@ -89,7 +91,7 @@ let k_of (type p) (structure : p Nx.Ptree.t) (dirs : p) : int =
   match
     Nx.Ptree.fold
       structure
-      (fun _ leaf k -> Option.fold ~none:(Some (Nx.dim 0 leaf)) ~some:Option.some k)
+      (fun _ leaf k -> Option.fold ~none:(Some (dim 0 leaf)) ~some:Option.some k)
       dirs
       None
   with
@@ -113,7 +115,7 @@ let run
       (fun theta ->
          Rune.Total.collect
            Observe.curvature
-           ~zero:(Nx.zeros Nx.float64 [| k; k |])
+           ~zero:(zeros float64 [| k; k |])
            (fun () -> Rune.jvp structure Nx.Ptree.tensor loss params theta))
       dirs
   in
@@ -121,11 +123,11 @@ let run
   then
     invalid_arg
       "Sofo.sketch: the loss function must return a scalar (a tensor with one element)";
-  let y = Nx.reshape [||] (Nx.cast Nx.float64 (Nx.slice [ Nx.I 0 ] loss_lanes)) in
-  let ggn = Nx.cast Nx.float64 (Nx.slice [ Nx.I 0 ] ggn) in
+  let y = reshape [||] (cast float64 (slice [ Nx.I 0 ] loss_lanes)) in
+  let ggn = cast float64 (slice [ Nx.I 0 ] ggn) in
   { k
   ; loss = y
-  ; c = Nx.reshape [| k |] (Nx.cast Nx.float64 c)
+  ; c = reshape [| k |] (cast float64 c)
   ; ggn
   ; dirs
   ; apply =
@@ -136,7 +138,7 @@ let run
             (Format.asprintf
                "Sofo.sketch: apply takes a k-vector (shape [%d]), got shape %a"
                k
-               Nx.pp_shape
+               pp_shape
                (Nx.shape z));
         Nx.Ptree.map structure (fun _ theta -> contract z theta) dirs)
   }
