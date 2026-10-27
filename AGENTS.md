@@ -43,6 +43,12 @@ one causes real damage.
 - If a repository-wide decision changes, update `CONTRIBUTING.md` or the
   relevant `doc/dev/` note in the same change. Do not let the repo and its
   documentation drift.
+- Never create a worktree inside the repository, including under `.agents/`.
+  Dune reads every `dune-project` below the root, so a nested worktree breaks
+  both checkouts. Use `./dev wt new` and keep worktrees in `../murder-wt/`.
+- One agent per worktree. Never switch branches in, or remove, a worktree you
+  do not own. Never share or symlink `_build` between checkouts, and never edit
+  files under `_build`: they are hardlinked to the shared Dune cache.
 
 ## Layout
 
@@ -66,18 +72,33 @@ one causes real damage.
 
 ## Commands
 
-- `./dev setup` — install hooks, build `.cmt`, download dependencies.
+- `./dev setup` — install hooks, generate the dev opam file, build `.cmt`.
 - `./dev fmt` — apply formatting (`dune fmt`).
 - `./dev check` — `dune build @ci`, then the full litany roster.
 - `./dev test` — `dune runtest`.
 - `./dev lint` — `dune exec -- litany check`.
 - `./dev lock` — `dune pkg lock` plus the Raven-main lock patch.
 - `./dev new <name>` — scaffold `packages/<name>/`.
+- `./dev wt` — create, list, and remove worktrees (see Parallel work).
 - One package's tests: `dune build @packages/<pkg>/runtest`.
 - One tutorial: `dune exec getting-started/01-nx/ex01_arrays.exe`.
 
 Use `timeout` for commands that can hang (tests, package solving). If a build
 looks stuck, check `dune rpc ping` before killing anything.
+
+## Parallel work
+
+Several agents can work at once, one per worktree.
+
+- `./dev wt new <name>` creates `../murder-wt/<name>` on branch `wt/<name>`
+  from `main` and runs `./dev setup` there. `./dev wt list` and
+  `./dev wt rm <name>` manage the rest.
+- Each worktree has its own `_build` and index. The Dune cache in `~/.cache/dune`
+  is shared: the first build on a machine pays for the compiler and
+  dependencies, later worktrees restore them in seconds.
+- Cap concurrent builds with `DUNE_JOBS=4`. Iterate on
+  `dune build @packages/<pkg>/runtest`; leave `./dev check` for the gate.
+- Full guide: `doc/dev/worktrees.md`.
 
 ## Code and docs
 

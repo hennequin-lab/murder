@@ -3,7 +3,19 @@
 set -eu
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+Usage: ./dev <command> [args]
+
+  setup     install hooks, generate the dev opam file, build .cmt
+  fmt       apply formatting (dune fmt)
+  check     dune build @ci, then the full litany roster
+  test      dune runtest
+  lint      dune exec -- litany check
+  lock      dune pkg lock plus the Raven-main lock patch
+  outdated  dune pkg outdated
+  new       scaffold packages/<name>
+  wt        create, list, and remove worktrees (./dev wt help)
+EOF
 }
 
 cmd=${1:-help}
@@ -17,6 +29,10 @@ case "$cmd" in
     }
     git config core.hooksPath .githooks
     dune build @check
+    # opam/murder-dev.opam is generated and gitignored, so a fresh clone or
+    # worktree has no copy and @ci fails until it exists. Dune reports the
+    # promotion as a failed rule the first time; the retry confirms it.
+    dune build @install --auto-promote || dune build @install --auto-promote
     echo "Ready. Try: dune exec getting-started/01-nx/ex01_arrays.exe"
     ;;
   fmt) dune fmt ;;
@@ -32,5 +48,6 @@ case "$cmd" in
     name=${1:?usage: ./dev new PACKAGE}
     exec scripts/new-package.sh "$name"
     ;;
+  wt) exec scripts/worktree.sh "$@" ;;
   help | *) usage ;;
 esac

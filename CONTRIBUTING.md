@@ -24,6 +24,20 @@ dune exec -- litany check  # full lint
 dune build @ci             # fmt + lint + tests
 ```
 
+## Parallel work
+
+Use a worktree when another person or agent is using the checkout:
+
+```sh
+./dev wt new <name>        # ../murder-wt/<name> on branch wt/<name>
+./dev wt list
+./dev wt rm <name>         # after the branch is merged
+```
+
+Worktrees live outside the repository, each with its own `_build`; the shared
+Dune cache makes the first build in a new worktree cheap. Never create a
+worktree inside the tree. See `doc/dev/worktrees.md`.
+
 ## Packages and applications
 
 This repo is for stable shared libraries. Applications and ongoing projects

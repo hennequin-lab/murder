@@ -2,6 +2,13 @@
 
 (pkg enabled)
 
+; Share build results across checkouts and worktrees. The cache is
+; content-addressed and stored in ~/.cache/dune, so a fresh _build is restored
+; with hardlinks instead of recompiling the locked OCaml compiler. `enabled`
+; also caches rules defined here (formatting, lint, tests); set
+; DUNE_CACHE=disabled to force a real run when a cached result looks wrong.
+(cache enabled)
+
 ; Raven is an external dependency. Pin its Git repository, never vendor it.
 ; Move this SHA forward deliberately; dune.lock records the same commit.
 (pin
