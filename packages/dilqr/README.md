@@ -35,6 +35,12 @@ program's size grows with the iteration count, **not with the horizon**.
 - **Adaptive solve** (`Solver.solve`) — classic iLQR: Levenberg–Marquardt
   regularization with Cholesky retries, Armijo backtracking line search,
   convergence checks. Host-side control flow, runs eagerly.
+- **Compiled adaptive solve** (`Solver.compile`) — the same adaptive solve with
+  its tensor kernels compiled by `Rune.jit`: the dynamics and cost scans, the
+  linearization and Riccati pass, and one line-search rollout. The host keeps
+  the regularization retries, the backtracking and the convergence test. Build
+  the function once, pass `~beam` and `~parallel` for Rune's kernel search, and
+  reuse it across solves.
 - **Traceable solve** (`Solver.solve_fixed`) — fixed iteration count, fixed
   regularization, and a line search realized as a masked argmin over a fixed
   trial schedule, so there is no host-side control flow: the solve traces and
@@ -166,7 +172,8 @@ A few things worth knowing:
 
 - `solve_ilqr` (adaptive forward, eager backward) is for small problems and
   reference results; do not put it inside `Rune.jit`. Use
-  `solve_ilqr_fixed ~iters` for anything compiled.
+  `solve_ilqr_fixed ~iters` for anything compiled. For an adaptive solve whose
+  tensor work should still be compiled, use `Solver.compile` (below).
 - The differentiable solves return the trajectory **stacked** as one
   `[K+1; n+m]` tensor: row `k` is `(x_k; u_k)` for `k < K`, row `K` is
   `(x_K; 0)`. `split_taus` recovers the per-step arrays.
@@ -193,6 +200,18 @@ every solver and helper takes it as its first argument.
   `conv_threshold = 1e-6`, `c1 = 1e-2`, `ls_depth = 8`, seeded
   regularization `Regularisation.init`. Returns `{ xs; us; cost }`.
 
+- **`Solver.compile`** — the adaptive solve with its traceable kernels compiled
+  by `Rune.jit`. It returns a solve function
+  (`?max_iter -> … -> 'p -> 'w value -> 'w value array -> 'w value t`); build
+  it once and reuse it. `~beam` and `~parallel` are Rune's kernel-search
+  options; `mu` and the trial step are tensor arguments, so changing them does
+  not retrace.
+
+  ```ocaml
+  let solve = Dilqr.Solver.compile problem ~beam:2 ~parallel:8 in
+  let sol = solve ~max_iter:20 theta x0 us0
+  ```
+
 - **`Solver.solve_fixed`** — fixed-iteration iLQR with tensor-only control
   flow: `~iters`, an optional trial schedule `alphas` (default
   `1; 1/2; …`, 8 trials), fixed `mu` (default none) and Armijo `c1`.
@@ -218,9 +237,9 @@ every solver and helper takes it as its first argument.
 - **`Dilqr.Lqr`** — the tensor core: `Rows`, `tape`, `gains`, `lin`,
   `lin_of_tape`, `backward_common` (the factors a solve shares with its
   tangents), `backward_lin`, `backward`, `costate`, `solve`, `solve_jvp`,
-  `rollout`, `rollout_linearized`, and the `tangent` record a forward-mode
-  solve consumes. Pure tensor math with host-static control flow; safe to trace
-  and jit.
+  `rollout`, `rollout_tensor`, `rollout_linearized`, and the `tangent` record
+  a forward-mode solve consumes. Pure tensor math with host-static control
+  flow; safe to trace and jit.
 
 - **`Solver.tangent`** — the tangent of the tape's first-order data along a
   direction in the problem's parameters: what `solve_jvp` needs from a problem,

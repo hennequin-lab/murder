@@ -10,11 +10,14 @@
     provides:
 
     - solves: {!Solver.solve} is the classic adaptive iLQR (regularization
-      retry, Armijo backtracking, host-side control flow — eager only);
-      {!Solver.solve_fixed} runs a fixed number of iterations with
-      tensor-only control flow and is traceable by [Rune.jit]. Its time loops
-      are [Rune.scan]s, which the compiler stages as loops: a program's size
-      grows with the iteration count, not with the horizon.
+      retry, Armijo backtracking, host-side control flow);
+      {!Solver.compile} is the same solve with its tensor kernels — the
+      dynamics and cost scans, the linearization and Riccati pass, and one
+      line-search rollout — compiled by [Rune.jit], while the host keeps the
+      control flow. {!Solver.solve_fixed} runs a fixed number of iterations
+      with tensor-only control flow and is traceable by [Rune.jit]. Its time
+      loops are [Rune.scan]s, which the compiler stages as loops: a program's
+      size grows with the iteration count, not with the horizon.
 
     - differentiable solves: {!solve_ilqr} and {!solve_ilqr_fixed} wrap a
       solve in a custom VJP whose backward pass computes the implicit

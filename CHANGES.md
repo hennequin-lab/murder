@@ -16,6 +16,13 @@ changes do not need an entry.
 ### dilqr
 
 - Imported from `hennequin-lab/dilqr-raven`.
+- `Solver.compile` returns the adaptive solve with its traceable kernels
+  (dynamics and cost scans, linearization and Riccati pass, line-search
+  rollout) compiled by `Rune.jit`, with `~beam` and `~parallel` for the kernel
+  search. The host keeps the regularization retries and line-search control
+  flow.
+- `Lqr.rollout_tensor` is `Lqr.rollout` with the step size as a scalar tensor,
+  so a traced line search can pass it as an argument.
 - Forward-mode differentiation: `solve_ilqr_jvp` and `solve_ilqr_fixed_jvp`
   attach an implicit JVP to the solve, sharing one Riccati factorization across
   a whole batch of directions (`Lqr.backward_common`, `Lqr.solve_jvp`,

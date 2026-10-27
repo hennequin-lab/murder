@@ -254,18 +254,19 @@ module Roll_rows = struct
     { x; u; k; ff; fb }
 end
 
-(* [rollout ~dyn ~x0 ~xs ~us ~gains ~alpha] integrates the true dynamics under
-   the control law û_k = ū_k + α·k_k + K_k·(x̂_k − x̄_k), returning the new
-   state path [[horizon+1; n]] and control path [[horizon; m]] as one scan.
-   [xs] is [[horizon+1; n]] and [us] is [[horizon; m]], with any batch axes
-   between the horizon and the dimensions. *)
-let rollout
+(* [rollout_tensor ~dyn ~x0 ~xs ~us ~gains ~alpha] integrates the true
+   dynamics under the control law û_k = ū_k + α·k_k + K_k·(x̂_k − x̄_k),
+   returning the new state path [[horizon+1; n]] and control path [[horizon; m]]
+   as one scan. [xs] is [[horizon+1; n]] and [us] is [[horizon; m]], with any
+   batch axes between the horizon and the dimensions, and [alpha] is a scalar
+   tensor so that a traced line search can pass the step size as an argument. *)
+let rollout_tensor
       ~(dyn : k:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t)
       ~(x0 : ('a, 'b) Nx.t)
       ~(xs : ('a, 'b) Nx.t)
       ~(us : ('a, 'b) Nx.t)
       ~(gains : ('a, 'b) gains)
-      ~(alpha : float)
+      ~(alpha : ('a, 'b) Nx.t)
   : ('a, 'b) Nx.t * ('a, 'b) Nx.t
   =
   let roll_rows = Nx.Ptree.instantiate (module Roll_rows) in
@@ -286,13 +287,18 @@ let rollout
       Nx.Ptree.(pair tensor tensor)
       ~f:(fun x row ->
         let dx = Nx.sub x row.Roll_rows.x in
-        let u = Nx.add row.u (Nx.add (Nx.mul_s row.ff alpha) (matvec row.fb dx)) in
+        let u = Nx.add row.u (Nx.add (Nx.mul row.ff alpha) (matvec row.fb dx)) in
         let x' = dyn ~k:row.k x u in
         x', (u, x'))
       ~init:x0
       rows
   in
   Nx.concatenate ~axis:0 [ Nx.unsqueeze ~axes:[ 0 ] x0; x_next ], u
+
+(* [rollout] is [rollout_tensor] with the step size as a host float: the
+   eager form, for a caller that does not trace the line search. *)
+let rollout ~dyn ~x0 ~xs ~us ~gains ~alpha =
+  rollout_tensor ~dyn ~x0 ~xs ~us ~gains ~alpha:(Nx.scalar_like x0 alpha)
 
 (* [rollout_linearized ~tape ~gains ~x0] integrates the linearized dynamics
    δx_{k+1} = A δx_k + B δu_k with δu_k = k_k + K_k δx_k from δx_0 = [x0], as

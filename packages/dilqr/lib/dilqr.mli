@@ -39,7 +39,9 @@
     therefore trace and compile with [Rune.jit] on CPU or GPU into programs
     whose size grows with the iteration count, not with the horizon. The
     adaptive solver ({!Solver.solve}) uses host-side control flow
-    (regularization retries, Armijo backtracking) and runs eagerly only.
+    (regularization retries, Armijo backtracking) and is not itself traceable;
+    {!Solver.compile} compiles its tensor kernels while leaving that control
+    flow on the host.
 
     {b Batches.} {!Solver.solve_fixed}, {!solve_ilqr_fixed} and
     {!solve_ilqr_fixed_jvp} also solve a batch of problems at once: give every
@@ -206,11 +208,11 @@ module Solver : sig
     -> 'w Problem.value array
     -> (float, 'w) Lqr.solution
 
-  (** Adaptive iLQR. Host-side control flow: eager only, do not jit, and
-      unbatched: a batch would need one line search per member
-      ({!solve_fixed} has it). Defaults: [max_iter = 20],
-      [conv_threshold = 1e-6], [c1 = 1e-2], [ls_depth = 8]. Fails when no
-      step can be regularized into descent. *)
+  (** Adaptive iLQR. Host-side control flow: unbatched (a batch would need one
+      line search per member; {!solve_fixed} has it), and not itself traceable
+      by [Rune.jit]. Defaults: [max_iter = 20], [conv_threshold = 1e-6],
+      [c1 = 1e-2], [ls_depth = 8]. Fails when no step can be regularized into
+      descent. {!compile} is the same solve with the tensor work compiled. *)
   val solve
     :  ('w, 'p) Problem.t
     -> ?max_iter:int
@@ -222,6 +224,37 @@ module Solver : sig
     -> 'w Problem.value
     -> 'w Problem.value array
     -> 'w Problem.value t
+
+  (** The adaptive solve with its tensor work compiled. The type of the
+      returned function is {!solve} minus the problem. *)
+  type ('w, 'p) compiled =
+    ?max_iter:int
+    -> ?conv_threshold:float
+    -> ?c1:float
+    -> ?ls_depth:int
+    -> ?reg:Regularisation.t
+    -> 'p
+    -> 'w Problem.value
+    -> 'w Problem.value array
+    -> 'w Problem.value t
+
+  (** [compile ?beam ?parallel problem] is {!solve} with each traceable kernel
+      — the dynamics and cost scans, the linearization and Riccati pass, and
+      one line-search rollout — compiled by [Rune.jit]. The host still owns
+      the control flow: regularization retries, Armijo backtracking and the
+      convergence test read scalars, so the result matches the eager solve.
+      The problem's dynamics and losses must be traceable (no host read of a
+      value that depends on a traced argument); {!solve_fixed} has the same
+      requirement.
+
+      Build the function once and reuse it. Its programs are keyed by the
+      shapes, dtypes and placements of the inputs, and the regularization
+      strength and line-search step arrive as tensor arguments, so a new
+      [mu] or [alpha] does not retrace. [beam] and [parallel] are
+      [Rune.jit]'s kernel-search options; with [beam] each kernel is
+      searched for its fastest variant, and [parallel] compiles the
+      candidates on that many domains. *)
+  val compile : ?beam:int -> ?parallel:int -> ('w, 'p) Problem.t -> ('w, 'p) compiled
 
   (** Fixed-iteration iLQR with tensor-only control flow: traceable and
       JIT-compilable. Every time loop is a [Rune.scan], compiled as a loop,

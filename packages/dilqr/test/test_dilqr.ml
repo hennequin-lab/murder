@@ -660,18 +660,67 @@ let test_batched_grad () =
     g.theta.target;
   check_close ~msg:"batched jit grad mass" ~tol:1e-9 compiled.theta.mass g.theta.mass
 
+(* [Solver.compile] compiles the tensor kernels of the adaptive solve and
+   leaves the host control flow alone: same trajectory, same cost. Build the
+   function once and reuse it for a second initial state of the same shapes. *)
+let test_compiled_adaptive_solve () =
+  let module P = Integrator in
+  let theta : Nx.float64_t P.Params.t = { mass = scalar64 1.0 } in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let solve = Dilqr.Solver.compile P.problem ~beam:0 ~parallel:1 in
+  let check ~msg x0 =
+    let eager = Dilqr.Solver.solve P.problem ~max_iter:20 theta x0 us0 in
+    let compiled = solve ~max_iter:20 theta x0 us0 in
+    check_close ~msg:(msg ^ " cost") ~tol:1e-10 compiled.cost eager.cost;
+    Array.iteri eager.xs ~f:(fun k x ->
+      check_close ~msg:(Printf.sprintf "%s xs %d" msg k) ~tol:1e-10 compiled.xs.(k) x);
+    Array.iteri eager.us ~f:(fun k u ->
+      check_close ~msg:(Printf.sprintf "%s us %d" msg k) ~tol:1e-10 compiled.us.(k) u)
+  in
+  check ~msg:"compiled adaptive" (vec64 [| 1.0; 0.0 |]);
+  check ~msg:"compiled adaptive reused" (vec64 [| -0.5; 0.2 |])
+
+(* Nonlinear problem, so the compiled path also meets the regularization
+   retries and a backtracked step. *)
+let test_compiled_adaptive_pendulum () =
+  let module P = Pendulum in
+  let theta : Nx.float64_t P.Params.t =
+    { gravity = scalar64 9.81; mass = scalar64 1.0; length = scalar64 1.0 }
+  in
+  let x0 = vec64 [| P.target -. 0.3; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let eager = Dilqr.Solver.solve P.problem ~max_iter:20 theta x0 us0 in
+  let compiled =
+    (Dilqr.Solver.compile P.problem ~beam:0 ~parallel:1) ~max_iter:20 theta x0 us0
+  in
+  check_close ~msg:"compiled pendulum cost" ~tol:1e-9 compiled.cost eager.cost;
+  Array.iteri eager.us ~f:(fun k u ->
+    check_close
+      ~msg:(Printf.sprintf "compiled pendulum us %d" k)
+      ~tol:1e-9
+      compiled.us.(k)
+      u)
+
 (* The adaptive solve has one host-side line search; batches are for the
    fixed solve. *)
 let test_adaptive_rejects_batches () =
   let module P = Batched in
   let b, theta, x0, us0 = batched_setup () in
   require ~msg:"batch is not empty" (b > 0);
-  match Dilqr.Solver.solve P.problem theta x0 us0 with
+  let () =
+    match Dilqr.Solver.solve P.problem theta x0 us0 with
+    | exception Failure msg ->
+      require
+        ~msg:"adaptive solve names batches"
+        (String.is_substring msg ~substring:"batched")
+    | _ -> failwith "the adaptive solve accepted a batch"
+  in
+  match (Dilqr.Solver.compile P.problem) theta x0 us0 with
   | exception Failure msg ->
     require
-      ~msg:"adaptive solve names batches"
+      ~msg:"compiled adaptive solve names batches"
       (String.is_substring msg ~substring:"batched")
-  | _ -> failwith "the adaptive solve accepted a batch"
+  | _ -> failwith "the compiled adaptive solve accepted a batch"
 
 (* ──────────────────────────────────────────────────────────────────────────
    Forward mode
@@ -941,6 +990,8 @@ let () =
        ; test "batched fixed solve matches unbatched" test_batched_fixed_solve
        ; test "batched gradient matches unbatched" test_batched_grad
        ; test "adaptive solve rejects batches" test_adaptive_rejects_batches
+       ; test "compiled adaptive solve matches eager" test_compiled_adaptive_solve
+       ; test "compiled adaptive pendulum matches eager" test_compiled_adaptive_pendulum
        ; test
            "forward mode is the transpose of the reverse mode"
            test_jvp_is_the_transpose_of_the_vjp

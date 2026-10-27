@@ -637,21 +637,147 @@ let solve_fixed p ?alphas ?mu ?c1 ~iters theta x0 us0 =
          solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters i.theta i.x0 i.us0)
       inputs)
 
+(* The traceable kernels of the adaptive solve, as one record. The eager and
+   the compiled implementations differ only in these three functions: the
+   host-side control flow above them — regularization retries, Armijo
+   backtracking, convergence — is unchanged. Every tensor is the stacked form
+   the solver keeps between iterations, so a kernel is one call per iteration
+   (or per line-search trial), not one per step. *)
+type ('w, 'p) kernels =
+  { rollout :
+      'p -> 'w Problem.value -> 'w Problem.value -> 'w Problem.value * 'w Problem.value
+    (** [rollout theta x0 us] is the state path and the total cost. *)
+  ; backward :
+      'p
+      -> 'w Problem.value
+      -> 'w Problem.value
+      -> 'w Problem.value
+      -> (float, 'w) Lqr.gains * 'w Problem.value * 'w Problem.value
+    (** [backward theta xs us mu] linearizes at the trajectory and runs the
+        damped Riccati pass: the gains and the expected-decrease
+        coefficients. *)
+  ; trial :
+      'p
+      -> 'w Problem.value
+      -> 'w Problem.value
+      -> 'w Problem.value
+      -> (float, 'w) Lqr.gains
+      -> 'w Problem.value
+      -> 'w Problem.value * 'w Problem.value * 'w Problem.value
+    (** [trial theta x0 xs us gains alpha] rolls out one line-search step
+        and evaluates its cost. *)
+  }
+
+(* The type of the compiled adaptive solve: {!solve} with the problem
+   already given. *)
+type ('w, 'p) compiled =
+  ?max_iter:int
+  -> ?conv_threshold:float
+  -> ?c1:float
+  -> ?ls_depth:int
+  -> ?reg:Regularisation.t
+  -> 'p
+  -> 'w Problem.value
+  -> 'w Problem.value array
+  -> 'w Problem.value t
+
+(* [eager_kernels p] runs the kernels as eager tensor code. *)
+let eager_kernels (p : ('w, 'p) Problem.t) : ('w, 'p) kernels =
+  { rollout =
+      (fun theta x0 us ->
+        let xs = states p theta x0 us in
+        xs, cost_of p theta xs us)
+  ; backward =
+      (fun theta xs us mu ->
+        let tape = blocks_t p theta xs us in
+        Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape))
+  ; trial =
+      (fun theta x0 xs us gains alpha ->
+        let xs_t, us_t =
+          Lqr.rollout_tensor ~dyn:(dyn p theta) ~x0 ~xs ~us ~gains ~alpha
+        in
+        xs_t, us_t, cost_of p theta xs_t us_t)
+  }
+
+(* [compiled_kernels ?beam ?parallel p] is {!eager_kernels} with each kernel
+   compiled by [Rune.jit]. The compiled functions are values: build them once
+   and every later call replays their programs for the same shapes and
+   placements. [mu] and [alpha] are inputs, not captured floats, so a new
+   regularization or a new trial step does not retrace. *)
+let compiled_kernels ?beam ?parallel (p : ('w, 'p) Problem.t) : ('w, 'p) kernels =
+  let rollout =
+    Rune.jit
+      ?beam
+      ?parallel
+      Nx.Ptree.(
+        pair p.Problem.params (pair tensor tensor) @-> returns (pair tensor tensor))
+      (fun (theta, (x0, us)) ->
+         let xs = states p theta x0 us in
+         xs, cost_of p theta xs us)
+  in
+  let backward =
+    Rune.jit
+      ?beam
+      ?parallel
+      Nx.Ptree.(
+        pair p.Problem.params (pair tensor (pair tensor tensor))
+        @-> returns (pair (pair tensor tensor) (pair tensor tensor)))
+      (fun (theta, (xs, (us, mu))) ->
+         let tape = blocks_t p theta xs us in
+         let gains, d1, d2 = Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape) in
+         (gains.Lqr.feedback, gains.feedforward), (d1, d2))
+  in
+  let trial =
+    Rune.jit
+      ?beam
+      ?parallel
+      Nx.Ptree.(
+        pair
+          p.Problem.params
+          (pair tensor (pair tensor (pair tensor (pair (pair tensor tensor) tensor))))
+        @-> returns (pair (pair tensor tensor) tensor))
+      (fun (theta, (x0, (xs, (us, ((feedback, feedforward), alpha))))) ->
+         let gains = { Lqr.feedback; feedforward } in
+         let xs_t, us_t =
+           Lqr.rollout_tensor ~dyn:(dyn p theta) ~x0 ~xs ~us ~gains ~alpha
+         in
+         (xs_t, us_t), cost_of p theta xs_t us_t)
+  in
+  { rollout =
+      (fun theta x0 us ->
+        let xs, cost = rollout (theta, (x0, us)) in
+        xs, cost)
+  ; backward =
+      (fun theta xs us mu ->
+        let (feedback, feedforward), (d1, d2) = backward (theta, (xs, (us, mu))) in
+        { Lqr.feedback; feedforward }, d1, d2)
+  ; trial =
+      (fun theta x0 xs us gains alpha ->
+        let (xs_t, us_t), cost =
+          trial (theta, (x0, (xs, (us, ((gains.Lqr.feedback, gains.feedforward), alpha)))))
+        in
+        xs_t, us_t, cost)
+  }
+
 (* The adaptive, host-driven solve. Requires untraced tensors: it reads
    scalars on the host and retries the Cholesky factorization on
    non-positive-definite [Quu]. Unbatched: a batch would need one line search
-   per member, which is host control flow. Use {!solve_fixed} for batches. *)
-let solve
-      p
+   per member, which is host control flow. Use {!solve_fixed} for batches.
+   [kernels] is where the tensor work happens: {!eager_kernels} for the plain
+   solve, {!compiled_kernels} for the compiled one. *)
+let solve_with
+      (type w p)
+      (p : (w, p) Problem.t)
+      (kernels : (w, p) kernels)
       ?(max_iter = 20)
       ?(conv_threshold = 1e-6)
       ?(c1 = 1e-2)
       ?(ls_depth = 8)
       ?(reg = Regularisation.init)
-      (theta : 'p)
-      (x0 : 'w Problem.value)
-      (us0 : 'w Problem.value array)
-  : 'w Problem.value t
+      (theta : p)
+      (x0 : w Problem.value)
+      (us0 : w Problem.value array)
+  : w Problem.value t
   =
   if is_batched x0 us0
   then
@@ -659,15 +785,17 @@ let solve
       "dilqr: the adaptive solve is unbatched; use Solver.solve_fixed or \
        solve_ilqr_fixed for batched problems";
   let us = ref (stack us0) in
-  let xs = ref (states p theta x0 !us) in
-  let cost = ref (item_f (cost_of p theta !xs !us)) in
+  let xs, cost0 = kernels.rollout theta x0 !us in
+  let xs = ref xs in
+  let cost_t = ref cost0 in
+  let cost = ref (item_f cost0) in
   let reg = ref reg in
-  let backward_adaptive tape =
+  let backward_adaptive () =
     let rec retry attempts =
       if attempts > 30
       then failwith "dilqr: Quu could not be regularized to positive definiteness";
       let mu = Nx.scalar_like x0 !reg.Regularisation.mu in
-      let gains, d1, d2 = Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape) in
+      let gains, d1, d2 = kernels.backward theta !xs !us mu in
       (* A non-positive-definite [Quu] gives a NaN Cholesky factor, and the
          NaN runs through the sweep into the gains and the expected-decrease
          accumulators. *)
@@ -687,8 +815,7 @@ let solve
     if iter >= max_iter
     then ()
     else (
-      let tape = blocks_t p theta !xs !us in
-      let gains, d1t, d2t = backward_adaptive tape in
+      let gains, d1t, d2t = backward_adaptive () in
       let d1 = item_f d1t
       and d2 = item_f d2t in
       (* Converged: the modelled first-order decrease is negligible against
@@ -701,14 +828,12 @@ let solve
           let rec try_alphas = function
             | [] -> None
             | alpha :: tl ->
-              let xs_t, us_t =
-                Lqr.rollout ~dyn:(dyn p theta) ~x0 ~xs:!xs ~us:!us ~gains ~alpha
-              in
-              let cost_t = cost_of p theta xs_t us_t in
-              let fv : float = item_f cost_t in
+              let alpha_t = Nx.scalar_like x0 alpha in
+              let xs_t, us_t, cost_t' = kernels.trial theta x0 !xs !us gains alpha_t in
+              let fv : float = item_f cost_t' in
               let model = (alpha *. d1) +. (0.5 *. alpha *. alpha *. d2) in
               if Float.(fv <= c +. (c1 *. model))
-              then Some (xs_t, us_t, fv, alpha)
+              then Some (xs_t, us_t, cost_t', fv, alpha)
               else try_alphas tl
           in
           try_alphas (Linesearch.schedule ~n:ls_depth ())
@@ -725,7 +850,7 @@ let solve
           else (
             reg := Regularisation.increase !reg;
             loop iter c (attempts + 1))
-        | Some (xs_t, us_t, fv, alpha) ->
+        | Some (xs_t, us_t, cost_t', fv, alpha) ->
           log
             p
             "iter %d: %g -> %g (alpha %g, mu %g)"
@@ -740,6 +865,7 @@ let solve
           then reg := Regularisation.decrease !reg;
           xs := xs_t;
           us := us_t;
+          cost_t := cost_t';
           if converged c fv
           then (
             log p "converged after %d iterations: %g -> %g" iter c fv;
@@ -749,5 +875,16 @@ let solve
   loop 0 !cost 0;
   { xs = unstack (p.Problem.horizon + 1) !xs
   ; us = unstack p.Problem.horizon !us
-  ; cost = cost_of p theta !xs !us
+  ; cost = !cost_t
   }
+
+let solve p = solve_with p (eager_kernels p)
+
+(* The adaptive solve with its traceable kernels compiled. Build the function
+   once and reuse it: the programs are keyed by the shapes and placements of
+   the inputs, so repeated calls replay them. [beam] and [parallel] are
+   [Rune.jit]'s search options. *)
+let compile ?beam ?parallel p =
+  let kernels = compiled_kernels ?beam ?parallel p in
+  fun ?max_iter ?conv_threshold ?c1 ?ls_depth ?reg theta x0 us0 ->
+    solve_with p kernels ?max_iter ?conv_threshold ?c1 ?ls_depth ?reg theta x0 us0

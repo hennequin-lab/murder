@@ -299,6 +299,19 @@ val rollout
   -> alpha:float
   -> (float, 'b) Nx.t * (float, 'b) Nx.t
 
+(** [rollout_tensor ~dyn ~x0 ~xs ~us ~gains ~alpha] is {!rollout} with the
+    step size as a scalar tensor. A traced line search passes [alpha] as an
+    argument of the compiled trial, so one program serves every trial step;
+    with a host [float] each step would be a separate program. *)
+val rollout_tensor
+  :  dyn:(k:(float, 'b) Nx.t -> (float, 'b) Nx.t -> (float, 'b) Nx.t -> (float, 'b) Nx.t)
+  -> x0:(float, 'b) Nx.t
+  -> xs:(float, 'b) Nx.t
+  -> us:(float, 'b) Nx.t
+  -> gains:(float, 'b) gains
+  -> alpha:(float, 'b) Nx.t
+  -> (float, 'b) Nx.t * (float, 'b) Nx.t
+
 (** [rollout_linearized ~tape ~gains ~x0] integrates the linearized dynamics
     [x_{k+1} = A_k x_k + B_k u_k] under [u_k = k_k + K_k x_k] from [x0], as
     one scan. It is {!solve}'s forward pass, and — with the gains of a
