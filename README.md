@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="doc/logo-light.png">
+    <img src="doc/logo.png" alt="A raven pecking a brain out of a camel's hump" width="200">
+  </picture>
+</p>
+
 # Murder
 
 The Hennequin lab's killer monorepo of stable, [Raven](https://github.com/raven-ml/raven)-based OCaml libraries.
