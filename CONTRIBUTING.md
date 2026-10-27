@@ -41,9 +41,8 @@ worktree inside the tree. See `doc/dev/worktrees.md`.
 ## Packages and applications
 
 This repo is for stable shared libraries. Applications and ongoing projects
-live in their own repositories and depend on a pinned murder commit or a
-released opam version. See `doc/dev/dependencies.md` for the pin and lock
-workflow.
+live in their own repositories and depend on a pinned murder commit. See
+`doc/dev/dependencies.md` for the pin and lock workflow.
 
 ## Formatting
 
@@ -95,8 +94,7 @@ workflow.
 
 - `./dev new <name>`, add the `(package ...)` stanza, fill `lib/`, `test/`,
   `doc/`.
-- Internal package names are bare. Add a `murder-` public prefix only at opam
-  publication.
+- Internal package names are bare (`foo`, not `murder-foo`).
 
 ## Getting unstuck
 

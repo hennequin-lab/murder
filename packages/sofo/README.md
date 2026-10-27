@@ -211,7 +211,7 @@ quadratic makes the sketch's second-order model exact.
 
 ## Status
 
-A research prototype: the API is unstable and nothing is released on opam yet.
+A research prototype: the API is unstable and nothing is released on opam.
 The sketching frontend (`Sofo.Curv`, `observe`, `mse`, `sse`, `softmax_ce`,
 `sketch`), Algorithm 1's update (`Sofo.Optim`, including the compiled half), the
 examples and the test suites are all implemented.

@@ -9,7 +9,7 @@ All packages share the root version in `dune-project`. A release is a tag
 2. Run `./dev check` and `dune build @all @install`.
 3. Tag: `git tag -s vX.Y.Z -m "vX.Y.Z"`.
 4. Push the tag (the human does this).
-5. If publishing to opam, use the generated `opam/*.opam` files. Do not
-   publish `murder-dev`.
+
+The repo does not publish to opam. Downstream projects pin a murder commit.
 
 Internal package dependencies use `(= :version)`, so they move together.

@@ -16,9 +16,9 @@ one causes real damage.
 
 - NEVER push, force-push, amend published commits, or rewrite history. The
   human pushes. Do not commit unless explicitly asked.
-- NEVER hand-edit `dune.lock/`, `opam/*.opam`, or anything under `_build/`.
-  `dune.lock` is written by `./dev lock` (which also runs the Raven-main
-  workaround); `_build` is Dune's output.
+- NEVER hand-edit `dune.lock/` or anything under `_build/`. `dune.lock` is
+  written by `./dev lock` (which also runs the Raven-main workaround); `_build`
+  is Dune's output.
 - NEVER relock or delete `dune.lock` as a side effect. Relock only when the
   change adds or updates a dependency or pin, and include the lock diff.
 - NEVER disable, bypass, or weaken `@fmt`, `@lint`, tests, or CI to make a
@@ -62,17 +62,16 @@ one causes real damage.
 | `litany` | Linter configuration. |
 | `.githooks/` | `commit-msg`, `pre-commit`, `pre-push`. |
 
-- Internal package names are bare (`foo`, not `murder-foo`). Add a `murder-`
-  public name only when a package is published to opam.
+- Internal package names are bare (`foo`, not `murder-foo`).
 - Do not create an umbrella `murder` package while the repo is used as a cloned
   workspace.
-- This repo is libraries only. A separate project repo pins a murder commit in
-  its own `dune-project` (or uses a released opam version) and owns its lock,
-  tests, and CI. Do not vendor these libraries into a project repo.
+- This repo is libraries only. It does not publish to opam. A separate project
+  repo pins a murder commit and owns its lock, tests, and CI. Do not vendor
+  these libraries into a project repo.
 
 ## Commands
 
-- `./dev setup` — install hooks, generate the dev opam file, build `.cmt`.
+- `./dev setup` — install hooks, build `.cmt`.
 - `./dev fmt` — apply formatting (`dune fmt`).
 - `./dev check` — `dune build @ci`, then the full litany roster.
 - `./dev test` — `dune runtest`.

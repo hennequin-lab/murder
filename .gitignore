@@ -7,9 +7,6 @@ _opam/
 *.install
 runs/
 
-# Dev-only package: depends on litany, which is not on opam
-opam/murder-dev.opam
-
 # Local tutorial scratch space
 getting-started/**/scratch/
 

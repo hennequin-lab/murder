@@ -53,10 +53,9 @@ case ${1:-help} in
     else
       git worktree add "$path" -b "$branch" "$base"
     fi
-    # Prepare the checkout the same way as a fresh clone: hooks, the
-    # generated dev opam file, and the .cmt files. With a warm Dune cache
-    # this is a few seconds; the first worktree on a machine pays for the
-    # compiler and dependency build.
+    # Prepare the checkout the same way as a fresh clone: hooks and the
+    # .cmt files. With a warm Dune cache this is a few seconds; the first
+    # worktree on a machine pays for the compiler and dependency build.
     (cd "$path" && ./dev setup)
     printf 'Worktree: %s\n' "$path"
     printf 'Branch:   %s\n' "$branch"

@@ -6,7 +6,7 @@ usage() {
   cat <<'EOF'
 Usage: ./dev <command> [args]
 
-  setup     install hooks, generate the dev opam file, build .cmt
+  setup     install hooks, build .cmt
   fmt       apply formatting (dune fmt)
   check     dune build @ci, then the full litany roster
   test      dune runtest
@@ -29,10 +29,6 @@ case "$cmd" in
     }
     git config core.hooksPath .githooks
     dune build @check
-    # opam/murder-dev.opam is generated and gitignored, so a fresh clone or
-    # worktree has no copy and @ci fails until it exists. Dune reports the
-    # promotion as a failed rule the first time; the retry confirms it.
-    dune build @install --auto-promote || dune build @install --auto-promote
     echo "Ready. Try: dune exec getting-started/01-nx/ex01_arrays.exe"
     ;;
   fmt) dune fmt ;;

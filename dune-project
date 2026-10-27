@@ -12,8 +12,6 @@
 (maintainers "Guillaume Hennequin")
 (license ISC)
 
-(generate_opam_files true)
-(opam_file_location inside_opam_directory)
 (implicit_transitive_deps false)
 (using mdx 0.4)
 
