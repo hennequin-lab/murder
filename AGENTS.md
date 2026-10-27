@@ -216,4 +216,4 @@ type(scope): Imperative summary
 
 - Prefer to `open Nx` globally.
 - Prefer to use infix operators for Nx maths, as they are more legible for humans; for this, use local `let open Infix in (...)`.
-
+- Prefer to use `ppx_ptree` rather than write you own `walk` functions.
