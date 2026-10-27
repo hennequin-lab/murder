@@ -35,6 +35,10 @@ jobs:
           steps: install-dune enable-pkg
       - name: Check the lock is committed
         run: test -f dune.lock/lock.dune
+      # The formatter is a dev tool, not a locked dependency, and the runner has
+      # no OCaml installation, so `@fmt` cannot resolve `ocamlformat` by itself.
+      - name: Install ocamlformat
+        run: dune tools install ocamlformat
       - name: Check formatting
         run: dune build @fmt
 
