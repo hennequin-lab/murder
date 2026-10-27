@@ -9,33 +9,35 @@
     a final loss — {!Problem.t} carries the description, and the solver
     provides:
 
-    - solves: {!Solver.solve} is the classic adaptive iLQR (regularization
-      retry, Armijo backtracking, host-side control flow);
-      {!Solver.compile} is the same solve with its tensor kernels — the
-      dynamics and cost scans, the linearization and Riccati pass, and one
-      line-search rollout — compiled by [Rune.jit], while the host keeps the
-      control flow. {!Solver.solve_fixed} runs a fixed number of iterations
-      with tensor-only control flow and is traceable by [Rune.jit]. Its time
-      loops are [Rune.scan]s, which the compiler stages as loops: a program's
-      size grows with the iteration count, not with the horizon.
+    - solves: {!solve_adaptive} is the classic adaptive iLQR with its
+      implicit reverse-mode derivative. With a JIT option, its tensor kernels
+      — the dynamics and cost scans, the linearization and Riccati pass, and
+      one line-search rollout — are compiled by [Rune.jit], while the host
+      keeps the regularization retries, backtracking and convergence test.
+      {!solve_fixed} runs a fixed number of iterations with tensor-only
+      control flow, is traceable by [Rune.jit], and solves a batch of problems
+      at once. Its time loops are [Rune.scan]s, which the compiler stages as
+      loops: a program's size grows with the iteration count, not with the
+      horizon.
 
-    - differentiable solves: {!solve_ilqr} and {!solve_ilqr_fixed} wrap a
-      solve in a custom VJP whose backward pass computes the implicit
-      gradient — the adjoint system of the local LQR QP, solved by the same
-      Riccati machinery, chained through the derivative blocks back to θ.
-      Composing
+    - forward mode: {!Jvp.solve_adaptive} and {!Jvp.solve_fixed} are the same
+      primal solves with a custom JVP instead of a custom VJP. Use them when
+      the number of directions is small or when a batch of directions has to
+      share one solve. They are explicit because a function cannot carry both
+      custom rules in Rune.
+
+    - implicit derivatives: the reverse rule is the adjoint system of the
+      local LQR QP, solved by the same Riccati machinery and chained through
+      the derivative blocks back to θ. Composing
 
     {[
     Rune.jit
       Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
       (fun i ->
-         Rune.grad
-           (inputs problem)
-           (fun i -> loss (solve_ilqr_fixed problem ~iters:5 i))
-           i)
+         Rune.grad (inputs problem) (fun i -> loss (solve_fixed problem ~iters:5 i)) i)
     ]}
 
-    compiles the solve and its gradient together, on CPU or GPU.
+    compiles the fixed solve and its gradient together, on CPU or GPU.
 
     - trajectory helpers: {!taus_of}, {!split_taus} and {!loss_of_taus} move
       between per-step arrays and the stacked [(K+1); n+m] tensor the
@@ -66,4 +68,23 @@ let split_taus = Problem.split_taus
 let loss_of_taus = Problem.loss_of_taus
 
 module Solver = Solver
-include Implicit_grad
+
+(** The differentiable solves. The default entry points attach the implicit
+    reverse-mode rule; {!module:Jvp} holds the forward-mode forms. *)
+
+(** A differentiable solve: the solve inputs in, the stacked trajectory out. *)
+type ('w, 'p) solve = ('p, 'w Problem.value) Inputs.t -> 'w Problem.value
+
+let solve_adaptive p ?beam ?parallel = Implicit_grad.solve_adaptive_vjp p ?beam ?parallel
+let solve_fixed p = Implicit_grad.solve_fixed_vjp p
+
+module Jvp = struct
+  let solve_adaptive p ?beam ?parallel =
+    Implicit_grad.solve_adaptive_jvp p ?beam ?parallel
+
+  let solve_fixed p = Implicit_grad.solve_fixed_jvp p
+end
+
+type ('p, 'a) residual = ('p, 'a) Implicit_grad.residual
+
+let bwd = Implicit_grad.bwd

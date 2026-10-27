@@ -743,8 +743,8 @@ let solve_with
   if is_batched x0 us0
   then
     failwith
-      "dilqr: the adaptive solve is unbatched; use Solver.solve_fixed or \
-       solve_ilqr_fixed for batched problems";
+      "dilqr: the adaptive solve is unbatched; use Solver.solve_fixed or solve_fixed for \
+       batched problems";
   let us = ref (stack us0) in
   let xs, cost0 = kernels.rollout theta x0 !us in
   let xs = ref xs in

@@ -374,13 +374,12 @@ let test_implicit_gradient_matches_fd () =
     let err = Infix.(slice [ R (0, 1) ] xf -$ P.target) in
     Infix.(ctrl + (sum (err * err) *$ 1.0))
   in
-  let value inputs =
-    item (loss (Dilqr.solve_ilqr P.problem ~max_iter:100 ~conv_threshold:1e-10 inputs))
-  in
+  let solve = Dilqr.solve_adaptive P.problem in
+  let value inputs = item (loss (solve ~max_iter:100 ~conv_threshold:1e-10 inputs)) in
   let grads =
     Rune.grad
       (Dilqr.inputs P.problem)
-      (fun i -> loss (Dilqr.solve_ilqr P.problem ~max_iter:100 ~conv_threshold:1e-10 i))
+      (fun i -> loss (solve ~max_iter:100 ~conv_threshold:1e-10 i))
       inputs
   in
   (* x0 gradient vs FD *)
@@ -457,11 +456,11 @@ let test_jit_solve () =
   let inputs : (Nx.float64_t P.Params.t, Nx.float64_t) Dilqr.Inputs.t =
     { Dilqr.Inputs.theta; x0; us0 }
   in
-  let eager = Dilqr.solve_ilqr_fixed P.problem ~iters:5 inputs in
+  let eager = Dilqr.solve_fixed P.problem ~iters:5 inputs in
   let jitted =
     Rune.jit
       Nx.Ptree.(Dilqr.inputs P.problem @-> returns Nx.Ptree.tensor)
-      (fun i -> Dilqr.solve_ilqr_fixed P.problem ~iters:5 i)
+      (fun i -> Dilqr.solve_fixed P.problem ~iters:5 i)
       inputs
   in
   check_close ~msg:"jit solve taus" ~tol:1e-10 jitted eager
@@ -486,7 +485,7 @@ let test_jit_grad () =
   let eager_grad =
     Rune.grad
       (Dilqr.inputs P.problem)
-      (fun i -> loss (Dilqr.solve_ilqr_fixed P.problem ~iters:4 i))
+      (fun i -> loss (Dilqr.solve_fixed P.problem ~iters:4 i))
       inputs
   in
   let compiled =
@@ -495,7 +494,7 @@ let test_jit_grad () =
       (fun i ->
          Rune.grad
            (Dilqr.inputs P.problem)
-           (fun i -> loss (Dilqr.solve_ilqr_fixed P.problem ~iters:4 i))
+           (fun i -> loss (Dilqr.solve_fixed P.problem ~iters:4 i))
            i)
       inputs
   in
@@ -610,7 +609,7 @@ let test_batched_grad () =
       (Dilqr.loss_of_taus
          P.problem
          i.Dilqr.Inputs.theta
-         (Dilqr.solve_ilqr_fixed P.problem ~iters:5 i))
+         (Dilqr.solve_fixed P.problem ~iters:5 i))
   in
   let g = Rune.grad (Dilqr.inputs P.problem) objective inputs in
   for i = 0 to b - 1 do
@@ -693,6 +692,46 @@ let test_compiled_adaptive_pendulum () =
       compiled.us.(k)
       u)
 
+(* The differentiable adaptive entry point compiles the same kernels when a
+   JIT option is supplied, and the compiled and eager closures return the same
+   trajectory. *)
+let test_solve_adaptive_compiled () =
+  let module P = Integrator in
+  let theta : Nx.float64_t P.Params.t = { mass = scalar64 1.0 } in
+  let x0 = vec64 [| 1.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let inputs : (Nx.float64_t P.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+    { Dilqr.Inputs.theta; x0; us0 }
+  in
+  let eager = Dilqr.solve_adaptive P.problem in
+  let compiled = Dilqr.solve_adaptive P.problem ~beam:0 ~parallel:1 in
+  check_close
+    ~msg:"differentiable adaptive compiled vs eager"
+    ~tol:1e-10
+    (compiled ~max_iter:20 inputs)
+    (eager ~max_iter:20 inputs)
+
+(* The reverse and forward entry points differ only in the attached rule: the
+   primal trajectory is the same for both. *)
+let test_ad_modes_share_the_primal () =
+  let module P = Integrator in
+  let theta : Nx.float64_t P.Params.t = { mass = scalar64 1.0 } in
+  let x0 = vec64 [| 1.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let inputs : (Nx.float64_t P.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+    { Dilqr.Inputs.theta; x0; us0 }
+  in
+  check_close
+    ~msg:"fixed reverse and forward primals"
+    ~tol:1e-12
+    (Dilqr.Jvp.solve_fixed P.problem ~iters:5 inputs)
+    (Dilqr.solve_fixed P.problem ~iters:5 inputs);
+  check_close
+    ~msg:"adaptive reverse and forward primals"
+    ~tol:1e-12
+    (Dilqr.Jvp.solve_adaptive P.problem ~max_iter:20 inputs)
+    (Dilqr.solve_adaptive P.problem ~max_iter:20 inputs)
+
 (* The adaptive solve has one host-side line search; batches are for the
    fixed solve. *)
 let test_adaptive_rejects_batches () =
@@ -741,7 +780,7 @@ let test_jvp_is_the_transpose_of_the_vjp () =
   let grads =
     Rune.grad
       structure
-      (fun i -> sum Infix.(ybar * Dilqr.solve_ilqr_fixed P.problem ~iters:6 i))
+      (fun i -> sum Infix.(ybar * Dilqr.solve_fixed P.problem ~iters:6 i))
       inputs
   in
   let dtaus =
@@ -749,7 +788,7 @@ let test_jvp_is_the_transpose_of_the_vjp () =
       (Rune.jvp
          structure
          Nx.Ptree.tensor
-         (fun i -> Dilqr.solve_ilqr_fixed_jvp P.problem ~iters:6 i)
+         (fun i -> Dilqr.Jvp.solve_fixed P.problem ~iters:6 i)
          inputs
          dinputs)
   in
@@ -769,7 +808,9 @@ let test_jvp_matches_finite_differences () =
   let module P = Pendulum in
   let inputs = pendulum_inputs () in
   let structure = Dilqr.inputs P.problem in
-  let solve i = Dilqr.solve_ilqr P.problem ~max_iter:100 ~conv_threshold:1e-10 i in
+  let solve = Dilqr.solve_adaptive P.problem in
+  let solve_jvp = Dilqr.Jvp.solve_adaptive P.problem in
+  let solve i = solve ~max_iter:100 ~conv_threshold:1e-10 i in
   (* A loss on the trajectory, smooth in the trajectory. *)
   let loss taus =
     let xs, us = Dilqr.split_taus P.problem taus in
@@ -812,7 +853,7 @@ let test_jvp_matches_finite_differences () =
         (Rune.jvp
            structure
            Nx.Ptree.tensor
-           (fun i -> Dilqr.solve_ilqr_jvp P.problem ~max_iter:100 ~conv_threshold:1e-10 i)
+           (fun i -> solve_jvp ~max_iter:100 ~conv_threshold:1e-10 i)
            inputs
            d)
     in
@@ -880,7 +921,7 @@ let test_batched_forward_mode () =
            (Rune.jvp
               structure
               Nx.Ptree.tensor
-              (fun i -> Dilqr.solve_ilqr_fixed_jvp P.problem ~iters:4 i)
+              (fun i -> Dilqr.Jvp.solve_fixed P.problem ~iters:4 i)
               inputs
               di))
       dirs
@@ -898,7 +939,7 @@ let test_batched_forward_mode () =
         (Rune.jvp
            structure
            Nx.Ptree.tensor
-           (fun j -> Dilqr.solve_ilqr_fixed_jvp P.problem ~iters:4 j)
+           (fun j -> Dilqr.Jvp.solve_fixed P.problem ~iters:4 j)
            inputs
            (one dirs))
     in
@@ -915,7 +956,7 @@ let test_batched_forward_mode () =
                 (Rune.jvp
                    structure
                    Nx.Ptree.tensor
-                   (fun i -> Dilqr.solve_ilqr_fixed_jvp P.problem ~iters:4 i)
+                   (fun i -> Dilqr.Jvp.solve_fixed P.problem ~iters:4 i)
                    inputs
                    di))
            dirs)
@@ -975,6 +1016,10 @@ let () =
        ; test "adaptive solve rejects batches" test_adaptive_rejects_batches
        ; test "compiled adaptive solve matches eager" test_compiled_adaptive_solve
        ; test "compiled adaptive pendulum matches eager" test_compiled_adaptive_pendulum
+       ; test
+           "differentiable adaptive compiles the same solve"
+           test_solve_adaptive_compiled
+       ; test "forward and reverse share the primal" test_ad_modes_share_the_primal
        ; test
            "forward mode is the transpose of the reverse mode"
            test_jvp_is_the_transpose_of_the_vjp

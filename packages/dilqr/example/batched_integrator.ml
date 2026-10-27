@@ -84,8 +84,9 @@ let inputs_ptree = Dilqr.inputs Integrator.problem
 
 let () =
   printf "── batched solve (b = %d) ──\n%!" b;
-  let sol = Dilqr.Solver.solve_fixed Integrator.problem ~iters:8 theta x0 us0 in
-  let taus = Dilqr.taus_of Integrator.problem sol.xs sol.us in
+  let solve = Dilqr.solve_fixed Integrator.problem in
+  let taus = solve ~iters:8 inputs in
+  let cost = Dilqr.loss_of_taus Integrator.problem theta taus in
   let xs, _ = Dilqr.split_taus Integrator.problem taus in
   let xf = xs.(Integrator.horizon) in
   for i = 0 to b - 1 do
@@ -94,15 +95,11 @@ let () =
       i
       targets.(i)
       (item [ i; 0 ] xf)
-      (item [ i ] sol.cost)
+      (item [ i ] cost)
   done;
   (* the gradient of the summed costs w.r.t. every member's target, compiled *)
   let total (i : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t) =
-    sum
-      (Dilqr.loss_of_taus
-         Integrator.problem
-         i.Dilqr.Inputs.theta
-         (Dilqr.solve_ilqr_fixed Integrator.problem ~iters:8 i))
+    sum (Dilqr.loss_of_taus Integrator.problem i.Dilqr.Inputs.theta (solve ~iters:8 i))
   in
   let grads =
     Rune.jit

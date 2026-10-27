@@ -107,11 +107,10 @@ let inputs_ptree = Dilqr.inputs Pendulum.problem
    1. Adaptive solve (eager): swing the pendulum up.
    ────────────────────────────────────────────────────────────────────────── *)
 
-let solve_adaptive () =
+let run_adaptive () =
   printf "── adaptive solve ──\n";
-  let taus =
-    Dilqr.solve_ilqr Pendulum.problem ~max_iter:100 ~conv_threshold:1e-9 inputs
-  in
+  let solve = Dilqr.solve_adaptive Pendulum.problem in
+  let taus = solve ~max_iter:100 ~conv_threshold:1e-9 inputs in
   let xs, us = Dilqr.split_taus Pendulum.problem taus in
   let xf = xs.(Array.length xs - 1) in
   printf
@@ -136,7 +135,7 @@ let solve_adaptive () =
          loss
            ~target:Pendulum.target
            Pendulum.problem
-           (Dilqr.solve_ilqr Pendulum.problem ~max_iter:100 ~conv_threshold:1e-9 i))
+           (solve ~max_iter:100 ~conv_threshold:1e-9 i))
       inputs
   in
   printf
@@ -164,7 +163,7 @@ let compiled_grad ~iters =
             loss
               ~target:Pendulum.target
               Pendulum.problem
-              (Dilqr.solve_ilqr_fixed Pendulum.problem ~iters i))
+              (Dilqr.solve_fixed Pendulum.problem ~iters i))
          i)
     inputs
 
@@ -187,7 +186,7 @@ let solve_compiled adaptive =
   let taus =
     Rune.jit
       Nx.Ptree.(inputs_ptree @-> returns Nx.Ptree.tensor)
-      (fun i -> Dilqr.solve_ilqr_fixed Pendulum.problem ~iters:10 i)
+      (fun i -> Dilqr.solve_fixed Pendulum.problem ~iters:10 i)
       inputs
   in
   let xs, _ = Dilqr.split_taus Pendulum.problem taus in
@@ -202,11 +201,11 @@ let solve_compiled adaptive =
          loss
            ~target:Pendulum.target
            Pendulum.problem
-           (Dilqr.solve_ilqr_fixed Pendulum.problem ~iters:10 i))
+           (Dilqr.solve_fixed Pendulum.problem ~iters:10 i))
       inputs
   in
   show "eager iters 10" eager
 
 let () =
-  let adaptive = solve_adaptive () in
+  let adaptive = run_adaptive () in
   solve_compiled adaptive

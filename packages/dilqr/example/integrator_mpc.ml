@@ -67,7 +67,7 @@ let inputs_ptree = Dilqr.inputs Integrator.problem
 let solve_step =
   Rune.jit
     Nx.Ptree.(inputs_ptree @-> returns Nx.Ptree.tensor)
-    (fun i -> Dilqr.solve_ilqr_fixed Integrator.problem ~iters:4 ~mu:1.0 i)
+    (fun i -> Dilqr.solve_fixed Integrator.problem ~iters:4 ~mu:1.0 i)
 
 (* The compiled gradient step: solve + implicit VJP in one program. *)
 let grad_step =
@@ -80,7 +80,7 @@ let grad_step =
             Dilqr.loss_of_taus
               Integrator.problem
               i.Dilqr.Inputs.theta
-              (Dilqr.solve_ilqr_fixed Integrator.problem ~iters:4 ~mu:1.0 i))
+              (Dilqr.solve_fixed Integrator.problem ~iters:4 ~mu:1.0 i))
          i)
 
 let () =

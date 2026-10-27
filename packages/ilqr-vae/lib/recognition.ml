@@ -327,7 +327,7 @@ module Iilqr = struct
     let inputs : (_, _) Dilqr.Problem.Inputs.t =
       { theta = gp; x0 = zeros gen.dtype [| gen.n |]; us0 = initial_controls gen u_init }
     in
-    controls_of gen (Dilqr.solve_ilqr p ?max_iter ?conv_threshold inputs)
+    controls_of gen (Dilqr.solve_adaptive p ?max_iter ?conv_threshold inputs)
 
   (** [posterior_mean_fixed gen gp ?u_init ~iters ?alphas ?mu ?c1 data] is
       the same mean with [iters] fixed iterations: tensor-only control flow,
@@ -337,7 +337,7 @@ module Iilqr = struct
     let inputs : (_, _) Dilqr.Problem.Inputs.t =
       { theta = gp; x0 = zeros gen.dtype [| gen.n |]; us0 = initial_controls gen u_init }
     in
-    controls_of gen (Dilqr.solve_ilqr_fixed p ~iters ?alphas ?mu ?c1 inputs)
+    controls_of gen (Dilqr.solve_fixed p ~iters ?alphas ?mu ?c1 inputs)
 
   (* [sample_u gen p ~mu ~n_samples ~key] draws [u = mu + L_time xi L_spaceᵀ] with [xi] standard normal: [L_time] acts on the time axis and
      [L_spaceᵀ] on the input axis, so the draws have covariance

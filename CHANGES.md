@@ -16,6 +16,12 @@ changes do not need an entry.
 ### dilqr
 
 - Imported from `hennequin-lab/dilqr-raven`.
+- The user-facing solves are `solve_adaptive` and `solve_fixed`, each returning
+  a reusable solve closure with the implicit reverse-mode rule. Forward-mode
+  forms live in `Dilqr.Jvp`. The flat `solve_ilqr*` names are gone.
+- `solve_adaptive` compiles its tensor kernels through `Solver.compile` when
+  `~beam` or `~parallel` is supplied, and runs eagerly otherwise; the host
+  keeps the regularization and line-search control flow either way.
 - `Solver.compile` returns the adaptive solve with its traceable kernels
   (dynamics and cost scans, linearization and Riccati pass, line-search
   rollout) compiled by `Rune.jit`, with `~beam` and `~parallel` for the kernel
@@ -23,11 +29,12 @@ changes do not need an entry.
   flow.
 - `Lqr.rollout_tensor` is `Lqr.rollout` with the step size as a scalar tensor,
   so a traced line search can pass it as an argument.
-- Forward-mode differentiation: `solve_ilqr_jvp` and `solve_ilqr_fixed_jvp`
-  attach an implicit JVP to the solve, sharing one Riccati factorization across
-  a whole batch of directions (`Lqr.backward_common`, `Lqr.solve_jvp`,
-  `Solver.tangent`). `Lqr` also gains `costate`, `solve` and the two-half
-  `backward_common`/`backward_lin` split, and `mu` is a scalar tensor there.
+- Forward-mode differentiation: `Jvp.solve_adaptive` and `Jvp.solve_fixed`
+  attach an implicit JVP to the same primal solves, sharing one Riccati
+  factorization across a whole batch of directions (`Lqr.backward_common`,
+  `Lqr.solve_jvp`, `Solver.tangent`). `Lqr` also gains `costate`, `solve` and
+  the two-half `backward_common`/`backward_lin` split, and `mu` is a scalar
+  tensor there.
 - The forward-mode tangent sweeps compute the tangents of the first-order data
   step by step (`Solver.tangent_solve`, `Lqr.tangent_step`,
   `Lqr.tangent_roll_step`) instead of materializing a tangent tape, so a

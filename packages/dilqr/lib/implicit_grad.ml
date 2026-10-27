@@ -193,34 +193,42 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
   ; us0 = Array.map ~f:zeros_like res.us0
   }
 
-(* The adaptive solve, wrapped with its implicit gradient. Eager only — do
-   not jit. *)
-let solve_ilqr
-      p
-      ?max_iter
-      ?conv_threshold
-      ?c1
-      ?ls_depth
-      ?reg0
-      (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
-  : 'w Problem.value
-  =
-  let reg = Option.value reg0 ~default:Regularisation.init in
-  Rune.custom_vjp
-    (Problem.inputs p)
-    Nx.Ptree.tensor
-    (fun { Problem.Inputs.theta; x0; us0 } ->
-       let sol =
-         Solver.solve p ?max_iter ?conv_threshold ?c1 ?ls_depth ~reg theta x0 us0
-       in
-       ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
-       , fun ybar -> bwd p { theta; x0; us0; xs = sol.xs; us = sol.us } ybar ))
-    inputs
+(* [adaptive_solver p ?beam ?parallel] is the adaptive solve. Supplying a
+   [Rune.jit] search option asks for the compiled kernels; without one the
+   solve runs eagerly, as it did before the differentiable entry point grew
+   its JIT options. The host keeps the control flow either way. *)
+let adaptive_solver p ?beam ?parallel =
+  match beam, parallel with
+  | None, None -> Solver.solve p
+  | _ -> Solver.compile ?beam ?parallel p
 
-(* The traceable solve, wrapped with its implicit gradient: put this inside
-   [Rune.jit] (with a [Rune.grad] inside it) to compile the solve and its
-   gradient together. *)
-let solve_ilqr_fixed_unbatched
+(* The adaptive solve with its implicit reverse-mode rule. The returned
+   closure owns the eager or compiled kernels once per problem, so it can serve
+   many solves and many regularization or line-search settings without
+   retracing. The primal still reads scalars on the host for its convergence
+   and line-search control flow, so the closure is eager. *)
+let solve_adaptive_vjp (p : ('w, 'p) Problem.t) ?beam ?parallel =
+  let solve = adaptive_solver p ?beam ?parallel in
+  fun ?max_iter
+    ?conv_threshold
+    ?c1
+    ?ls_depth
+    ?reg
+    (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
+    : 'w Problem.value ->
+    Rune.custom_vjp
+      (Problem.inputs p)
+      Nx.Ptree.tensor
+      (fun { Problem.Inputs.theta; x0; us0 } ->
+         let sol = solve ?max_iter ?conv_threshold ?c1 ?ls_depth ?reg theta x0 us0 in
+         ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
+         , fun ybar -> bwd p { theta; x0; us0; xs = sol.xs; us = sol.us } ybar ))
+      inputs
+
+(* The traceable fixed-iteration solve with its implicit reverse-mode rule.
+   Put this inside [Rune.jit] (with a [Rune.grad] inside it) to compile the
+   solve and its gradient together. *)
+let solve_fixed_vjp_unbatched
       p
       ~(iters : int)
       ?alphas
@@ -242,13 +250,13 @@ let solve_ilqr_fixed_unbatched
    and every initial control) are solved by vmapping the unbatched solve, its
    implicit VJP included, over the batch: each member gets its own trajectory
    and its own gradient. *)
-let solve_ilqr_fixed p ~iters ?alphas ?mu ?c1 inputs =
+let solve_fixed_vjp p ?alphas ?mu ?c1 ~iters inputs =
   if not (Solver.is_batched inputs.Problem.Inputs.x0 inputs.us0)
-  then solve_ilqr_fixed_unbatched p ~iters ?alphas ?mu ?c1 inputs
+  then solve_fixed_vjp_unbatched p ~iters ?alphas ?mu ?c1 inputs
   else
     Rune.vmap
       Nx.Ptree.(Problem.inputs p @-> returns Nx.Ptree.tensor)
-      (fun i -> solve_ilqr_fixed_unbatched p ~iters ?alphas ?mu ?c1 i)
+      (fun i -> solve_fixed_vjp_unbatched p ~iters ?alphas ?mu ?c1 i)
       inputs
 
 (* ──────────────────────────────────────────────────────────────────────────
@@ -265,33 +273,29 @@ let tangent_of_solve p ~theta ~(sol : 'w Problem.value Solver.t) ~dx0 ~dtheta
   let dsol = Solver.tangent_solve p theta ~dtheta ~dx0 sol.xs sol.us in
   taus_of_stacked p dsol.Lqr.xs dsol.Lqr.us
 
-(* The adaptive solve with a custom forward-mode rule. Eager only: the primal
-   solve reads values on the host. *)
-let solve_ilqr_jvp
-      p
-      ?max_iter
-      ?conv_threshold
-      ?c1
-      ?ls_depth
-      ?reg0
-      (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
-  : 'w Problem.value
-  =
-  let reg = Option.value reg0 ~default:Regularisation.init in
-  Rune.custom_jvp
-    (Problem.inputs p)
-    Nx.Ptree.tensor
-    (fun { Problem.Inputs.theta; x0; us0 } ->
-       let sol =
-         Solver.solve p ?max_iter ?conv_threshold ?c1 ?ls_depth ~reg theta x0 us0
-       in
-       ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
-       , fun { Problem.Inputs.theta = dtheta; x0 = dx0; us0 = _ } ->
-           tangent_of_solve p ~theta ~sol ~dx0 ~dtheta ))
-    inputs
+(* The adaptive solve with its implicit forward-mode rule. The primal is the
+   same closure as the reverse-mode entry point. *)
+let solve_adaptive_jvp (p : ('w, 'p) Problem.t) ?beam ?parallel =
+  let solve = adaptive_solver p ?beam ?parallel in
+  fun ?max_iter
+    ?conv_threshold
+    ?c1
+    ?ls_depth
+    ?reg
+    (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
+    : 'w Problem.value ->
+    Rune.custom_jvp
+      (Problem.inputs p)
+      Nx.Ptree.tensor
+      (fun { Problem.Inputs.theta; x0; us0 } ->
+         let sol = solve ?max_iter ?conv_threshold ?c1 ?ls_depth ?reg theta x0 us0 in
+         ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
+         , fun { Problem.Inputs.theta = dtheta; x0 = dx0; us0 = _ } ->
+             tangent_of_solve p ~theta ~sol ~dx0 ~dtheta ))
+      inputs
 
-(* The traceable solve with a custom forward-mode rule. *)
-let solve_ilqr_fixed_jvp_unbatched
+(* The traceable fixed-iteration solve with its implicit forward-mode rule. *)
+let solve_fixed_jvp_unbatched
       p
       ~(iters : int)
       ?alphas
@@ -312,11 +316,11 @@ let solve_ilqr_fixed_jvp_unbatched
 
 (* Batched inputs are solved member by member, the primal and the tangents
    alike: each member gets its own trajectory and its own derivative. *)
-let solve_ilqr_fixed_jvp p ~iters ?alphas ?mu ?c1 inputs =
+let solve_fixed_jvp p ?alphas ?mu ?c1 ~iters inputs =
   if not (Solver.is_batched inputs.Problem.Inputs.x0 inputs.us0)
-  then solve_ilqr_fixed_jvp_unbatched p ~iters ?alphas ?mu ?c1 inputs
+  then solve_fixed_jvp_unbatched p ~iters ?alphas ?mu ?c1 inputs
   else
     Rune.vmap
       Nx.Ptree.(Problem.inputs p @-> returns Nx.Ptree.tensor)
-      (fun i -> solve_ilqr_fixed_jvp_unbatched p ~iters ?alphas ?mu ?c1 i)
+      (fun i -> solve_fixed_jvp_unbatched p ~iters ?alphas ?mu ?c1 i)
       inputs

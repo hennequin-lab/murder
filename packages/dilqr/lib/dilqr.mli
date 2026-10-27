@@ -22,12 +22,17 @@
     - {b Reverse mode.} A perturbed Riccati pass and a linearized rollout
       solve the adjoint KKT system of the local QP, and a nested [Rune.grad]
       chains the resulting block cotangents back to the problem parameters.
-      {!solve_ilqr}, {!solve_ilqr_fixed}.
+      {!solve_adaptive}, {!solve_fixed}.
     - {b Forward mode.} One Riccati backward pass at the solution yields the
       factors that the primal and every tangent share — the Cholesky factor of
       the regularized [Q_uu], the feedback gain, the value Hessian — and each
       tangent then costs one cheap backward pass and one rollout.
-      {!solve_ilqr_jvp}, {!solve_ilqr_fixed_jvp}.
+      {!Jvp.solve_adaptive}, {!Jvp.solve_fixed}.
+
+    Rune cannot attach both a custom VJP and a custom JVP to one function, so
+    the reverse rule is the default and the forward rule lives in
+    {!module:Jvp}. Each pair shares its primal solve exactly; only the
+    attached derivative rule differs.
 
     A problem is a value ({!Problem.t}): its dtype, dimensions, horizon,
     dynamics and losses are record fields, and its parameter structure is an
@@ -38,19 +43,23 @@
     derivative in either mode, and the tangent sweeps of a forward-mode batch
     therefore trace and compile with [Rune.jit] on CPU or GPU into programs
     whose size grows with the iteration count, not with the horizon. The
-    adaptive solver ({!Solver.solve}) uses host-side control flow
+    adaptive solve ({!solve_adaptive}) uses host-side control flow
     (regularization retries, Armijo backtracking) and is not itself traceable;
-    {!Solver.compile} compiles its tensor kernels while leaving that control
-    flow on the host.
+    with a JIT option, its tensor kernels are compiled by [Rune.jit] while
+    that control flow stays on the host. Its returned closure is therefore
+    eager.
 
-    {b Batches.} {!Solver.solve_fixed}, {!solve_ilqr_fixed} and
-    {!solve_ilqr_fixed_jvp} also solve a batch of problems at once: give every
-    leaf of the parameters, the initial state and every initial control a
-    leading batch axis, and each member gets its own trajectory, line search
-    and derivative. The dynamics and the losses stay written for one member;
-    the solver maps them over the batch. The adaptive solves ({!Solver.solve},
-    {!solve_ilqr}, {!solve_ilqr_jvp}) are deliberately unbatched: their
-    control flow is host-side, and a batch would need one of each per member.
+    {b Batches.} {!solve_fixed} and {!Jvp.solve_fixed} solve a batch of
+    problems at once: give every leaf of the parameters, the initial state
+    and every initial control a leading batch axis, and each member gets its
+    own trajectory, line search and derivative. The dynamics and the losses
+    stay written for one member; the solver maps them over the batch. The
+    adaptive solves ({!solve_adaptive}, {!Jvp.solve_adaptive}) are
+    deliberately unbatched: their control flow is host-side, and a batch
+    would need one of each per member.
+
+    The record-returning solves and the tensor-level helpers remain in
+    {!module:Solver} for advanced use.
 
     {b Batched forward mode.} A batch of {e tangents} is a different axis from
     a batch of problems, and it composes with it: map over the tangents with
@@ -58,7 +67,8 @@
     tangent reuses — is computed once, outside the lanes.
 
     {[
-      let taus = Dilqr.solve_ilqr_fixed_jvp problem ~iters:5 inputs in
+      let solve = Dilqr.Jvp.solve_fixed problem in
+      let taus = solve ~iters:5 inputs in
       let dtaus =
         Rune.vmap
           Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
@@ -67,7 +77,7 @@
                (Rune.jvp
                   (inputs problem)
                   Nx.Ptree.tensor
-                  (Dilqr.solve_ilqr_fixed_jvp problem ~iters:5)
+                  (fun i -> solve ~iters:5 i)
                   inputs
                   dinputs))
           dirs
@@ -290,109 +300,135 @@ val bwd
   -> 'w Problem.value
   -> ('p, 'w Problem.value) Inputs.t
 
-(** [solve_ilqr problem inputs] runs the adaptive solve and returns the
-    stacked trajectory, with the implicit gradient attached through a custom
-    VJP. Eager only — under [Rune.grad] the backward pass computes the
-    implicit gradient; do not jit, and unbatched (use {!solve_ilqr_fixed}).
+(** {2 Differentiable solves} *)
+
+(** A differentiable solve: the solve inputs in, the stacked trajectory out.
+    Both the reverse-mode and the forward-mode entry points have this type. *)
+type ('w, 'p) solve = ('p, 'w Problem.value) Inputs.t -> 'w Problem.value
+
+(** [solve_adaptive problem ?beam ?parallel] is the adaptive iLQR solve with
+    its implicit reverse-mode derivative. The returned function takes the
+    adaptive options and the solve inputs, and returns the stacked trajectory.
+
+    [beam] and [parallel] are [Solver.compile]'s kernel-search options.
+    Supplying either one compiles the tensor kernels once per problem and
+    reuses them across calls; pass [~parallel:1] (or [~beam:0]) to compile
+    with the default search settings. Without either, the solve runs eagerly.
+    The host still owns the regularization retries, line search and
+    convergence test, so the returned closure is eager either way and must not
+    be placed inside [Rune.jit]. Unbatched; use {!Jvp.solve_adaptive} for
+    forward mode.
 
     The derivative is taken at the undamped KKT system of the local model at
     the solution: the solve's own regularization is a device that finds the
     solution, not a part of the map being differentiated. If the loss
     curvature leaves [Q_uu] of the model at the solution indefinite, that
     factor is NaN and so is the gradient. *)
-val solve_ilqr
+val solve_adaptive
   :  ('w, 'p) Problem.t
+  -> ?beam:int
+  -> ?parallel:int
   -> ?max_iter:int
   -> ?conv_threshold:float
   -> ?c1:float
   -> ?ls_depth:int
-  -> ?reg0:Regularisation.t
-  -> ('p, 'w Problem.value) Inputs.t
-  -> 'w Problem.value
+  -> ?reg:Regularisation.t
+  -> ('w, 'p) solve
 
-(** The traceable solve with its implicit gradient. Batched inputs (a
-    leading batch axis on every leaf) are solved member by member, the
-    implicit VJP included; the stacked trajectory is then [B; K+1; n+m]. Put
-    inside [Rune.jit] with a [Rune.grad] inside:
+(** [solve_fixed problem] is the fixed-iteration iLQR solve with its implicit
+    reverse-mode derivative. The returned function takes the fixed-solve
+    options and the solve inputs, and returns the stacked trajectory.
+
+    Batched inputs (a leading batch axis on every leaf) are solved member by
+    member, the implicit VJP included; the stacked trajectory is then
+    [B; K+1; n+m]. The solve is traceable, so put the returned function inside
+    [Rune.jit] with a [Rune.grad] inside:
 
     {[
+    let solve = solve_fixed problem in
     let step =
       Rune.jit
         Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
         (fun inputs ->
            Rune.grad
              (inputs problem)
-             (fun inputs -> loss (solve_ilqr_fixed problem ~iters:3 inputs))
+             (fun inputs -> loss (solve ~iters:3 inputs))
              inputs)
     ]}
 
     The derivative is taken at the undamped KKT system, as in
-    {!solve_ilqr}. *)
-val solve_ilqr_fixed
+    {!solve_adaptive}. Use {!Jvp.solve_fixed} for forward mode. *)
+val solve_fixed
   :  ('w, 'p) Problem.t
-  -> iters:int
   -> ?alphas:float list
   -> ?mu:float
   -> ?c1:float
-  -> ('p, 'w Problem.value) Inputs.t
-  -> 'w Problem.value
-
-(** [solve_ilqr_jvp problem inputs] is {!solve_ilqr} with a custom {e forward}
-    mode rule instead: [Rune.jvp] applied to it is the derivative of the
-    converged solution along the tangent of the solve inputs, computed from
-    one factorization of the local model at the solution rather than by
-    differentiating the iteration. The tangent of [us0] does not reach the
-    result — the idealized solve does not depend on its initial guess — and
-    neither does its reverse-mode cotangent.
-
-    Use it when the number of directions is small and the output is large, or
-    when a whole batch of directions has to share one solve: map [Rune.jvp]
-    over the tangent seeds with [Rune.vmap] and the primal solve, with its
-    factorization, is computed once (see the module documentation). Eager
-    only, and unbatched, like {!solve_ilqr}. *)
-val solve_ilqr_jvp
-  :  ('w, 'p) Problem.t
-  -> ?max_iter:int
-  -> ?conv_threshold:float
-  -> ?c1:float
-  -> ?ls_depth:int
-  -> ?reg0:Regularisation.t
-  -> ('p, 'w Problem.value) Inputs.t
-  -> 'w Problem.value
-
-(** The traceable solve with a custom forward-mode rule. Same solve as
-    {!solve_ilqr_fixed}, same batched inputs, same traceability: the tangent
-    map is pure tensor code whose time loops are scans, so the solve and its
-    JVP compile together. The batched forward-mode recipe in the module
-    documentation is this function:
-
-    {[
-    let dtaus =
-      Rune.vmap
-        Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
-        (fun dinputs ->
-           snd
-             (Rune.jvp
-                (inputs problem)
-                Nx.Ptree.tensor
-                (solve_ilqr_fixed_jvp problem ~iters:5)
-                inputs
-                dinputs))
-        dirs
-    ]}
-
-    Two notes on composing it. [Rune.vmap] around [Rune.jvp] keeps one solve
-    for all the directions, because the primal is a constant of the map; a
-    [vmap] that also varies the problem's parameters re-solves per lane, which
-    is what it should do. And a {e reverse} differentiation of this function
-    would transpose the tangent map, which [Rune] supports only degraded (its
-    scans are written out and a value beside a tangent is taken as zero): take
-    gradients with {!solve_ilqr_fixed}, which is built for them. *)
-val solve_ilqr_fixed_jvp
-  :  ('w, 'p) Problem.t
   -> iters:int
-  -> ?alphas:float list
-  -> ?mu:float
-  -> ?c1:float
-  -> ('p, 'w Problem.value) Inputs.t
-  -> 'w Problem.value
+  -> ('w, 'p) solve
+
+(** The forward-mode forms of the two solves. Each returns the same primal
+    trajectory as its reverse-mode counterpart; only the attached rule
+    differs. *)
+module Jvp : sig
+  (** [Jvp.solve_adaptive problem ?beam ?parallel] is {!solve_adaptive} with a
+      custom forward-mode rule: [Rune.jvp] applied to it is the derivative of
+      the converged solution along the tangent of the solve inputs, computed
+      from one factorization of the local model at the solution rather than by
+      differentiating the iteration. The tangent of [us0] does not reach the
+      result — the idealized solve does not depend on its initial guess — and
+      neither does its reverse-mode cotangent.
+
+      Use it when the number of directions is small and the output is large, or
+      when a whole batch of directions has to share one solve: map [Rune.jvp]
+      over the tangent seeds with [Rune.vmap] and the primal solve, with its
+      factorization, is computed once (see the module documentation). The
+      returned closure is eager and unbatched, like {!solve_adaptive}. *)
+  val solve_adaptive
+    :  ('w, 'p) Problem.t
+    -> ?beam:int
+    -> ?parallel:int
+    -> ?max_iter:int
+    -> ?conv_threshold:float
+    -> ?c1:float
+    -> ?ls_depth:int
+    -> ?reg:Regularisation.t
+    -> ('w, 'p) solve
+
+  (** [Jvp.solve_fixed problem] is {!solve_fixed} with a custom forward-mode
+      rule. Same primal, same batched inputs, same traceability: the tangent
+      map is pure tensor code whose time loops are scans, so the solve and its
+      JVP compile together. The batched forward-mode recipe in the module
+      documentation is this function:
+
+      {[
+      let solve = Dilqr.Jvp.solve_fixed problem in
+      let dtaus =
+        Rune.vmap
+          Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
+          (fun dinputs ->
+             snd
+               (Rune.jvp
+                  (inputs problem)
+                  Nx.Ptree.tensor
+                  (fun i -> solve ~iters:5 i)
+                  inputs
+                  dinputs))
+          dirs
+      ]}
+
+      Two notes on composing it. [Rune.vmap] around [Rune.jvp] keeps one solve
+      for all the directions, because the primal is a constant of the map; a
+      [vmap] that also varies the problem's parameters re-solves per lane,
+      which is what it should do. And a {e reverse} differentiation of this
+      function would transpose the tangent map, which [Rune] supports only
+      degraded (its scans are written out and a value beside a tangent is
+      taken as zero): take gradients with {!solve_fixed}, which is built for
+      them. *)
+  val solve_fixed
+    :  ('w, 'p) Problem.t
+    -> ?alphas:float list
+    -> ?mu:float
+    -> ?c1:float
+    -> iters:int
+    -> ('w, 'p) solve
+end

@@ -250,7 +250,7 @@ module Iilqr : sig
   (** [posterior_mean gen gp ?u_init ?max_iter ?conv_threshold data] is the
       adaptive iLQR solution's controls, of shape [[n_steps; m]]. [u_init]
       ([n_steps; m], zeros when omitted) is the initial guess and carries no
-      gradient. Differentiable through {!Dilqr.solve_ilqr}'s implicit VJP;
+      gradient. Differentiable through {!Dilqr.solve_adaptive}'s implicit VJP;
       eager only, so do not put it inside {!Rune.jit}. *)
   val posterior_mean
     :  ('w, 'd, 'l, 'p, 'e) generative

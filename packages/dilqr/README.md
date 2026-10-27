@@ -32,29 +32,27 @@ program's size grows with the iteration count, **not with the horizon**.
 
 ## Highlights
 
-- **Adaptive solve** (`Solver.solve`) — classic iLQR: Levenberg–Marquardt
+- **Adaptive solve** (`solve_adaptive`) — classic iLQR: Levenberg–Marquardt
   regularization with Cholesky retries, Armijo backtracking line search,
-  convergence checks. Host-side control flow, runs eagerly.
-- **Compiled adaptive solve** (`Solver.compile`) — the same adaptive solve with
-  its tensor kernels compiled by `Rune.jit`: the dynamics and cost scans, the
-  linearization and Riccati pass, and one line-search rollout. The host keeps
-  the regularization retries, the backtracking and the convergence test. Build
-  the function once, pass `~beam` and `~parallel` for Rune's kernel search, and
-  reuse it across solves.
-- **Traceable solve** (`Solver.solve_fixed`) — fixed iteration count, fixed
+  convergence checks. Host-side control flow, so the returned closure is
+  eager and unbatched. Pass `~beam` or `~parallel` to compile its tensor
+  kernels with `Rune.jit`; build the solver once and reuse it.
+- **Traceable solve** (`solve_fixed`) — fixed iteration count, fixed
   regularization, and a line search realized as a masked argmin over a fixed
   trial schedule, so there is no host-side control flow: the solve traces and
-  JIT-compiles.
-- **Implicit gradients** (`solve_ilqr`, `solve_ilqr_fixed`) — differentiable
-  solves wrapped in a `Rune.custom_vjp`. Put them inside `Rune.jit` with a
-  `Rune.grad` inside, and the forward solve and the implicit VJP compile
+  JIT-compiles, and it solves a batch of problems at once.
+- **Implicit gradients** (`solve_adaptive`, `solve_fixed`) — differentiable
+  solves wrapped in a `Rune.custom_vjp`. Put the fixed solve inside `Rune.jit`
+  with a `Rune.grad` inside, and the forward solve and the implicit VJP compile
   together into one program, on CPU or GPU.
-- **Implicit JVPs** (`solve_ilqr_jvp`, `solve_ilqr_fixed_jvp`) — the same
+- **Implicit JVPs** (`Jvp.solve_adaptive`, `Jvp.solve_fixed`) — the same primal
   solves wrapped in a `Rune.custom_jvp`. One Riccati backward pass at the
   solution yields the factors every tangent shares — the Cholesky factor of
   the regularized `Q_uu`, the feedback gain, and the costate — and each
   direction then costs one cheap sweep plus one rollout. Map `Rune.jvp` over
   the directions with `Rune.vmap` and the primal solve is computed once.
+  Rune cannot attach both rules to one function, so forward mode is explicit
+  in `Dilqr.Jvp`; the submodule disappears when Rune gains a combined rule.
 - **Static shapes, dynamic time** — state and control dimensions and the
   horizon are static, which is what the compiled scans are built from. The
   step index `k` travels as a scalar tensor, so time-varying problems index
@@ -135,17 +133,21 @@ let us0 =
 let inputs : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t =
   { Dilqr.Inputs.theta; x0; us0 }
 
-(* 1. Adaptive solve, eager. *)
-let sol = Dilqr.Solver.solve Integrator.problem theta x0 us0
-let () = printf "cost: %g\n%!" (Nx.item [] sol.cost)
+(* 1. Adaptive solve. *)
+let solve_adaptive = Dilqr.solve_adaptive Integrator.problem in
+let taus = solve_adaptive inputs
+let () =
+  printf "cost: %g\n%!"
+    (Nx.item [] (Dilqr.loss_of_taus Integrator.problem theta taus))
 
-(* 2. Differentiable solve: any scalar loss of the trajectory gets its
+(* 2. Differentiable fixed solve: any scalar loss of the trajectory gets its
    implicit gradient in (theta, x0). *)
+let solve_fixed = Dilqr.solve_fixed Integrator.problem in
 let objective (inputs : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t) =
   Dilqr.loss_of_taus
     Integrator.problem
     inputs.Dilqr.Inputs.theta
-    (Dilqr.solve_ilqr_fixed Integrator.problem ~iters:5 inputs)
+    (solve_fixed ~iters:5 inputs)
 
 let inputs_ptree = Dilqr.inputs Integrator.problem
 let grads = Rune.grad inputs_ptree objective inputs
@@ -170,10 +172,16 @@ The user code needs `ppx_ptree` preprocessed and the usual libraries:
 
 A few things worth knowing:
 
-- `solve_ilqr` (adaptive forward, eager backward) is for small problems and
-  reference results; do not put it inside `Rune.jit`. Use
-  `solve_ilqr_fixed ~iters` for anything compiled. For an adaptive solve whose
-  tensor work should still be compiled, use `Solver.compile` (below).
+- `solve_adaptive` is the adaptive solve with the implicit reverse-mode
+  rule. It is eager because the host owns the regularization, line search and
+  convergence logic; pass `~beam` or `~parallel` to compile its tensor
+  kernels. It is unbatched.
+- `solve_fixed` is the fixed-iteration solve. It is traceable: put it inside
+  `Rune.jit` for a compiled solve and gradient. It is batched.
+- `Dilqr.Jvp.solve_adaptive` and `Dilqr.Jvp.solve_fixed` are the forward-mode
+  forms. They return the same primal trajectory; only the attached rule
+  differs. Reverse differentiation of the JVP form is degraded in Rune, so
+  take gradients with the default entry points.
 - The differentiable solves return the trajectory **stacked** as one
   `[K+1; n+m]` tensor: row `k` is `(x_k; u_k)` for `k < K`, row `K` is
   `(x_K; 0)`. `split_taus` recovers the per-step arrays.
@@ -196,26 +204,31 @@ every solver and helper takes it as its first argument.
   `Rune.grad`, `Rune.custom_vjp` and `Rune.jit` take. `Dilqr.Inputs.t` is the
   corresponding record.
 
-- **`Solver.solve`** — adaptive iLQR. Defaults: `max_iter = 20`,
-  `conv_threshold = 1e-6`, `c1 = 1e-2`, `ls_depth = 8`, seeded
-  regularization `Regularisation.init`. Returns `{ xs; us; cost }`.
+- **`solve_adaptive problem ?beam ?parallel`** — adaptive iLQR with its
+  implicit reverse-mode derivative. It returns a function taking the adaptive
+  options (`?max_iter`, `?conv_threshold`, `?c1`, `?ls_depth`, `?reg`) and the
+  solve inputs, and returning the stacked trajectory. Defaults: `max_iter =
+  20`, `conv_threshold = 1e-6`, `c1 = 1e-2`, `ls_depth = 8`, seeded
+  regularization `Regularisation.init`. Without `beam` or `parallel` the solve
+  runs eagerly; with either, its tensor kernels are compiled and reused (pass
+  `~parallel:1` or `~beam:0` to compile with the default search settings).
+  Unbatched.
 
-- **`Solver.compile`** — the adaptive solve with its traceable kernels compiled
-  by `Rune.jit`. It returns a solve function
-  (`?max_iter -> … -> 'p -> 'w value -> 'w value array -> 'w value t`); build
-  it once and reuse it. `~beam` and `~parallel` are Rune's kernel-search
-  options; `mu` and the trial step are tensor arguments, so changing them does
-  not retrace.
+- **`solve_fixed problem`** — fixed-iteration iLQR with its implicit
+  reverse-mode derivative. It returns a function taking `~iters`, an optional
+  trial schedule `alphas` (default `1; 1/2; …`, 8 trials), fixed `mu` (default
+  none), Armijo `c1`, and the solve inputs. Traceable, JIT-compilable, never
+  reads a tensor on the host, and batched.
 
-  ```ocaml
-  let solve = Dilqr.Solver.compile problem ~beam:2 ~parallel:8 in
-  let sol = solve ~max_iter:20 theta x0 us0
-  ```
+- **`Jvp.solve_adaptive`, `Jvp.solve_fixed`** — the same two primals with a
+  custom forward-mode rule instead of the reverse one. `Rune.jvp` applied to
+  them is the trajectory tangent, computed without differentiating a Cholesky
+  factor. See [Forward mode](#forward-mode).
 
-- **`Solver.solve_fixed`** — fixed-iteration iLQR with tensor-only control
-  flow: `~iters`, an optional trial schedule `alphas` (default
-  `1; 1/2; …`, 8 trials), fixed `mu` (default none) and Armijo `c1`.
-  Traceable, JIT-compilable, never reads a tensor on the host.
+- **`Solver`** — the low-level record-returning solves (`solve`, `compile`,
+  `solve_fixed`) and the tensor helpers used by the differentiable layer.
+  Advanced callers can use these directly when they want `{ xs; us; cost }`
+  rather than the stacked trajectory.
 
 - **`Solver.rollout`** — integrate the dynamics under a control sequence and
   return the state path and total cost; useful for evaluating an existing
@@ -223,16 +236,6 @@ every solver and helper takes it as its first argument.
 
 - **`Solver.blocks`** — linearize dynamics and losses along a trajectory and
   return the tape.
-
-- **`solve_ilqr`, `solve_ilqr_fixed`** — the differentiable solves: a solve
-  wrapped in `Rune.custom_vjp` whose backward pass is the implicit VJP.
-  `split_taus`, `taus_of` and `loss_of_taus` are the trajectory helpers they
-  work with, each taking the problem first.
-
-- **`solve_ilqr_jvp`, `solve_ilqr_fixed_jvp`** — the differentiable solves in
-  forward mode: the same solves wrapped in `Rune.custom_jvp`. `Rune.jvp`
-  applied to them is the trajectory tangent, computed without differentiating a
-  Cholesky factor. See [Forward mode](#forward-mode).
 
 - **`Dilqr.Lqr`** — the tensor core: `Rows`, `tape`, `gains`, `lin`,
   `lin_of_tape`, `backward_common` (the factors a solve shares with its
@@ -254,7 +257,7 @@ every solver and helper takes it as its first argument.
 
 ## Batched solves
 
-`Solver.solve_fixed` and `solve_ilqr_fixed` solve a **batch** of problems at
+`solve_fixed` and `Jvp.solve_fixed` solve a **batch** of problems at
 once. Give every leaf of the parameters, of the initial state and of every
 initial control a leading batch axis. Say the quick-start problem's
 parameters also carry a per-member `target`, used by its running loss:
@@ -267,9 +270,11 @@ let theta =
   }
 let x0 = Nx.create Nx.float64 [| b; 2 |] x0s
 let us0 = Array.init horizon ~f:(fun _ -> Nx.zeros Nx.float64 [| b; 1 |])
-
-let sol = Dilqr.Solver.solve_fixed Integrator.problem ~iters:8 theta x0 us0
-(* sol.cost : [b];  sol.xs.(k) : [b; 2];  sol.us.(k) : [b; 1] *)
+let solve = Dilqr.solve_fixed Integrator.problem in
+let taus = solve ~iters:8 { Dilqr.Inputs.theta; x0; us0 }
+(* taus : [b; K+1; n+m];  split_taus gives xs.(k) : [b; 2] and us.(k) : [b; 1] *)
+let cost = Dilqr.loss_of_taus Integrator.problem theta taus
+(* cost : [b] *)
 ```
 
 The dynamics and the losses are still written for **one member**: the solver
@@ -291,14 +296,15 @@ let grads =
          (Dilqr.loss_of_taus
             Integrator.problem
             i.Dilqr.Inputs.theta
-            (Dilqr.solve_ilqr_fixed Integrator.problem ~iters:8 i)))
+            (solve ~iters:8 i)))
     inputs
 (* grads.theta.target : [b; 1];  grads.x0 : [b; 2];  ... *)
 ```
 
-Only the fixed solves are batched. `Solver.solve` and `solve_ilqr` are
-unbatched and say so: their regularization retries and Armijo backtracking
-are host-side control flow, and a batch would need one of each per member.
+Only the fixed solves are batched. `solve_adaptive` and
+`Jvp.solve_adaptive` are unbatched and say so: their regularization retries
+and Armijo backtracking are host-side control flow, and a batch would need one
+of each per member.
 
 ## How the gradient works
 
@@ -321,7 +327,7 @@ VJP is computed with the same machinery as the forward pass:
    the forward pass does.
 
 Under a converged solve this is the true derivative of the solution map. With
-`solve_ilqr_fixed ~iters`, the gradient converges to the adaptive solve's as
+`solve_fixed ~iters`, the gradient converges to the adaptive solve's as
 iterations accumulate (see the pendulum example, which prints both).
 
 Forward mode is the transpose of the same linear map, which is why the two give
@@ -350,13 +356,14 @@ derivative goes through the KKT system, whose matrix is the primal's.
 
 ## Forward mode
 
-`Rune.jvp` of a `*_jvp` solve is its derivative along a tangent of the solve
-inputs. A **batch of directions** is one `Rune.vmap` around it, with the primal
-solve — and the factorization every direction reuses — computed once, outside
-the lanes:
+`Rune.jvp` of a `Dilqr.Jvp.solve_*` function is its derivative along a tangent
+of the solve inputs. A **batch of directions** is one `Rune.vmap` around it,
+with the primal solve — and the factorization every direction reuses —
+computed once, outside the lanes:
 
 ```ocaml
-let taus = Dilqr.solve_ilqr_fixed_jvp problem ~iters:4 inputs in
+let solve = Dilqr.Jvp.solve_fixed problem in
+let taus = solve ~iters:4 inputs in
 let dtaus =
   Rune.vmap
     Nx.Ptree.(Dilqr.inputs problem @-> returns Nx.Ptree.tensor)
@@ -365,7 +372,7 @@ let dtaus =
          (Rune.jvp
             (Dilqr.inputs problem)
             Nx.Ptree.tensor
-            (Dilqr.solve_ilqr_fixed_jvp problem ~iters:4)
+            (fun i -> solve ~iters:4 i)
             inputs
             dinputs))
     dirs
