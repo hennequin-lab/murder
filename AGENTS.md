@@ -52,15 +52,15 @@ one causes real damage.
 
 ## Layout
 
-| Path | Meaning |
-| --- | --- |
+| Path               | Meaning                                                                                   |
+| ------------------ | ----------------------------------------------------------------------------------------- |
 | `packages/<name>/` | Shared libraries. A package's main library is `lib/`; tests are `test/`; docs are `doc/`. |
-| `getting-started/` | Tested Raven/Nx/Rune/Vega course and capstone. |
-| `doc/dev/` | Design, testing, CI, dependency, and release notes. |
-| `scripts/` | Small repo scripts. |
-| `dune.lock/` | Committed, generated dependency solution. |
-| `litany` | Linter configuration. |
-| `.githooks/` | `commit-msg`, `pre-commit`, `pre-push`. |
+| `getting-started/` | Tested Raven/Nx/Rune/Vega course and capstone.                                            |
+| `doc/dev/`         | Design, testing, CI, dependency, and release notes.                                       |
+| `scripts/`         | Small repo scripts.                                                                       |
+| `dune.lock/`       | Committed, generated dependency solution.                                                 |
+| `litany`           | Linter configuration.                                                                     |
+| `.githooks/`       | `commit-msg`, `pre-commit`, `pre-push`.                                                   |
 
 - Internal package names are bare (`foo`, not `murder-foo`).
 - Do not create an umbrella `murder` package while the repo is used as a cloned
@@ -211,3 +211,9 @@ type(scope): Imperative summary
 - For a CI failure, run `./dev check` and see `doc/dev/ci.md`.
 - Ask with the command, the full error, and the commit. Do not leave a
   background job running when you end a turn.
+
+## Raven for numerical code
+
+- Prefer to `open Nx` globally.
+- Prefer to use infix operators for Nx maths, as they are more legible for humans; for this, use local `let open Infix in (...)`.
+
