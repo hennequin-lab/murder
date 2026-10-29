@@ -70,7 +70,11 @@ type ('w, 'd, 'l, 'p, 'e) gparams =
   }
 
 (** One reparameterized draw of a trial's latents: the initial state, of shape
-    [[n_samples; n]], and the inputs, of shape [[n_steps; n_samples; m]]. *)
+    [[n_samples; n]], and the inputs, of shape [[n_steps; n_samples; m]].
+
+    A mini-batch of trials adds leading trial axes to every tensor: [x0] is
+    [[batch…; n_samples; n]], [u] is [[n_steps; batch…; n_samples; m]] (time
+    leads) and [log_prob] is [[batch…; n_samples]]. *)
 type 'w samples =
   { x0 : 'w value
   ; u : 'w value
@@ -78,7 +82,7 @@ type 'w samples =
 
 (** A draw together with the value of [log q] at it: [x0] and [u] as in
     {!type-samples}, and [log_prob] of shape [[n_samples]], one scalar per
-    draw. *)
+    draw, or [[batch…; n_samples]] for a mini-batch. *)
 type 'w posterior =
   { x0 : 'w value
   ; u : 'w value
@@ -133,6 +137,12 @@ type ('w, 'd, 'l, 'p, 'e, 'r) t =
 (** [infer rec gen gp ~params ~n_samples ~key data] draws [n_samples] latent
     trajectories from [q(· | data)] and evaluates [log q] at each of them.
 
+    [data] is one trial ([[n_steps; n_output]]) or a mini-batch
+    ([[batch…; n_steps; n_output]]). A mini-batch is one tensor argument: the
+    recognition maps one trial's encoder over its leading axes, and the key
+    is split into one subkey per trial, so their draws are independent. The
+    result carries the batch axes as documented at {!type-posterior}.
+
     The returned density is evaluated with the recognition's own distribution
     parameters detached: its value is [log q], but its gradient reaches the
     recognition only through the sampled latents. That is the path-derivative
@@ -156,8 +166,9 @@ val infer
   -> 'w posterior
 
 (** [mean rec gen gp ~params data] is the posterior mean: a single
-    deterministic latent trajectory, shaped like a batch of one
-    ([x0] of shape [[1; n]] and [u] of shape [[n_steps; 1; m]]). *)
+    deterministic latent trajectory per trial, shaped like a sample batch of
+    one ([x0] of shape [[1; n]] and [u] of shape [[n_steps; 1; m]], with the
+    trial axes leading when [data] is a mini-batch). *)
 val mean
   :  ('w, 'd, 'l, 'p, 'e, 'r) t
   -> ('w, 'd, 'l, 'p, 'e) generative
@@ -168,9 +179,10 @@ val mean
   -> 'w samples
 
 (** [log_prob rec gen gp ~params data s] is [log q(s | data)], one value per
-    member of a batch, with live parameters: the same value {!val-infer}
-    returns, but differentiable through the density's parameters as well as
-    through the latents. {!val-infer} returns it at its draws without a
+    member of a sample batch, with live parameters: the same value
+    {!val-infer} returns, but differentiable through the density's parameters
+    as well as through the latents. [data] and [s] may carry trial axes, as
+    for {!val-infer}. {!val-infer} returns [log q] at its draws without a
     second pass over the data, so this is for latents from elsewhere: an
     importance-weighted bound, a fixed set of draws, a diagnostic. *)
 val log_prob

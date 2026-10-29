@@ -5,7 +5,8 @@ stack: `nx` tensors, `rune` transformations, and
 [`dilqr`](https://github.com/hennequin-lab/dilqr-raven) as the inference
 engine — with a swappable recognition model.
 
-A trial is a tensor of observations. Latent inputs (and, for an LFADS-style
+A trial is a tensor of observations; a mini-batch stacks trials on leading
+axes. Latent inputs (and, for an LFADS-style
 encoder, an initial state) drive a state through a dynamics; a likelihood
 emits each observation from the state reached by the inputs before it. The
 recognition is a value of type `Recognition.t` with its own parameters;
@@ -39,10 +40,10 @@ let model =
     ~recognition:(Recognition.Iilqr.make ~n:3 ~m:3 ~n_steps:32 ~n_output:3 Nx.float64)
     ()
 
-let params = Model.init model
+let params = Model.params model
 let key = Nx.Rng.key 0
 let data = (* one trial: [n_steps; n_output] *)
-let trials = (* an array of trials *)
+let batch = (* a tensor mini-batch: [batch; n_steps; n_output] *)
 
 (* Eager: adaptive encoder and diagnostics. *)
 let () =
@@ -50,14 +51,18 @@ let () =
   let e = Elbo.compute model params ~posterior data in
   printf "loss %f\n%!" (Nx.item [] (Nx.neg e.Elbo.elbo))
 
-(* Compiled: fixed encoder, implicit gradient through the solve. *)
+(* Compiled: fixed encoder, implicit gradient through the solve. The
+   mini-batch is an argument, so the compiled step is not tied to one
+   OCaml array of trials. *)
 let step =
   Rune.jit
-    Nx.Ptree.(Model.structure model @-> Nx.Rng.ptree @-> returns (pair tensor (Model.structure model)))
-    (fun params key ->
+    Nx.Ptree.(
+      Model.structure model @-> Nx.Rng.ptree @-> tensor
+      @-> returns (pair tensor (Model.structure model)))
+    (fun params key batch ->
        Rune.value_and_grad
          (Model.structure model)
-         (fun p -> Elbo.batch_loss_fixed model p ~key ~n_samples:16 ~iters:4 trials)
+         (fun p -> Elbo.batch_loss_fixed model p ~key ~n_samples:16 ~iters:4 batch)
          params)
 ```
 
@@ -108,7 +113,7 @@ already contains the encoder prior.
 ## Status
 
 The library is **implemented**: the `.mli` files in `lib/` are the design, the
-`.ml` files beside them are the implementation, and `test/` is the suite (22
+`.ml` files beside them are the implementation, and `test/` is the suite (25
 tests). See the [`dilqr`
 repository](https://github.com/hennequin-lab/dilqr-raven) for `dilqr` itself.
 

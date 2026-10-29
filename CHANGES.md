@@ -48,6 +48,10 @@ changes do not need an entry.
 ### ilqr-vae
 
 - Imported from `hennequin-lab/ilqr-vae-raven`.
+- Mini-batches are tensors: `Elbo.batch_loss_fixed` takes
+  `[batch…; n_steps; n_output]` instead of an array, and the recognitions and
+  the bound accept the matching leading trial axes, so a JIT-compiled step can
+  take the batch as an argument.
 
 ### symo
 

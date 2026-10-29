@@ -13,14 +13,34 @@ type 'w t =
   ; kl : 'w value
   }
 
-(* [mean_over_batch t n] is the mean of a [[n]] tensor of per-sample
-   scalars. *)
-let mean_over_batch t n = Infix.(sum t /$ Float.of_int n)
+let shape_string shape =
+  String.concat ~sep:"; " (Array.to_list (Array.map shape ~f:Int.to_string))
+
+let append_shape front tail = Array.concat [ front; tail ]
+
+let check_shape ~what expected t =
+  let got = Nx.shape t in
+  if not (Array.equal Int.equal got expected)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Elbo.compute: %s must be [%s], got [%s]"
+         what
+         (shape_string expected)
+         (shape_string got))
+
+(* [time_major_axes rank] moves the time axis of a [batch…; time; channels]
+   tensor to the front: an observation batch is [batch…; n_steps; n_output]
+   and the likelihood scan runs over time. *)
+let time_major_axes rank =
+  let time = rank - 2 in
+  time :: (List.init time ~f:Fn.id @ [ rank - 1 ])
 
 (* [log_prior model params ~x0 ~u] is the log density of the model's prior
-   over the latents at a sample: one value per member of the batch. The input
-   prior is evaluated step by step; the initial-state prior contributes
-   exactly when the model has one. *)
+   over the latents at a sample: one value per member of the sample batch. The
+   input prior is evaluated step by step; the initial-state prior contributes
+   exactly when the model has one. [u] is time-major, so its leading axis is
+   scanned and every trial and sample axis is a batch axis. *)
 let log_prior
       (type w d l p e r)
       (model : (w, d, l, p, e, r) Model.t)
@@ -54,9 +74,50 @@ let compute
       data
   =
   let beta = Option.value beta ~default:(scalar model.Model.dtype 1.0) in
-  let t_steps = model.Model.n_steps in
-  let n_samples = Array.get (shape posterior.Recognition.x0) 0 in
+  let t_steps = model.Model.n_steps
+  and n = model.Model.n
+  and m = model.Model.m
+  and n_output = model.Model.n_output in
+  let data_shape = Nx.shape data in
+  let data_rank = Array.length data_shape in
+  if
+    data_rank < 2
+    || (not (Int.equal data_shape.(data_rank - 2) t_steps))
+    || not (Int.equal data_shape.(data_rank - 1) n_output)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Elbo.compute: data must be [n_steps; n_output] or [batch…; n_steps; n_output] \
+          with n_steps = %d and n_output = %d, got [%s]"
+         t_steps
+         n_output
+         (shape_string data_shape));
+  let batch_dims = Array.sub data_shape ~pos:0 ~len:(data_rank - 2) in
+  if Array.exists batch_dims ~f:(fun d -> d <= 0)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Elbo.compute: every batch axis of the data must be positive, got [%s]"
+         (shape_string data_shape));
+  let batch_rank = Array.length batch_dims in
+  let log_prob_shape = Nx.shape posterior.Recognition.log_prob in
+  if Array.length log_prob_shape <> batch_rank + 1
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Elbo.compute: log_prob must be [batch…; n_samples] matching data [%s], got [%s]"
+         (shape_string data_shape)
+         (shape_string log_prob_shape));
+  let n_samples = log_prob_shape.(batch_rank) in
   if n_samples <= 0 then invalid_arg "Elbo.compute: the posterior batch is empty";
+  check_shape
+    ~what:"x0"
+    (append_shape batch_dims [| n_samples; n |])
+    posterior.Recognition.x0;
+  check_shape
+    ~what:"u"
+    (append_shape [| t_steps |] (append_shape batch_dims [| n_samples; m |]))
+    posterior.Recognition.u;
   let z =
     Dynamics.integrate
       model.Model.dynamics
@@ -66,6 +127,7 @@ let compute
   in
   (* Observation [k] is emitted from the state reached by [k + 1] inputs. *)
   let z_next = slice [ R (1, t_steps + 1) ] z in
+  let data_by_time = transpose ~axes:(time_major_axes data_rank) data in
   let ks = arange model.Model.dtype 0 t_steps 1 in
   let _, likelihood_by_step =
     Rune.scan
@@ -73,6 +135,9 @@ let compute
       Nx.Ptree.(pair (pair tensor tensor) tensor)
       Nx.Ptree.tensor
       ~f:(fun () ((z_k, o_k), k) ->
+        (* [o_k] carries the trial axes and the observation axis; the singleton
+           added before that axis broadcasts it over the sample axis. *)
+        let o_k = unsqueeze ~axes:[ -2 ] o_k in
         ( ()
         , model.Model.likelihood.Likelihood.logp_t
             params.Model.likelihood
@@ -80,7 +145,7 @@ let compute
             ~x:z_k
             ~o:o_k ))
       ~init:()
-      ((z_next, data), ks)
+      ((z_next, data_by_time), ks)
   in
   let log_likelihood_by_sample = sum ~axes:[ 0 ] likelihood_by_step in
   let log_prior_by_sample =
@@ -94,9 +159,10 @@ let compute
      only. *)
   let kl_by_sample = Infix.(posterior.Recognition.log_prob - log_prior_by_sample) in
   let elbo_by_sample = Infix.(log_likelihood_by_sample - (kl_by_sample * beta)) in
-  { elbo = mean_over_batch elbo_by_sample n_samples
-  ; log_likelihood = mean_over_batch log_likelihood_by_sample n_samples
-  ; kl = mean_over_batch kl_by_sample n_samples
+  (* The bound is the mean over every draw of every trial. *)
+  { elbo = mean elbo_by_sample
+  ; log_likelihood = mean log_likelihood_by_sample
+  ; kl = mean kl_by_sample
   }
 
 let loss model params ?beta ?iters ~key ~n_samples data =
@@ -106,12 +172,12 @@ let loss model params ?beta ?iters ~key ~n_samples data =
 let loss_fixed model params ?beta ~iters ~key ~n_samples data =
   loss model params ?beta ~iters ~key ~n_samples data
 
-let batch_loss_fixed model params ?beta ~key ~n_samples ~iters trials =
-  let count = Array.length trials in
-  if count = 0 then invalid_arg "Elbo.batch_loss_fixed: the batch is empty";
-  let keys = Nx.Rng.split ~n:count key in
-  let total =
-    Array.foldi trials ~init:(scalar model.Model.dtype 0.0) ~f:(fun i acc data ->
-      Infix.(acc + loss_fixed model params ?beta ~key:keys.(i) ~n_samples ~iters data))
-  in
-  Infix.(total /$ Float.of_int count)
+let batch_loss_fixed model params ?beta ~key ~n_samples ~iters data =
+  let shape = Nx.shape data in
+  if Array.length shape < 3
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Elbo.batch_loss_fixed: data must be [batch…; n_steps; n_output], got [%s]"
+         (shape_string shape));
+  loss_fixed model params ?beta ~key ~n_samples ~iters data

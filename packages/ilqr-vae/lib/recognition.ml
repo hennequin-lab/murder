@@ -20,7 +20,10 @@ open Types
    prior fixes [x_0 = 0] and iLQR-style recognition infers only the inputs;
    an LFADS-style recognition infers the initial state as well. A sample
    batch is {!type-samples}: [x0] of shape [[n_samples; n]] and [u] of shape
-   [[n_steps; n_samples; m]].
+   [[n_steps; n_samples; m]]. A mini-batch of trials puts its leading axes in
+   front of every one of those shapes, and one tensor of data
+   [[batch…; n_steps; n_output]] drives all of them: the recognition maps one
+   trial's encoder over the flattened batch with [Rune.vmap].
 
    {1 What a recognition provides}
 
@@ -168,13 +171,118 @@ let gparams_structure (type w d l p e) (gen : (w, d, l, p, e) generative)
               (field "prior" gen.prior.Prior.structure)
               (field "encoder_prior" gen.encoder_prior.Prior.structure))))
 
+let shape_string shape =
+  String.concat ~sep:"; " (Array.to_list (Array.map shape ~f:Int.to_string))
+
 let check_data ~n_steps ~n_output data =
   let shape = Nx.shape data in
   if
     Array.length shape <> 2
     || (not (Int.equal shape.(0) n_steps))
     || not (Int.equal shape.(1) n_output)
-  then invalid_arg (Printf.sprintf "Recognition: data must be [%d; %d]" n_steps n_output)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Recognition: one trial's data must be [%d; %d], got [%s]"
+         n_steps
+         n_output
+         (shape_string shape))
+
+(* [data_batch_dims ~n_steps ~n_output data] is the leading trial axes of
+   [data], whose last two axes must be [n_steps] and [n_output]. It is [||]
+   for one trial [n_steps; n_output] and [| batch |] for a mini-batch
+   [batch; n_steps; n_output]; more leading axes are allowed and treated as
+   one flattened batch. *)
+let data_batch_dims ~n_steps ~n_output data =
+  let shape = Nx.shape data in
+  let rank = Array.length shape in
+  if
+    rank < 2
+    || (not (Int.equal shape.(rank - 2) n_steps))
+    || not (Int.equal shape.(rank - 1) n_output)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Recognition: data must be [n_steps; n_output] or [batch…; n_steps; n_output] \
+          with n_steps = %d and n_output = %d, got [%s]"
+         n_steps
+         n_output
+         (shape_string shape));
+  let dims = Array.sub shape ~pos:0 ~len:(rank - 2) in
+  if Array.exists dims ~f:(fun d -> d <= 0)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Recognition: every batch axis of the data must be positive, got [%s]"
+         (shape_string shape));
+  dims
+
+let batch_size dims = Array.fold dims ~init:1 ~f:( * )
+let append_shape front tail = Array.concat [ front; tail ]
+
+let check_shape ~what expected t =
+  let got = Nx.shape t in
+  if not (Array.equal Int.equal got expected)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Recognition: %s must be [%s], got [%s]"
+         what
+         (shape_string expected)
+         (shape_string got))
+
+(* The [Rune.vmap] rules below map one trial's recognition over a flattened
+   batch. The public shapes keep the trial axes where the caller put them:
+   [x0] is [batch…; n_samples; n], [u] is [time; batch…; n_samples; m] and
+   [log_prob] is [batch…; n_samples]. *)
+let flat_x0 ~dims ~n_samples ~n x0 =
+  check_shape ~what:"x0" (append_shape dims [| n_samples; n |]) x0;
+  reshape [| batch_size dims; n_samples; n |] x0
+
+let unflat_x0 ~dims ~n_samples ~n x0 = reshape (append_shape dims [| n_samples; n |]) x0
+
+let flat_u ~dims ~n_steps ~n_samples ~m u =
+  let expected = append_shape [| n_steps |] (append_shape dims [| n_samples; m |]) in
+  check_shape ~what:"u" expected u;
+  reshape [| n_steps; batch_size dims; n_samples; m |] u
+
+let unflat_u ~dims ~n_steps ~n_samples ~m u =
+  let shape = append_shape [| n_steps |] (append_shape dims [| n_samples; m |]) in
+  reshape shape (transpose ~axes:[ 1; 0; 2; 3 ] u)
+
+let unflat_log_prob ~dims ~n_samples log_prob =
+  reshape (append_shape dims [| n_samples |]) log_prob
+
+let posterior_structure (type w) () : w posterior Nx.Ptree.t =
+  Nx.Ptree.(
+    iso
+      (fun (x0, (u, log_prob)) -> { x0; u; log_prob })
+      (fun p -> p.x0, (p.u, p.log_prob))
+      (pair tensor (pair tensor tensor)))
+
+let samples_structure (type w) () : w samples Nx.Ptree.t =
+  Nx.Ptree.(iso (fun (x0, u) -> { x0; u }) (fun s -> s.x0, s.u) (pair tensor tensor))
+
+(* [stack_posterior] collects one-trial results into the public mini-batch
+   shapes. The inputs carry no trial axis, and are stacked batch-first; [u]
+   is put back in front because time leads. This is the eager path for a
+   recognition whose solve is not traceable. *)
+let stack_posterior (type w) ~dims ~n_samples ~n ~n_steps ~m (ps : w posterior array)
+  : w posterior
+  =
+  let stack f = Nx.stack ~axis:0 (Array.to_list (Array.map ps ~f)) in
+  { x0 = unflat_x0 ~dims ~n_samples ~n (stack (fun p -> p.x0))
+  ; u = unflat_u ~dims ~n_steps ~n_samples ~m (stack (fun p -> p.u))
+  ; log_prob = unflat_log_prob ~dims ~n_samples (stack (fun p -> p.log_prob))
+  }
+
+let stack_samples (type w) ~dims ~n_samples ~n ~n_steps ~m (ss : w samples array)
+  : w samples
+  =
+  let stack f = Nx.stack ~axis:0 (Array.to_list (Array.map ss ~f)) in
+  { x0 = unflat_x0 ~dims ~n_samples ~n (stack (fun s -> s.x0))
+  ; u = unflat_u ~dims ~n_steps ~n_samples ~m (stack (fun s -> s.u))
+  }
 
 (* [scaled_randn ?key ~sigma dtype shape] is a normal draw of standard
    deviation [sigma], from [key] when given and from the current random scope
@@ -435,7 +543,7 @@ module Iilqr = struct
         }
     }
 
-  let infer
+  let infer_one
         (type w d l p e)
         (gen : (w, d, l, p, e) generative)
         (gp : (w, d, l, p, e) gparams)
@@ -452,7 +560,7 @@ module Iilqr = struct
     let log_prob = log_prob_u gen (stopped params) ~mu:(Rune.detach mu_u) u in
     { x0 = broadcast_to [| n_samples; gen.n |] x0; u; log_prob }
 
-  let mean
+  let mean_one
         (type w d l p e)
         (gen : (w, d, l, p, e) generative)
         (gp : (w, d, l, p, e) gparams)
@@ -467,7 +575,7 @@ module Iilqr = struct
     ; u = reshape [| gen.n_steps; 1; gen.m |] mu_u
     }
 
-  let log_prob
+  let log_prob_one
         (type w d l p e)
         (gen : (w, d, l, p, e) generative)
         (gp : (w, d, l, p, e) gparams)
@@ -479,6 +587,138 @@ module Iilqr = struct
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
     let mu_u = solve gen gp ?iters data in
     log_prob_u gen params ~mu:mu_u samples.u
+
+  (* One iLQR solve per trial. The solve itself is unbatched; [Rune.vmap] maps
+     it over the flattened trial batch, and its implicit VJP is batched by the
+     same map, so a mini-batch differentiates in one pass. *)
+  let infer
+        (type w d l p e)
+        (gen : (w, d, l, p, e) generative)
+        (gp : (w, d, l, p, e) gparams)
+        ~params
+        ?iters
+        ~n_samples
+        ~key
+        data
+    =
+    let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
+    if Array.is_empty dims
+    then infer_one gen gp ~params ?iters ~n_samples ~key data
+    else (
+      let batch = batch_size dims in
+      let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
+      if Option.is_none iters
+      then (
+        (* The adaptive solve reads scalars on the host, so it cannot run
+           inside [Rune.vmap]; solve the trials one by one instead. *)
+        let keys = Nx.Rng.split ~n:batch key in
+        let ps =
+          Array.init batch ~f:(fun i ->
+            infer_one
+              gen
+              gp
+              ~params
+              ?iters
+              ~n_samples
+              ~key:keys.(i)
+              (slice [ I i ] flat_data))
+        in
+        stack_posterior ~dims ~n_samples ~n:gen.n ~n_steps:gen.n_steps ~m:gen.m ps)
+      else (
+        let keys = Nx.Rng.split_batch ~n:batch key in
+        let p =
+          Rune.vmap
+            Nx.Ptree.(pair tensor Nx.Rng.ptree @-> returns (posterior_structure ()))
+            (fun (data, key) -> infer_one gen gp ~params ?iters ~n_samples ~key data)
+            (flat_data, keys)
+        in
+        { x0 = unflat_x0 ~dims ~n_samples ~n:gen.n p.x0
+        ; u = unflat_u ~dims ~n_steps:gen.n_steps ~n_samples ~m:gen.m p.u
+        ; log_prob = unflat_log_prob ~dims ~n_samples p.log_prob
+        }))
+
+  let mean
+        (type w d l p e)
+        (gen : (w, d, l, p, e) generative)
+        (gp : (w, d, l, p, e) gparams)
+        ~params
+        ?iters
+        data
+    =
+    let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
+    if Array.is_empty dims
+    then mean_one gen gp ~params ?iters data
+    else (
+      let batch = batch_size dims in
+      let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
+      if Option.is_none iters
+      then (
+        let ss =
+          Array.init batch ~f:(fun i ->
+            mean_one gen gp ~params ?iters (slice [ I i ] flat_data))
+        in
+        stack_samples ~dims ~n_samples:1 ~n:gen.n ~n_steps:gen.n_steps ~m:gen.m ss)
+      else (
+        let p =
+          Rune.vmap
+            Nx.Ptree.(tensor @-> returns (samples_structure ()))
+            (fun data -> mean_one gen gp ~params ?iters data)
+            flat_data
+        in
+        { x0 = unflat_x0 ~dims ~n_samples:1 ~n:gen.n p.x0
+        ; u = unflat_u ~dims ~n_steps:gen.n_steps ~n_samples:1 ~m:gen.m p.u
+        }))
+
+  let log_prob
+        (type w d l p e)
+        (gen : (w, d, l, p, e) generative)
+        (gp : (w, d, l, p, e) gparams)
+        ~params
+        ?iters
+        data
+        (samples : w samples)
+    =
+    let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
+    if Array.is_empty dims
+    then log_prob_one gen gp ~params ?iters data samples
+    else (
+      let batch = batch_size dims in
+      let batch_rank = Array.length dims in
+      let x0_shape = Nx.shape samples.x0 in
+      if Array.length x0_shape <> batch_rank + 2
+      then
+        invalid_arg
+          (Printf.sprintf
+             "Recognition.Iilqr.log_prob: x0 must be [batch…; n_samples; %d], got [%s]"
+             gen.n
+             (shape_string x0_shape));
+      let n_samples = x0_shape.(batch_rank) in
+      let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
+      let x0 = flat_x0 ~dims ~n_samples ~n:gen.n samples.x0 in
+      let u = flat_u ~dims ~n_steps:gen.n_steps ~n_samples ~m:gen.m samples.u in
+      let u_batch_first = transpose ~axes:[ 1; 0; 2; 3 ] u in
+      let log_prob =
+        if Option.is_none iters
+        then
+          (* [Rune.vmap] cannot hold the adaptive solve's host-side reads. *)
+          stack
+            ~axis:0
+            (Array.to_list
+               (Array.init batch ~f:(fun i ->
+                  log_prob_one
+                    gen
+                    gp
+                    ~params
+                    ?iters
+                    (slice [ I i ] flat_data)
+                    { x0 = slice [ I i ] x0; u = slice [ I i ] u_batch_first })))
+        else
+          Rune.vmap
+            Nx.Ptree.(pair tensor (pair tensor tensor) @-> returns tensor)
+            (fun (data, (x0, u)) -> log_prob_one gen gp ~params ?iters data { x0; u })
+            (flat_data, (x0, u_batch_first))
+      in
+      unflat_log_prob ~dims ~n_samples log_prob)
 
   (** [make ?space_sigma2 ?time_sigma2 ~n ~m ~n_steps ~n_output dtype] is the
       iLQR recognition with covariance factors initialized to
@@ -686,7 +926,7 @@ module Lfads = struct
     in
     sum ~axes:[ 0 ] lps
 
-  let infer
+  let infer_one
         (type w d l p e)
         ~phi
         ~with_inputs
@@ -730,7 +970,7 @@ module Lfads = struct
       in
       { x0; u; log_prob = Infix.(ic_logp + u_logp) })
 
-  let mean
+  let mean_one
         (type w d l p e)
         ~phi
         ~with_inputs
@@ -753,7 +993,7 @@ module Lfads = struct
       let u, _, _ = rollout ~phi gen gp params ~e_con ~x0 ~eps in
       { x0; u })
 
-  let log_prob
+  let log_prob_one
         (type w d l p e)
         ~phi
         ~with_inputs
@@ -779,6 +1019,104 @@ module Lfads = struct
     else (
       let e_con = encode_con ~phi params data in
       Infix.(ic_logp + replay ~phi gen gp params ~e_con ~x0:samples.x0 ~u:samples.u))
+
+  (* The same trial-level map as the iLQR recognition: the encoder reads one
+     trial and [Rune.vmap] stacks the trials' draws. *)
+  let infer
+        (type w d l p e)
+        ~phi
+        ~with_inputs
+        (gen : (w, d, l, p, e) generative)
+        (gp : (w, d, l, p, e) gparams)
+        ~params
+        ?iters
+        ~n_samples
+        ~key
+        data
+    =
+    let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
+    if Array.is_empty dims
+    then infer_one ~phi ~with_inputs gen gp ~params ?iters ~n_samples ~key data
+    else (
+      let batch = batch_size dims in
+      let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
+      let keys = Nx.Rng.split_batch ~n:batch key in
+      let p =
+        Rune.vmap
+          Nx.Ptree.(pair tensor Nx.Rng.ptree @-> returns (posterior_structure ()))
+          (fun (data, key) ->
+             infer_one ~phi ~with_inputs gen gp ~params ?iters ~n_samples ~key data)
+          (flat_data, keys)
+      in
+      { x0 = unflat_x0 ~dims ~n_samples ~n:gen.n p.x0
+      ; u = unflat_u ~dims ~n_steps:gen.n_steps ~n_samples ~m:gen.m p.u
+      ; log_prob = unflat_log_prob ~dims ~n_samples p.log_prob
+      })
+
+  let mean
+        (type w d l p e)
+        ~phi
+        ~with_inputs
+        (gen : (w, d, l, p, e) generative)
+        (gp : (w, d, l, p, e) gparams)
+        ~params
+        ?iters
+        data
+    =
+    let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
+    if Array.is_empty dims
+    then mean_one ~phi ~with_inputs gen gp ~params ?iters data
+    else (
+      let batch = batch_size dims in
+      let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
+      let p =
+        Rune.vmap
+          Nx.Ptree.(tensor @-> returns (samples_structure ()))
+          (fun data -> mean_one ~phi ~with_inputs gen gp ~params ?iters data)
+          flat_data
+      in
+      { x0 = unflat_x0 ~dims ~n_samples:1 ~n:gen.n p.x0
+      ; u = unflat_u ~dims ~n_steps:gen.n_steps ~n_samples:1 ~m:gen.m p.u
+      })
+
+  let log_prob
+        (type w d l p e)
+        ~phi
+        ~with_inputs
+        (gen : (w, d, l, p, e) generative)
+        (gp : (w, d, l, p, e) gparams)
+        ~params
+        ?iters
+        data
+        (samples : w samples)
+    =
+    let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
+    if Array.is_empty dims
+    then log_prob_one ~phi ~with_inputs gen gp ~params ?iters data samples
+    else (
+      let batch = batch_size dims in
+      let batch_rank = Array.length dims in
+      let x0_shape = Nx.shape samples.x0 in
+      if Array.length x0_shape <> batch_rank + 2
+      then
+        invalid_arg
+          (Printf.sprintf
+             "Recognition.Lfads.log_prob: x0 must be [batch…; n_samples; %d], got [%s]"
+             gen.n
+             (shape_string x0_shape));
+      let n_samples = x0_shape.(batch_rank) in
+      let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
+      let x0 = flat_x0 ~dims ~n_samples ~n:gen.n samples.x0 in
+      let u = flat_u ~dims ~n_steps:gen.n_steps ~n_samples ~m:gen.m samples.u in
+      let u_batch_first = transpose ~axes:[ 1; 0; 2; 3 ] u in
+      let log_prob =
+        Rune.vmap
+          Nx.Ptree.(pair tensor (pair tensor tensor) @-> returns tensor)
+          (fun (data, (x0, u)) ->
+             log_prob_one ~phi ~with_inputs gen gp ~params ?iters data { x0; u })
+          (flat_data, (x0, u_batch_first))
+      in
+      unflat_log_prob ~dims ~n_samples log_prob)
 
   (** [make ?n_ic ?n_ci ?n_ctrl ?with_inputs ?phi ?key ~n ~m ~n_steps ~n_output dtype] is the LFADS recognition. [n_ic] (default [64]) and
       [n_ci] (default [n_ic]) are the encoder state sizes, [n_ctrl] (default

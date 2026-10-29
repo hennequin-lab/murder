@@ -19,6 +19,9 @@
    - the ELBO: gradient check of the whole inference path (implicit gradient
      included) against finite differences,
    - JIT round-trips of the fixed solve and of its gradient,
+   - tensor mini-batches: the recognition's batch shapes, the batched bound
+     against the per-trial mean, and a compiled step that takes the batch as
+     an argument,
    - swapping recognitions, model validation, and end-to-end training smoke
      tests. *)
 
@@ -110,7 +113,7 @@ let setup ?(key = Nx.Rng.key 0) ~n ~m ~t_steps ~n_output () : iilqr_model * iilq
       ~recognition
       ()
   in
-  model, M.init model
+  model, M.params model
 
 let setup_lfads
       ?(key = Nx.Rng.key 1)
@@ -160,7 +163,7 @@ let setup_lfads
       ~initial_prior
       ()
   in
-  model, M.init model
+  model, M.params model
 
 let data_of ~n_output ~t_steps values =
   create dtype [| t_steps; n_output |] (Array.of_list values)
@@ -990,7 +993,7 @@ let test_lfads_sticking_the_landing () =
       ~initial_prior
       ()
   in
-  let params = M.init model in
+  let params = M.params model in
   let p = params.M.recognition in
   (* q(x0) = p(x0) and q(u_t) = p(u_t) for every t. *)
   let recognition_params =
@@ -1352,6 +1355,184 @@ let test_jit () =
     grads.M.recognition.Il.time_cov.t
 
 (* ──────────────────────────────────────────────────────────────────────────
+   Mini-batches
+   ────────────────────────────────────────────────────────────────────────── *)
+
+let test_batched_iilqr () =
+  let n = 2
+  and m = 2
+  and t_steps = 3 in
+  let model, params = setup ~n ~m ~t_steps ~n_output:2 () in
+  let o1 = data_of ~n_output:2 ~t_steps [ 1.0; 0.0; 0.5; -0.5; -0.2; 0.7 ] in
+  let o2 = data_of ~n_output:2 ~t_steps [ 0.3; -0.1; -0.4; 0.8; 0.2; -0.6 ] in
+  let batch = stack ~axis:0 [ o1; o2 ] in
+  let key = Nx.Rng.key 40 in
+  let n_samples = 3
+  and iters = 4 in
+  (* the recognition maps one trial's solve over the leading batch axis *)
+  let posterior = M.infer model params ~iters ~n_samples ~key batch in
+  require ~msg:"batched x0 shape" Poly.(shape posterior.R.x0 = [| 2; n_samples; n |]);
+  require
+    ~msg:"batched u shape"
+    Poly.(shape posterior.R.u = [| t_steps; 2; n_samples; m |]);
+  require
+    ~msg:"batched log_prob shape"
+    Poly.(shape posterior.R.log_prob = [| 2; n_samples |]);
+  let posterior_mean = M.mean model params ~iters batch in
+  require ~msg:"batched mean x0 shape" Poly.(shape posterior_mean.R.x0 = [| 2; 1; n |]);
+  require
+    ~msg:"batched mean u shape"
+    Poly.(shape posterior_mean.R.u = [| t_steps; 2; 1; m |]);
+  let pu, pz, po = Ilqr_vae.predictions model params posterior in
+  require
+    ~msg:"batched predictions u shape"
+    Poly.(shape pu = [| t_steps; 2; n_samples; m |]);
+  require
+    ~msg:"batched predictions z shape"
+    Poly.(shape pz = [| t_steps + 1; 2; n_samples; n |]);
+  require
+    ~msg:"batched predictions o shape"
+    Poly.(shape po = [| t_steps; 2; n_samples; 2 |]);
+  let dz, do_ = Ilqr_vae.predictions_deterministic model params posterior_mean in
+  require
+    ~msg:"batched deterministic z shape"
+    Poly.(shape dz = [| t_steps + 1; 2; 1; n |]);
+  require ~msg:"batched deterministic o shape" Poly.(shape do_ = [| t_steps; 2; 1; 2 |]);
+  (* the density at the draws is the same one the recognition reports *)
+  let log_prob =
+    M.log_prob model params ~iters batch { R.x0 = posterior.R.x0; u = posterior.R.u }
+  in
+  check_close ~msg:"batched log q replays" ~tol:1e-10 log_prob posterior.R.log_prob;
+  (* compute averages the per-trial bounds of the same draws *)
+  let terms = El.compute model params ~posterior batch in
+  let per_trial =
+    Array.init 2 ~f:(fun i ->
+      let posterior_i =
+        { R.x0 = slice [ I i ] posterior.R.x0
+        ; u = slice [ A; I i ] posterior.R.u
+        ; log_prob = slice [ I i ] posterior.R.log_prob
+        }
+      in
+      El.compute model params ~posterior:posterior_i (slice [ I i ] batch))
+  in
+  let mean_of field =
+    mean (stack ~axis:0 (Array.to_list (Array.map per_trial ~f:field)))
+  in
+  check_close
+    ~msg:"batched elbo is the trial mean"
+    ~tol:1e-12
+    terms.El.elbo
+    (mean_of (fun t -> t.El.elbo));
+  check_close
+    ~msg:"batched likelihood is the trial mean"
+    ~tol:1e-12
+    terms.El.log_likelihood
+    (mean_of (fun t -> t.El.log_likelihood));
+  check_close
+    ~msg:"batched kl is the trial mean"
+    ~tol:1e-12
+    terms.El.kl
+    (mean_of (fun t -> t.El.kl));
+  (* the key is split into one subkey per trial, as for separate losses *)
+  let keys = Nx.Rng.split ~n:2 key in
+  let separate =
+    stack
+      ~axis:0
+      [ El.loss_fixed model params ~key:keys.(0) ~n_samples ~iters o1
+      ; El.loss_fixed model params ~key:keys.(1) ~n_samples ~iters o2
+      ]
+  in
+  check_close
+    ~msg:"batched loss is the trial mean"
+    ~tol:1e-12
+    (El.batch_loss_fixed model params ~key ~n_samples ~iters batch)
+    (mean separate);
+  (* the mini-batch is an argument of the compiled step, not a closed array *)
+  let structure = M.structure model in
+  let eager =
+    Rune.value_and_grad
+      structure
+      (fun p -> El.batch_loss_fixed model p ~key ~n_samples ~iters batch)
+      params
+  in
+  let compiled =
+    Rune.jit
+      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> tensor @-> returns (pair tensor structure))
+      (fun p k data ->
+         Rune.value_and_grad
+           structure
+           (fun p -> El.batch_loss_fixed model p ~key:k ~n_samples ~iters data)
+           p)
+  in
+  let loss, grads = compiled params key batch in
+  check_close ~msg:"batched jit loss" ~tol:1e-10 loss (fst eager);
+  let eager_grads = snd eager in
+  check_close
+    ~msg:"batched jit dynamics gradient"
+    ~tol:1e-9
+    grads.M.dynamics.w
+    eager_grads.M.dynamics.w;
+  check_close
+    ~msg:"batched jit covariance gradient"
+    ~tol:1e-9
+    grads.M.recognition.Il.time_cov.t
+    eager_grads.M.recognition.Il.time_cov.t
+
+let test_batched_lfads () =
+  let n = 2
+  and m = 2
+  and t_steps = 3 in
+  let model, params = setup_lfads ~n ~m ~t_steps ~n_output:2 () in
+  let o = lfads_data ~t_steps ~n_output:2 () in
+  let batch = stack ~axis:0 [ o; Infix.(o *$ 0.5) ] in
+  let key = Nx.Rng.key 41 in
+  let n_samples = 3
+  and iters = 4 in
+  let posterior = M.infer model params ~iters ~n_samples ~key batch in
+  require
+    ~msg:"lfads batched x0 shape"
+    Poly.(shape posterior.R.x0 = [| 2; n_samples; n |]);
+  require
+    ~msg:"lfads batched u shape"
+    Poly.(shape posterior.R.u = [| t_steps; 2; n_samples; m |]);
+  require
+    ~msg:"lfads batched log_prob shape"
+    Poly.(shape posterior.R.log_prob = [| 2; n_samples |]);
+  let log_prob =
+    M.log_prob model params ~iters batch { R.x0 = posterior.R.x0; u = posterior.R.u }
+  in
+  check_close ~msg:"lfads batched log q replays" ~tol:1e-10 log_prob posterior.R.log_prob;
+  (* the bound is the mean over the trials, from the same draws *)
+  let terms = El.compute model params ~posterior batch in
+  let per_trial =
+    Array.init 2 ~f:(fun i ->
+      let posterior_i =
+        { R.x0 = slice [ I i ] posterior.R.x0
+        ; u = slice [ A; I i ] posterior.R.u
+        ; log_prob = slice [ I i ] posterior.R.log_prob
+        }
+      in
+      El.compute model params ~posterior:posterior_i (slice [ I i ] batch))
+  in
+  let mean_of field =
+    mean (stack ~axis:0 (Array.to_list (Array.map per_trial ~f:field)))
+  in
+  check_close
+    ~msg:"lfads batched elbo is the trial mean"
+    ~tol:1e-12
+    terms.El.elbo
+    (mean_of (fun t -> t.El.elbo));
+  (* eager and compiled batch losses are one function of the data argument *)
+  let structure = M.structure model in
+  let eager = El.batch_loss_fixed model params ~key ~n_samples ~iters batch in
+  let compiled =
+    Rune.jit
+      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
+      (fun p k data -> El.batch_loss_fixed model p ~key:k ~n_samples ~iters data)
+  in
+  check_close ~msg:"lfads batched jit loss" ~tol:1e-10 (compiled params key batch) eager
+
+(* ──────────────────────────────────────────────────────────────────────────
    Swapping recognitions and validation
    ────────────────────────────────────────────────────────────────────────── *)
 
@@ -1396,7 +1577,7 @@ let test_swapping () =
       (Some (I.make ~std:1.0 ~n dtype))
   in
   let loss_of model =
-    let params = M.init model in
+    let params = M.params model in
     El.loss_fixed model params ~key:(Nx.Rng.key 33) ~n_samples:2 ~iters:4 data
   in
   let l_iilqr = loss_of iilqr
@@ -1405,7 +1586,7 @@ let test_swapping () =
     ~msg:"both recognitions give finite losses"
     (Float.is_finite (item l_iilqr) && Float.is_finite (item l_lfads));
   (* both recognition parameter blocks receive gradients *)
-  let params = M.init iilqr in
+  let params = M.params iilqr in
   let _, grads =
     Rune.value_and_grad
       (M.structure iilqr)
@@ -1415,7 +1596,7 @@ let test_swapping () =
   require
     ~msg:"the iLQR covariance receives gradients"
     Float.(max_abs grads.M.recognition.Il.space_cov.d > 1e-10);
-  let params = M.init lfads in
+  let params = M.params lfads in
   let _, grads =
     Rune.value_and_grad
       (M.structure lfads)
@@ -1462,12 +1643,13 @@ let test_training_smoke () =
   let model, params = setup ~n ~m ~t_steps ~n_output:2 () in
   (* synthetic trials from the model itself *)
   let true_params = params in
-  let trials =
+  let trial_data =
     Array.init 4 ~f:(fun i ->
       let key = Nx.Rng.key (100 + i) in
       let _, _, _, o = Ilqr_vae.sample_generative model true_params ~key in
       o)
   in
+  let trials = stack ~axis:0 (Array.to_list trial_data) in
   let structure = M.structure model in
   let key = Nx.Rng.key 7 in
   let objective p = El.batch_loss_fixed model p ~key ~n_samples:4 ~iters:4 trials in
@@ -1491,13 +1673,13 @@ let test_training_smoke () =
   require ~msg:"generative z shape" Poly.(shape z = [| t_steps + 1; n |]);
   require ~msg:"generative o shape" Poly.(shape o = [| t_steps; 2 |]);
   let posterior =
-    M.infer model !params ~iters:4 ~n_samples:5 ~key:(Nx.Rng.key 10) (Array.get trials 0)
+    M.infer model !params ~iters:4 ~n_samples:5 ~key:(Nx.Rng.key 10) trial_data.(0)
   in
   let u, z, o = Ilqr_vae.predictions model !params posterior in
   require ~msg:"predictions u shape" Poly.(shape u = [| t_steps; 5; m |]);
   require ~msg:"predictions z shape" Poly.(shape z = [| t_steps + 1; 5; n |]);
   require ~msg:"predictions o shape" Poly.(shape o = [| t_steps; 5; 2 |]);
-  let mean = M.mean model !params (Array.get trials 0) in
+  let mean = M.mean model !params trial_data.(0) in
   let z, o = Ilqr_vae.predictions_deterministic model !params mean in
   require ~msg:"deterministic z shape" Poly.(shape z = [| t_steps + 1; 1; n |]);
   require ~msg:"deterministic o shape" Poly.(shape o = [| t_steps; 1; 2 |])
@@ -1508,12 +1690,13 @@ let test_lfads_training_smoke () =
   and t_steps = 5 in
   let model, params = setup_lfads ~n ~m ~t_steps ~n_output:2 () in
   let true_params = params in
-  let trials =
+  let trial_data =
     Array.init 3 ~f:(fun i ->
       let key = Nx.Rng.key (200 + i) in
       let _, _, _, o = Ilqr_vae.sample_generative model true_params ~key in
       o)
   in
+  let trials = stack ~axis:0 (Array.to_list trial_data) in
   let structure = M.structure model in
   let key = Nx.Rng.key 17 in
   let objective p = El.batch_loss_fixed model p ~key ~n_samples:3 ~iters:4 trials in
@@ -1557,6 +1740,8 @@ let () =
        ; test "elbo terms" test_elbo_terms
        ; test "kl schedule" test_kl_schedule
        ; test "jit round-trips" test_jit
+       ; test "batched iLQR elbo" test_batched_iilqr
+       ; test "batched LFADS elbo" test_batched_lfads
        ; test "recognition swapping" test_swapping
        ; test "training smoke test" test_training_smoke
        ; test "lfads training smoke test" test_lfads_training_smoke

@@ -40,7 +40,7 @@
         ~recognition:(Recognition.Iilqr.make ~n:3 ~m:3 ~n_steps:32 ~n_output:3 Nx.float64)
         ()
     in
-    let params = Model.init model in
+    let params = Model.params model in
     Rune.value_and_grad (Model.structure model) objective params
     ]}
 
@@ -121,10 +121,8 @@ val make
   -> unit
   -> ('w, 'd, 'l, 'p, 'e, 'r) t
 
-(** [init model] collects the components' initial parameters: the value a
-    training run starts from. Deterministic — the randomness was spent when
-    the components were built. *)
-val init : ('w, 'd, 'l, 'p, 'e, 'r) t -> ('w, 'd, 'l, 'p, 'e, 'r) params
+(** [params model] collects the components' parameters. *)
+val params : ('w, 'd, 'l, 'p, 'e, 'r) t -> ('w, 'd, 'l, 'p, 'e, 'r) params
 
 (** [structure model] is the structure of {!init}'s value, assembled from the
     components' structures: paths read ["dynamics.a1"],
@@ -139,8 +137,10 @@ val generative : ('w, 'd, 'l, 'p, 'e, 'r) t -> ('w, 'd, 'l, 'p, 'e) Recognition.
 val gparams : ('w, 'd, 'l, 'p, 'e, 'r) params -> ('w, 'd, 'l, 'p, 'e) Recognition.gparams
 
 (** [infer model params ~n_samples ~key data] draws [n_samples] latent
-    trajectories from the model's recognition distribution and evaluates
-    [log q] at each of them. See {!Recognition.infer}. [iters] is the
+    trajectories per trial from the model's recognition distribution and
+    evaluates [log q] at each of them. [data] is one trial or a tensor
+    mini-batch ([[batch…; n_steps; n_output]]), and the posterior carries the
+    matching batch axes. See {!Recognition.infer}. [iters] is the
     recognition's solver hint: [Some n] for [n] fixed iLQR iterations
     (traceable), [None] for the default complete solve; LFADS ignores it. *)
 val infer
@@ -152,8 +152,8 @@ val infer
   -> 'w value
   -> 'w Recognition.posterior
 
-(** [mean model params data] is the recognition's posterior mean, a single
-    deterministic latent trajectory. See {!Recognition.mean}. *)
+(** [mean model params data] is the recognition's posterior mean, one
+    deterministic latent trajectory per trial. See {!Recognition.mean}. *)
 val mean
   :  ('w, 'd, 'l, 'p, 'e, 'r) t
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -162,7 +162,7 @@ val mean
   -> 'w Recognition.samples
 
 (** [log_prob model params data samples] is [log q(samples | data)] for given
-    latents. See {!Recognition.log_prob}. *)
+    latents, with the batch axes of [data]. See {!Recognition.log_prob}. *)
 val log_prob
   :  ('w, 'd, 'l, 'p, 'e, 'r) t
   -> ('w, 'd, 'l, 'p, 'e, 'r) params

@@ -141,7 +141,7 @@ let make
   ; recognition
   }
 
-let init (type w d l p e r) (model : (w, d, l, p, e, r) t) : (w, d, l, p, e, r) params =
+let params (type w d l p e r) (model : (w, d, l, p, e, r) t) : (w, d, l, p, e, r) params =
   { dynamics = model.dynamics.Dynamics.params
   ; likelihood = model.likelihood.Likelihood.params
   ; prior = model.prior.Prior.params

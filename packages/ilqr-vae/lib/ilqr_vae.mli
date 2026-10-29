@@ -7,7 +7,8 @@
     model.
 
     {b The generative model.} A trial is a tensor of observations
-    [[n_steps; n_output]]. Latents [x_0] (the initial state, [[n]]) and
+    [[n_steps; n_output]]; a mini-batch stacks trials on leading axes,
+    [[batch…; n_steps; n_output]]. Latents [x_0] (the initial state, [[n]]) and
     [u_0 … u_{T−1}] (the inputs, [[n_steps; m]]) drive a state through the
     dynamics ([z_{k+1} = f(z_k, u_k)]); each observation is emitted from the
     state reached by the inputs before it, [o_k ~ p(o | z_{k+1})]. The
@@ -46,21 +47,25 @@
     the pathwise gradient of Roeder, Wu & Duvenaud (2017), "Sticking the
     landing".
 
-    {b A training step.}
+    {b A training step.} The mini-batch is an argument of the compiled
+    function, so one program serves every step of the same batch shape:
 
     {[
       let model = … Model.make … in
-      let params = Model.init model in
+      let params = Model.params model in
       let step =
         Rune.jit
-          Nx.Ptree.(Model.structure model @-> Nx.Rng.ptree @-> returns Nx.Ptree.tensor)
-          (fun params key ->
+          Nx.Ptree.(
+            Model.structure model @-> Nx.Rng.ptree @-> tensor
+            @-> returns (pair tensor (Model.structure model)))
+          (fun params key data ->
              Rune.value_and_grad
                (Model.structure model)
                (fun p ->
-                  Elbo.batch_loss_fixed model p ~key ~n_samples:16 ~iters:4 trials)
+                  Elbo.batch_loss_fixed model p ~key ~n_samples:16 ~iters:4 data)
                params)
       in
+      let loss, grads = step params key batch
     ]}
 
     {b Sampling and prediction.} {!sample_generative} draws from the prior
@@ -98,8 +103,9 @@ module Elbo = Elbo
 (** {1:inference Inference} *)
 
 (** [posterior_mean model params ?iters data] is the recognition's posterior
-    mean: one deterministic latent trajectory ([x0] of shape [[1; n]] and
-    [u] of shape [[n_steps; 1; m]]). [iters] asks for that many fixed iLQR
+    mean: one deterministic latent trajectory per trial ([x0] of shape
+    [[1; n]] and [u] of shape [[n_steps; 1; m]], with the trial axes leading
+    when [data] is a mini-batch). [iters] asks for that many fixed iLQR
     iterations; [None] uses the adaptive solve. See {!Recognition.mean}. *)
 val posterior_mean
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
@@ -109,9 +115,9 @@ val posterior_mean
   -> 'w Recognition.samples
 
 (** [posterior_draws model params ~n_samples ~key data] draws [n_samples]
-    latent trajectories from the recognition distribution and evaluates
-    [log q] at each. This is the [q] the ELBO is built from. See
-    {!Recognition.infer}. *)
+    latent trajectories per trial from the recognition distribution and
+    evaluates [log q] at each; [data] is one trial or a tensor mini-batch.
+    This is the [q] the ELBO is built from. See {!Recognition.infer}. *)
 val posterior_draws
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -122,7 +128,8 @@ val posterior_draws
   -> 'w Recognition.posterior
 
 (** [log_prob model params data samples] is [log q(samples | data)] for given
-    latents, one value per member of a batch. See {!Recognition.log_prob}. *)
+    latents, one value per member of a sample batch. See
+    {!Recognition.log_prob}. *)
 val log_prob
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -131,8 +138,9 @@ val log_prob
   -> 'w Recognition.samples
   -> 'w value
 
-(** The estimated evidence lower bound, a scalar, from a posterior's draws.
-    See {!Elbo.compute} for the bound's terms. *)
+(** The estimated evidence lower bound, a scalar and the mean over the draws
+    of every trial, from a posterior's draws. See {!Elbo.compute} for the
+    bound's terms. *)
 val elbo
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -141,8 +149,8 @@ val elbo
   -> 'w value
   -> 'w value
 
-(** The negated bound from fresh draws: the per-trial objective. See
-    {!Elbo.loss}. *)
+(** The negated bound from fresh draws, for one trial or a tensor mini-batch.
+    See {!Elbo.loss}. *)
 val loss
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -165,8 +173,8 @@ val loss_fixed
   -> 'w value
   -> 'w value
 
-(** The mean of {!loss_fixed} over a batch of trials. See
-    {!Elbo.batch_loss_fixed}. *)
+(** The mean of {!loss_fixed} over a tensor mini-batch of trials,
+    [[batch…; n_steps; n_output]]. See {!Elbo.batch_loss_fixed}. *)
 val batch_loss_fixed
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -174,16 +182,16 @@ val batch_loss_fixed
   -> key:Nx.Rng.t
   -> n_samples:int
   -> iters:int
-  -> 'w value array
+  -> 'w value
   -> 'w value
 
 (** {1:sampling Sampling and prediction} *)
 
 (** [integrate model params ~u] rolls the model's dynamics out from
-    [x_0 = 0] under the inputs [u] ([[n_steps; m]], or a sample batch
-    [[n_steps; n_samples; m]]): states [[n_steps + 1; …; n]]. Differentiable
-    in [u] and in the parameters. {!integrate_from} starts from a given
-    initial state. *)
+    [x_0 = 0] under the inputs [u] ([[n_steps; m]], or a batch
+    [[n_steps; batch…; m]]): states [[n_steps + 1; …; n]]. Differentiable in
+    [u] and in the parameters. {!integrate_from} starts from a given initial
+    state. *)
 val integrate
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -191,7 +199,7 @@ val integrate
   -> 'w value
 
 (** [integrate_from model params ~x0 ~u] is {!integrate} from [x0]
-    ([[n]], or a batch [[n_samples; n]]). *)
+    ([[n]], or a batch [[batch…; n]]); [u] keeps time leading. *)
 val integrate_from
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -212,9 +220,9 @@ val sample_generative
   -> 'w value * 'w value * 'w value * 'w value
 
 (** [predictions model params posterior] rolls the posterior's draws out and
-    decodes them: the inputs ([[n_steps; n_samples; m]]), the states
-    ([[n_steps + 1; n_samples; n]]) and the per-sample readouts
-    ([[n_steps; n_samples; n_output]]), decoded from the states the
+    decodes them: the inputs ([[n_steps; batch…; n_samples; m]]), the states
+    ([[n_steps + 1; batch…; n_samples; n]]) and the per-sample readouts
+    ([[n_steps; batch…; n_samples; n_output]]), decoded from the states the
     observations belong to. The readouts are the likelihood's deterministic
     [mean], not samples. *)
 val predictions
@@ -224,8 +232,8 @@ val predictions
   -> 'w value * 'w value * 'w value
 
 (** [predictions_deterministic model params samples] rolls a deterministic
-    latent trajectory out and decodes it: states [[n_steps + 1; n]] and
-    readouts [[n_steps; n_output]] for a batch of one. *)
+    latent trajectory out and decodes it: states [[n_steps + 1; batch…; n]]
+    and readouts [[n_steps; batch…; n_output]] for a sample batch of one. *)
 val predictions_deterministic
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
