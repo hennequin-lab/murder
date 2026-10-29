@@ -125,6 +125,6 @@ let softmax_ce y labels =
   let idx = reshape (Array.append labels_shape [| 1 |]) labels in
   let picked = take_along_axis ~axis:(-1) ~indices:idx (log_softmax y) in
   let loss = Infix.(-mean picked) in
-  let curv = Curv.softmax_ce ~scale:(1.0 /. float_of_int rows) p in
+  let curv = Curv.softmax_ce ~scale:(1.0 /. float_of_int rows) (Rune.detach p) in
   observe ~y ~curv loss;
   loss
