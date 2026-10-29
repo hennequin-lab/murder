@@ -9,7 +9,8 @@
     conditioned on the trial's observations. The latents are the initial
     state [x_0] ([[n]]) and the inputs [u_0 … u_{T−1}] ([[n_steps; m]]); a
     model that fixes [x_0 = 0] and a model that infers it are both expressed
-    here, and {!Model.t} carries whichever recognition the user built.
+    here, and {!Model.t} carries whichever recognition the user built. Trial
+    axes lead every tensor, then comes the horizon, then the sample axis.
 
     Two constructors are provided:
 
@@ -73,8 +74,9 @@ type ('w, 'd, 'l, 'p, 'e) gparams =
     [[n_samples; n]], and the inputs, of shape [[n_steps; n_samples; m]].
 
     A mini-batch of trials adds leading trial axes to every tensor: [x0] is
-    [[batch…; n_samples; n]], [u] is [[n_steps; batch…; n_samples; m]] (time
-    leads) and [log_prob] is [[batch…; n_samples]]. *)
+    [[batch…; n_samples; n]], [u] is [[batch…; n_steps; n_samples; m]] and
+    [log_prob] is [[batch…; n_samples]]. Trial axes lead, then the horizon,
+    then the sample axis. *)
 type 'w samples =
   { x0 : 'w value
   ; u : 'w value
@@ -167,8 +169,9 @@ val infer
 
 (** [mean rec gen gp ~params data] is the posterior mean: a single
     deterministic latent trajectory per trial, shaped like a sample batch of
-    one ([x0] of shape [[1; n]] and [u] of shape [[n_steps; 1; m]], with the
-    trial axes leading when [data] is a mini-batch). *)
+    one ([x0] of shape [[1; n]] and [u] of shape [[n_steps; 1; m]] for one
+    trial, and [[batch…; 1; n]] and [[batch…; n_steps; 1; m]] for a
+    mini-batch). *)
 val mean
   :  ('w, 'd, 'l, 'p, 'e, 'r) t
   -> ('w, 'd, 'l, 'p, 'e) generative

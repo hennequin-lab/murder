@@ -15,8 +15,15 @@ type ('w, 'p) t =
   ; dyn : 'p -> k:'w value -> x:'w value -> u:'w value -> 'w value
   }
 
-let integrate (d : ('w, 'p) t) (p : 'p) ~(x0 : 'w value) ~(u : 'w value) =
-  let horizon = (shape u).(0) in
+let shape_string shape =
+  String.concat ~sep:"; " (Array.to_list (Array.map shape ~f:Int.to_string))
+
+(* [integrate_along d p ~time_axis ~x0 ~u] is the rollout when [time_axis] is
+   the horizon's position in [u]. [Rune.scan] walks axis 0, so the horizon is
+   moved there for the scan and the result put back where it belongs. *)
+let integrate_along (d : ('w, 'p) t) (p : 'p) ~time_axis ~(x0 : 'w value) ~(u : 'w value) =
+  let horizon = (shape u).(time_axis) in
+  let u = if Int.equal time_axis 0 then u else moveaxis time_axis 0 u in
   let ks = arange (Nx.dtype x0) 0 horizon 1 in
   let _, xs =
     Rune.scan
@@ -33,7 +40,50 @@ let integrate (d : ('w, 'p) t) (p : 'p) ~(x0 : 'w value) ~(u : 'w value) =
      batch shape before stacking the initial state in front of the path. *)
   let batch_shape = Array.sub (shape xs) ~pos:1 ~len:(Array.length (shape xs) - 1) in
   let x0 = reshape (Array.append [| 1 |] batch_shape) (broadcast_to batch_shape x0) in
-  concatenate ~axis:0 [ x0; xs ]
+  let path = concatenate ~axis:0 [ x0; xs ] in
+  if Int.equal time_axis 0 then path else moveaxis 0 time_axis path
+
+let integrate (d : ('w, 'p) t) (p : 'p) ~(x0 : 'w value) ~(u : 'w value) =
+  let rank = Array.length (shape u) in
+  if rank < 2
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Dynamics.integrate: u must be [batch…; n_steps; %d], got rank %d"
+         d.m
+         rank);
+  let time_axis = rank - 2 in
+  if Array.length (shape x0) <> time_axis + 1
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Dynamics.integrate: x0 must be [batch…; %d] for u with %d batch axes, got [%s]"
+         d.n
+         time_axis
+         (shape_string (shape x0)));
+  integrate_along d p ~time_axis ~x0 ~u
+
+let integrate_samples (d : ('w, 'p) t) (p : 'p) ~(x0 : 'w value) ~(u : 'w value) =
+  let rank = Array.length (shape u) in
+  if rank < 3
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Dynamics.integrate_samples: u must be [batch…; n_steps; n_samples; %d], got \
+          rank %d"
+         d.m
+         rank);
+  let time_axis = rank - 3 in
+  if Array.length (shape x0) <> time_axis + 2
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Dynamics.integrate_samples: x0 must be [batch…; n_samples; %d] for u with %d \
+          batch axes, got [%s]"
+         d.n
+         time_axis
+         (shape_string (shape x0)));
+  integrate_along d p ~time_axis ~x0 ~u
 
 (* [randn ?key dtype shape] is a standard normal draw, from [key] when given
    and from the implicit random scope otherwise. *)

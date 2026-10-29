@@ -646,10 +646,10 @@ let test_dynamics () =
       rnn
       rnn.D.params
       ~x0:(zeros dtype [| 2; n |])
-      ~u:(broadcast_to [| t_steps; 2; m |] (unsqueeze ~axes:[ 1 ] u))
+      ~u:(broadcast_to [| 2; t_steps; m |] (unsqueeze ~axes:[ 0 ] u))
   in
-  require ~msg:"batched rollout shape" Poly.(shape batched = [| t_steps + 1; 2; n |]);
-  let first = slice [ A; I 0 ] batched in
+  require ~msg:"batched rollout shape" Poly.(shape batched = [| 2; t_steps + 1; n |]);
+  let first = slice [ I 0 ] batched in
   check_close
     ~msg:"batched rollout member"
     ~tol:1e-10
@@ -734,10 +734,10 @@ let test_mgu () =
       dynamics
       params
       ~x0:(broadcast_to [| 2; n |] x0)
-      ~u:(broadcast_to [| t_steps; 2; m |] (unsqueeze ~axes:[ 1 ] us))
+      ~u:(broadcast_to [| 2; t_steps; m |] (unsqueeze ~axes:[ 0 ] us))
   in
-  require ~msg:"mgu batched rollout shape" Poly.(shape batched = [| t_steps + 1; 2; n |]);
-  check_close ~msg:"mgu batched rollout member" ~tol:1e-10 (slice [ A; I 0 ] batched) z;
+  require ~msg:"mgu batched rollout shape" Poly.(shape batched = [| 2; t_steps + 1; n |]);
+  check_close ~msg:"mgu batched rollout member" ~tol:1e-10 (slice [ I 0 ] batched) z;
   (* the dynamics is differentiable in every parameter *)
   match
     Rune.check_grads
@@ -1374,7 +1374,7 @@ let test_batched_iilqr () =
   require ~msg:"batched x0 shape" Poly.(shape posterior.R.x0 = [| 2; n_samples; n |]);
   require
     ~msg:"batched u shape"
-    Poly.(shape posterior.R.u = [| t_steps; 2; n_samples; m |]);
+    Poly.(shape posterior.R.u = [| 2; t_steps; n_samples; m |]);
   require
     ~msg:"batched log_prob shape"
     Poly.(shape posterior.R.log_prob = [| 2; n_samples |]);
@@ -1382,22 +1382,24 @@ let test_batched_iilqr () =
   require ~msg:"batched mean x0 shape" Poly.(shape posterior_mean.R.x0 = [| 2; 1; n |]);
   require
     ~msg:"batched mean u shape"
-    Poly.(shape posterior_mean.R.u = [| t_steps; 2; 1; m |]);
+    Poly.(shape posterior_mean.R.u = [| 2; t_steps; 1; m |]);
   let pu, pz, po = Ilqr_vae.predictions model params posterior in
   require
     ~msg:"batched predictions u shape"
-    Poly.(shape pu = [| t_steps; 2; n_samples; m |]);
+    Poly.(shape pu = [| 2; t_steps; n_samples; m |]);
   require
     ~msg:"batched predictions z shape"
-    Poly.(shape pz = [| t_steps + 1; 2; n_samples; n |]);
+    Poly.(shape pz = [| 2; t_steps + 1; n_samples; n |]);
   require
     ~msg:"batched predictions o shape"
-    Poly.(shape po = [| t_steps; 2; n_samples; 2 |]);
+    Poly.(shape po = [| 2; t_steps; n_samples; 2 |]);
   let dz, do_ = Ilqr_vae.predictions_deterministic model params posterior_mean in
   require
     ~msg:"batched deterministic z shape"
-    Poly.(shape dz = [| t_steps + 1; 2; 1; n |]);
-  require ~msg:"batched deterministic o shape" Poly.(shape do_ = [| t_steps; 2; 1; 2 |]);
+    Poly.(shape dz = [| 2; t_steps + 1; 1; n |]);
+  require ~msg:"batched deterministic o shape" Poly.(shape do_ = [| 2; t_steps; 1; 2 |]);
+  let pz0 = Ilqr_vae.integrate model params ~u:(zeros dtype [| 2; t_steps; m |]) in
+  require ~msg:"batched integrate shape" Poly.(shape pz0 = [| 2; t_steps + 1; n |]);
   (* the density at the draws is the same one the recognition reports *)
   let log_prob =
     M.log_prob model params ~iters batch { R.x0 = posterior.R.x0; u = posterior.R.u }
@@ -1409,7 +1411,7 @@ let test_batched_iilqr () =
     Array.init 2 ~f:(fun i ->
       let posterior_i =
         { R.x0 = slice [ I i ] posterior.R.x0
-        ; u = slice [ A; I i ] posterior.R.u
+        ; u = slice [ I i ] posterior.R.u
         ; log_prob = slice [ I i ] posterior.R.log_prob
         }
       in
@@ -1476,7 +1478,37 @@ let test_batched_iilqr () =
     ~msg:"batched jit covariance gradient"
     ~tol:1e-9
     grads.M.recognition.Il.time_cov.t
-    eager_grads.M.recognition.Il.time_cov.t
+    eager_grads.M.recognition.Il.time_cov.t;
+  (* the adaptive solve is eager and runs one trial at a time *)
+  let adaptive = M.infer model params ~n_samples:2 ~key:(Nx.Rng.key 43) batch in
+  require ~msg:"adaptive batched x0 shape" Poly.(shape adaptive.R.x0 = [| 2; 2; n |]);
+  require
+    ~msg:"adaptive batched u shape"
+    Poly.(shape adaptive.R.u = [| 2; t_steps; 2; m |]);
+  let adaptive_log_prob =
+    M.log_prob model params batch { R.x0 = adaptive.R.x0; u = adaptive.R.u }
+  in
+  require ~msg:"adaptive batched log q shape" Poly.(shape adaptive_log_prob = [| 2; 2 |]);
+  let adaptive_mean = M.mean model params batch in
+  require
+    ~msg:"adaptive batched mean u shape"
+    Poly.(shape adaptive_mean.R.u = [| 2; t_steps; 1; m |]);
+  let adaptive_loss = El.loss model params ~key:(Nx.Rng.key 44) ~n_samples:2 batch in
+  require ~msg:"adaptive batched loss is finite" Float.(is_finite (item adaptive_loss));
+  (* more than one leading trial axis behaves as one flattened batch *)
+  let batch2 = stack ~axis:0 [ batch; batch ] in
+  let posterior2 = M.infer model params ~iters ~n_samples ~key:(Nx.Rng.key 42) batch2 in
+  require
+    ~msg:"two-axis batch x0 shape"
+    Poly.(shape posterior2.R.x0 = [| 2; 2; n_samples; n |]);
+  require
+    ~msg:"two-axis batch u shape"
+    Poly.(shape posterior2.R.u = [| 2; 2; t_steps; n_samples; m |]);
+  require
+    ~msg:"two-axis batch log_prob shape"
+    Poly.(shape posterior2.R.log_prob = [| 2; 2; n_samples |]);
+  let terms2 = El.compute model params ~posterior:posterior2 batch2 in
+  require ~msg:"two-axis batch bound is scalar" Poly.(shape terms2.El.elbo = [||])
 
 let test_batched_lfads () =
   let n = 2
@@ -1494,7 +1526,7 @@ let test_batched_lfads () =
     Poly.(shape posterior.R.x0 = [| 2; n_samples; n |]);
   require
     ~msg:"lfads batched u shape"
-    Poly.(shape posterior.R.u = [| t_steps; 2; n_samples; m |]);
+    Poly.(shape posterior.R.u = [| 2; t_steps; n_samples; m |]);
   require
     ~msg:"lfads batched log_prob shape"
     Poly.(shape posterior.R.log_prob = [| 2; n_samples |]);
@@ -1508,7 +1540,7 @@ let test_batched_lfads () =
     Array.init 2 ~f:(fun i ->
       let posterior_i =
         { R.x0 = slice [ I i ] posterior.R.x0
-        ; u = slice [ A; I i ] posterior.R.u
+        ; u = slice [ I i ] posterior.R.u
         ; log_prob = slice [ I i ] posterior.R.log_prob
         }
       in

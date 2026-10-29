@@ -37,11 +37,18 @@ let integrate
       (params : (w, d, l, p, e, r) Model.params)
       ~u
   =
-  Dynamics.integrate
-    model.Model.dynamics
-    params.Model.dynamics
-    ~x0:(zeros model.Model.dtype [| model.Model.n |])
-    ~u
+  let u_shape = shape u in
+  let rank = Array.length u_shape in
+  if rank < 2
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Ilqr_vae.integrate: u must be [batch…; n_steps; %d], got rank %d"
+         model.Model.m
+         rank);
+  let batch_dims = Array.sub u_shape 0 (rank - 2) in
+  let x0 = zeros model.Model.dtype (Array.append batch_dims [| model.Model.n |]) in
+  Dynamics.integrate model.Model.dynamics params.Model.dynamics ~x0 ~u
 
 let integrate_from
       (type w d l p e r)
@@ -52,15 +59,21 @@ let integrate_from
   =
   Dynamics.integrate model.Model.dynamics params.Model.dynamics ~x0 ~u
 
-(* [decode model params z] is the likelihood's readout of a state sequence:
-   observation [k] belongs to state [k + 1]. *)
+(* [decode model params ~time_axis z] is the likelihood's readout of a state
+   sequence: observation [k] belongs to state [k + 1]. *)
 let decode
       (type w d l p e r)
       (model : (w, d, l, p, e, r) Model.t)
       (params : (w, d, l, p, e, r) Model.params)
+      ~time_axis
       (z : w value)
   =
-  let z_next = slice [ R (1, model.Model.n_steps + 1) ] z in
+  let rank = Array.length (shape z) in
+  let indices =
+    List.init rank (fun axis ->
+      if Int.equal axis time_axis then (R (1, model.Model.n_steps + 1) : Nx.index) else A)
+  in
+  let z_next = slice indices z in
   model.Model.likelihood.Likelihood.mean params.Model.likelihood z_next
 
 let sample_generative
@@ -85,11 +98,12 @@ let sample_generative
     | Some p -> reshape [| model.Model.n |] (Initial.sample p ~key:key_x0 ~n_samples:1)
   in
   let z = integrate_from model params ~x0 ~u in
+  let time_axis = Array.length (shape z) - 2 in
   let o =
     model.Model.likelihood.Likelihood.sample
       params.Model.likelihood
       ~key:key_o
-      ~mean:(decode model params z)
+      ~mean:(decode model params ~time_axis z)
   in
   x0, u, z, o
 
@@ -100,9 +114,14 @@ let predictions
       (posterior : w Recognition.posterior)
   =
   let z =
-    integrate_from model params ~x0:posterior.Recognition.x0 ~u:posterior.Recognition.u
+    Dynamics.integrate_samples
+      model.Model.dynamics
+      params.Model.dynamics
+      ~x0:posterior.Recognition.x0
+      ~u:posterior.Recognition.u
   in
-  posterior.Recognition.u, z, decode model params z
+  let time_axis = Array.length (shape z) - 3 in
+  posterior.Recognition.u, z, decode model params ~time_axis z
 
 let predictions_deterministic
       (type w d l p e r)
@@ -111,6 +130,11 @@ let predictions_deterministic
       (samples : w Recognition.samples)
   =
   let z =
-    integrate_from model params ~x0:samples.Recognition.x0 ~u:samples.Recognition.u
+    Dynamics.integrate_samples
+      model.Model.dynamics
+      params.Model.dynamics
+      ~x0:samples.Recognition.x0
+      ~u:samples.Recognition.u
   in
-  z, decode model params z
+  let time_axis = Array.length (shape z) - 3 in
+  z, decode model params ~time_axis z

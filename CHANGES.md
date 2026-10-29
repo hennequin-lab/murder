@@ -52,6 +52,10 @@ changes do not need an entry.
   `[batch…; n_steps; n_output]` instead of an array, and the recognitions and
   the bound accept the matching leading trial axes, so a JIT-compiled step can
   take the batch as an argument.
+- Trial axes now lead the horizon everywhere: latent inputs are
+  `[batch…; n_steps; n_samples; m]`, state paths `[batch…; n_steps + 1; …]`,
+  and `Dynamics.integrate` takes `[batch…; n_steps; m]`. The new
+  `Dynamics.integrate_samples` is the sample-batched form.
 
 ### symo
 

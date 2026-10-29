@@ -29,11 +29,17 @@ type ('w, 'p) t =
     (** [dyn p ~k ~x ~u] is the next state. *)
   }
 
-(** [integrate d p ~x0 ~u] rolls the dynamics out over the leading (time) axis
-    of [u] and returns the state path, of shape [[T + 1; n]] against
-    [[T; m]] controls (batch axes follow time on both). One {!Rune.scan}
-    stands for the horizon, so the rollout traces and compiles. *)
+(** [integrate d p ~x0 ~u] rolls the dynamics out over the horizon of [u]:
+    [u] is [[batch…; T; m]], [x0] is [[batch…; n]], and the state path is
+    [[batch…; T + 1; n]]. Trial axes lead, the horizon follows them. One
+    {!Rune.scan} stands for the horizon, so the rollout traces and compiles. *)
 val integrate : ('w, 'p) t -> 'p -> x0:'w value -> u:'w value -> 'w value
+
+(** [integrate_samples d p ~x0 ~u] is {!integrate} with a sample axis after
+    the horizon: [u] is [[batch…; T; n_samples; m]], [x0] is
+    [[batch…; n_samples; n]], and the state path is
+    [[batch…; T + 1; n_samples; n]]. *)
+val integrate_samples : ('w, 'p) t -> 'p -> x0:'w value -> u:'w value -> 'w value
 
 (** {1:linear Linear} *)
 

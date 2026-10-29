@@ -8,7 +8,9 @@
 
     {b The generative model.} A trial is a tensor of observations
     [[n_steps; n_output]]; a mini-batch stacks trials on leading axes,
-    [[batch…; n_steps; n_output]]. Latents [x_0] (the initial state, [[n]]) and
+    [[batch…; n_steps; n_output]]. Trial axes lead every tensor, the horizon
+    follows them, and the sample axis follows the horizon when there is one.
+    Latents [x_0] (the initial state, [[n]]) and
     [u_0 … u_{T−1}] (the inputs, [[n_steps; m]]) drive a state through the
     dynamics ([z_{k+1} = f(z_k, u_k)]); each observation is emitted from the
     state reached by the inputs before it, [o_k ~ p(o | z_{k+1})]. The
@@ -104,8 +106,9 @@ module Elbo = Elbo
 
 (** [posterior_mean model params ?iters data] is the recognition's posterior
     mean: one deterministic latent trajectory per trial ([x0] of shape
-    [[1; n]] and [u] of shape [[n_steps; 1; m]], with the trial axes leading
-    when [data] is a mini-batch). [iters] asks for that many fixed iLQR
+    [[1; n]] and [u] of shape [[n_steps; 1; m]] for one trial, and
+    [[batch…; 1; n]] and [[batch…; n_steps; 1; m]] for a mini-batch).
+    [iters] asks for that many fixed iLQR
     iterations; [None] uses the adaptive solve. See {!Recognition.mean}. *)
 val posterior_mean
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
@@ -189,9 +192,9 @@ val batch_loss_fixed
 
 (** [integrate model params ~u] rolls the model's dynamics out from
     [x_0 = 0] under the inputs [u] ([[n_steps; m]], or a batch
-    [[n_steps; batch…; m]]): states [[n_steps + 1; …; n]]. Differentiable in
-    [u] and in the parameters. {!integrate_from} starts from a given initial
-    state. *)
+    [[batch…; n_steps; m]]): states [[batch…; n_steps + 1; n]]. Differentiable
+    in [u] and in the parameters. {!integrate_from} starts from a given
+    initial state. *)
 val integrate
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -199,7 +202,7 @@ val integrate
   -> 'w value
 
 (** [integrate_from model params ~x0 ~u] is {!integrate} from [x0]
-    ([[n]], or a batch [[batch…; n]]); [u] keeps time leading. *)
+    ([[n]], or a batch [[batch…; n]]); trial axes lead [u]'s horizon. *)
 val integrate_from
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params
@@ -220,9 +223,9 @@ val sample_generative
   -> 'w value * 'w value * 'w value * 'w value
 
 (** [predictions model params posterior] rolls the posterior's draws out and
-    decodes them: the inputs ([[n_steps; batch…; n_samples; m]]), the states
-    ([[n_steps + 1; batch…; n_samples; n]]) and the per-sample readouts
-    ([[n_steps; batch…; n_samples; n_output]]), decoded from the states the
+    decodes them: the inputs ([[batch…; n_steps; n_samples; m]]), the states
+    ([[batch…; n_steps + 1; n_samples; n]]) and the per-sample readouts
+    ([[batch…; n_steps; n_samples; n_output]]), decoded from the states the
     observations belong to. The readouts are the likelihood's deterministic
     [mean], not samples. *)
 val predictions
@@ -232,8 +235,8 @@ val predictions
   -> 'w value * 'w value * 'w value
 
 (** [predictions_deterministic model params samples] rolls a deterministic
-    latent trajectory out and decodes it: states [[n_steps + 1; batch…; n]]
-    and readouts [[n_steps; batch…; n_output]] for a sample batch of one. *)
+    latent trajectory out and decodes it: states [[batch…; n_steps + 1; n]]
+    and readouts [[batch…; n_steps; n_output]] for a sample batch of one. *)
 val predictions_deterministic
   :  ('w, 'd, 'l, 'p, 'e, 'r) model
   -> ('w, 'd, 'l, 'p, 'e, 'r) params

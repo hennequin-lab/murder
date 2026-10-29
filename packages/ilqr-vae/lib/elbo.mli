@@ -40,9 +40,9 @@
     mini-batch stacks trials on leading axes, [[batch…; n_steps; n_output]],
     which is one tensor the caller can pass to a JIT-compiled step. The
     recognition's draws then carry the same leading axes: [x0] is
-    [[batch…; n_samples; n]], [u] is
-    [[n_steps; batch…; n_samples; m]] (time leads, as everywhere else in this
-    library) and [log_prob] is [[batch…; n_samples]]. The bound and its terms
+    [[batch…; n_samples; n]], [u] is [[batch…; n_steps; n_samples; m]] and
+    [log_prob] is [[batch…; n_samples]]. Trial axes lead, then the horizon,
+    then the sample axis. The bound and its terms
     are the means over every draw of every trial. The batch axes are tensor
     axes, not an OCaml array: their shape is part of the compiled program's
     key, but the number of trials is not frozen into a closure.
@@ -156,7 +156,8 @@ val batch_loss_fixed
   -> 'w value
 
 (** [log_prior model params ~x0 ~u] is the model's log prior at a latent
-    sample: [log p(x_0) + Σ_k log p(u_k)], one value per member of a batch.
+    sample: [log p(x_0) + Σ_k log p(u_k)], one value per sample. [x0] is
+    [[batch…; n_samples; n]] and [u] is [[batch…; n_steps; n_samples; m]].
     It is the term the bound contrasts with [log q]. *)
 val log_prior
   :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t

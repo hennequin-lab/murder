@@ -21,7 +21,8 @@ open Types
    an LFADS-style recognition infers the initial state as well. A sample
    batch is {!type-samples}: [x0] of shape [[n_samples; n]] and [u] of shape
    [[n_steps; n_samples; m]]. A mini-batch of trials puts its leading axes in
-   front of every one of those shapes, and one tensor of data
+   front of every one of those shapes, so [u] becomes
+   [[batch…; n_steps; n_samples; m]], and one tensor of data
    [[batch…; n_steps; n_output]] drives all of them: the recognition maps one
    trial's encoder over the flattened batch with [Rune.vmap].
 
@@ -232,8 +233,8 @@ let check_shape ~what expected t =
          (shape_string got))
 
 (* The [Rune.vmap] rules below map one trial's recognition over a flattened
-   batch. The public shapes keep the trial axes where the caller put them:
-   [x0] is [batch…; n_samples; n], [u] is [time; batch…; n_samples; m] and
+   batch. Trial axes lead, then the horizon, then the sample axis: [x0] is
+   [batch…; n_samples; n], [u] is [batch…; n_steps; n_samples; m] and
    [log_prob] is [batch…; n_samples]. *)
 let flat_x0 ~dims ~n_samples ~n x0 =
   check_shape ~what:"x0" (append_shape dims [| n_samples; n |]) x0;
@@ -242,13 +243,12 @@ let flat_x0 ~dims ~n_samples ~n x0 =
 let unflat_x0 ~dims ~n_samples ~n x0 = reshape (append_shape dims [| n_samples; n |]) x0
 
 let flat_u ~dims ~n_steps ~n_samples ~m u =
-  let expected = append_shape [| n_steps |] (append_shape dims [| n_samples; m |]) in
+  let expected = append_shape dims [| n_steps; n_samples; m |] in
   check_shape ~what:"u" expected u;
-  reshape [| n_steps; batch_size dims; n_samples; m |] u
+  reshape [| batch_size dims; n_steps; n_samples; m |] u
 
 let unflat_u ~dims ~n_steps ~n_samples ~m u =
-  let shape = append_shape [| n_steps |] (append_shape dims [| n_samples; m |]) in
-  reshape shape (transpose ~axes:[ 1; 0; 2; 3 ] u)
+  reshape (append_shape dims [| n_steps; n_samples; m |]) u
 
 let unflat_log_prob ~dims ~n_samples log_prob =
   reshape (append_shape dims [| n_samples |]) log_prob
@@ -264,9 +264,9 @@ let samples_structure (type w) () : w samples Nx.Ptree.t =
   Nx.Ptree.(iso (fun (x0, u) -> { x0; u }) (fun s -> s.x0, s.u) (pair tensor tensor))
 
 (* [stack_posterior] collects one-trial results into the public mini-batch
-   shapes. The inputs carry no trial axis, and are stacked batch-first; [u]
-   is put back in front because time leads. This is the eager path for a
-   recognition whose solve is not traceable. *)
+   shapes. The inputs carry no trial axis and are stacked on a leading one;
+   the trial axes lead the horizon in the result. This is the eager path for
+   a recognition whose solve is not traceable. *)
 let stack_posterior (type w) ~dims ~n_samples ~n ~n_steps ~m (ps : w posterior array)
   : w posterior
   =
@@ -472,9 +472,9 @@ module Iilqr = struct
     in
     Infix.(unsqueeze ~axes:[ 1 ] mu + noise)
 
-  (* [log_prob_u gen p ~mu u] is log q(u) for an input sequence of shape
-     [[n_steps; m]], or one value per sequence for a batch
-     [[n_steps; batch…; m]]. The quadratic form is evaluated with two
+  (* [log_prob_u gen p ~mu u] is log q(u) for one trial's input sequence of
+     shape [[n_steps; m]], or one value per sequence for a sample batch
+     [[n_steps; n_samples; m]]. The quadratic form is evaluated with two
      triangular solves against the Cholesky factors. *)
   let log_prob_u (type w) (gen : (w, _, _, _, _) generative) (p : w value params) ~mu u =
     let t_steps = gen.n_steps
@@ -696,7 +696,6 @@ module Iilqr = struct
       let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
       let x0 = flat_x0 ~dims ~n_samples ~n:gen.n samples.x0 in
       let u = flat_u ~dims ~n_steps:gen.n_steps ~n_samples ~m:gen.m samples.u in
-      let u_batch_first = transpose ~axes:[ 1; 0; 2; 3 ] u in
       let log_prob =
         if Option.is_none iters
         then
@@ -711,12 +710,12 @@ module Iilqr = struct
                     ~params
                     ?iters
                     (slice [ I i ] flat_data)
-                    { x0 = slice [ I i ] x0; u = slice [ I i ] u_batch_first })))
+                    { x0 = slice [ I i ] x0; u = slice [ I i ] u })))
         else
           Rune.vmap
             Nx.Ptree.(pair tensor (pair tensor tensor) @-> returns tensor)
             (fun (data, (x0, u)) -> log_prob_one gen gp ~params ?iters data { x0; u })
-            (flat_data, (x0, u_batch_first))
+            (flat_data, (x0, u))
       in
       unflat_log_prob ~dims ~n_samples log_prob)
 
@@ -1108,13 +1107,12 @@ module Lfads = struct
       let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
       let x0 = flat_x0 ~dims ~n_samples ~n:gen.n samples.x0 in
       let u = flat_u ~dims ~n_steps:gen.n_steps ~n_samples ~m:gen.m samples.u in
-      let u_batch_first = transpose ~axes:[ 1; 0; 2; 3 ] u in
       let log_prob =
         Rune.vmap
           Nx.Ptree.(pair tensor (pair tensor tensor) @-> returns tensor)
           (fun (data, (x0, u)) ->
              log_prob_one ~phi ~with_inputs gen gp ~params ?iters data { x0; u })
-          (flat_data, (x0, u_batch_first))
+          (flat_data, (x0, u))
       in
       unflat_log_prob ~dims ~n_samples log_prob)
 

@@ -29,12 +29,16 @@ let check_shape ~what expected t =
          (shape_string expected)
          (shape_string got))
 
-(* [time_major_axes rank] moves the time axis of a [batch…; time; channels]
-   tensor to the front: an observation batch is [batch…; n_steps; n_output]
-   and the likelihood scan runs over time. *)
-let time_major_axes rank =
-  let time = rank - 2 in
-  time :: (List.init time ~f:Fn.id @ [ rank - 1 ])
+(* [time_major_axes ~time_axis rank] moves [time_axis] to the front, keeping
+   every other axis in order. The likelihood and prior scans walk axis 0, so
+   a batch-first tensor is transposed for the duration of the scan. *)
+let time_major_axes ~time_axis rank =
+  time_axis
+  :: List.filter (List.init rank ~f:Fn.id) ~f:(fun axis -> not (Int.equal axis time_axis))
+
+let transpose_time ~time_axis t =
+  let rank = Array.length (Nx.shape t) in
+  transpose ~axes:(time_major_axes ~time_axis rank) t
 
 (* [log_prior model params ~x0 ~u] is the log density of the model's prior
    over the latents at a sample: one value per member of the sample batch. The
@@ -49,6 +53,9 @@ let log_prior
       ~(u : w value)
   =
   let t_steps = model.Model.n_steps in
+  let u_rank = Array.length (Nx.shape u) in
+  let time_axis = Int.max 0 (u_rank - 3) in
+  let u_by_time = transpose_time ~time_axis u in
   let ks = arange model.Model.dtype 0 t_steps 1 in
   let _, by_step =
     Rune.scan
@@ -58,7 +65,7 @@ let log_prior
       ~f:(fun () (u_k, k) ->
         (), model.Model.prior.Prior.logp_t params.Model.prior ~k ~u:u_k)
       ~init:()
-      (u, ks)
+      (u_by_time, ks)
   in
   let u_logp = sum ~axes:[ 0 ] by_step in
   match params.Model.initial_prior with
@@ -116,18 +123,19 @@ let compute
     posterior.Recognition.x0;
   check_shape
     ~what:"u"
-    (append_shape [| t_steps |] (append_shape batch_dims [| n_samples; m |]))
+    (append_shape batch_dims [| t_steps; n_samples; m |])
     posterior.Recognition.u;
   let z =
-    Dynamics.integrate
+    Dynamics.integrate_samples
       model.Model.dynamics
       params.Model.dynamics
       ~x0:posterior.Recognition.x0
       ~u:posterior.Recognition.u
   in
   (* Observation [k] is emitted from the state reached by [k + 1] inputs. *)
-  let z_next = slice [ R (1, t_steps + 1) ] z in
-  let data_by_time = transpose ~axes:(time_major_axes data_rank) data in
+  let z_by_time = transpose_time ~time_axis:batch_rank z in
+  let z_next = slice [ R (1, t_steps + 1) ] z_by_time in
+  let data_by_time = transpose_time ~time_axis:batch_rank data in
   let ks = arange model.Model.dtype 0 t_steps 1 in
   let _, likelihood_by_step =
     Rune.scan
