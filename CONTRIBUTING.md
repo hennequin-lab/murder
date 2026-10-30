@@ -73,8 +73,9 @@ live in their own repositories and depend on a pinned murder commit. See
 - Dune package management is the only package manager.
 - Add the dependency to the package's `dune-project` stanza, run `./dev lock`,
   and commit the lock diff with the change.
-- Raven is pinned in `dune-workspace` to its GitHub repository. Move the SHA
-  deliberately and relock.
+- Raven is pinned in `dune-project` to its GitHub repository. Move the SHA
+  deliberately and relock. Pins live there rather than in `dune-workspace` so
+  that projects pinning murder inherit them.
 - Pin git dependencies to a full SHA; never a moving branch. Do not vendor
   Raven.
 

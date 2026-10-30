@@ -161,7 +161,8 @@ and runs.
   commit the lock diff with the change.
 - Pin a git dependency to a full SHA and name the packages it provides. Never
   pin a moving branch. Remove version constraints on a pinned package while the
-  pin is active.
+  pin is active. Declare pins in `dune-project`, not `dune-workspace`: Dune
+  resolves them recursively, so projects that pin murder inherit them.
 - Never hand-edit the lock. If a package is missing, relock; if the lock
   conflicts, take one side, relock, run `./dev check`, and commit the result.
 - Keep dependencies few. A dependency is a contract with the lab, not a

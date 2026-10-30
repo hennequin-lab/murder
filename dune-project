@@ -15,6 +15,52 @@
 (implicit_transitive_deps false)
 (using mdx 0.4)
 
+; Pins live in dune-project, not dune-workspace, because Dune resolves the pins
+; of a pinned project recursively. A project that pins murder inherits the
+; Raven commit, windtrap and litany below, without repeating them.
+
+; Raven is an external dependency. Pin its Git repository, never vendor it.
+; Move this SHA forward deliberately; dune.lock records the same commit.
+(pin
+ (url
+  "git+https://github.com/raven-ml/raven.git#3984341140aef7bfc6f27eb14474f4a261a7b7bc")
+ (package
+  (name compress))
+ (package
+  (name nx))
+ (package
+  (name rune))
+ (package
+  (name tolk))
+ (package
+  (name vega))
+ (package
+  (name jera))
+ (package
+  (name hugin))
+ (package
+  (name rig))
+ (package
+  (name ppx_ptree))
+ (package
+  (name kaun)))
+
+; Windtrap is pinned to the commit Raven's CI uses.
+(pin
+ (url
+  "git+https://github.com/invariant-hq/windtrap.git#7be03df651610949a87ed3bb797984015e9691b9")
+ (package
+  (name windtrap))
+ (package
+  (name ppx_windtrap)))
+
+; Litany is not on opam yet. Pin it by full SHA.
+(pin
+ (url
+  "git+https://github.com/invariant-hq/litany.git#4cab5e78fd62d2455638fb76ca030ee6d9ce1d29")
+ (package
+  (name litany)))
+
 (package
  (name dilqr)
  (synopsis "Differentiable iLQR for optimal control on Nx tensors")
