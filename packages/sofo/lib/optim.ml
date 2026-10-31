@@ -40,8 +40,8 @@ type preconditioner =
   ]
 
 type state =
-  { key : Nx.Rng.t
-    (* The stream Θ is drawn from. A tensor, not a host value: it is what a
+  { key : Nx.host Nx.Rng.key
+    (* The stream Θ is drawn from. A tensor, not an OCaml value: it is what a
        compiled sketch step takes as an input, and what makes each replay draw
        fresh directions from one compilation. *)
   ; step : int (* Iterations completed; the counter key derivation folds in. *)
@@ -61,25 +61,26 @@ let next st = { key = Nx.Rng.fold_in st.key st.step; step = st.step + 1 }
 
 (* ── directions and their contraction ────────────────────────────────────── *)
 
-let directions (type p) (structure : p Nx.Ptree.t) ?key ~k (params : p) : p =
-  let key =
-    match key with
-    | Some key -> key
-    | None -> Nx.Rng.next_key ()
-  in
-  Nx.Rng.with_key key (fun () -> Sketch.sample structure ~k params)
+let directions (type p d) (structure : (p, d) Nx.Ptree.t) ?key ~k (params : p) : p =
+  match key with
+  | Some key -> Sketch.sample structure ~key ~k params
+  | None ->
+    Nx.Rng.with_key (Nx.Rng.next_key ()) (fun () -> Sketch.sample structure ~k params)
 
-let apply (type p) (structure : p Nx.Ptree.t) ~k (thetas : p) (z : Nx.float64_t) : p =
-  let z = reshape [| k |] (contiguous z) in
+let apply (type p d) (structure : (p, d) Nx.Ptree.t) ~k (thetas : p) (z : d Nx.float64_t)
+  : p
+  =
+  let z = reshape [| k |] z in
   Nx.Ptree.map
     structure
     (fun _ theta ->
        (* Leaves that cannot carry a direction — a key, an index, a counter —
           get the zero direction, as they do in the sampler. *)
-       if Nx_dtype.is Nx_dtype.Float (Nx.dtype theta)
+       if Nx.Dtype.is Nx.Dtype.Float (Nx.dtype theta)
        then Sketch.contract z theta
        else
-         zeros
+         zeros_at
+           (beside theta)
            (Nx.dtype theta)
            (Array.sub (shape theta) 1 (Array.length (shape theta) - 1)))
     thetas
@@ -89,13 +90,18 @@ let apply (type p) (structure : p Nx.Ptree.t) ~k (thetas : p) (z : Nx.float64_t)
    leaves are passed through untouched: their directions are zero, and a
    parameter that cannot carry one is not the optimizer's to move (vega's
    convention for the same leaves). *)
-let shift (type p) (structure : p Nx.Ptree.t) ~(lr : Nx.float64_t) (params : p) (dw : p)
+let shift
+      (type p d)
+      (structure : (p, d) Nx.Ptree.t)
+      ~(lr : d Nx.float64_t)
+      (params : p)
+      (dw : p)
   : p
   =
   Nx.Ptree.map2
     structure
     (fun _ p d ->
-       if Nx_dtype.is Nx_dtype.Float (Nx.dtype p)
+       if Nx.Dtype.is Nx.Dtype.Float (Nx.dtype p)
        then Infix.(p - (d * cast (Nx.dtype d) lr))
        else p)
     params
@@ -108,17 +114,20 @@ let shift (type p) (structure : p Nx.Ptree.t) ~(lr : Nx.float64_t) (params : p) 
    rather than a materialized [k×P] matrix. Leaves are promoted to float64
    first, so the matrix does not depend on the model's dtypes, and a leaf that
    cannot carry a direction is zero and contributes nothing. *)
-let gram (type p) (structure : p Nx.Ptree.t) ~k (dirs : p) : Nx.float64_t =
+let gram (type p d) (structure : (p, d) Nx.Ptree.t) ~k (dirs : p) : d Nx.float64_t =
   Nx.Ptree.fold
     structure
     (fun _ leaf z ->
-       if Nx_dtype.is Nx_dtype.Float (Nx.dtype leaf)
+       if Nx.Dtype.is Nx.Dtype.Float (Nx.dtype leaf)
        then (
-         let m = reshape [| k; numel leaf / k |] (contiguous (cast float64 leaf)) in
+         let m = reshape [| k; numel leaf / k |] (cast float64 leaf) in
          Infix.(z + (m *@ transpose m)))
        else z)
     dirs
-    (zeros float64 [| k; k |])
+    (zeros_at
+       (Sketch.beside_first ~fn:"Sofo.Optim.gram" structure dirs)
+       float64
+       [| k; k |])
 
 (* [spectrum z] is [(u, s, smax, smin)] for a symmetric matrix [z]: [z]'s
    singular vectors [u] and values [s], with the largest and smallest of [s].
@@ -127,8 +136,8 @@ let gram (type p) (structure : p Nx.Ptree.t) ~k (dirs : p) : Nx.float64_t =
    [Nx.svd] would, [z = u diag(±s) uᵀ], at about half the cost. Taking
    magnitudes keeps the SVD's semantics where rounding leaves an eigenvalue of
    a positive semi-definite matrix slightly negative. *)
-let spectrum (z : Nx.float64_t) =
-  let w, u = eigh z in
+let spectrum (z : 'd Nx.float64_t) =
+  let w, u = eigh float64 z in
   let s = abs w in
   u, s, item [] (max s), item [] (min s)
 
@@ -141,7 +150,7 @@ let spectrum (z : Nx.float64_t) =
    A rank-deficient Gram has no inverse square root and no arithmetic will
    produce one: some drawn lanes span nothing, which is a statement about [k]
    against the number of parameters, so it raises. *)
-let inverse_sqrt (z : Nx.float64_t) : Nx.float64_t =
+let inverse_sqrt (z : 'd Nx.float64_t) : 'd Nx.float64_t =
   let k = (shape z).(0) in
   let u, s, smax, smin = spectrum z in
   if smin <= 1e-12 *. smax
@@ -177,9 +186,9 @@ let coordinates
       ?(damping : damping = `Relative_from_top 1e-6)
       ?(preconditioner : preconditioner = `Inverse)
       ?gram
-      (ggn : Nx.float64_t)
-      (c : Nx.float64_t)
-  : Nx.float64_t
+      (ggn : 'd Nx.float64_t)
+      (c : 'd Nx.float64_t)
+  : 'd Nx.float64_t
   =
   let k = (shape c).(0) in
   let q = Option.map inverse_sqrt gram in
@@ -223,56 +232,71 @@ let coordinates
   | Some q -> Infix.(transpose q *@ z)
 
 let update_sketch
-      (type p)
-      (structure : p Nx.Ptree.t)
+      (type p d)
+      (structure : (p, d) Nx.Ptree.t)
       ?(lr = 1.0)
       ?damping
       ?preconditioner
-      (sk : p Sketch.t)
+      (sk : (p, d) Sketch.t)
       (params : p)
   : p
   =
   let g = gram structure ~k:sk.k sk.dirs in
-  let dw = sk.apply (coordinates ?damping ?preconditioner ~gram:g sk.ggn sk.c) in
-  shift structure ~lr:(scalar float64 lr) params dw
+  let z = coordinates ?damping ?preconditioner ~gram:g sk.ggn sk.c in
+  shift structure ~lr:(scalar_like z lr) params (sk.apply z)
 
 (* ── the eager step ──────────────────────────────────────────────────────── *)
 
 let step
-      (type p c d)
-      (structure : p Nx.Ptree.t)
+      (type p c e d)
+      (structure : (p, d) Nx.Ptree.t)
       ~k
       ~lr
       ?damping
       ?preconditioner
       (st : state)
-      ~(loss : p -> (c, d) Nx.t)
+      ~(loss : p -> (c, e, d) Nx.t)
       ~(params : p)
-  : p * state * p Sketch.t
+  : p * state * (p, d) Sketch.t
   =
-  let thetas = directions structure ~key:st.key ~k params in
+  let at = Sketch.beside_first ~fn:"Sofo.Optim.step" structure params in
+  (* Whole on every device of the set, as [sketch_jit] places it: a leaf on
+     another device than the first reads it there. *)
+  let key = Nx.Rng.place (Nx.Placement.on (Nx.Placement.devices at)) st.key in
+  let thetas = directions structure ~key ~k params in
   let sk = Sketch.run structure loss params thetas in
   let params = update_sketch structure ~lr ?damping ?preconditioner sk params in
   params, next st, sk
 
 (* ── the compiled half ─────────────────────────────────── *)
 
-type 'p step_info =
-  { loss : Nx.float64_t
-  ; c : Nx.float64_t
-  ; ggn : Nx.float64_t
-  ; gram : Nx.float64_t
+type ('p, 'd) step_info =
+  { loss : 'd Nx.float64_t
+  ; c : 'd Nx.float64_t
+  ; ggn : 'd Nx.float64_t
+  ; gram : 'd Nx.float64_t
   ; dirs : 'p
   }
 
-let sketch_jit ?beam ?parallel ~k placement (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptree.t) loss
+(* [place_all s p x] is [x] with each array at [p], a placement of its own set. *)
+let place_all (type s d) (structure : (s, d) Nx.Ptree.t) (p : d Nx.Placement.t) (x : s) =
+  Nx.Ptree.map structure (fun _ a -> place p a) x
+
+let sketch_jit
+      ?beam
+      ?parallel
+      ~k
+      (placement : 'd Nx.Placement.t)
+      (p : ('p, 'd) Nx.Ptree.t)
+      (a : ('aux, 'd) Nx.Ptree.t)
+      loss
   =
   let module Out = struct
-    type t =
-      { loss : Nx.float64_t
-      ; c : Nx.float64_t
-      ; ggn : Nx.float64_t
-      ; gram : Nx.float64_t
+    type 'd t =
+      { loss : 'd Nx.float64_t
+      ; c : 'd Nx.float64_t
+      ; ggn : 'd Nx.float64_t
+      ; gram : 'd Nx.float64_t
       }
     [@@deriving ptree]
   end
@@ -286,12 +310,13 @@ let sketch_jit ?beam ?parallel ~k placement (p : 'p Nx.Ptree.t) (a : 'aux Nx.Ptr
     Rune.jit
       ?beam
       ?parallel
-      Nx.Ptree.(Nx.Rng.ptree @-> a @-> p @-> returns (pair Out.ptree p))
+      Nx.Ptree.(v Nx.Rng.walk @-> a @-> p @-> returns (pair (v Out.walk) p))
       sketch
   in
   fun ~key ~aux params ->
-    let aux = Nx.Ptree.place a placement aux in
-    let params = Nx.Ptree.place p placement params in
+    let key = Nx.Rng.place (Nx.Placement.uncut placement) key in
+    let aux = place_all a placement aux in
+    let params = place_all p placement params in
     let out, dirs = f key aux params in
     { loss = out.loss; c = out.c; ggn = out.ggn; gram = out.gram; dirs }
 
@@ -302,7 +327,7 @@ let shift_by p =
     ~beam:2
     ~parallel:8
     Nx.Ptree.(p @-> p @-> tensor @-> tensor @-> returns p)
-    (fun params dirs (z : Nx.float64_t) lr ->
+    (fun params dirs (z : 'd Nx.float64_t) lr ->
        shift p ~lr params (apply p ~k:(shape z).(0) dirs z))
 
 (* The step, and the state that produced it, advanced together: the caller
@@ -310,15 +335,24 @@ let shift_by p =
    key the next sketch is drawn from cannot drift apart. The solve runs on
    the host, which copies three k-sized tensors when the sketch ran on a
    GPU. *)
-let update ?(lr = 1.0) ?damping ?preconditioner placement p (st : state) params o =
-  let host = place Nx.Placement.host in
+let update
+      ?(lr = 1.0)
+      ?damping
+      ?preconditioner
+      (placement : 'd Nx.Placement.t)
+      (p : ('p, 'd) Nx.Ptree.t)
+      (st : state)
+      params
+      (o : ('p, 'd) step_info)
+  =
+  let host = place Nx.Host.on in
   let z =
     coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
   in
   ( shift_by
       p
-      (Nx.Ptree.place p placement params)
-      (Nx.Ptree.place p placement o.dirs)
+      (place_all p placement params)
+      (place_all p placement o.dirs)
       (place placement z)
-      (scalar float64 lr)
+      (scalar_at placement float64 lr)
   , next st )

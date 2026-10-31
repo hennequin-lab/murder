@@ -2,6 +2,6 @@
  (name sofo)
  (public_name sofo)
  (private_modules observe optim sketch)
- (libraries nx nx.dtype rune)
+ (libraries nx rune)
  (preprocess
   (pps ppx_ptree)))

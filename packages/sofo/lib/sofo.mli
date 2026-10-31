@@ -31,10 +31,13 @@
     - [Rune.value_and_grad]: loss and the exact gradient (the marks are
       inert).
 
-    Marks are inert by construction: {!observe} runs a unit-result
-    [Rune.custom_jvp] whose rule only a sketch's total collects, and every
-    other driver runs its no-op function and lets the additions drop. Marking
-    a little loss therefore costs nothing outside a sketch.
+    Marks are inert by construction: inside a sketch, {!observe} runs a
+    unit-result [Rune.custom_jvp] whose rule only the sketch's total collects,
+    and under every other driver it does nothing. Marking a little loss
+    therefore costs nothing outside a sketch. A mark is made when the loss is
+    traced, so a sketch must be given the uncompiled loss: a [Rune.jit]ed loss
+    first traced outside a sketch keeps a program without its marks, and
+    sketches with a zero GGN. {!Optim.sketch_jit} compiles the loss itself.
 
     {[
       let loss params =
@@ -61,29 +64,30 @@ module Curv : sig
       [Rune.jacfwd' (Rune.grad' f)] of the corresponding loss [f] rather than
       against a hand-derived formula. *)
 
-  type t
+  (** The type for curvatures of predictions on the device set ['d]. *)
+  type 'd t
 
   (** [apply c v] is H v: the curvature applied to a tangent batch [v] of the
       prediction's shape, whose leading axis holds the sketch's lanes. The
       application is linear in [v] and keeps the lane axis, so it serves a
       whole batch in one pass. *)
-  val apply : t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
+  val apply : 'd t -> ('a, 'b, 'd) Nx.t -> ('a, 'b, 'd) Nx.t
 
   (** [scale s] is H = s·I: the curvature of a mean-squared loss, and of any
       loss whose second derivative in [y] is constant. *)
-  val scale : float -> t
+  val scale : float -> 'd t
 
   (** [diag w] is H = diag w: the curvature of a weighted mean-squared loss, or
       of any negative log-likelihood in a natural parameterisation whose
       Hessian is diagonal. [w] is cast to the prediction's dtype. *)
-  val diag : ('a, 'b) Nx.t -> t
+  val diag : ('a, 'b, 'd) Nx.t -> 'd t
 
   (** [softmax_ce ~scale p] is the cross-entropy curvature, for [p = softmax y]
       over the last axis: H v = p⊙v − p (p·v), contracted per row, times
       [scale] (a loss averaged over rows contributes [1/rows]). [p] is the
       probability tensor of the little loss, so the value and the curvature it
       describes cannot disagree. *)
-  val softmax_ce : ?scale:float -> ('a, 'b) Nx.t -> t
+  val softmax_ce : ?scale:float -> ('a, 'b, 'd) Nx.t -> 'd t
 
   (** [hvp ~y f] describes an arbitrary curvature through its action [f] on a
       single direction of the prediction's shape; the library lifts it over the
@@ -95,15 +99,17 @@ module Curv : sig
       receives carries the map's batch axes, like every other curvature here:
       a shape-dependent [f] must accept them, as [Scale], [Diag] and
       [Softmax_ce] do by construction. *)
-  val hvp : y:('a, 'b) Nx.t -> (('a, 'b) Nx.t -> ('a, 'b) Nx.t) -> t
+  val hvp : y:('a, 'b, 'd) Nx.t -> (('a, 'b, 'd) Nx.t -> ('a, 'b, 'd) Nx.t) -> 'd t
 end
 
 (** [observe ~y ~curv l] marks the scalar [l] as a little loss in the
     prediction [y], whose Hessian with respect to [y] is [curv]. Under a
     {!sketch}, the rule of a unit-result [Rune.custom_jvp] gathers [y]'s
-    [k]-lane tangent batch and adds the block YᵀHY to the sketch's total; any
-    other driver runs the mark's no-op function and the block is dropped, so
-    calling this is a no-op outside a sketch.
+    [k]-lane tangent batch and adds the block YᵀHY to the sketch's total; under
+    any other driver the mark makes no rule, so calling this is a no-op outside
+    a sketch. A mark in a [Rune.jit]ed function is made when the function is
+    traced, and a call whose program was traced outside a sketch adds no
+    block inside one: give {!sketch} the uncompiled loss.
 
     [l] must be a scalar computed from [y] by differentiable operations — the
     user's own arithmetic defines both the value and the tangent of the loss
@@ -125,19 +131,27 @@ end
     contribution whatever reduction the caller applies outside. A mean over
     the map's axis is again a factor of [M] the block does not see; scale the
     little loss and the map's outputs instead. *)
-val observe : y:('a, 'b) Nx.t -> curv:Curv.t -> ('a, 'b) Nx.t -> unit
+val observe : y:('a, 'b, 'd) Nx.t -> curv:'d Curv.t -> ('a, 'b, 'd) Nx.t -> unit
 
 (** [mse ?w ~target y] is the mean weighted squared error
     [mean (w * (y - target)²)], marked with its exact curvature
     (H = diag (2 w / numel y), or [2 / numel y] times the identity without
     weights), and returned as a scalar to accumulate into the loss. *)
-val mse : ?w:('a, 'b) Nx.t -> target:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
+val mse
+  :  ?w:('a, 'b, 'd) Nx.t
+  -> target:('a, 'b, 'd) Nx.t
+  -> ('a, 'b, 'd) Nx.t
+  -> ('a, 'b, 'd) Nx.t
 
 (** [sse ?w ~target y] is the sum (optionally weighted) squared error
     [sse (w * (y - target)²)], marked with its exact curvature
     (H = diag (2 w), or [2] times the identity without weights),
     and returned as a scalar to accumulate into the loss. *)
-val sse : ?w:('a, 'b) Nx.t -> target:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t
+val sse
+  :  ?w:('a, 'b, 'd) Nx.t
+  -> target:('a, 'b, 'd) Nx.t
+  -> ('a, 'b, 'd) Nx.t
+  -> ('a, 'b, 'd) Nx.t
 
 (** [softmax_ce y labels] is the cross entropy of the last axis of [y] against
     class indices [labels] — which have [y]'s shape without its last axis —
@@ -145,16 +159,16 @@ val sse : ?w:('a, 'b) Nx.t -> target:('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) 
     ([diag p − p pᵀ] per row, divided by the number of rows) and returned as a
     scalar. Labels must lie in [\[0, num_classes)]; the checked cases are the
     user's to validate up front. *)
-val softmax_ce : ('a, 'b) Nx.t -> Nx.int64_t -> ('a, 'b) Nx.t
+val softmax_ce : (float, 'b, 'd) Nx.t -> 'd Nx.int64_t -> (float, 'b, 'd) Nx.t
 
-(** A sketch's results. *)
-type 'p sketch =
+(** A sketch's results, on the parameters' device set ['d]. *)
+type ('p, 'd) sketch =
   { k : int (** The number of directions the sketch spans. *)
-  ; loss : Nx.float64_t (** The primal total loss, as a float64 scalar. *)
-  ; c : Nx.float64_t
+  ; loss : 'd Nx.float64_t (** The primal total loss, as a float64 scalar. *)
+  ; c : 'd Nx.float64_t
     (** C = Θᵀ∇c, shape [k]: the gradient sketched onto the sampled
         directions. *)
-  ; ggn : Nx.float64_t
+  ; ggn : 'd Nx.float64_t
     (** The sketched generalized Gauss-Newton matrix ΘᵀJᵀHJΘ, shape [k;k].
         Blocks are accumulated in float64 and the result symmetrized. *)
   ; dirs : 'p
@@ -162,7 +176,7 @@ type 'p sketch =
         per float leaf, and zero lanes where no direction can be drawn. They
         are in whatever basis the draw produced, which {!Optim.coordinates}
         whitens rather than assumes away. *)
-  ; apply : Nx.float64_t -> 'p
+  ; apply : 'd Nx.float64_t -> 'p
     (** [apply z] is the parameter-space direction Θz for [z : [k]], each
         leaf in its parameter's dtype. *)
   }
@@ -191,7 +205,12 @@ type 'p sketch =
 
     Raises [Invalid_argument] if [dirs] have no tensor leaf, if the number of
     lanes [k] is less than 1, or if [loss] does not return a scalar. *)
-val sketch : 'p Nx.Ptree.t -> ('p -> ('c, 'd) Nx.t) -> 'p -> 'p -> 'p sketch
+val sketch
+  :  ('p, 'd) Nx.Ptree.t
+  -> ('p -> ('c, 'e, 'd) Nx.t)
+  -> 'p
+  -> 'p
+  -> ('p, 'd) sketch
 
 (** {1 The optimizer: Algorithm 1's update}
 
@@ -239,14 +258,14 @@ module Optim : sig
   (** {2 State} *)
 
   type state =
-    { key : Nx.Rng.t (** The stream the directions Θ are drawn from. *)
+    { key : Nx.host Nx.Rng.key (** The stream the directions Θ are drawn from. *)
     ; step : int (** Iterations completed. *)
     }
 
   (** [init ?key ()] is a fresh state: step 0, and [key] as the stream's root,
       or a subkey of the ambient {!Nx.Rng} scope when [key] is omitted. The
       whole run follows from this key. *)
-  val init : ?key:Nx.Rng.t -> unit -> state
+  val init : ?key:Nx.host Nx.Rng.key -> unit -> state
 
   (** [next st] is the state of the iteration after [st]: the counter advances
       and the key becomes the subkey the counter indexes, so no two steps share
@@ -264,15 +283,16 @@ module Optim : sig
       the ambient scope when [key] is omitted), so the compiled step can draw
       it from a key that is an input leaf, and a caller can reproduce a step's
       subspace by name. {!sketch} takes these directions as an argument, so
-      this is how a caller draws them. *)
-  val directions : 'p Nx.Ptree.t -> ?key:Nx.Rng.t -> k:int -> 'p -> 'p
+      this is how a caller draws them. Each batch lies whole on its leaf's
+      devices. *)
+  val directions : ('p, 'd) Nx.Ptree.t -> ?key:'d Nx.Rng.key -> k:int -> 'p -> 'p
 
   (** [apply structure ~k thetas z] is Θz: the parameter-space direction the
       sketch coordinates [z] denote, each leaf in its parameter's dtype.
       [structure] is the parameter structure. {!sketch} returns the same
       function as the [apply] field of its record; this one takes the
       directions as a value, because a compiled step cannot return a closure. *)
-  val apply : 'p Nx.Ptree.t -> k:int -> 'p -> Nx.float64_t -> 'p
+  val apply : ('p, 'd) Nx.Ptree.t -> k:int -> 'p -> 'd Nx.float64_t -> 'p
 
   (** [gram structure ~k thetas] is ΘΘᵀ — [VᵀV] for [V] the [P×k] matrix of a
       tangent batch's components — accumulated leaf by leaf rather than over a
@@ -280,8 +300,10 @@ module Optim : sig
       matrix {!coordinates} takes the inverse square root of when it whitens,
       so it is also how a caller checks or reuses the conditioning of a drawn
       subspace. Float64 whoever the leaves are; a leaf that cannot carry a
-      direction contributes nothing. *)
-  val gram : 'p Nx.Ptree.t -> k:int -> 'p -> Nx.float64_t
+      direction contributes nothing.
+
+      Raises [Invalid_argument] if [thetas] has no tensor leaf. *)
+  val gram : ('p, 'd) Nx.Ptree.t -> k:int -> 'p -> 'd Nx.float64_t
 
   (** {2 The update} *)
 
@@ -343,7 +365,8 @@ module Optim : sig
 
       {b Note.} Neither eigendecomposition — of the Gram, nor of the sketched
       GGN — compiles, so this is for the host side of a step, not inside a
-      [Rune.jit]ed program. Its arguments must be on the host.
+      [Rune.jit]ed program. Its arguments must be on a set with kernels, such
+      as the host, since it computes eagerly.
 
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
       smallest singular value is 0, and for a [gram] that is rank-deficient:
@@ -352,10 +375,10 @@ module Optim : sig
   val coordinates
     :  ?damping:damping
     -> ?preconditioner:preconditioner
-    -> ?gram:Nx.float64_t
-    -> Nx.float64_t
-    -> Nx.float64_t
-    -> Nx.float64_t
+    -> ?gram:'d Nx.float64_t
+    -> 'd Nx.float64_t
+    -> 'd Nx.float64_t
+    -> 'd Nx.float64_t
 
   (** [update_sketch structure ~lr ?damping ?preconditioner sk params] is one
       SOFO step on an eager sketch: [θ ← θ − η·Θ U (S + λ·s_max I)⁻¹ Vᵀ C],
@@ -370,11 +393,11 @@ module Optim : sig
       {!step} to draw the directions and sketch as well, and {!update} for the
       state-threaded step on a {!sketch_jit} output. *)
   val update_sketch
-    :  'p Nx.Ptree.t
+    :  ('p, 'd) Nx.Ptree.t
     -> ?lr:float
     -> ?damping:damping
     -> ?preconditioner:preconditioner
-    -> 'p sketch
+    -> ('p, 'd) sketch
     -> 'p
     -> 'p
 
@@ -388,15 +411,15 @@ module Optim : sig
       end; use {!sketch_jit} with {!update} when the sketching half should be
       compiled. *)
   val step
-    :  'p Nx.Ptree.t
+    :  ('p, 'd) Nx.Ptree.t
     -> k:int
     -> lr:float
     -> ?damping:damping
     -> ?preconditioner:preconditioner
     -> state
-    -> loss:('p -> ('c, 'd) Nx.t)
+    -> loss:('p -> ('c, 'e, 'd) Nx.t)
     -> params:'p
-    -> 'p * state * 'p sketch
+    -> 'p * state * ('p, 'd) sketch
 
   (** {2 The compiled half}
 
@@ -413,11 +436,11 @@ module Optim : sig
       nothing. What comes back is everything the update needs and nothing that
       needs a factorization. *)
 
-  type 'p step_info =
-    { loss : Nx.float64_t (** The primal total, as a scalar. *)
-    ; c : Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
-    ; ggn : Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
-    ; gram : Nx.float64_t (** ΘΘᵀ, shape [k;k]: {!gram} of [dirs]. *)
+  type ('p, 'd) step_info =
+    { loss : 'd Nx.float64_t (** The primal total, as a scalar. *)
+    ; c : 'd Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
+    ; ggn : 'd Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
+    ; gram : 'd Nx.float64_t (** ΘΘᵀ, shape [k;k]: {!gram} of [dirs]. *)
     ; dirs : 'p (** Θ, the directions the sketch was measured along. *)
     }
 
@@ -426,7 +449,8 @@ module Optim : sig
       with the directions. It is the whole computation — [Rune.jit] over the
       key, the aux and the parameters — so the function it returns compiles on
       its first call, replays on every later one, and is pure and
-      differentiable in nothing.
+      differentiable in nothing. Each call places the parameters and the aux
+      at [placement], and [key], a host key, whole on its devices.
 
       [loss] takes the parameters and the aux, in that order. It is the same
       function the eager entry points take, closed over its aux —
@@ -437,14 +461,14 @@ module Optim : sig
     :  ?beam:int
     -> ?parallel:int
     -> k:int
-    -> Nx.Placement.t
-    -> 'p Nx.Ptree.t
-    -> 'aux Nx.Ptree.t
-    -> ('p -> 'aux -> ('a, 'b) Nx.t)
-    -> key:Nx.Rng.t
+    -> 'd Nx.Placement.t
+    -> ('p, 'd) Nx.Ptree.t
+    -> ('aux, 'd) Nx.Ptree.t
+    -> ('p -> 'aux -> ('a, 'b, 'd) Nx.t)
+    -> key:Nx.host Nx.Rng.key
     -> aux:'aux
     -> 'p
-    -> 'p step_info
+    -> ('p, 'd) step_info
 
   (** [update ?lr ?damping ?preconditioner st params out] is one SOFO step on
       a compiled sketch: [θ ← θ − η·Θ U (S + γ·I)⁻¹ Vᵀ C] from the output
@@ -471,10 +495,10 @@ module Optim : sig
     :  ?lr:float
     -> ?damping:damping
     -> ?preconditioner:preconditioner
-    -> Nx.Placement.t
-    -> 'p Nx.Ptree.t
+    -> 'd Nx.Placement.t
+    -> ('p, 'd) Nx.Ptree.t
     -> state
     -> 'p
-    -> 'p step_info
+    -> ('p, 'd) step_info
     -> 'p * state
 end

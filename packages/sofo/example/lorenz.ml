@@ -15,10 +15,12 @@ let device =
     | _ -> None
   in
   match gpu with
-  | Some g -> Device.make g
-  | None -> Device.host
+  | Some g -> g
+  | None -> Rig.host
 
-let placement = Placement.on device
+module D = (val Nx.devices [ device ])
+
+let placement = D.on
 
 (* [Nx.relu] is gone from [Nx] and activations now live in [Kaun]; the example
    keeps its own rather than depend on [Kaun] for one line. *)
@@ -88,10 +90,10 @@ let lorenz_trajs =
 let _ = print [%message (shape lorenz_trajs : int array)]
 
 let minibatch key bs =
-  let indices = Rng.permutation key total_bs |> slice [ R (0, bs) ] in
-  let x0 = take ~axis:0 ~indices (slice [ I 0 ] lorenz_trajs) in
-  let xT = take ~axis:0 ~indices (slice [ I (horizon - 1) ] lorenz_trajs) in
-  x0, xT
+  let indices = Rng.permutation ~key total_bs |> slice [ R (0, bs) ] in
+  let x0 = take ~axis:0 indices (slice [ I 0 ] lorenz_trajs) in
+  let xT = take ~axis:0 indices (slice [ I (horizon - 1) ] lorenz_trajs) in
+  place placement x0, place placement xT
 
 let data_ptree = Ptree.(pair tensor tensor)
 
@@ -99,61 +101,67 @@ let data_ptree = Ptree.(pair tensor tensor)
 
 module Model = struct
   module P = struct
-    type t =
-      { w : float32_t
-      ; c : float32_t
-      ; a : float32_t
+    type (_, 'd) t =
+      { w : 'd float32_t
+      ; c : 'd float32_t
+      ; a : 'd float32_t
       }
     [@@deriving ptree]
   end
 
+  let ptree : ((D.d float32_t, D.d) P.t, D.d) Nx.Ptree.t = Nx.Ptree.instantiate (module P)
+
   let init ~d ~d_hidden =
     let open Nx.Infix in
-    let w = randn float32 [| d_hidden; d |] *$ Float.(0.1 / sqrt (of_int d_hidden)) in
+    let w =
+      Rng.normal float32 [| d_hidden; d |] *$ Float.(0.1 / sqrt (of_int d_hidden))
+    in
     let c =
-      randn float32 [| Int.(d + 1); d_hidden |] /$ Float.(sqrt (of_int Int.(d + 1)))
+      Rng.normal float32 [| Int.(d + 1); d_hidden |] /$ Float.(sqrt (of_int Int.(d + 1)))
     in
     let a = eye float32 d in
     P.{ w; c; a }
 
-  let step (theta : P.t) x =
+  let step (theta : _ P.t) x =
     let open Nx.Infix in
     let bs = dim 0 x in
     (x *@ theta.a)
-    + (relu (concatenate ~axis:1 [ x; ones float32 [| bs; 1 |] ] *@ theta.c) *@ theta.w)
+    + (relu (concatenate ~axis:1 [ x; ones_at (beside x) float32 [| bs; 1 |] ] *@ theta.c)
+       *@ theta.w)
 
-  let forward ~horizon (theta : P.t) x0 =
+  let forward ~horizon (theta : _ P.t) x0 =
     Rune.scan
       Ptree.tensor
       Ptree.tensor
       Ptree.unit
-      ~f:(fun x _t -> step theta x, ())
+      (fun x _t -> step theta x, ())
       ~init:x0
-      (zeros float32 [| horizon - 1 |])
+      (zeros_at (beside x0) float32 [| horizon - 1 |])
     |> fst
 end
 
 let params =
   Rng.with_key (Rng.key 42) (fun () -> Model.init ~d ~d_hidden)
-  |> Nx.Ptree.place Model.P.ptree (Nx.Placement.on device)
+  |> Nx.Ptree.place (module Model.P) placement
 
 let objective params (x0, xf) =
   let pred = Model.forward ~horizon params x0 in
-  Sofo.mse ~w:(scalar float32 Float.(1. / of_int horizon)) ~target:xf pred
+  Sofo.mse ~w:(scalar_like pred Float.(1. / of_int horizon)) ~target:xf pred
 
 (* The sketch compiles for the device the parameters are placed on; the
-   minibatch and the keys are host values that join them on each call. *)
+   minibatch is placed there too, and the keys are host values that join them
+   on each call. *)
 let sketch_step =
   Sofo.Optim.sketch_jit
     ~beam:2
     ~parallel:8
     ~k:n_tangents
     placement
-    Model.P.ptree
+    Model.ptree
     data_ptree
     objective
 
-let rec loop_sofo ~i ~out (params : Model.P.t) (state : Sofo.Optim.state) =
+let rec loop_sofo ~i ~out ~losses (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
   then params
   else (
@@ -161,17 +169,23 @@ let rec loop_sofo ~i ~out (params : Model.P.t) (state : Sofo.Optim.state) =
     let data = minibatch key_data bs in
     let sketch = sketch_step ~key:state.key ~aux:data params in
     let params, state =
-      Sofo.Optim.update ~lr ~damping placement Model.P.ptree state params sketch
+      Sofo.Optim.update ~lr ~damping placement Model.ptree state params sketch
     in
     let loss = item [] sketch.loss in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
-    if i % 10 = 0 then Nx_io.save_txt ~append:true out (create float32 [| 1 |] [| loss |]);
-    loop_sofo ~i:(i + 1) ~out params state)
+    (* A save replaces its file, so every tenth loss so far is saved as one
+       column. *)
+    let losses = if i % 10 = 0 then loss :: losses else losses in
+    if i % 10 = 0
+    then (
+      let n = List.length losses in
+      Nx_io.save_txt out (create float32 [| n; 1 |] (Array.of_list (List.rev losses))));
+    loop_sofo ~i:(i + 1) ~out ~losses params state)
 
 let state = Sofo.Optim.init ~key:(Rng.key 1985) ()
 
 let _ =
-  Stdio.printf "device: %s\n%!" (Nx.Device.name device);
+  Stdio.printf "device: %s\n%!" (Rig.name device);
   let out = in_dir "loss" in
   let () = Bos.Cmd.(v "rm" % "-f" % out) |> Bos.OS.Cmd.run |> ignore in
-  loop_sofo ~i:0 ~out params state
+  loop_sofo ~i:0 ~out ~losses:[] params state

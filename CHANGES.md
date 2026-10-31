@@ -86,3 +86,12 @@ changes do not need an entry.
 ### sofo
 
 - Imported from `hennequin-lab/sofo-raven`.
+- Arrays carry their device set: `Curv.t` is `'d Curv.t`, `sketch` is
+  `('p, 'd) sketch` and `Optim.step_info` is `('p, 'd) Optim.step_info`, and
+  `Optim.state`'s key is a host `Nx.Rng.key`. `softmax_ce` takes float logits.
+- `Optim.gram` raises on directions with no tensor leaf.
+- A `Rune.vmap` around `Sofo.sketch` raises at raven 19a5d88: `Rune.lanes`
+  in a tangent map that an outer map evaluates does not see the map around
+  the call, a rune bug.
+- A sketch must be given the uncompiled loss: a `Rune.jit`ed loss first traced
+  outside a sketch keeps no marks, and its sketch has a zero GGN.
