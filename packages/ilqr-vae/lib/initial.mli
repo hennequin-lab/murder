@@ -20,7 +20,7 @@ open Types
 
 (** The parameters of the initial-state prior over payload ['a]: the mean and
     the log standard deviations, each of shape [[n]]. *)
-type 'a params =
+type ('a, _) params =
   { mean : 'a
   ; log_stds : 'a
   }
@@ -31,19 +31,28 @@ type 'a params =
     structure is used. A top-level [let s = structure ()] would pin it to the
     first dtype, as any application does; write [let s () = structure ()]
     instead. *)
-val structure : unit -> ('a, 'b) Nx.t params Nx.Ptree.t
+val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
 (** [make ~mean ~std ~n dtype] is the prior [N(mean, std²)] in every
     dimension. [mean] defaults to [0.], [std] to [1.]. Raises
     [Invalid_argument] if [n] is not positive or [std] is not positive. *)
-val make : ?mean:float -> ?std:float -> n:int -> (float, 'w) Nx.dtype -> 'w value params
+val make
+  :  ?mean:float
+  -> ?std:float
+  -> n:int
+  -> (float, 'w) Nx.dtype
+  -> (('w, Nx.host) value, Nx.host) params
 
 (** [logp p x] is [log p(x)] summed over the last axis: one value per row when
     [x] is [[n_samples; n]], a scalar for a single state. Differentiable and
     traceable. *)
-val logp : 'w value params -> 'w value -> 'w value
+val logp : (('w, 's) value, 's) params -> ('w, 's) value -> ('w, 's) value
 
 (** [sample p ~key ~n_samples] draws [n_samples] initial states, of shape
     [[n_samples; n]]. Reparameterized, so it differentiates in [mean] and
     [log_stds]. *)
-val sample : 'w value params -> key:Nx.Rng.t -> n_samples:int -> 'w value
+val sample
+  :  (('w, 's) value, 's) params
+  -> key:'s Nx.Rng.key
+  -> n_samples:int
+  -> ('w, 's) value

@@ -7,22 +7,23 @@ open Base
 open Nx
 open Types
 
-type ('w, 'p) t =
+type ('w, 'p, 's) t =
   { n : int
   ; n_output : int
-  ; structure : 'p Nx.Ptree.t
+  ; structure : ('p, 's) Nx.Ptree.t
   ; params : 'p
-  ; logp_t : 'p -> k:'w value -> x:'w value -> o:'w value -> 'w value
-  ; mean : 'p -> 'w value -> 'w value
-  ; sample : 'p -> key:Nx.Rng.t -> mean:'w value -> 'w value
+  ; logp_t :
+      'p -> k:('w, 's) value -> x:('w, 's) value -> o:('w, 's) value -> ('w, 's) value
+  ; mean : 'p -> ('w, 's) value -> ('w, 's) value
+  ; sample : 'p -> key:'s Nx.Rng.key -> mean:('w, 's) value -> ('w, 's) value
   }
 
 let log_2pi = Float.log (2.0 *. Float.pi)
 
 let randn ?key dtype shape =
   match key with
-  | Some key -> Nx.Rng.normal key dtype shape
-  | None -> Nx.randn dtype shape
+  | Some key -> Nx.Rng.normal ~key dtype shape
+  | None -> Nx.Rng.normal dtype shape
 
 (* [readout c x] is [x @ cᵀ] for a state row or a batch of rows: the last axis
    of [x] is contracted with the second axis of [c], whatever leading axes [x]
@@ -32,7 +33,7 @@ let readout c x = Infix.(x *@ matrix_transpose c)
 (* {1 Gaussian} *)
 
 module Gaussian = struct
-  type 'a params =
+  type ('a, _) params =
     { c : 'a
     ; bias : 'a
     ; log_variances : 'a
@@ -42,7 +43,7 @@ module Gaussian = struct
   let structure () =
     Nx.Ptree.instantiate
       (module struct
-        type 'a t = 'a params
+        type ('a, 's) t = ('a, 's) params
 
         let walk = walk_params
       end)
@@ -75,7 +76,7 @@ module Gaussian = struct
       sum ~axes:[ -1 ] term *$ -0.5
     in
     let sample p ~key ~mean =
-      let noise = Nx.Rng.normal key dtype (shape mean) in
+      let noise = Nx.Rng.normal_at (beside mean) ~key dtype (shape mean) in
       Infix.(mean + (noise * sqrt (exp p.log_variances)))
     in
     { n
@@ -95,7 +96,7 @@ end
 (* {1 Poisson} *)
 
 module Poisson = struct
-  type 'a params =
+  type ('a, _) params =
     { c : 'a
     ; bias : 'a
     ; log_gain : 'a
@@ -105,7 +106,7 @@ module Poisson = struct
   let structure () =
     Nx.Ptree.instantiate
       (module struct
-        type 'a t = 'a params
+        type ('a, 's) t = ('a, 's) params
 
         let walk = walk_params
       end)
@@ -140,7 +141,7 @@ module Poisson = struct
       let log_factorial = sum ~axes:[ -1 ] (Special.lgamma (o +$ 1.0)) in
       ll - log_factorial
     in
-    let sample _p ~key ~mean = cast dtype (Nx.Rng.poisson key mean) in
+    let sample _p ~key ~mean = cast dtype (Nx.Rng.poisson ~key mean) in
     { n
     ; n_output
     ; structure = structure ()

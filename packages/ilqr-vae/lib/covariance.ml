@@ -6,7 +6,7 @@
 open Base
 open Nx
 
-type 'a params =
+type ('a, _) params =
   { d : 'a
   ; t : 'a
   }
@@ -15,7 +15,7 @@ type 'a params =
 let structure () =
   Nx.Ptree.instantiate
     (module struct
-      type 'a t = 'a params
+      type ('a, 's) t = ('a, 's) params
 
       let walk = walk_params
     end)

@@ -7,10 +7,10 @@ open Base
 open Nx
 open Types
 
-type 'w t =
-  { elbo : 'w value
-  ; log_likelihood : 'w value
-  ; kl : 'w value
+type ('w, 's) t =
+  { elbo : ('w, 's) value
+  ; log_likelihood : ('w, 's) value
+  ; kl : ('w, 's) value
   }
 
 let shape_string shape =
@@ -47,23 +47,22 @@ let transpose_time ~time_axis t =
    scanned and every trial and sample axis is a batch axis. *)
 let log_prior
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) Model.t)
-      (params : (w, d, l, p, e, r) Model.params)
-      ~(x0 : w value)
-      ~(u : w value)
+      (model : (w, d, l, p, e, r, 's) Model.t)
+      (params : (w, d, l, p, e, r, 's) Model.params)
+      ~(x0 : (w, 's) value)
+      ~(u : (w, 's) value)
   =
   let t_steps = model.Model.n_steps in
   let u_rank = Array.length (Nx.shape u) in
   let time_axis = Int.max 0 (u_rank - 3) in
   let u_by_time = transpose_time ~time_axis u in
-  let ks = arange model.Model.dtype 0 t_steps 1 in
+  let ks = arange_at (beside u) model.Model.dtype 0 t_steps 1 in
   let _, by_step =
     Rune.scan
       Nx.Ptree.unit
       Nx.Ptree.(pair tensor tensor)
       Nx.Ptree.tensor
-      ~f:(fun () (u_k, k) ->
-        (), model.Model.prior.Prior.logp_t params.Model.prior ~k ~u:u_k)
+      (fun () (u_k, k) -> (), model.Model.prior.Prior.logp_t params.Model.prior ~k ~u:u_k)
       ~init:()
       (u_by_time, ks)
   in
@@ -74,13 +73,17 @@ let log_prior
 
 let compute
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) Model.t)
-      (params : (w, d, l, p, e, r) Model.params)
+      (model : (w, d, l, p, e, r, 's) Model.t)
+      (params : (w, d, l, p, e, r, 's) Model.params)
       ?beta
-      ~(posterior : w Recognition.posterior)
+      ~(posterior : (w, 's) Recognition.posterior)
       data
   =
-  let beta = Option.value beta ~default:(scalar model.Model.dtype 1.0) in
+  let beta =
+    Option.value
+      beta
+      ~default:(scalar_at (beside posterior.Recognition.x0) model.Model.dtype 1.0)
+  in
   let t_steps = model.Model.n_steps
   and n = model.Model.n
   and m = model.Model.m
@@ -136,22 +139,22 @@ let compute
   let z_by_time = transpose_time ~time_axis:batch_rank z in
   let z_next = slice [ R (1, t_steps + 1) ] z_by_time in
   let data_by_time = transpose_time ~time_axis:batch_rank data in
-  let ks = arange model.Model.dtype 0 t_steps 1 in
+  let ks = arange_at (beside data) model.Model.dtype 0 t_steps 1 in
   let _, likelihood_by_step =
     Rune.scan
       Nx.Ptree.unit
       Nx.Ptree.(pair (pair tensor tensor) tensor)
       Nx.Ptree.tensor
-      ~f:(fun () ((z_k, o_k), k) ->
-        (* [o_k] carries the trial axes and the observation axis; the singleton
-           added before that axis broadcasts it over the sample axis. *)
-        let o_k = unsqueeze ~axes:[ -2 ] o_k in
-        ( ()
-        , model.Model.likelihood.Likelihood.logp_t
-            params.Model.likelihood
-            ~k
-            ~x:z_k
-            ~o:o_k ))
+      (fun () ((z_k, o_k), k) ->
+         (* [o_k] carries the trial axes and the observation axis; the singleton
+            added before that axis broadcasts it over the sample axis. *)
+         let o_k = unsqueeze ~axes:[ -2 ] o_k in
+         ( ()
+         , model.Model.likelihood.Likelihood.logp_t
+             params.Model.likelihood
+             ~k
+             ~x:z_k
+             ~o:o_k ))
       ~init:()
       ((z_next, data_by_time), ks)
   in

@@ -63,4 +63,4 @@ val value : 'w t -> int -> float
 
 (** [at s step] is the weight at [step] as a scalar tensor, of the schedule's
     dtype. Pass it to the ELBO as [~beta]. *)
-val at : 'w t -> int -> 'w value
+val at : 'w t -> int -> ('w, Nx.host) value
