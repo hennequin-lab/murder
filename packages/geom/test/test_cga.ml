@@ -360,7 +360,7 @@ let test_inherited () =
     (C.undual (C.dual C.e1));
   raises_match
     ~msg:"a bad blade index is rejected"
-    (Exn.invalid_arg ~substring:"out of range")
+    (Exn.invalid_arg ~sub:"out of range")
     (fun () -> ignore (C.basis (B.of_int 32)))
 
 (* Properties *)

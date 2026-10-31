@@ -52,26 +52,26 @@ include Algebra.ALGEBRA with type kind = Nx.float32_elt
 (** {1:basis Basis} *)
 
 (** [e1] is the first Euclidean basis vector. *)
-val e1 : t
+val e1 : Nx.host t
 
 (** [e2] is the second Euclidean basis vector. *)
-val e2 : t
+val e2 : Nx.host t
 
 (** [e3] is the third Euclidean basis vector. *)
-val e3 : t
+val e3 : Nx.host t
 
 (** [e4] is the positive extra direction. *)
-val e4 : t
+val e4 : Nx.host t
 
 (** [e5] is the negative extra direction. *)
-val e5 : t
+val e5 : Nx.host t
 
 (** [e0] is the null direction [(e5 - e4) / 2], the origin of the conformal
     embedding. *)
-val e0 : t
+val e0 : Nx.host t
 
 (** [einf] is the null direction [e4 + e5], the point at infinity. *)
-val einf : t
+val einf : Nx.host t
 
 (** {1:points Points} *)
 
@@ -83,20 +83,20 @@ val einf : t
     ]}
 
     The result is a null vector with [e_infinity dot X = -1]. *)
-val point : Nx.float32_t -> t
+val point : 'd Nx.float32_t -> 'd t
 
 (** [point3 x y z] is [point] of the single coordinate vector [(x, y, z)]. *)
-val point3 : float -> float -> float -> t
+val point3 : float -> float -> float -> Nx.host t
 
 (** [coords x] is the Euclidean coordinate tensor of the point [x], of shape
     [batch_shape @ [|3|]]. The point is normalised by dividing by
     [-e_infinity dot x] first; the result for a non-null or non-point
     multivector is unspecified. *)
-val coords : t -> Nx.float32_t
+val coords : 'd t -> 'd Nx.float32_t
 
 (** [is_point x] is [true] where [x] is null and [e_infinity dot x = -1], up to
     floating-point tolerance. *)
-val is_point : t -> Nx.bool_t
+val is_point : 'd t -> 'd Nx.bool_t
 
 (** {1:round Round objects: spheres and planes} *)
 
@@ -110,20 +110,20 @@ val is_point : t -> Nx.bool_t
     [batch_shape @ [|3|]]) and [radius] is [r] (shape [batch_shape]). The
     sphere is a vector; [S^2 = r^2] and [e_infinity dot S = -1]. An imaginary
     sphere has a negative [r^2]. *)
-val sphere : center:Nx.float32_t -> radius:Nx.float32_t -> t
+val sphere : center:'d Nx.float32_t -> radius:'d Nx.float32_t -> 'd t
 
 (** [sphere_of_point ~center ~radius] is [sphere] with an already constructed
     conformal point [center]. *)
-val sphere_of_point : center:t -> radius:Nx.float32_t -> t
+val sphere_of_point : center:'d t -> radius:'d Nx.float32_t -> 'd t
 
 (** [sphere_center s] is the conformal point at the centre of the sphere [s].
     The sphere is normalised internally; the result for a plane or a
     non-sphere is unspecified. *)
-val sphere_center : t -> t
+val sphere_center : 'd t -> 'd t
 
 (** [sphere_radius2 s] is the signed squared radius [r^2] of the sphere [s], of
     shape [batch_shape]. *)
-val sphere_radius2 : t -> Nx.float32_t
+val sphere_radius2 : 'd t -> 'd Nx.float32_t
 
 (** [plane ~normal ~offset] is the plane [{x : n dot x = offset}], with normal
     [n] (shape [batch_shape @ [|3|]]) and scalar offset [offset] (shape
@@ -136,37 +136,37 @@ val sphere_radius2 : t -> Nx.float32_t
     When [n] is unit, [pi^2 = 1], [X dot pi = n dot x - offset] and
     [e_infinity dot pi = 0]. The normal is not normalised by this function;
     use {!normalize_plane} if it is not already unit. *)
-val plane : normal:Nx.float32_t -> offset:Nx.float32_t -> t
+val plane : normal:'d Nx.float32_t -> offset:'d Nx.float32_t -> 'd t
 
 (** [plane_normal pi] extracts the normal of the plane [pi], of shape
     [batch_shape @ [|3|]]. It is unit after {!normalize_plane}. *)
-val plane_normal : t -> Nx.float32_t
+val plane_normal : 'd t -> 'd Nx.float32_t
 
 (** [plane_offset pi] extracts the offset [d] of the plane [pi] with [pi = n + d e_infinity], of shape [batch_shape].
 *)
-val plane_offset : t -> Nx.float32_t
+val plane_offset : 'd t -> 'd Nx.float32_t
 
 (** [normalize_plane pi] divides [pi] by the norm of its Euclidean part, so that
     [pi^2 = 1]. *)
-val normalize_plane : t -> t
+val normalize_plane : 'd t -> 'd t
 
 (** [is_flat o] is [true] where [e_infinity dot o = 0] in the appropriate
     grade, that is, where [o] is a flat object (a plane or a line). For a
     grade-one object this is exactly [e_infinity dot o = 0]; for a grade-two
     object it is the vanishing of the grade-one contraction [e_infinity dot o].
     A point pair and a circle are round, so they are not flat. *)
-val is_flat : t -> Nx.bool_t
+val is_flat : 'd t -> 'd Nx.bool_t
 
 (** [is_round o] is the negation of {!is_flat}: a sphere, point, circle or point
     pair is round. *)
-val is_round : t -> Nx.bool_t
+val is_round : 'd t -> 'd Nx.bool_t
 
 (** {1:composites Composite objects} *)
 
 (** [point_pair x y] is the direct 2-blade [x and y] of two points. Its square
     is [(x dot y)^2 = d^4 / 4], so a real separated pair is a hyperbolic
     blade; it is zero when the points coincide. *)
-val point_pair : t -> t -> t
+val point_pair : 'd t -> 'd t -> 'd t
 
 (** [line x y] is the line through two points, in the dual (constraint)
     representation:
@@ -176,20 +176,20 @@ val point_pair : t -> t -> t
     ]}
 
     It is a grade-2 blade; a point [z] lies on it exactly when [z dot l = 0]. *)
-val line : t -> t -> t
+val line : 'd t -> 'd t -> 'd t
 
 (** [line_of_planes pi1 pi2] is the line where two planes meet,
     [pi1 and pi2], a grade-2 blade. *)
-val line_of_planes : t -> t -> t
+val line_of_planes : 'd t -> 'd t -> 'd t
 
 (** [line_direction l] is the Euclidean direction of the line [l], of shape
     [batch_shape @ [|3|]]. *)
-val line_direction : t -> Nx.float32_t
+val line_direction : 'd t -> 'd Nx.float32_t
 
 (** [line_moment l] is the moment of the line [l] with respect to the origin,
     of shape [batch_shape @ [|3|]]. Together with {!line_direction} it gives
     the six Plücker coordinates of the line. *)
-val line_moment : t -> Nx.float32_t
+val line_moment : 'd t -> 'd Nx.float32_t
 
 (** [circle x y z] is the circle through the three points [x], [y] and [z], in
     the dual representation:
@@ -201,30 +201,30 @@ val line_moment : t -> Nx.float32_t
     It is a grade-2 blade; a point [w] lies on it exactly when [w dot c = 0],
     which is the simultaneous satisfaction of the two sphere equations that
     define the circle. *)
-val circle : t -> t -> t -> t
+val circle : 'd t -> 'd t -> 'd t -> 'd t
 
 (** [circle_of_spheres s1 s2] is the circle where two spheres meet,
     [s1 and s2], a grade-2 blade. *)
-val circle_of_spheres : t -> t -> t
+val circle_of_spheres : 'd t -> 'd t -> 'd t
 
 (** [circle_center c] is the conformal point at the centre of the circle [c]. *)
-val circle_center : t -> t
+val circle_center : 'd t -> 'd t
 
 (** [circle_radius2 c] is the squared radius of the circle [c], of shape
     [batch_shape]. *)
-val circle_radius2 : t -> Nx.float32_t
+val circle_radius2 : 'd t -> 'd Nx.float32_t
 
 (** [circle_normal c] is the unit normal of the carrier plane of the circle
     [c], of shape [batch_shape @ [|3|]]. *)
-val circle_normal : t -> Nx.float32_t
+val circle_normal : 'd t -> 'd Nx.float32_t
 
 (** [plane_through x y z] is the plane through the three points [x], [y] and
     [z], obtained by dualising [x and y and z and e_infinity]. *)
-val plane_through : t -> t -> t -> t
+val plane_through : 'd t -> 'd t -> 'd t -> 'd t
 
 (** [sphere_through x y z w] is the sphere through the four points [x], [y],
     [z] and [w], obtained by dualising [x and y and z and w]. *)
-val sphere_through : t -> t -> t -> t -> t
+val sphere_through : 'd t -> 'd t -> 'd t -> 'd t -> 'd t
 
 (** {1:incidence Incidence, distance and meet} *)
 
@@ -233,14 +233,14 @@ val sphere_through : t -> t -> t -> t -> t
     every object in the working representation: a point, a point pair, a
     circle, a sphere, a line and a plane. For a point object it is the
     zero-distance test; for a point pair it selects the two points. *)
-val incident : t -> t -> Nx.bool_t
+val incident : 'd t -> 'd t -> 'd Nx.bool_t
 
 (** [distance2 x y] is the squared Euclidean distance between two points,
     [-2 (x dot y)], of shape [batch_shape]. *)
-val distance2 : t -> t -> Nx.float32_t
+val distance2 : 'd t -> 'd t -> 'd Nx.float32_t
 
 (** [distance x y] is [sqrt (distance2 x y)]. *)
-val distance : t -> t -> Nx.float32_t
+val distance : 'd t -> 'd t -> 'd Nx.float32_t
 
 (** [meet a b] is the outer product [a and b] of two constraint blades. It is
     the intersection in the inner-product-null-space sense: for two grade-one
@@ -252,17 +252,17 @@ val distance : t -> t -> Nx.float32_t
     the pair in the working representation. The function is not a universal
     meet: a point is a direct object, and incident constraints can wedge to
     zero. Use the named constructors for point-based objects. *)
-val meet : t -> t -> t
+val meet : 'd t -> 'd t -> 'd t
 
 (** {1:normalisation Normalisation} *)
 
 (** [normalize_point x] divides the point [x] by [-e_infinity dot x], so that
     [e_infinity dot x = -1]. A point at infinity is not normalisable. *)
-val normalize_point : t -> t
+val normalize_point : 'd t -> 'd t
 
 (** [normalize_sphere s] divides the sphere [s] by [-e_infinity dot s], so that
     [e_infinity dot s = -1]. *)
-val normalize_sphere : t -> t
+val normalize_sphere : 'd t -> 'd t
 
 (** {1:conformal Conformal generators} *)
 
@@ -277,7 +277,7 @@ val normalize_sphere : t -> t
     is projective: the raw image has [e_0] coefficient [e^(-lambda)], so
     {!coords} normalises it and the Euclidean coordinates are multiplied by
     [e^lambda]. [lambda] has shape [batch_shape]. *)
-val dilator : Nx.float32_t -> t
+val dilator : 'd Nx.float32_t -> 'd t
 
 (** [transversion a] is the versor
 
@@ -288,15 +288,15 @@ val dilator : Nx.float32_t -> t
     the special conformal transformation with parameter vector [a], of shape
     [batch_shape @ [|3|]]. The raw image of a point is not on the normalised
     point slice; {!coords} divides by the [e_0] coefficient. *)
-val transversion : Nx.float32_t -> t
+val transversion : 'd Nx.float32_t -> 'd t
 
 (** {1:motors Motors} *)
 
 (** [of_motor m] embeds the packed motor [m] into the dense even subalgebra of
     the conformal algebra. *)
-val of_motor : Motor.t -> t
+val of_motor : 'd Motor.t -> 'd t
 
 (** [apply_motor m x] is the action of the motor [m] on the multivector [x],
     [m x tilde(m)], without materialising the dense motor. Grades and
     incidence relations are preserved. *)
-val apply_motor : Motor.t -> t -> t
+val apply_motor : 'd Motor.t -> 'd t -> 'd t

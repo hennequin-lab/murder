@@ -16,11 +16,11 @@ let test_make () =
   equal ~msg:"make copies its argument" (array int) [| 1; -1; 0 |] (S.to_array s);
   raises_match
     ~msg:"entries must be -1, 0 or 1"
-    (Exn.invalid_arg ~substring:"entries")
+    (Exn.invalid_arg ~sub:"entries")
     (fun () -> ignore (S.make [| 1; 2 |] : S.t));
   raises_match
     ~msg:"negative two is not an entry"
-    (Exn.invalid_arg ~substring:"entries")
+    (Exn.invalid_arg ~sub:"entries")
     (fun () -> ignore (S.make [| -2 |] : S.t))
 
 let test_constructors () =
@@ -45,15 +45,15 @@ let test_constructors () =
     (S.to_array (S.conformal 0));
   raises_match
     ~msg:"euclidean rejects a negative dimension"
-    (Exn.invalid_arg ~substring:"negative")
+    (Exn.invalid_arg ~sub:"negative")
     (fun () -> ignore (S.euclidean (-1) : S.t));
   raises_match
     ~msg:"projective rejects a negative dimension"
-    (Exn.invalid_arg ~substring:"negative")
+    (Exn.invalid_arg ~sub:"negative")
     (fun () -> ignore (S.projective (-1) : S.t));
   raises_match
     ~msg:"conformal rejects a negative dimension"
-    (Exn.invalid_arg ~substring:"negative")
+    (Exn.invalid_arg ~sub:"negative")
     (fun () -> ignore (S.conformal (-1) : S.t))
 
 let test_properties () =

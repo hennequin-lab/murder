@@ -5,7 +5,7 @@
 
 open Nx
 
-type t = Nx.float32_t
+type 'd t = 'd Nx.float32_t
 
 let dtype = float32
 let size = 8
@@ -68,7 +68,9 @@ let last_axis a =
   if r = 0 then invalid_arg "Motor: missing motor axis";
   r - 1
 
-let take_comp a i = take ~axis:(last_axis a) ~indices:(Nx.scalar int64 (Int64.of_int i)) a
+let take_comp a i =
+  take ~axis:(last_axis a) (Nx.scalar_at (beside a) int64 (Int64.of_int i)) a
+
 let expand batch x = reshape (Array.append batch [| 1 |]) x
 
 let of_array a =
@@ -89,6 +91,7 @@ let to_nx x = x
 let shape m = Nx.shape m
 let one = of_array [| 1.; 0.; 0.; 0.; 0.; 0.; 0.; 0. |]
 let zero = of_array [| 0.; 0.; 0.; 0.; 0.; 0.; 0.; 0. |]
+let contraction = Pattern.v "b i, b j, k i j -> b k | i j"
 
 let contract a b =
   let a, b =
@@ -100,24 +103,28 @@ let contract a b =
   let bsz = Array.fold_left ( * ) 1 batch in
   let a2 = reshape [| bsz; size |] a in
   let b2 = reshape [| bsz; size |] b in
-  let out = einsum "bi,bj,kij->bk" [| a2; b2; packed_tbl |] in
+  let out = einsum contraction [ a2; b2; place (beside a2) packed_tbl ] in
   reshape (Array.append batch [| size |]) out
 
 let mul a b = contract a b
-let compose ms = List.fold_left mul one ms
-let reverse m = Infix.(m * reverse_sign)
+
+let compose = function
+  | [] -> invalid_arg "Motor.compose: an empty list has no device set to make one on"
+  | m :: _ as ms -> List.fold_left mul (place (beside m) one) ms
+
+let reverse m = Infix.(m * place (beside m) reverse_sign)
 let norm2 m = take_comp (mul m (reverse m)) 0
 let norm m = Nx.sqrt (Nx.abs (norm2 m))
 let normalize m = Infix.(m / expand (batch_shape m) (norm m))
 let inverse m = Infix.(reverse m / expand (batch_shape m) (norm2 m))
-let zero_comp batch = zeros dtype batch
-let one_comp batch = ones dtype batch
+let zero_comp p batch = zeros_at p dtype batch
+let one_comp p batch = ones_at p dtype batch
 let vector3 x y z = create dtype [| 3 |] [| x; y; z |]
 
 let translate v =
   let batch = Array.sub (Nx.shape v) 0 (Array.length (Nx.shape v) - 1) in
-  let z = zero_comp batch in
-  let o = one_comp batch in
+  let z = zero_comp (beside v) batch in
+  let o = one_comp (beside v) batch in
   let m = Infix.(v *$ -0.5) in
   stack ~axis:(-1) [ o; z; z; z; take_comp m 0; take_comp m 1; take_comp m 2; z ]
 
@@ -145,7 +152,7 @@ let rotate ~axis ~angle =
   let nx = take_comp axis 0
   and ny = take_comp axis 1
   and nz = take_comp axis 2 in
-  let z = zero_comp batch in
+  let z = zero_comp (beside axis) batch in
   stack ~axis:(-1) [ c; s * nz *$ -1.; s * ny; s * nx *$ -1.; z; z; z; z ]
 
 let of_quaternion q =
@@ -158,7 +165,7 @@ let of_quaternion q =
   and x = take_comp q 1
   and y = take_comp q 2
   and z = take_comp q 3 in
-  let zero = zero_comp batch in
+  let zero = zero_comp (beside q) batch in
   stack ~axis:(-1) [ w; z *$ -1.; y; x *$ -1.; zero; zero; zero; zero ]
 
 let to_quaternion m =
@@ -218,7 +225,9 @@ let of_rotation r =
     out.(o8 + 2) <- y;
     out.(o8 + 3) <- -.x
   done;
-  reshape (Array.append batch [| size |]) (create dtype [| bsz; size |] out)
+  place
+    (beside r)
+    (reshape (Array.append batch [| size |]) (create dtype [| bsz; size |] out))
 
 let exp twist =
   let sh = Nx.shape twist in
@@ -237,7 +246,7 @@ let exp twist =
      feeds. Lifting the radicand by [tiny] costs a relative 1e-12 on any nonzero
      angle and none of the accuracy: the closed forms below are analytic at the
      origin, and the [small] branch stays for the exact limits. *)
-  let theta = Nx.sqrt (theta2 + Nx.scalar dtype 1e-12) in
+  let theta = Nx.sqrt (theta2 + Nx.scalar_like theta2 1e-12) in
   let small = less_s theta 2e-6 in
   let one = ones_like theta in
   let theta_safe = where small one theta in
@@ -290,7 +299,7 @@ let log m =
   (* Both of these square roots vanish for a pure translation, and a vanishing
      radicand makes the derivative infinite and a forward-mode pass NaN; see the
      note in [exp]. *)
-  let qv = Nx.sqrt Infix.((x * x) + (y * y) + (z * z) + Nx.scalar dtype 1e-12) in
+  let qv = Nx.sqrt Infix.((x * x) + (y * y) + (z * z) + Nx.scalar_like x 1e-12) in
   let small = less_s qv 2e-6 in
   let qv_safe = where small (ones_like qv) qv in
   let theta = Infix.(Nx.atan2 qv w *$ 2.) in
@@ -301,7 +310,7 @@ let log m =
   let t = translation_of_motor m in
   let n2 = sum ~axes:[ Array.length (Nx.shape omega) - 1 ] Infix.(omega * omega) in
   let open Infix in
-  let theta = Nx.sqrt (n2 + Nx.scalar dtype 1e-12) in
+  let theta = Nx.sqrt (n2 + Nx.scalar_like n2 1e-12) in
   let half = theta *$ 0.5 in
   let sin_half = Nx.sin half
   and cos_half = Nx.cos half in
