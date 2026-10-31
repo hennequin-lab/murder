@@ -23,9 +23,9 @@
 ; Move this SHA forward deliberately; dune.lock records the same commit.
 (pin
  (url
-  "git+https://github.com/raven-ml/raven.git#3984341140aef7bfc6f27eb14474f4a261a7b7bc")
+  "git+https://github.com/raven-ml/raven.git#7f485ef63275e4362cac91a15076227c5ac4572d")
  (package
-  (name compress))
+  (name lz))
  (package
   (name nx))
  (package
@@ -48,7 +48,7 @@
 ; Windtrap is pinned to the commit Raven's CI uses.
 (pin
  (url
-  "git+https://github.com/invariant-hq/windtrap.git#7be03df651610949a87ed3bb797984015e9691b9")
+  "git+https://github.com/invariant-hq/windtrap.git#4f2b11f2f5e70b3ffcf9bf972a037d12dd8031ba")
  (package
   (name windtrap))
  (package
