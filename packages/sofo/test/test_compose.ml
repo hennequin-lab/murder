@@ -84,15 +84,15 @@ let raises_containing ~msg ~substring f =
    and a matrix on the right: this is the form Rune.vmap's matmul rule can
    translate, and it is equally correct eagerly. *)
 
-type params =
-  { a : Nx.float64_t (* [3;3] *)
-  ; ct : Nx.float64_t (* Cᵀ, [3;h] *)
-  ; wt : Nx.float64_t (* Wᵀ, [h;3] *)
-  ; b : Nx.float64_t (* [h] *)
+type 'd params =
+  { a : 'd Nx.float64_t (* [3;3] *)
+  ; ct : 'd Nx.float64_t (* Cᵀ, [3;h] *)
+  ; wt : 'd Nx.float64_t (* Wᵀ, [h;3] *)
+  ; b : 'd Nx.float64_t (* [h] *)
   }
 [@@deriving ptree]
 
-let params_ptree : params Nx.Ptree.t = ptree_params
+let params_ptree : (Nx.host params, Nx.host) Nx.Ptree.t = Nx.Ptree.v walk_params
 
 let params () =
   { a = mat 3 3 [| 0.8; 0.1; -0.2; 0.3; 0.7; 0.2; -0.1; 0.4; 0.9 |]
@@ -136,7 +136,7 @@ let sketch ?(kk = k) loss p = Sofo.sketch params_ptree loss p (sampler kk p)
 
 (* The reference tangent batch, computed independently of the lane machinery
    under test: one single-tangent [Rune.jvp] per lane, stacked. *)
-let lane_tangents ~k (f : params -> Nx.float64_t) p thetas =
+let lane_tangents ~k (f : Nx.host params -> Nx.host Nx.float64_t) p thetas =
   stack
     ~axis:0
     (List.init k (fun i ->
@@ -198,9 +198,9 @@ let scan_targets =
 let scan_loss p =
   let _, ls =
     Rune.scan'
-      ~f:(fun z tgt ->
-        let z' = step p z in
-        z', Sofo.mse ~target:tgt z')
+      (fun z tgt ->
+         let z' = step p z in
+         z', Sofo.mse ~target:tgt z')
       ~init:z0
       scan_targets
   in
@@ -222,7 +222,9 @@ let test_scan_threads_the_total () =
       (zeros f64 [| kk; kk |])
       (List.init scan_steps Fun.id)
   in
-  check_arr ~msg:"Σ_t Y_tᵀ H Y_t" (to_array reference) sk.ggn
+  (* The reference scales Y Yᵀ by h, the mark contracts Y with h Y: the two
+     round apart, and the blocks reach 4e7, where one ulp is 7e-9. *)
+  check_rel ~msg:"Σ_t Y_tᵀ H Y_t" reference sk.ggn
 
 let vmap_trials = 5
 
@@ -264,13 +266,13 @@ let test_vmap_inside_matches_the_loop () =
 
 (* Trials as a structure, so that a mapped function can see each trial's target
    alongside its start. *)
-type trial =
-  { x : Nx.float64_t
-  ; t : Nx.float64_t
+type 'd trial =
+  { x : 'd Nx.float64_t
+  ; t : 'd Nx.float64_t
   }
 [@@deriving ptree]
 
-let trial_ptree : trial Nx.Ptree.t = ptree_trial
+let trial_ptree : (Nx.host trial, Nx.host) Nx.Ptree.t = Nx.Ptree.v walk_trial
 let trials = { x = starts; t = endpoints }
 let batch = float_of_int vmap_trials
 let n_pred = 3.0
@@ -341,8 +343,8 @@ let test_vmap_outside_a_sketch_batches_the_sketches () =
      sketches naturally. Compare the whole bundle per lane. *)
   let m = 2 in
   let batched = sampler m (params ()) in
-  let bundle (sk : params Sofo.sketch) =
-    concatenate ~axis:0 [ ravel sk.loss; ravel sk.c; ravel sk.ggn ]
+  let bundle (sk : (Nx.host params, Nx.host) Sofo.sketch) =
+    concatenate ~axis:0 [ flatten sk.loss; flatten sk.c; flatten sk.ggn ]
   in
   let expected =
     stack
@@ -374,6 +376,66 @@ let test_grad_outside_a_sketch_is_exact () =
   check_arr ~msg:"gradient (wt)" (to_array g_plain.wt) g_sketch.wt;
   check_arr ~msg:"gradient (b)" (to_array g_plain.b) g_sketch.b
 
+let test_a_sketch_on_another_thread_is_its_own () =
+  (* A sketch's extent is the code its map runs. A thread of the same domain
+     that differentiates a scan of marks while the sketch's loss is running
+     sees no sketch around it, and the sketch is the one it makes alone. The
+     two threads take turns at fixed stages, so the interleaving is the same
+     on every run. *)
+  let p = params () in
+  let _, g_alone = Rune.value_and_grad params_ptree scan_loss p in
+  let sk_alone = sketch scan_loss p in
+  let m = Mutex.create ()
+  and c = Condition.create ()
+  and stage = ref 0 in
+  let set n =
+    Mutex.protect m (fun () ->
+      stage := Int.max !stage n;
+      Condition.broadcast c)
+  in
+  let wait_for n =
+    Mutex.protect m (fun () ->
+      while !stage < n do
+        Condition.wait c m
+      done)
+  in
+  let sketched = ref None in
+  let thread =
+    Thread.create
+      (fun () ->
+         let loss p =
+           set 1;
+           wait_for 2;
+           scan_loss p
+         in
+         sketched
+         := Some
+              (match sketch loss p with
+               | sk -> Ok sk
+               | exception e -> Error e);
+         set 1)
+      ()
+  in
+  wait_for 1;
+  let grad =
+    Fun.protect
+      ~finally:(fun () -> set 2)
+      (fun () ->
+         match Rune.value_and_grad params_ptree scan_loss p with
+         | _, g -> Ok g
+         | exception e -> Error e)
+  in
+  Thread.join thread;
+  (match grad with
+   | Ok g ->
+     check_arr ~msg:"gradient (a)" (to_array g_alone.a) g.a;
+     check_arr ~msg:"gradient (b)" (to_array g_alone.b) g.b
+   | Error e -> fail ("the other thread's gradient raised " ^ Printexc.to_string e));
+  match !sketched with
+  | Some (Ok sk) -> check_arr ~msg:"the thread's G̃" (to_array sk_alone.ggn) sk.ggn
+  | Some (Error e) -> fail ("the sketch raised " ^ Printexc.to_string e)
+  | None -> fail "the sketch did not return"
+
 let test_sketch_of_grad_is_the_batched_hessian () =
   (* a sketch of grad (the matrix's bonus row): the prediction is itself a
      gradient computed by reverse mode, and the batched forward pass
@@ -392,7 +454,7 @@ let test_sketch_of_grad_is_the_batched_hessian () =
   let p' =
     Nx.Ptree.map2
       params_ptree
-      (fun _ leaf d -> Infix.(leaf + (d *$ Nx_dtype.of_float (Nx.dtype d) eps)))
+      (fun _ leaf d -> Infix.(leaf + (d *$ Nx.Dtype.of_float (Nx.dtype d) eps)))
       p
       (sk.apply z)
   in
@@ -428,7 +490,7 @@ let test_rng_in_the_graph_is_a_constant () =
      the same key: that is the statement that the draw is a constant of the
      differentiation rather than a missing term. *)
   let noisy p =
-    let noise = randn f64 [| 3 |] in
+    let noise = Nx.Rng.normal f64 [| 3 |] in
     Sofo.mse ~target:(zeros f64 [| 3 |]) Infix.(step p z0 + noise)
   in
   let clean p = Sofo.mse ~target:(zeros f64 [| 3 |]) (step p z0) in
@@ -518,8 +580,8 @@ let test_jitted_sketch_matches_eager () =
      input leaf, and the scan inside the loss stays a loop. *)
   let p = params () in
   let dirs = sampler k p in
-  let bundle (sk : params Sofo.sketch) =
-    concatenate ~axis:0 [ ravel sk.loss; ravel sk.c; ravel sk.ggn ]
+  let bundle (sk : (Nx.host params, Nx.host) Sofo.sketch) =
+    concatenate ~axis:0 [ flatten sk.loss; flatten sk.c; flatten sk.ggn ]
   in
   let eager = bundle (Sofo.sketch params_ptree vmap_loss p dirs) in
   let jitted =
@@ -538,9 +600,9 @@ let test_a_long_scan_compiles () =
   let loss p =
     let _, ls =
       Rune.scan'
-        ~f:(fun z tgt ->
-          let z' = step p z in
-          z', Sofo.mse ~target:tgt z')
+        (fun z tgt ->
+           let z' = step p z in
+           z', Sofo.mse ~target:tgt z')
         ~init:z0
         targets
     in
@@ -548,8 +610,8 @@ let test_a_long_scan_compiles () =
   in
   let p = params () in
   let dirs = sampler 4 p in
-  let bundle (sk : params Sofo.sketch) =
-    concatenate ~axis:0 [ ravel sk.loss; ravel sk.c; ravel sk.ggn ]
+  let bundle (sk : (Nx.host params, Nx.host) Sofo.sketch) =
+    concatenate ~axis:0 [ flatten sk.loss; flatten sk.c; flatten sk.ggn ]
   in
   let eager = bundle (Sofo.sketch params_ptree loss p dirs) in
   let jitted =
@@ -573,9 +635,9 @@ let test_control_flow_is_inherited () =
   let masked p =
     let _, zs =
       Rune.scan'
-        ~f:(fun z _tgt ->
-          let z' = step p z in
-          z', z')
+        (fun z _tgt ->
+           let z' = step p z in
+           z', z')
         ~init:z0
         scan_targets
     in
@@ -602,6 +664,9 @@ let tests =
           "an observation inside a vmap scales by the batch"
           test_observation_inside_a_vmap_scales_by_the_batch
       ; test "grad of a sketch is exact" test_grad_outside_a_sketch_is_exact
+      ; test
+          "a sketch on another thread is its own"
+          test_a_sketch_on_another_thread_is_its_own
       ; test
           "a sketch of grad is the batched Hessian"
           test_sketch_of_grad_is_the_batched_hessian

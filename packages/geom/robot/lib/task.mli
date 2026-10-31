@@ -55,17 +55,18 @@
 (** {1:types Types} *)
 
 (** The type for tasks. A task holds the model it belongs to, the dimension of
-    its residual and the two maps that produce it. *)
-type t
+    its residual and the two maps that produce it. Its targets, and the
+    configurations it maps, lie on the device set ['d]. *)
+type 'd t
 
 (** [model t] is the model [t] is defined on. *)
-val model : t -> Robot.t
+val model : 'd t -> Robot.t
 
 (** [dim t] is the length of the residual vector. *)
-val dim : t -> int
+val dim : 'd t -> int
 
 (** [label t] names the task for printing and error messages. *)
-val label : t -> string
+val label : 'd t -> string
 
 (** {1:constructors Constructors} *)
 
@@ -75,7 +76,7 @@ val label : t -> string
     (see {!jacobian}). It is the same convention on both sides: a step [dq]
     changes the body twist by [J dq], and the error is the body twist that
     cancels the error. *)
-val pose : Robot.t -> frame:Robot.frame -> target:Geom.Motor.t -> t
+val pose : Robot.t -> frame:Robot.frame -> target:'d Geom.Motor.t -> 'd t
 
 (** [primitive model ~frame ~reference ~target] is the geometric task: the
     object [reference], attached to the named frame and carried by its motion,
@@ -95,9 +96,9 @@ val primitive
   :  ?normalize:bool
   -> Robot.t
   -> frame:Robot.frame
-  -> reference:Geom.Cga.t
-  -> target:Geom.Cga.t
-  -> t
+  -> reference:'d Geom.Cga.t
+  -> target:'d Geom.Cga.t
+  -> 'd t
 
 (** [custom ?label model ~dim ~residual ~jacobian] is a task defined by its two
     maps, for the residuals this module does not know about. [residual q] must
@@ -108,9 +109,9 @@ val custom
   :  ?label:string
   -> Robot.t
   -> dim:int
-  -> residual:(Robot.q -> Nx.float32_t)
-  -> jacobian:(Robot.q -> Nx.float32_t)
-  -> t
+  -> residual:('d Robot.q -> 'd Nx.float32_t)
+  -> jacobian:('d Robot.q -> 'd Nx.float32_t)
+  -> 'd t
 
 (** {1:combining Combining} *)
 
@@ -119,21 +120,21 @@ val custom
     components have different units.
 
     Raises [Invalid_argument] if [Array.length w <> dim t]. *)
-val weight : t -> float array -> t
+val weight : 'd t -> float array -> 'd t
 
 (** [scale t s] is [weight t [| s; s; ... |]], the uniform version. *)
-val scale : t -> float -> t
+val scale : 'd t -> float -> 'd t
 
 (** [stack ts] is the concatenation of the tasks' residual vectors, whose
     Jacobian stacks the same way. The tasks must share a model.
 
     Raises [Invalid_argument] if the list is empty or the models differ. *)
-val stack : t list -> t
+val stack : 'd t list -> 'd t
 
 (** {1:evaluating Evaluating} *)
 
 (** [residual t q] is the residual vector, of shape [batch_shape @ [|dim|]]. *)
-val residual : t -> Robot.q -> Nx.float32_t
+val residual : 'd t -> 'd Robot.q -> 'd Nx.float32_t
 
 (** [jacobian t q] is the Jacobian of the task, of shape
     [batch_shape @ [|dim; dof|]].
@@ -150,16 +151,16 @@ val residual : t -> Robot.q -> Nx.float32_t
     The exact derivative of [log] would need the differential of the [SE(3)]
     logarithm, [d log_E]; that is a refinement, and it changes the step only
     where the error is already large, where a trust region dominates anyway. *)
-val jacobian : t -> Robot.q -> Nx.float32_t
+val jacobian : 'd t -> 'd Robot.q -> 'd Nx.float32_t
 
 (** [squared t q] is the sum of the squares of the residual, of shape
     [batch_shape]: the least-squares objective the residual defines, and the
     scalar a demo logs. *)
-val squared : t -> Robot.q -> Nx.float32_t
+val squared : 'd t -> 'd Robot.q -> 'd Nx.float32_t
 
 (** [norm t q] is its square root, of shape [batch_shape]. *)
-val norm : t -> Robot.q -> Nx.float32_t
+val norm : 'd t -> 'd Robot.q -> 'd Nx.float32_t
 
 (** [pp ppf t] prints the task: its label, its dimension and its model's
     coordinate count. *)
-val pp : Format.formatter -> t -> unit
+val pp : Format.formatter -> 'd t -> unit

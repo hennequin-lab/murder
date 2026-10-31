@@ -71,6 +71,32 @@ let test_points () =
     (C.distance p (p3 0. 0. 0.));
   equal_scalar ~msg:"squared distance" 25. (C.distance2 (p3 0. 0. 0.) (p3 3. 4. 0.));
   equal_scalar ~msg:"distance is symmetric" 5. (C.distance (p3 3. 4. 0.) (p3 0. 0. 0.));
+  (* Rounding leaves [distance2 q q] at -2.4e-7 for this point. Its distance is
+     zero, and a residue of 1e-6 of either sign has a root below 1e-2. *)
+  let q = p3 (-0.9520394521181377) (-0.9520394521181377) 0.5894452266566428 in
+  equal_scalar
+    ~msg:"a point is at distance zero from itself"
+    ~eps:1e-2
+    0.
+    (C.distance q q);
+  (* At coincident points the distance has a kink, and its derivative is the
+     zero subgradient in both modes, whatever the sign rounding gave
+     [distance2]: [-2.4e-7] at [q], and zero at two origins. *)
+  List.iter
+    (fun (name, c) ->
+       let f v = C.distance (C.point v) (C.point c) in
+       equal_floats
+         ~msg:(name ^ ": grad at coincidence")
+         [| 0.; 0.; 0. |]
+         (Rune.grad' f c);
+       equal_scalar
+         ~msg:(name ^ ": jvp at coincidence")
+         0.
+         (snd (Rune.jvp' f c (v3 1. 1. 1.))))
+    [ ( "rounded below zero"
+      , v3 (-0.9520394521181377) (-0.9520394521181377) 0.5894452266566428 )
+    ; "two origins", v3 0. 0. 0.
+    ];
   let batch = C.point (create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 0.5 |]) in
   equal ~msg:"a batch of points" (array int) [| 2; 32 |] (C.shape batch);
   equal
@@ -360,7 +386,7 @@ let test_inherited () =
     (C.undual (C.dual C.e1));
   raises_match
     ~msg:"a bad blade index is rejected"
-    (Exn.invalid_arg ~substring:"out of range")
+    (Exn.invalid_arg ~sub:"out of range")
     (fun () -> ignore (C.basis (B.of_int 32)))
 
 (* Properties *)
@@ -392,6 +418,28 @@ let motor_gen =
         (array ~size:(constant 3) (float_range (-1.) 1.))
         axis_gen
         (float_range (-2.5) 2.5))
+
+(* Another device set *)
+
+(* A set of the host's devices, computed by the same kernels as the host, so a
+   value computed there is the host's, bit for bit. An operation that met a
+   constant left on the host would raise. *)
+let test_device_set () =
+  let module D = (val Nx.devices (Nx.rigs Nx.Host.v)) in
+  let on x = Nx.place D.on x in
+  let same msg host set = equal ~msg (tensor_exact ()) host (Nx.place Nx.Host.on set) in
+  let a = p3 1. 2. 3.
+  and b = p3 (-1.) 0.5 2. in
+  let m = M.mul (M.translate3 0.5 0. 1.) (M.rotate ~axis:(v3 0. 0. 1.) ~angle:(sc 0.7)) in
+  same "distance" (C.distance a b) (C.distance (on a) (on b));
+  same "a line" (C.line a b) (C.line (on a) (on b));
+  same
+    "a sphere of a point"
+    (C.sphere_of_point ~center:a ~radius:(sc 2.))
+    (C.sphere_of_point ~center:(on a) ~radius:(on (sc 2.)));
+  same "a grade" (C.grade 2 (C.gp a b)) (C.grade 2 (C.gp (on a) (on b)));
+  same "the dual" (C.dual a) (C.dual (on a));
+  same "the motor action" (C.apply_motor m a) (C.apply_motor (on m) (on a))
 
 let test_properties =
   group
@@ -455,5 +503,6 @@ let () =
        ; group "conformal" [ test "dilations and transversions" test_conformal ]
        ; group "motors" [ test "the packed motor bridge" test_motors ]
        ; group "inherited" [ test "the generic algebra in Cl(4,1)" test_inherited ]
+       ; group "device sets" [ test "a set besides the host" test_device_set ]
        ; test_properties
        ])

@@ -12,7 +12,7 @@ open Symo
 let in_dir = Cmdargs.in_dir "-d"
 
 module RNN = struct
-  type 'a t =
+  type ('a, _) t =
     { b : 'a (* input x hidden *)
     ; w : 'a (* hidden x hidden *)
     ; c : 'a (* hidden x output *)
@@ -31,7 +31,7 @@ module RNN = struct
     ; bias = [ hidden ]
     }
 
-  let symmetries : Symmetry.spec list t =
+  let symmetries : (Symmetry.spec list, _) t =
     { b = [ Symmetry.Id; Symmetry.Perm 0 ]
     ; w = [ Symmetry.Perm 0; Symmetry.Perm 0 ]
     ; c = [ Symmetry.Perm 0; Symmetry.Id ]
@@ -39,9 +39,9 @@ module RNN = struct
     }
 
   let init () =
-    let w = randn float32 [| hidden; hidden |] in
-    let b = randn float32 [| input_dim; hidden |] in
-    let c = randn float32 [| hidden; output_dim |] in
+    let w = Rng.normal float32 [| hidden; hidden |] in
+    let b = Rng.normal float32 [| input_dim; hidden |] in
+    let c = Rng.normal float32 [| hidden; output_dim |] in
     let bias = zeros float32 [| hidden |] in
     let open Infix in
     { b = b /$ Float.sqrt (Float.of_int input_dim)
@@ -50,17 +50,17 @@ module RNN = struct
     ; bias
     }
 
-  let forward ~dt (p : float32_t t) ~input =
+  let forward ~dt (p : (host float32_t, host) t) ~input =
     (* input = horizon x bs x input_dim *)
     let bs = dim 1 input in
     let open Infix in
     Rune.scan'
-      ~f:(fun x u ->
-        let o = tanh x in
-        let x =
-          (x *$ Float.(1. - dt)) + ((-x + (o *@ p.w) + (u *@ p.b) + p.bias) *$ dt)
-        in
-        x, o *@ p.c)
+      (fun x u ->
+         let o = tanh x in
+         let x =
+           (x *$ Float.(1. - dt)) + ((-x + (o *@ p.w) + (u *@ p.b) + p.bias) *$ dt)
+         in
+         x, o *@ p.c)
       ~init:(zeros float32 [| bs; hidden |])
       input
     |> snd
@@ -71,11 +71,11 @@ let student = RNN.init ()
 let dt = 0.04
 let horizon = 100
 let batch = 128
-let input = randn float32 [| horizon; batch; RNN.input_dim |]
+let input = Rng.normal float32 [| horizon; batch; RNN.input_dim |]
 let targets = RNN.forward ~dt teacher ~input
 let _ = Nx_io.save_txt (in_dir "target") (slice [ A; I 0; A ] targets)
 
-let loss (p : Nx.float32_t RNN.t) =
+let loss (p : (Nx.host Nx.float32_t, Nx.host) RNN.t) =
   let pred = RNN.forward ~dt p ~input in
   mean (square Infix.(pred - targets))
 
@@ -104,9 +104,14 @@ let save_cov_for label theta =
   let s2_emp =
     let key = Rng.key 1985 in
     let flatten x =
-      Ptree.Payload.fold (module RNN) (fun _ x acc -> reshape [| -1; 1 |] x :: acc) x []
-      |> List.rev
-      |> concatenate ~axis:0
+      let acc = ref [] in
+      ignore
+        (Ptree.Payload.map
+           (module RNN)
+           (fun _ x -> acc := reshape [| -1; 1 |] x :: !acc)
+           x
+         : _ RNN.t);
+      List.rev !acc |> concatenate ~axis:0
     in
     List.range 0 10_000
     |> List.fold ~init:(scalar float32 0.) ~f:(fun acc i ->

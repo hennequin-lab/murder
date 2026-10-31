@@ -27,14 +27,14 @@ let batch_of_shape sh =
   if Array.length sh = 0 then [||] else Array.sub sh 0 (Array.length sh - 1)
 
 let dense batch comps =
-  let z = zeros dty batch in
+  let z = zeros_at (beside (snd (List.hd comps))) dty batch in
   let a = Array.make 16 z in
   List.iter (fun (i, v) -> a.(i) <- v) comps;
   stack ~axis:(-1) (Array.to_list a)
 
 let take3 v =
   let r = Array.length (shape v) in
-  let f i = take ~axis:(r - 1) ~indices:(Nx.scalar int64 (Int64.of_int i)) v in
+  let f i = take ~axis:(r - 1) (Nx.scalar_at (beside v) int64 (Int64.of_int i)) v in
   f 0, f 1, f 2
 
 let e1 = A.e 1
@@ -45,9 +45,10 @@ let e0 = A.e 4
 let point v =
   let batch = batch_of_shape (shape v) in
   let x, y, z = take3 v in
-  let p1 = Infix.(e1 - (expand batch x * e0)) in
-  let p2 = Infix.(e2 - (expand batch y * e0)) in
-  let p3 = Infix.(e3 - (expand batch z * e0)) in
+  let at c = place (beside v) c in
+  let p1 = Infix.(at e1 - (expand batch x * at e0)) in
+  let p2 = Infix.(at e2 - (expand batch y * at e0)) in
+  let p3 = Infix.(at e3 - (expand batch z * at e0)) in
   A.op (A.op p1 p2) p3
 
 let point3 x y z = point (create dty [| 3 |] [| x; y; z |])
@@ -67,7 +68,7 @@ let ideal_point d =
   let batch = batch_of_shape (shape d) in
   let dx, dy, dz = take3 d in
   let b = dense batch [ 3, dz; (5, Infix.(dy *$ -1.)); 6, dx ] in
-  A.op e0 b
+  A.op (place (beside d) e0) b
 
 let plane ~normal ~offset =
   let batch = batch_of_shape (shape normal) in
@@ -164,7 +165,7 @@ let of_motor m =
   let batch = Array.sub sh 0 (Array.length sh - 1) in
   let bsz = Array.fold_left ( * ) 1 batch in
   let m2 = reshape [| bsz; 8 |] m in
-  let out = Infix.(m2 *@ motor_embedding) in
+  let out = Infix.(m2 *@ place (beside m2) motor_embedding) in
   reshape (Array.append batch [| 16 |]) out
 
 let apply_motor m x = A.sandwich (of_motor m) x

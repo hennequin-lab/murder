@@ -5,11 +5,11 @@
 
 (depends
  (all_platforms
-  (ocaml dune compress rig)))
+  (ocaml dune lz rig)))
 
 (source
  (fetch
   (url
-   git+https://github.com/raven-ml/raven.git#3984341140aef7bfc6f27eb14474f4a261a7b7bc)))
+   git+https://github.com/raven-ml/raven.git#19a5d885a6dc6e23f8d62286331200b9aeb58958)))
 
 (dev)

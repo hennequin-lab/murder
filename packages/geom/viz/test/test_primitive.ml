@@ -272,6 +272,34 @@ let test_transform_circle_and_sphere () =
     equal_float ~msg:"the sphere keeps its radius" 0.5 s.P.radius
   | _ -> failwith "expected a sphere"
 
+(* Another device set *)
+
+(* A set of the host's devices, computed by the same kernels as the host, so a
+   value computed there is the host's, bit for bit. An operation that met a
+   constant left on the host would raise. *)
+let test_device_set () =
+  let module D = (val Nx.devices (Nx.rigs Nx.Host.v)) in
+  let m =
+    M.mul (M.translate3 1. 0. 0.5) (M.rotate ~axis:(vec3 0. 0. 1.) ~angle:(scalar 0.5))
+  in
+  let points = function
+    | P.Point a -> [ a ]
+    | P.Segment (a, b) -> [ a; b ]
+    | P.Frame f -> [ f.origin; f.x; f.y; f.z ]
+    | _ -> []
+  in
+  let floats p = List.concat_map (fun (a : P.p3) -> [ a.x; a.y; a.z ]) (points p) in
+  List.iter
+    (fun p ->
+       equal
+         (list float_exact)
+         (floats (P.transform m p))
+         (floats (P.transform (Nx.place D.on m) p)))
+    [ P.Point (p3 1. 2. 3.)
+    ; P.Segment (p3 0. 0. 0., p3 (-1.) 0.5 2.)
+    ; P.Frame { origin = p3 0. 0. 0.; x = p3 1. 0. 0.; y = p3 0. 1. 0.; z = p3 0. 0. 1. }
+    ]
+
 let () =
   exit
     (run
@@ -296,4 +324,5 @@ let () =
            ; test "agreement with the PGA motor action" test_transform_matches_pga
            ; test "circles and spheres" test_transform_circle_and_sphere
            ]
+       ; group "device sets" [ test "a set besides the host" test_device_set ]
        ])

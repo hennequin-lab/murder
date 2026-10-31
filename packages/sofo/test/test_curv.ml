@@ -27,7 +27,7 @@ let v3 () = vec [| 0.3; -0.6; 0.8 |]
 
 (* The Hessian action, taken from rune's Hessian of [loss] as a function of a
    free [y]. *)
-let hessian_action (loss : Nx.float64_t -> Nx.float64_t) y v =
+let hessian_action (loss : Nx.host Nx.float64_t -> Nx.host Nx.float64_t) y v =
   Infix.(Rune.jacfwd' (Rune.grad' loss) y *@ v)
 
 let one_lane t = unsqueeze ~axes:[ 0 ] t
@@ -51,8 +51,8 @@ let lanes ~k t =
 let check_curv
       ~msg
       ?(k = 3)
-      (curv : Sofo.Curv.t)
-      (loss : Nx.float64_t -> Nx.float64_t)
+      (curv : Nx.host Sofo.Curv.t)
+      (loss : Nx.host Nx.float64_t -> Nx.host Nx.float64_t)
       y
       v
   =

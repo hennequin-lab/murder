@@ -6,9 +6,9 @@ module P = Primitive
 let p3 = P.p3
 
 type obj =
-  | Point of Cga.t
-  | Sphere of Cga.t
-  | Circle of Cga.t
+  | Point of Nx.host Cga.t
+  | Sphere of Nx.host Cga.t
+  | Circle of Nx.host Cga.t
 
 let to_primitive v = function
   | Point p -> P.of_cga_point (Cga.sandwich v p)

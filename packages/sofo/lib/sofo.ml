@@ -14,13 +14,13 @@ let mse = Observe.mse
 let sse = Observe.sse
 let softmax_ce = Observe.softmax_ce
 
-type 'p sketch = 'p Sketch.t =
+type ('p, 'd) sketch = ('p, 'd) Sketch.t =
   { k : int
-  ; loss : Nx.float64_t
-  ; c : Nx.float64_t
-  ; ggn : Nx.float64_t
+  ; loss : 'd Nx.float64_t
+  ; c : 'd Nx.float64_t
+  ; ggn : 'd Nx.float64_t
   ; dirs : 'p
-  ; apply : Nx.float64_t -> 'p
+  ; apply : 'd Nx.float64_t -> 'p
   }
 
 let sketch = Sketch.run

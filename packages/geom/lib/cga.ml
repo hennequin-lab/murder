@@ -23,20 +23,20 @@ let dty = float32
 let batch_shape = A.batch_shape
 let expand batch x = reshape (Array.append batch [| 1 |]) x
 let comp a i = A.coeff a (Blade.of_int i)
-let constant batch x = broadcast_to batch (Nx.scalar dty x)
+let constant p batch x = broadcast_to batch (Nx.scalar_at p dty x)
 
 let batch_of_shape sh =
   if Array.length sh = 0 then [||] else Array.sub sh 0 (Array.length sh - 1)
 
 let dense batch comps =
-  let z = zeros dty batch in
+  let z = zeros_at (beside (snd (List.hd comps))) dty batch in
   let a = Array.make 32 z in
   List.iter (fun (i, v) -> a.(i) <- v) comps;
   stack ~axis:(-1) (Array.to_list a)
 
 let take3 v =
   let r = Array.length (shape v) in
-  let f i = take ~axis:(r - 1) ~indices:(Nx.scalar int64 (Int64.of_int i)) v in
+  let f i = take ~axis:(r - 1) (Nx.scalar_at (beside v) int64 (Int64.of_int i)) v in
   f 0, f 1, f 2
 
 let e1 = A.e 1
@@ -44,8 +44,8 @@ let e2 = A.e 2
 let e3 = A.e 3
 let e4 = A.e 4
 let e5 = A.e 5
-let e0 = dense [||] [ 8, constant [||] (-0.5); 16, constant [||] 0.5 ]
-let einf = dense [||] [ 8, constant [||] 1.; 16, constant [||] 1. ]
+let e0 = dense [||] [ 8, constant Host.on [||] (-0.5); 16, constant Host.on [||] 0.5 ]
+let einf = dense [||] [ 8, constant Host.on [||] 1.; 16, constant Host.on [||] 1. ]
 
 let point v =
   let open Infix in
@@ -87,15 +87,15 @@ let sphere ~center ~radius =
   let x2 = (x * x) + (y * y) + (z * z) in
   let r2 = r * r in
   let d = x2 - r2 in
-  let c4 = (d *$ 0.5) - constant batch 0.5 in
-  let c5 = (d *$ 0.5) + constant batch 0.5 in
+  let c4 = (d *$ 0.5) - constant (beside d) batch 0.5 in
+  let c5 = (d *$ 0.5) + constant (beside d) batch 0.5 in
   dense batch [ 1, x; 2, y; 4, z; 8, c4; 16, c5 ]
 
 let sphere_of_point ~center ~radius =
   let open Infix in
   let batch = A.batch_shape center in
   let r2 = expand batch (radius * radius) in
-  center - (r2 * einf *$ 0.5)
+  center - (r2 * place (beside center) einf *$ 0.5)
 
 let sphere_radius2 s =
   let open Infix in
@@ -109,7 +109,7 @@ let sphere_center s =
   let batch = A.batch_shape s in
   let sn = s / expand batch b in
   let s2 = A.coeff (A.gp sn sn) (Blade.of_int 0) in
-  sn + (expand batch (s2 *$ 0.5) * einf)
+  sn + (expand batch (s2 *$ 0.5) * place (beside s) einf)
 
 let plane ~normal ~offset =
   let batch = batch_of_shape (shape normal) in
@@ -141,18 +141,26 @@ let is_zero a =
   let s = sum ~axes:[ r - 1 ] (Nx.abs a) in
   less_s s 1e-5
 
-let is_flat a = is_zero (A.inner einf a)
+let is_flat a = is_zero (A.inner (place (beside a) einf) a)
 let is_round a = logical_not (is_flat a)
 let point_pair x y = A.op x y
-let line x y = A.dual (A.op (A.op x y) einf)
+let line x y = A.dual (A.op (A.op x y) (place (beside x) einf))
 let line_of_planes p1 p2 = A.op p1 p2
 let circle x y z = A.dual (A.op (A.op x y) z)
 let circle_of_spheres s1 s2 = A.op s1 s2
-let plane_through x y z = A.dual (A.op (A.op (A.op x y) z) einf)
+let plane_through x y z = A.dual (A.op (A.op (A.op x y) z) (place (beside x) einf))
 let sphere_through x y z w = A.dual (A.op (A.op (A.op x y) z) w)
 let incident x o = is_zero (A.inner x o)
 let distance2 x y = Infix.(A.scalar_prod x y *$ -2.)
-let distance x y = Nx.sqrt (distance2 x y)
+
+(* The root reads a placeholder where [distance2] is not positive, so that
+   neither its value nor its infinite derivative at zero reaches the result:
+   coincident points get distance zero and derivative zero in both modes. *)
+let distance x y =
+  let d2 = distance2 x y in
+  let pos = greater_s d2 0. in
+  where pos (Nx.sqrt (where pos d2 (ones_like d2))) (zeros_like d2)
+
 let meet a b = A.op a b
 let coeff_i a i = A.coeff a (Blade.of_int i)
 
@@ -245,7 +253,7 @@ let transversion a =
   let open Infix in
   let batch = batch_of_shape (shape a) in
   let ax, ay, az = take3 a in
-  let one = constant batch 1. in
+  let one = constant (beside a) batch 1. in
   let hx = ax *$ 0.5
   and hy = ay *$ 0.5
   and hz = az *$ 0.5 in
@@ -281,7 +289,7 @@ let of_motor m =
   let batch = Array.sub sh 0 (Array.length sh - 1) in
   let bsz = Array.fold_left ( * ) 1 batch in
   let m2 = reshape [| bsz; 8 |] m in
-  let out = Infix.(m2 *@ motor_embedding) in
+  let out = Infix.(m2 *@ place (beside m2) motor_embedding) in
   reshape (Array.append batch [| 32 |]) out
 
 let apply_motor m x = A.sandwich (of_motor m) x

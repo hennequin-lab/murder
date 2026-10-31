@@ -25,9 +25,11 @@ module Optim = Optim
 module Make (M : Orbit.Model) = struct
   module Orbit = Orbit.Make (M)
 
-  (* The packed traversal of the parameter tree, for [Rune.grad] and
-     [Rune.jit]. *)
-  let ptree : Nx.float32_t M.t Nx.Ptree.t = Nx.Ptree.instantiate (module M)
+  (* The packed traversal of the parameter tree on the host, for [Rune.grad]
+     and [Rune.jit]. A description is at one set, so a tree on another is
+     described by [Nx.Ptree.instantiate (module M)] there. *)
+  let ptree : ((Nx.host Nx.float32_t, Nx.host) M.t, Nx.host) Nx.Ptree.t =
+    Nx.Ptree.instantiate (module M)
 
   include Orbit
   include Optim.Make (M) (Orbit)

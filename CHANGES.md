@@ -8,6 +8,21 @@ changes do not need an entry.
 ### geom
 
 - Imported from `hennequin-lab/geom`.
+- Multivectors and motors carry nx's device set, as `'d Cga.t` and
+  `'d Motor.t`: an operation computes where its operands lie. Constructors from
+  numbers (`scalar`, `one`, `basis`, `e`, `of_array`, `point3`, `Cga.einf`,
+  `Motor.translate3`) give host values.
+- `Motor.compose []` raises `Invalid_argument`, where it was `Motor.one`: an
+  empty list names no device set to make `one` on.
+- `Geom_robot`: configurations, motions and twists are `'d Robot.q`,
+  `'d Robot.motion` and `'d Robot.twist`, and `Task.t`, `Ik.state` and
+  `Ik.result` take the device set of their targets and configurations. A model
+  holds host motions: `joint_spec.origin` and `frame_spec.pose` are `Nx.host`.
+- `Geom_viz` and `Geom_robot_viz` take objects, motions and configurations of
+  any device set and read them on the host. `Camera.view` is a host motor, and
+  `Frame.rgba` a host image.
+- `Cga.distance` of two coincident points is `0.`, with derivative `0.`.
+  Rounding could leave their `distance2` below zero, and the distance was NaN.
 
 ### cmdargs
 
@@ -44,6 +59,11 @@ changes do not need an entry.
   scans), and `loss_of_taus` is one scan rather than one loss per step. The
   local model's expected-decrease coefficient `d2` is `-d1`, as it always was
   numerically.
+- Ported to raven 19a5d88: the problem and every tensor type take the device
+  set of their tensors (`('w, 'p, 'd) Problem.t`, `('w, 'd) Problem.value`,
+  `(float, 'w, 'd) Lqr.tape`), `inputs problem` describes the inputs at that
+  set, and `Lqr.Rows`, `Lqr.Tangent_rows` and `Lqr.Tangent_roll_rows` are
+  `('a, _) t` structures, as a parameter record now is.
 
 ### ilqr-vae
 
@@ -56,11 +76,35 @@ changes do not need an entry.
   `[batch…; n_steps; n_samples; m]`, state paths `[batch…; n_steps + 1; …]`,
   and `Dynamics.integrate` takes `[batch…; n_steps; m]`. The new
   `Dynamics.integrate_samples` is the sample-batched form.
+- Ported to raven 19a5d88: every value, component, recognition and model
+  type takes the device set of its tensors, named `'s` (`('w, 's) value`,
+  `('w, 'p, 's) Dynamics.t`, `('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t`), keys
+  are `'s Nx.Rng.key`, and the parameter records are `('a, _) params`
+  structures (`('a, 's) params` where one nests another). The constructors
+  make host components, as nx's creations do.
+- `Model.structure` and `Recognition.gparams_structure` name their parts by
+  field alone: a path that was `0.dynamics.w` is `dynamics.w`.
 
 ### symo
 
 - Imported from `hennequin-lab/symo-raven`.
+- Ported to raven 19a5d88. The orbit machinery and the optimizer run on the
+  parameter tree's device set: a `Model` is an `Nx.Ptree.S` declared
+  `('a, _) t` with `dims` and `symmetries` at every set; the set is a new
+  parameter of `Orbit.S.t`, both `factors`, `Optim.S.tree`, `State.t`, `Mid.t`,
+  `state`, `mid` and `Compiled.t`; `random_transform` takes a `'d Nx.Rng.key`,
+  `Compiler.t`'s closures run on any set, and `ptree` describes the tree on
+  `Nx.host`.
 
 ### sofo
 
 - Imported from `hennequin-lab/sofo-raven`.
+- Arrays carry their device set: `Curv.t` is `'d Curv.t`, `sketch` is
+  `('p, 'd) sketch` and `Optim.step_info` is `('p, 'd) Optim.step_info`, and
+  `Optim.state`'s key is a host `Nx.Rng.key`. `softmax_ce` takes float logits.
+- `Optim.gram` raises on directions with no tensor leaf.
+- A `Rune.vmap` around `Sofo.sketch` raises at raven 19a5d88: `Rune.lanes`
+  in a tangent map that an outer map evaluates does not see the map around
+  the call, a rune bug.
+- A sketch must be given the uncompiled loss: a `Rune.jit`ed loss first traced
+  outside a sketch keeps no marks, and its sketch has a zero GGN.

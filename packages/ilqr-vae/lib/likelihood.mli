@@ -22,19 +22,20 @@
 
 open Types
 
-type ('w, 'p) t =
+type ('w, 'p, 's) t =
   { n : int (** state dimension *)
   ; n_output : int (** observation dimension *)
-  ; structure : 'p Nx.Ptree.t (** the structure of the likelihood's parameters *)
+  ; structure : ('p, 's) Nx.Ptree.t (** the structure of the likelihood's parameters *)
   ; params : 'p (** the parameters a fresh model starts from *)
-  ; logp_t : 'p -> k:'w value -> x:'w value -> o:'w value -> 'w value
+  ; logp_t :
+      'p -> k:('w, 's) value -> x:('w, 's) value -> o:('w, 's) value -> ('w, 's) value
     (** [logp_t p ~k ~x ~o] is log p(o_k | x), summed over the observation
         channels: a scalar for one row, or one value per row for a batch
         ([[batch…; n]] states against [[batch…; n_output]] data). *)
-  ; mean : 'p -> 'w value -> 'w value
+  ; mean : 'p -> ('w, 's) value -> ('w, 's) value
     (** [mean p z] is the readout of a state or state sequence: the last axis
         ([n]) is replaced by [n_output], every leading axis kept. *)
-  ; sample : 'p -> key:Nx.Rng.t -> mean:'w value -> 'w value
+  ; sample : 'p -> key:'s Nx.Rng.key -> mean:('w, 's) value -> ('w, 's) value
     (** [sample p ~key ~mean] draws observations of the shape of [mean]. *)
   }
 
@@ -47,7 +48,7 @@ type ('w, 'p) t =
 module Gaussian : sig
   (** The parameters of a Gaussian likelihood over payload ['a].
       {!structure} gives their [Nx.Ptree.t]. *)
-  type 'a params =
+  type ('a, _) params =
     { c : 'a (** the readout, shape [[n_output; n]] *)
     ; bias : 'a (** shape [[n_output]] *)
     ; log_variances : 'a (** shape [[n_output]]; the variances are
@@ -60,7 +61,7 @@ module Gaussian : sig
       structure is used. A top-level [let s = structure ()] would pin it to
       the first dtype, as any application does; write [let s () = structure ()]
       instead. *)
-  val structure : unit -> ('a, 'b) Nx.t params Nx.Ptree.t
+  val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
   (** [make ~key ~c_mask ~scale ~sigma2 ~bias ~n ~n_output dtype] is a
       Gaussian readout of [[n]] dimensional states to [[n_output]]
@@ -82,15 +83,15 @@ module Gaussian : sig
       Raises [Invalid_argument] if [n] or [n_output] is not positive, or
       [sigma2] or [scale] is not positive. *)
   val make
-    :  ?key:Nx.Rng.t
-    -> ?c_mask:'w value
+    :  ?key:Nx.host Nx.Rng.key
+    -> ?c_mask:('w, Nx.host) value
     -> ?scale:float
     -> ?sigma2:float
     -> ?bias:float
     -> n:int
     -> n_output:int
     -> (float, 'w) Nx.dtype
-    -> ('w, (float, 'w) Nx.t params) t
+    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
 end
 
 (** {1:poisson Poisson} *)
@@ -105,7 +106,7 @@ end
 module Poisson : sig
   (** The parameters of a Poisson likelihood over payload ['a].
       {!structure} gives their [Nx.Ptree.t]. *)
-  type 'a params =
+  type ('a, _) params =
     { c : 'a (** the readout, shape [[n_output; n]] *)
     ; bias : 'a (** shape [[n_output]] *)
     ; log_gain : 'a (** shape [[n_output]]; the gains are [exp log_gain] *)
@@ -117,7 +118,7 @@ module Poisson : sig
       structure is used. A top-level [let s = structure ()] would pin it to
       the first dtype, as any application does; write [let s () = structure ()]
       instead. *)
-  val structure : unit -> ('a, 'b) Nx.t params Nx.Ptree.t
+  val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
   (** [make ~key ~c_mask ~link ~dt ~n ~n_output dtype] is a Poisson readout of
       [[n]] dimensional states to [[n_output]] observation channels.
@@ -136,12 +137,12 @@ module Poisson : sig
       Raises [Invalid_argument] if [n] or [n_output] is not positive, or [dt]
       is not positive. *)
   val make
-    :  ?key:Nx.Rng.t
-    -> ?c_mask:'w value
-    -> ?link:('w value -> 'w value)
+    :  ?key:Nx.host Nx.Rng.key
+    -> ?c_mask:('w, Nx.host) value
+    -> ?link:(('w, Nx.host) value -> ('w, Nx.host) value)
     -> ?dt:float
     -> n:int
     -> n_output:int
     -> (float, 'w) Nx.dtype
-    -> ('w, (float, 'w) Nx.t params) t
+    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
 end

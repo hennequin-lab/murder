@@ -31,7 +31,7 @@
 
     {[
     module Model = struct
-      type 'a t = { w : 'a } [@@deriving ptree]
+      type ('a, _) t = { w : 'a } [@@deriving ptree]
 
       let dims = { w = [ 100; 78 ] }
       let symmetries = { w = [ Symmetry.Id; Symmetry.Perm 0 ] }
@@ -160,32 +160,44 @@ module Orbit : sig
       estimation from parameters and from dense surrogates, the orbit
       averages [R1] and [R2], and a random group element applied to the tree
       ([random_transform]). *)
-  module Make (M : Model) : S with type 'a t = 'a M.t
+  module Make (M : Model) : S with type ('a, 'd) t = ('a, 'd) M.t
 end
 
 (** The host-side estimator solve. *)
 module Solve : sig
   (** [svd64 x] is the economy SVD of [x], computed in float64 and returned in
       float32. *)
-  val svd64 : Nx.float32_t -> Nx.float32_t * Nx.float32_t
+  val svd64 : Nx.host Nx.float32_t -> Nx.host Nx.float32_t * Nx.host Nx.float32_t
 
   (** [damp_spectrum ~damping s] is [damping * s_max + s]. *)
-  val damp_spectrum : damping:float -> Nx.float32_t -> Nx.float32_t
+  val damp_spectrum : damping:float -> Nx.host Nx.float32_t -> Nx.host Nx.float32_t
 
   (** [symmetric_power ~damping ~power x] is the damped symmetric power of a
       symmetric matrix, [U diag((damping·s_max + s)^power) Uᵀ] for
       [x = U diag(s) Uᵀ]. A negative power of a zero singular value is zero:
       a zero surrogate yields a zero direction rather than NaN. *)
-  val symmetric_power : damping:float -> power:float -> Nx.float32_t -> Nx.float32_t
+  val symmetric_power
+    :  damping:float
+    -> power:float
+    -> Nx.host Nx.float32_t
+    -> Nx.host Nx.float32_t
 
   (** [hessian ~damping sigma_w sigma_g] is the estimator [H] itself. *)
-  val hessian : damping:float -> Nx.float32_t -> Nx.float32_t -> Nx.float32_t
+  val hessian
+    :  damping:float
+    -> Nx.host Nx.float32_t
+    -> Nx.host Nx.float32_t
+    -> Nx.host Nx.float32_t
 
   (** [hessian_inverse ~damping sigma_w sigma_g] is Eq. 10's preconditioner
-      [H_inv] on two dense matrices. It needs [Nx.eigh], which [Rune.jit] does
-      not compile, so it is kept host-side. Its arguments must be on the
-      host. *)
-  val hessian_inverse : damping:float -> Nx.float32_t -> Nx.float32_t -> Nx.float32_t
+      [H_inv] on two dense matrices. It reads the spectrum's maximum with
+      [Nx.item], which a traced value refuses, so it is kept host-side. Its
+      arguments must be on the host. *)
+  val hessian_inverse
+    :  damping:float
+    -> Nx.host Nx.float32_t
+    -> Nx.host Nx.float32_t
+    -> Nx.host Nx.float32_t
 
   (** [hessian_inverse_blocks ~damping sigma_w sigma_g] is the same
       preconditioner applied blockwise: one square matrix per isotypic kind,
@@ -193,9 +205,9 @@ module Solve : sig
       uses; it is exact at the model's size and small. *)
   val hessian_inverse_blocks
     :  damping:float
-    -> Nx.float32_t list
-    -> Nx.float32_t list
-    -> Nx.float32_t list
+    -> Nx.host Nx.float32_t list
+    -> Nx.host Nx.float32_t list
+    -> Nx.host Nx.float32_t list
 end
 
 (** The Taylor optimizer on the orbit machinery: bias-corrected momentum, an
@@ -207,17 +219,21 @@ module Optim : module type of Optim
     and the Taylor optimizer ({!Optim.Make}) for a model [M], plus [ptree],
     the packed traversal {!Rune.grad} and {!Rune.jit} take.
 
-    The parameter tree is [Nx.float32_t M.t] throughout; [dims] and
-    [symmetries] describe each leaf. *)
+    The parameter tree is [('d Nx.float32_t, 'd) M.t] throughout, on any
+    device set ['d]: the compiled tables are host values, placed beside the
+    tree's arrays where they meet them, and the estimator solve runs on the
+    host. [dims] and [symmetries] describe each leaf. *)
 module Make (M : Orbit.Model) : sig
-  (** The packed traversal of the parameter tree. *)
-  val ptree : Nx.float32_t M.t Nx.Ptree.t
+  (** The packed traversal of the parameter tree on the host. A description is
+      at one set: [Nx.Ptree.instantiate (module M)] describes the tree on
+      another. *)
+  val ptree : ((Nx.host Nx.float32_t, Nx.host) M.t, Nx.host) Nx.Ptree.t
 
-  include Orbit.S with type 'a t := 'a M.t
+  include Orbit.S with type ('a, 'd) t := ('a, 'd) M.t
 
   (** The orbit machinery as a named submodule, alongside its [include]d
       contents. *)
-  module Orbit : Orbit.S with type 'a t = 'a M.t
+  module Orbit : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t
 
-  include Optim.S with type 'a tree := 'a M.t
+  include Optim.S with type ('a, 'd) tree := ('a, 'd) M.t
 end

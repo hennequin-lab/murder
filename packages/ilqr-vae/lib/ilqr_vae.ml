@@ -15,9 +15,9 @@ module Recognition = Recognition
 module Model = Model
 module Elbo = Elbo
 
-type 'w value = (float, 'w) Nx.t
-type ('w, 'd, 'l, 'p, 'e, 'r) model = ('w, 'd, 'l, 'p, 'e, 'r) Model.t
-type ('w, 'd, 'l, 'p, 'e, 'r) params = ('w, 'd, 'l, 'p, 'e, 'r) Model.params
+type ('w, 's) value = (float, 'w, 's) Nx.t
+type ('w, 'd, 'l, 'p, 'e, 'r, 's) model = ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
+type ('w, 'd, 'l, 'p, 'e, 'r, 's) params = ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
 
 let posterior_mean = Model.mean
 let posterior_draws = Model.infer
@@ -33,8 +33,8 @@ let elbo model params ?beta ~posterior data =
    [integrate_from model params ~x0 ~u] starts where the caller says. *)
 let integrate
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) Model.t)
-      (params : (w, d, l, p, e, r) Model.params)
+      (model : (w, d, l, p, e, r, 's) Model.t)
+      (params : (w, d, l, p, e, r, 's) Model.params)
       ~u
   =
   let u_shape = shape u in
@@ -47,13 +47,15 @@ let integrate
          model.Model.m
          rank);
   let batch_dims = Array.sub u_shape 0 (rank - 2) in
-  let x0 = zeros model.Model.dtype (Array.append batch_dims [| model.Model.n |]) in
+  let x0 =
+    zeros_at (beside u) model.Model.dtype (Array.append batch_dims [| model.Model.n |])
+  in
   Dynamics.integrate model.Model.dynamics params.Model.dynamics ~x0 ~u
 
 let integrate_from
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) Model.t)
-      (params : (w, d, l, p, e, r) Model.params)
+      (model : (w, d, l, p, e, r, 's) Model.t)
+      (params : (w, d, l, p, e, r, 's) Model.params)
       ~x0
       ~u
   =
@@ -63,23 +65,25 @@ let integrate_from
    sequence: observation [k] belongs to state [k + 1]. *)
 let decode
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) Model.t)
-      (params : (w, d, l, p, e, r) Model.params)
+      (model : (w, d, l, p, e, r, 's) Model.t)
+      (params : (w, d, l, p, e, r, 's) Model.params)
       ~time_axis
-      (z : w value)
+      (z : (w, 's) value)
   =
   let rank = Array.length (shape z) in
   let indices =
     List.init rank (fun axis ->
-      if Int.equal axis time_axis then (R (1, model.Model.n_steps + 1) : Nx.index) else A)
+      if Int.equal axis time_axis
+      then (R (1, model.Model.n_steps + 1) : 's Nx.index)
+      else A)
   in
   let z_next = slice indices z in
   model.Model.likelihood.Likelihood.mean params.Model.likelihood z_next
 
 let sample_generative
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) Model.t)
-      (params : (w, d, l, p, e, r) Model.params)
+      (model : (w, d, l, p, e, r, 's) Model.t)
+      (params : (w, d, l, p, e, r, 's) Model.params)
       ~key
   =
   let keys = Nx.Rng.split ~n:3 key in
@@ -94,7 +98,7 @@ let sample_generative
   in
   let x0 =
     match params.Model.initial_prior with
-    | None -> zeros model.Model.dtype [| model.Model.n |]
+    | None -> zeros_at (beside u) model.Model.dtype [| model.Model.n |]
     | Some p -> reshape [| model.Model.n |] (Initial.sample p ~key:key_x0 ~n_samples:1)
   in
   let z = integrate_from model params ~x0 ~u in
@@ -109,9 +113,9 @@ let sample_generative
 
 let predictions
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) Model.t)
-      (params : (w, d, l, p, e, r) Model.params)
-      (posterior : w Recognition.posterior)
+      (model : (w, d, l, p, e, r, 's) Model.t)
+      (params : (w, d, l, p, e, r, 's) Model.params)
+      (posterior : (w, 's) Recognition.posterior)
   =
   let z =
     Dynamics.integrate_samples
@@ -125,9 +129,9 @@ let predictions
 
 let predictions_deterministic
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) Model.t)
-      (params : (w, d, l, p, e, r) Model.params)
-      (samples : w Recognition.samples)
+      (model : (w, d, l, p, e, r, 's) Model.t)
+      (params : (w, d, l, p, e, r, 's) Model.params)
+      (samples : (w, 's) Recognition.samples)
   =
   let z =
     Dynamics.integrate_samples

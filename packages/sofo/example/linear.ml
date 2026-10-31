@@ -18,43 +18,47 @@ let device =
     | _ -> None
   in
   match gpu with
-  | Some g -> Device.make g
-  | None -> Device.host
+  | Some g -> g
+  | None -> Rig.host
 
-let placement = Placement.on device
+module D = (val Nx.devices [ device ])
+
+let placement = D.on
 
 module Model = struct
   module P = struct
-    type t = float32_t [@@deriving ptree]
+    type (_, 'd) t = 'd float32_t [@@deriving ptree]
   end
+
+  let ptree : ((D.d float32_t, D.d) P.t, D.d) Nx.Ptree.t = Nx.Ptree.instantiate (module P)
 
   let init ~d_in ~d_out =
     let open Nx.Infix in
-    randn float32 [| d_in; d_out |] /$ Float.(sqrt (of_int d_in))
+    Rng.normal float32 [| d_in; d_out |] /$ Float.(sqrt (of_int d_in))
 
-  let forward (w : P.t) x =
+  let forward (w : _ P.t) x =
     let open Nx.Infix in
     x *@ w
 end
 
-let student = Model.init ~d_in ~d_out |> Nx.Ptree.place Model.P.ptree placement
+let student = Model.init ~d_in ~d_out |> Nx.Ptree.place (module Model.P) placement
 
 let minibatch =
   let open Nx.Infix in
-  let teacher = Model.init ~d_in ~d_out in
+  let teacher = Model.init ~d_in ~d_out |> place placement in
   (* draw inputs from an ill-conditioned Gaussian;
      this covariance is the GGN (and also the Hessian in this case)! *)
   let input_cov_sqrt =
-    let u, _ = qr (randn float32 [| d_in; d_in |]) in
+    let u, _ = qr (Rng.normal float32 [| d_in; d_in |]) in
     let lambda =
       Array.init d_in ~f:(fun i -> Float.(1. / (1. + square (of_int Int.(i + 1)))))
       |> create float32 [| d_in; 1 |]
       |> fun x -> x / mean x
     in
-    sqrt lambda * u
+    sqrt lambda * u |> place placement
   in
   fun ~key bs ->
-    let x = Rng.normal key float32 [| bs; d_in |] *@ input_cov_sqrt in
+    let x = Rng.normal_at placement ~key float32 [| bs; d_in |] *@ input_cov_sqrt in
     let y = Model.forward teacher x in
     x, y
 
@@ -66,21 +70,21 @@ let objective params key =
 (* The sketch compiles for the device the parameters are placed on; the
    keys are host values that join them on each call. *)
 let sketch_step =
-  Sofo.Optim.sketch_jit ~k:n_tangents placement Model.P.ptree Rng.ptree objective
+  Sofo.Optim.sketch_jit ~k:n_tangents placement Model.ptree (Ptree.v Rng.walk) objective
 
-let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
+let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
   then params
   else (
-    let aux = Rng.fold_in state.key 0 in
+    let aux = Rng.place placement (Rng.fold_in state.key 0) in
     let out = sketch_step ~key:state.key ~aux params in
     let params, state =
-      Sofo.Optim.update ~lr ~damping placement Model.P.ptree state params out
+      Sofo.Optim.update ~lr ~damping placement Model.ptree state params out
     in
     let loss = item [] out.loss in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
     loop ~i:(i + 1) params state)
 
 let state = Sofo.Optim.init ~key:(Rng.key 1985) ()
-let () = Stdio.printf "device: %s\n%!" (Nx.Device.name device)
+let () = Stdio.printf "device: %s\n%!" (Rig.name device)
 let _ = loop ~i:0 student state

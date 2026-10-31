@@ -24,7 +24,7 @@
       let schedule = Schedule.linear_warmup ~steps:2000 dtype in
       let step =
         Rune.jit
-          Nx.Ptree.(structure @-> tensor @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
+          Nx.Ptree.(structure @-> tensor @-> (Nx.Ptree.v Nx.Rng.walk) @-> tensor @-> returns tensor)
           (fun params beta key data ->
              Elbo.batch_loss_fixed
                model params ~beta ~iters:4 ~key ~n_samples:16 data)
@@ -63,4 +63,4 @@ val value : 'w t -> int -> float
 
 (** [at s step] is the weight at [step] as a scalar tensor, of the schedule's
     dtype. Pass it to the ELBO as [~beta]. *)
-val at : 'w t -> int -> 'w value
+val at : 'w t -> int -> ('w, Nx.host) value

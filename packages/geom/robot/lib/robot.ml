@@ -7,26 +7,26 @@ open Nx
 
 module type MOTION = sig
   type kind
-  type t = (float, kind) Nx.t
+  type 'd t = (float, kind, 'd) Nx.t
 
   val dtype : (float, kind) Nx.dtype
-  val one : t
-  val mul : t -> t -> t
-  val inverse : t -> t
-  val normalize : t -> t
-  val translate : (float, kind) Nx.t -> t
-  val translate3 : float -> float -> float -> t
-  val rotate : axis:(float, kind) Nx.t -> angle:(float, kind) Nx.t -> t
-  val exp : (float, kind) Nx.t -> t
-  val log : t -> (float, kind) Nx.t
-  val adjoint : t -> (float, kind) Nx.t
-  val translation : t -> (float, kind) Nx.t
-  val rotation : t -> (float, kind) Nx.t
+  val one : Nx.host t
+  val mul : 'd t -> 'd t -> 'd t
+  val inverse : 'd t -> 'd t
+  val normalize : 'd t -> 'd t
+  val translate : (float, kind, 'd) Nx.t -> 'd t
+  val translate3 : float -> float -> float -> Nx.host t
+  val rotate : axis:(float, kind, 'd) Nx.t -> angle:(float, kind, 'd) Nx.t -> 'd t
+  val exp : (float, kind, 'd) Nx.t -> 'd t
+  val log : 'd t -> (float, kind, 'd) Nx.t
+  val adjoint : 'd t -> (float, kind, 'd) Nx.t
+  val translation : 'd t -> (float, kind, 'd) Nx.t
+  val rotation : 'd t -> (float, kind, 'd) Nx.t
 end
 
 module Float32 = struct
   type kind = Nx.float32_elt
-  type t = Nx.float32_t
+  type 'd t = 'd Nx.float32_t
 
   let dtype = float32
   let one = Geom.Motor.one
@@ -44,10 +44,10 @@ module Float32 = struct
 end
 
 module Make (Mo : MOTION) = struct
-  type motion = Mo.t
-  type twist = (float, Mo.kind) Nx.t
-  type q = (float, Mo.kind) Nx.t
-  type qdot = q
+  type 'd motion = 'd Mo.t
+  type 'd twist = (float, Mo.kind, 'd) Nx.t
+  type 'd q = (float, Mo.kind, 'd) Nx.t
+  type 'd qdot = 'd q
   type axis = float * float * float
 
   type kind =
@@ -60,9 +60,9 @@ module Make (Mo : MOTION) = struct
     ; kind : kind
     ; parent : int (* link index *)
     ; child : int (* link index *)
-    ; origin : motion (* M_{parent, joint} *)
-    ; screw : twist (* unit twist in the joint frame, shape [|6|] *)
-    ; generator : motion (* the packed [screw], shape [|8|] *)
+    ; origin : Nx.host motion (* M_{parent, joint} *)
+    ; screw : Nx.host twist (* unit twist in the joint frame, shape [|6|] *)
+    ; generator : Nx.host motion (* the packed [screw], shape [|8|] *)
     ; lower : float
     ; upper : float
     }
@@ -70,7 +70,7 @@ module Make (Mo : MOTION) = struct
   type frame_rec =
     { fname : string
     ; flink : int
-    ; fpose : motion
+    ; fpose : Nx.host motion
     }
 
   type t =
@@ -90,14 +90,14 @@ module Make (Mo : MOTION) = struct
     ; kind : kind
     ; parent : string
     ; child : string
-    ; origin : motion
+    ; origin : Nx.host motion
     ; limits : (float * float) option
     }
 
   type frame_spec =
     { name : string
     ; link : string
-    ; pose : motion
+    ; pose : Nx.host motion
     }
 
   (* Shapes *)
@@ -105,7 +105,9 @@ module Make (Mo : MOTION) = struct
   let size = 8
   let prod a = Array.fold_left ( * ) 1 a
   let i64 n = Nx.scalar int64 (Int64.of_int n)
-  let take_axis ~axis idx x = take ~axis ~indices:idx x
+  let take_axis ~axis idx x = take ~axis (place (beside x) idx) x
+  let by_screw = Pattern.v "b n i j, n j -> b i n | j"
+  let by_column = Pattern.v "b i j, b j -> b i | j"
 
   let batch_shape x =
     let s = Nx.shape x in
@@ -332,16 +334,16 @@ module Make (Mo : MOTION) = struct
   let joint_motion m j q =
     let jt = m.joints.(j) in
     match jt.kind with
-    | Fixed -> jt.origin
+    | Fixed -> place (beside q) jt.origin
     | Revolute _ | Prismatic _ ->
       let qi = column q m.dof_index.(j) in
-      let scaled = Infix.(jt.screw * expand (Nx.shape qi) qi) in
-      Mo.mul jt.origin (Mo.exp scaled)
+      let scaled = Infix.(place (beside q) jt.screw * expand (Nx.shape qi) qi) in
+      Mo.mul (place (beside q) jt.origin) (Mo.exp scaled)
 
   let link_motors m q =
     let batch = batch_shape q in
-    let motors = Array.make (Array.length m.link_names) Mo.one in
-    motors.(0) <- broadcast_to (Array.append batch [| size |]) Mo.one;
+    let root = broadcast_to (Array.append batch [| size |]) (place (beside q) Mo.one) in
+    let motors = Array.make (Array.length m.link_names) root in
     Array.iteri
       (fun j (jt : joint) ->
          motors.(jt.child) <- Mo.mul motors.(jt.parent) (joint_motion m j q))
@@ -355,7 +357,7 @@ module Make (Mo : MOTION) = struct
     let lm = link_motors m q in
     let nf = Array.length m.frames in
     if nf = 0
-    then zeros Mo.dtype (Array.append batch [| 0; size |])
+    then zeros_at (beside q) Mo.dtype (Array.append batch [| 0; size |])
     else (
       let links =
         Nx.create
@@ -367,7 +369,8 @@ module Make (Mo : MOTION) = struct
       let poses =
         stack
           ~axis:0
-          (Array.to_list (Array.map (fun (f : frame_rec) -> f.fpose) m.frames))
+          (Array.to_list
+             (Array.map (fun (f : frame_rec) -> place (beside q) f.fpose) m.frames))
       in
       Mo.mul selected poses)
 
@@ -375,7 +378,7 @@ module Make (Mo : MOTION) = struct
     let batch = batch_shape q in
     let lm = link_motors m q in
     let f = m.frames.(fi) in
-    Mo.mul (take_link lm batch f.flink) f.fpose
+    Mo.mul (take_link lm batch f.flink) (place (beside q) f.fpose)
 
   let relative m ~from:a ~to_:b q =
     Mo.mul (Mo.inverse (pose m ~frame:a q)) (pose m ~frame:b q)
@@ -403,7 +406,7 @@ module Make (Mo : MOTION) = struct
   let frame_state m batch q fi =
     let lm = link_motors m q in
     let f = m.frames.(fi) in
-    lm, Mo.mul (take_link lm batch f.flink) f.fpose
+    lm, Mo.mul (take_link lm batch f.flink) (place (beside q) f.fpose)
 
   (* One column per coordinate, in [q]'s order, so that a Jacobian multiplies a
      whole [qdot]: a joint off the frame's chain contributes zeros. *)
@@ -418,17 +421,17 @@ module Make (Mo : MOTION) = struct
       columns
         m
         ~frame:fi
-        ~zero:(fun () -> zeros Mo.dtype (Array.append batch [| size |]))
+        ~zero:(fun () -> zeros_at (beside q) Mo.dtype (Array.append batch [| size |]))
         ~col:(fun j ->
           let jt = m.joints.(j) in
           (* [w] is the world pose of the joint's frame, so the column is the
              world screw [w g w^-1] acting on the frame's pose. *)
-          let w = Mo.mul (take_link lm batch jt.parent) jt.origin in
+          let w = Mo.mul (take_link lm batch jt.parent) (place (beside q) jt.origin) in
           let tail = Mo.mul (Mo.inverse w) mframe in
-          Mo.mul (Mo.mul w jt.generator) tail)
+          Mo.mul (Mo.mul w (place (beside q) jt.generator)) tail)
     in
     if cols = []
-    then zeros Mo.dtype (Array.append batch [| size; 0 |])
+    then zeros_at (beside q) Mo.dtype (Array.append batch [| size; 0 |])
     else stack ~axis:(Array.length batch + 1) cols
 
   let jacobian m ?(space = `World) ~frame:fi q =
@@ -438,7 +441,7 @@ module Make (Mo : MOTION) = struct
     let joints = moving m in
     let n = List.length joints in
     if n = 0
-    then zeros Mo.dtype (Array.append batch [| 6; 0 |])
+    then zeros_at (beside q) Mo.dtype (Array.append batch [| 6; 0 |])
     else (
       (* Re-reference the twists to the frame's origin, and, for [`Body], rotate
          them onto the frame's axes. The re-referencing is an adjoint; the
@@ -458,15 +461,17 @@ module Make (Mo : MOTION) = struct
         columns
           m
           ~frame:fi
-          ~zero:(fun () -> zeros Mo.dtype (Array.append batch [| 6; 6 |]))
+          ~zero:(fun () -> zeros_at (beside q) Mo.dtype (Array.append batch [| 6; 6 |]))
           ~col:(fun j ->
             let jt = m.joints.(j) in
-            let w = Mo.mul (take_link lm batch jt.parent) jt.origin in
+            let w = Mo.mul (take_link lm batch jt.parent) (place (beside q) jt.origin) in
             Mo.adjoint (Mo.mul shift w))
       in
-      let screws = stack ~axis:0 (List.map (fun j -> m.joints.(j).screw) joints) in
+      let screws =
+        place (beside q) (stack ~axis:0 (List.map (fun j -> m.joints.(j).screw) joints))
+      in
       let stacked = reshape [| prod batch; n; 6; 6 |] (stack ~axis:bl columns) in
-      let out = einsum "bnij,nj->bin" [| stacked; screws |] in
+      let out = einsum by_screw [ stacked; screws ] in
       reshape (Array.append batch [| 6; n |]) out)
 
   (* Velocities and accelerations *)
@@ -474,8 +479,8 @@ module Make (Mo : MOTION) = struct
   (* Three-vector helpers, on the last axis of a tensor. *)
 
   let part v start stop =
-    let indices = arange int64 start stop 1 in
-    take ~axis:(-1) ~indices v
+    let indices = arange_at (beside v) int64 start stop 1 in
+    take ~axis:(-1) indices v
 
   let cross3 a b =
     let ax = part a 0 1
@@ -525,7 +530,7 @@ module Make (Mo : MOTION) = struct
      identity. *)
   let body_twists m q qdot =
     let batch = batch_shape q in
-    let zero = zeros Mo.dtype (Array.append batch [| 6 |]) in
+    let zero = zeros_at (beside q) Mo.dtype (Array.append batch [| 6 |]) in
     let twists = Array.make (Array.length m.link_names) zero in
     Array.iteri
       (fun j (jt : joint) ->
@@ -536,7 +541,7 @@ module Make (Mo : MOTION) = struct
            | Fixed -> carried
            | Revolute _ | Prismatic _ ->
              let speed = column qdot m.dof_index.(j) in
-             Infix.(carried + (jt.screw * expand batch speed))
+             Infix.(carried + (place (beside q) jt.screw * expand batch speed))
          in
          twists.(jt.child) <- own)
       m.joints;
@@ -570,7 +575,8 @@ module Make (Mo : MOTION) = struct
      fixed pose. *)
   let frame_body_twist m ~frame:fi body =
     let f = m.frames.(fi) in
-    matvec (Mo.adjoint (Mo.inverse f.fpose)) body.(f.flink)
+    let v = body.(f.flink) in
+    matvec (Mo.adjoint (Mo.inverse (place (beside v) f.fpose))) v
 
   let twist m ?(space = `Body) ~frame:fi q qdot =
     let body = body_twists m q qdot in
@@ -579,7 +585,7 @@ module Make (Mo : MOTION) = struct
     | `Body -> vb
     | `World ->
       let link, f = frame_link m (batch_shape q) q fi in
-      matvec (rotating (Mo.mul link f.fpose)) vb
+      matvec (rotating (Mo.mul link (place (beside q) f.fpose))) vb
 
   let bias m ?(space = `Body) ~frame:fi q qdot =
     let batch = batch_shape q in
@@ -592,7 +598,7 @@ module Make (Mo : MOTION) = struct
        {[
        ddot V_child = Ad_(L^-1) ddot V_parent + ad_(V_child) (g qdot)
        ]} *)
-    let zero = zeros Mo.dtype (Array.append batch [| 6 |]) in
+    let zero = zeros_at (beside q) Mo.dtype (Array.append batch [| 6 |]) in
     let acc = Array.make (Array.length m.link_names) zero in
     Array.iteri
       (fun j (jt : joint) ->
@@ -604,7 +610,7 @@ module Make (Mo : MOTION) = struct
            | Fixed -> zero
            | Revolute _ | Prismatic _ ->
              let speed = column qdot m.dof_index.(j) in
-             let screw = Infix.(jt.screw * expand batch speed) in
+             let screw = Infix.(place (beside q) jt.screw * expand batch speed) in
              ad body.(jt.child) screw
          in
          acc.(jt.child) <- Infix.(carried + own))
@@ -622,7 +628,7 @@ module Make (Mo : MOTION) = struct
           [ zeros_like (part vb 0 3); cross3 (part vb 0 3) (part vb 3 6) ]
       in
       let link, f = frame_link m batch q fi in
-      matvec (rotating (Mo.mul link f.fpose)) Infix.(vdot + coriolis)
+      matvec (rotating (Mo.mul link (place (beside q) f.fpose))) Infix.(vdot + coriolis)
 
   let jacobian_dot m ?(space = `World) ~frame:fi q qdot =
     snd (Rune.jvp' (fun q -> jacobian m ~space ~frame:fi q) q qdot)
@@ -630,16 +636,18 @@ module Make (Mo : MOTION) = struct
   (* Conditioning of a frame's motion, from the singular values of its world
      Jacobian. *)
 
-  let singular_values m ~frame:fi q = cast Mo.dtype (svdvals (jacobian m ~frame:fi q))
+  let singular_values m ~frame:fi q =
+    let _, s, _ = svd ~vectors:false Mo.dtype (jacobian m ~frame:fi q) in
+    s
 
   let manipulability m ~frame:fi q =
     let sv = singular_values m ~frame:fi q in
     let k = Stdlib.min 6 m.dof in
     if k = 0
-    then zeros Mo.dtype (batch_shape q)
+    then zeros_at (beside q) Mo.dtype (batch_shape q)
     else (
       let axes = Array.length (Nx.shape sv) - 1 in
-      let kept = take ~axis:axes ~indices:(arange int64 0 k 1) sv in
+      let kept = take ~axis:axes (arange_at (beside sv) int64 0 k 1) sv in
       Nx.prod ~axes:[ axes ] kept)
 
   (* Differentiable kinematics *)
@@ -648,13 +656,13 @@ module Make (Mo : MOTION) = struct
     let batch = batch_shape q in
     let n = m.dof in
     if n = 0
-    then zeros Mo.dtype (Array.append batch [| size |])
+    then zeros_at (beside q) Mo.dtype (Array.append batch [| size |])
     else (
       let jm = motion_jacobian m ~frame:fi q in
       let bsz = prod batch in
       let cols = reshape [| bsz; size; n |] jm in
       let tangents = reshape [| bsz; n |] dq in
-      let out = einsum "bij,bj->bi" [| cols; tangents |] in
+      let out = einsum by_column [ cols; tangents ] in
       reshape (Array.append batch [| size |]) out)
 
   let pose_diff m ~frame:fi =

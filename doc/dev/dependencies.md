@@ -8,7 +8,7 @@ committed; `dune build` uses it without solving.
 External sources are pinned in `dune-project`:
 
 - **Raven** — the whole Raven repository at a full commit SHA. The pin lists
-  every Raven package this repo and its downstream projects use (`compress`,
+  every Raven package this repo and its downstream projects use (`lz`,
   `nx`, `rune`, `tolk`, `vega`, `jera`, `hugin`, `rig`, `ppx_ptree`, `kaun`).
   Raven is not a package of this monorepo.
 - **windtrap** and **ppx_windtrap** — the commit Raven's own CI uses, so our

@@ -58,7 +58,7 @@ let starts = 10
 
 let paths =
   Rng.with_key (Rng.key 7) (fun () ->
-    let q0 = Infix.(randn f32 [| starts; 6 |] *$ 1.0) in
+    let q0 = Infix.(Rng.normal f32 [| starts; 6 |] *$ 1.0) in
     Array.init starts (fun i ->
       let start = slice [ I i ] q0 in
       let q_end = (Ik.solve ~max_iter:150 ~step_limit:0.3 task ~q:start).q in

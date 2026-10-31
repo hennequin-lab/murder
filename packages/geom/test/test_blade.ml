@@ -25,17 +25,15 @@ let test_constructors () =
   equal ~msg:"a dense bitmask" int 42 (B.to_int (B.of_int 42));
   raises_match
     ~msg:"negative index is rejected"
-    (Exn.invalid_arg ~substring:"negative")
+    (Exn.invalid_arg ~sub:"negative")
     (fun () -> ignore (B.of_int (-1) : B.t));
   equal ~msg:"e_1 is bit 0" int 1 (B.to_int (B.of_basis 1));
   equal ~msg:"e_4 is bit 3" int 8 (B.to_int (B.of_basis 4));
-  raises_match
-    ~msg:"basis indices start at one"
-    (Exn.invalid_arg ~substring:"index")
-    (fun () -> ignore (B.of_basis 0 : B.t));
+  raises_match ~msg:"basis indices start at one" (Exn.invalid_arg ~sub:"index") (fun () ->
+    ignore (B.of_basis 0 : B.t));
   raises_match
     ~msg:"negative basis index is rejected"
-    (Exn.invalid_arg ~substring:"index")
+    (Exn.invalid_arg ~sub:"index")
     (fun () -> ignore (B.of_basis (-2) : B.t))
 
 let test_contains () =
@@ -44,7 +42,7 @@ let test_contains () =
   equal ~msg:"e_2 in e124" bool true (B.contains b 2);
   equal ~msg:"e_3 not in e124" bool false (B.contains b 3);
   equal ~msg:"e_4 in e124" bool true (B.contains b 4);
-  raises_match ~msg:"indices start at one" (Exn.invalid_arg ~substring:"index") (fun () ->
+  raises_match ~msg:"indices start at one" (Exn.invalid_arg ~sub:"index") (fun () ->
     ignore (B.contains b 0));
   equal ~msg:"the scalar contains nothing" bool false (B.contains (B.of_int 0) 1);
   equal ~msg:"is_scalar on the empty product" bool true (B.is_scalar (B.of_int 0));
@@ -70,7 +68,7 @@ let test_all () =
   equal ~msg:"all 4 has 16 entries" int 16 (Array.length (B.all 4));
   raises_match
     ~msg:"negative dimension is rejected"
-    (Exn.invalid_arg ~substring:"negative")
+    (Exn.invalid_arg ~sub:"negative")
     (fun () -> ignore (B.all (-1)))
 
 let test_grade () =
@@ -191,7 +189,7 @@ let test_complement () =
   done;
   raises_match
     ~msg:"negative dimension is rejected"
-    (Exn.invalid_arg ~substring:"negative")
+    (Exn.invalid_arg ~sub:"negative")
     (fun () -> ignore (B.complement ~n:(-1) (B.of_int 0)))
 
 let test_printing () =

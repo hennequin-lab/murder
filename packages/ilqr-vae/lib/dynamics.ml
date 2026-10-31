@@ -7,12 +7,12 @@ open Base
 open Nx
 open Types
 
-type ('w, 'p) t =
+type ('w, 'p, 's) t =
   { n : int
   ; m : int
-  ; structure : 'p Nx.Ptree.t
+  ; structure : ('p, 's) Nx.Ptree.t
   ; params : 'p
-  ; dyn : 'p -> k:'w value -> x:'w value -> u:'w value -> 'w value
+  ; dyn : 'p -> k:('w, 's) value -> x:('w, 's) value -> u:('w, 's) value -> ('w, 's) value
   }
 
 let shape_string shape =
@@ -21,18 +21,24 @@ let shape_string shape =
 (* [integrate_along d p ~time_axis ~x0 ~u] is the rollout when [time_axis] is
    the horizon's position in [u]. [Rune.scan] walks axis 0, so the horizon is
    moved there for the scan and the result put back where it belongs. *)
-let integrate_along (d : ('w, 'p) t) (p : 'p) ~time_axis ~(x0 : 'w value) ~(u : 'w value) =
+let integrate_along
+      (d : ('w, 'p, 's) t)
+      (p : 'p)
+      ~time_axis
+      ~(x0 : ('w, 's) value)
+      ~(u : ('w, 's) value)
+  =
   let horizon = (shape u).(time_axis) in
   let u = if Int.equal time_axis 0 then u else moveaxis time_axis 0 u in
-  let ks = arange (Nx.dtype x0) 0 horizon 1 in
+  let ks = arange_at (beside u) (Nx.dtype x0) 0 horizon 1 in
   let _, xs =
     Rune.scan
       Nx.Ptree.tensor
       Nx.Ptree.(pair tensor tensor)
       Nx.Ptree.tensor
-      ~f:(fun x (u_k, k) ->
-        let x' = d.dyn p ~k ~x ~u:u_k in
-        x', x')
+      (fun x (u_k, k) ->
+         let x' = d.dyn p ~k ~x ~u:u_k in
+         x', x')
       ~init:x0
       (u, ks)
   in
@@ -43,7 +49,7 @@ let integrate_along (d : ('w, 'p) t) (p : 'p) ~time_axis ~(x0 : 'w value) ~(u : 
   let path = concatenate ~axis:0 [ x0; xs ] in
   if Int.equal time_axis 0 then path else moveaxis 0 time_axis path
 
-let integrate (d : ('w, 'p) t) (p : 'p) ~(x0 : 'w value) ~(u : 'w value) =
+let integrate (d : ('w, 'p, 's) t) (p : 'p) ~(x0 : ('w, 's) value) ~(u : ('w, 's) value) =
   let rank = Array.length (shape u) in
   if rank < 2
   then
@@ -63,7 +69,12 @@ let integrate (d : ('w, 'p) t) (p : 'p) ~(x0 : 'w value) ~(u : 'w value) =
          (shape_string (shape x0)));
   integrate_along d p ~time_axis ~x0 ~u
 
-let integrate_samples (d : ('w, 'p) t) (p : 'p) ~(x0 : 'w value) ~(u : 'w value) =
+let integrate_samples
+      (d : ('w, 'p, 's) t)
+      (p : 'p)
+      ~(x0 : ('w, 's) value)
+      ~(u : ('w, 's) value)
+  =
   let rank = Array.length (shape u) in
   if rank < 3
   then
@@ -89,8 +100,8 @@ let integrate_samples (d : ('w, 'p) t) (p : 'p) ~(x0 : 'w value) ~(u : 'w value)
    and from the implicit random scope otherwise. *)
 let randn ?key dtype shape =
   match key with
-  | Some key -> Nx.Rng.normal key dtype shape
-  | None -> Nx.randn dtype shape
+  | Some key -> Nx.Rng.normal ~key dtype shape
+  | None -> Nx.Rng.normal dtype shape
 
 (* [scaled_randn ?key ~sigma dtype shape] is a normal draw of standard
    deviation [sigma]. *)
@@ -99,7 +110,7 @@ let scaled_randn ?key ~sigma dtype shape = Infix.(randn ?key dtype shape *$ sigm
 (* [first_step k] is a boolean scalar that is [true] at step 0. A dynamics
    written for these constructors selects on it with [Nx.where], since [k] is
    a tensor under the encoder's scans. *)
-let first_step (k : 'w value) = Nx.equal k (scalar_like k 0.0)
+let first_step (k : ('w, 's) value) = Nx.equal k (scalar_like k 0.0)
 
 (* [input_term ~dt_over_tau ~k ~u] is the input contribution of one step: the
    projected input itself at the first step, [dt_over_tau] times it
@@ -116,7 +127,7 @@ let input_term ~dt_over_tau ~k ~u =
 (* {1 Linear} *)
 
 module Linear = struct
-  type 'a params =
+  type ('a, _) params =
     { dt_over_tau : float [@ptree.skip]
     ; w : 'a
     ; b : 'a option
@@ -126,13 +137,13 @@ module Linear = struct
   let structure () =
     Nx.Ptree.instantiate
       (module struct
-        type 'a t = 'a params
+        type ('a, 's) t = ('a, 's) params
 
         let walk = walk_params
       end)
 
   let matrix { dt_over_tau; w; _ } =
-    let identity = eye (Nx.dtype w) (Array.get (shape w) 0) in
+    let identity = eye_at (beside w) (Nx.dtype w) (Array.get (shape w) 0) in
     Infix.(identity + ((w - identity) *$ dt_over_tau))
 
   let dyn p ~k ~x ~u =
@@ -155,7 +166,7 @@ end
 (* {1 Linear–nonlinear} *)
 
 module Linear_nonlinear = struct
-  type 'a params =
+  type ('a, _) params =
     { dt_over_tau : 'a
     ; a0 : 'a
     ; a1 : 'a
@@ -169,7 +180,7 @@ module Linear_nonlinear = struct
   let structure () =
     Nx.Ptree.instantiate
       (module struct
-        type 'a t = 'a params
+        type ('a, 's) t = ('a, 's) params
 
         let walk = walk_params
       end)
@@ -203,7 +214,7 @@ module Linear_nonlinear = struct
             ~sigma:(radius /. Float.sqrt (Float.of_int nh))
             dtype
             [| nh; n |]
-      ; bias1 = Infix.((rand dtype [| nh |] *$ 2.0) -$ 1.0)
+      ; bias1 = Infix.((Nx.Rng.uniform dtype [| nh |] *$ 2.0) -$ 1.0)
       ; bias2 = zeros dtype [| n |]
       ; b =
           Some
@@ -225,7 +236,7 @@ end
 (* {1 Gated nonlinear} *)
 
 module Gnode = struct
-  type 'a params =
+  type ('a, _) params =
     { dt_over_tau : float [@ptree.skip]
     ; g_a1 : 'a
     ; g_bias1 : 'a
@@ -240,7 +251,7 @@ module Gnode = struct
   let structure () =
     Nx.Ptree.instantiate
       (module struct
-        type 'a t = 'a params
+        type ('a, 's) t = ('a, 's) params
 
         let walk = walk_params
       end)
@@ -291,7 +302,7 @@ end
 (* {1 Minimal gated unit} *)
 
 module Mgu = struct
-  type 'a params =
+  type ('a, _) params =
     { uf : 'a
     ; uh : 'a
     ; w : 'a
@@ -303,7 +314,7 @@ module Mgu = struct
   let structure () =
     Nx.Ptree.instantiate
       (module struct
-        type 'a t = 'a params
+        type ('a, 's) t = ('a, 's) params
 
         let walk = walk_params
       end)

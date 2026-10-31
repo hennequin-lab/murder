@@ -29,7 +29,7 @@ let workspace () =
   section "batched forward kinematics: a 4096-configuration workspace cloud";
   let m = R.six_dof () in
   let ee = R.frame m "ee" in
-  let q = Infix.(randn f32 [| 4096; 6 |] *$ 2.5) in
+  let q = Infix.(Rng.normal f32 [| 4096; 6 |] *$ 2.5) in
   let cloud = tip m ~frame:ee q in
   Format.printf "  cloud shape                  %s@." (shape_of cloud);
   report "smallest x" (min (slice [ A; I 0 ] cloud));
@@ -124,9 +124,9 @@ let singularity () =
   section "diagnostics: sigma_min of J over 512 configurations";
   let m = R.six_dof () in
   let ee = R.frame m "ee" in
-  let q = Infix.(randn f32 [| 512; 6 |] *$ 2.5) in
-  let sv = svdvals (R.jacobian m ~frame:ee q) in
-  let sigma_min = cast f32 (slice [ A; I 5 ] sv) in
+  let q = Infix.(Rng.normal f32 [| 512; 6 |] *$ 2.5) in
+  let _, sv, _ = svd ~vectors:false f32 (R.jacobian m ~frame:ee q) in
+  let sigma_min = slice [ A; I 5 ] sv in
   Format.printf "  singular values              %s@." (shape_of sv);
   report "mean sigma_min" (mean sigma_min);
   report "worst sigma_min" (min sigma_min);
@@ -148,9 +148,9 @@ let ik () =
   let clamp = Nx.clamp ~min:(-.limit) ~max:limit in
   (* Targets strictly inside the limits: one drawn exactly on a limit leaves the
      solution on the boundary, where the projection and the step fight. *)
-  let truth = Nx.tanh Infix.(randn f32 [| 8; 6 |] *$ 1.5) in
+  let truth = Nx.tanh Infix.(Rng.normal f32 [| 8; 6 |] *$ 1.5) in
   let targets = R.pose m ~frame:ee truth in
-  let q = ref (Nx.tanh Infix.(truth + (randn f32 [| 8; 6 |] *$ 0.4))) in
+  let q = ref (Nx.tanh Infix.(truth + (Rng.normal f32 [| 8; 6 |] *$ 0.4))) in
   let lambda = ref (full f32 [| 8 |] 1e-2) in
   let error_at q = M.log (M.mul (M.inverse targets) (R.pose m ~frame:ee q)) in
   let norm e = sum ~axes:[ 1 ] Infix.(e * e) in

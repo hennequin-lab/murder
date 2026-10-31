@@ -21,19 +21,20 @@
 
    with [X^{p~} = U diag((damping * s_max + s)^p) Uᵀ] for [X = U diag(s) Uᵀ].
 
-   [eigh] does not compile under [Rune.jit], so this module is the host
-   boundary of the step: it runs on the small block matrices, never inside the
-   traced [prepare]/[finish] halves. *)
+   The damping reads the spectrum's maximum with [Nx.item], which a traced
+   value refuses, so this module is the host boundary of the step: it runs on
+   the small block matrices, never inside the traced [prepare]/[finish]
+   halves. *)
 
 open Base
 open Nx
 
 (* [svd64 x] is the economy SVD of [x]. The factorization runs in float64 (as
    the old Owl implementation did) and its factors come back in float32, the
-   working dtype of the rest of the step. Singular values are float64 in [Nx]
-   and are cast along with the rest. *)
+   working dtype of the rest of the step. The singular values are float64, as
+   the call asks, and are cast along with the rest. *)
 let svd64 x =
-  let u, s, _ = svd (cast float64 x) in
+  let u, s, _ = svd float64 (cast float64 x) in
   cast float32 u, cast float32 s
 
 (* [spectrum64 x] is [svd64 x] for a symmetric [x]. A symmetric matrix's
@@ -41,7 +42,7 @@ let svd64 x =
    its eigenvectors, so [Nx.eigh] gives the factorization [Nx.svd] would,
    [x = u diag(±s) uᵀ], at about half the cost. *)
 let spectrum64 x =
-  let w, u = eigh (cast float64 x) in
+  let w, u = eigh float64 (cast float64 x) in
   cast float32 u, cast float32 (abs w)
 
 (* [damp_spectrum ~damping s] is [damping * s_max + s]. The relative damping
@@ -90,13 +91,13 @@ let hessian_inverse ~damping sigma_w sigma_g =
 (* The largest singular value over a list of blocks. *)
 let global_smax blocks =
   List.fold blocks ~init:0.0 ~f:(fun acc x ->
-    let w, _ = eigh (cast float64 x) in
+    let w, _ = eigh float64 (cast float64 x) in
     Float.max acc (item [] (max (abs w))))
 
 (* The damped symmetric power of every block, with one global [s_max]. *)
 let symmetric_power_blocks ~damping ~smax ~power blocks =
   List.map blocks ~f:(fun x ->
-    let w, u = eigh (cast float64 x) in
+    let w, u = eigh float64 (cast float64 x) in
     let u = cast float32 u in
     let w = cast float32 (abs w) in
     let stilde = Infix.(w +$ (damping *. smax)) in

@@ -36,33 +36,33 @@ type config = Config.t
 
 (* [bump_tensor beta_t beta] decays a bias-correction counter by [beta] with a
    floor, so the debiasing denominator never reaches zero. *)
-let bump_tensor beta_t beta = maximum Infix.(beta_t *$ beta) (scalar float32 1e-4)
+let bump_tensor beta_t beta = maximum Infix.(beta_t *$ beta) (scalar_like beta_t 1e-4)
 let ema ~beta x avg = Infix.((avg *$ beta) + (x *$ (1. -. beta)))
-let debias beta_t x = Infix.(x / (scalar float32 1. - beta_t))
+let debias beta_t x = Infix.(x / (scalar_like beta_t 1. - beta_t))
 
 module type S = sig
-  type 'a tree
+  type ('a, 'd) tree
   type config = Config.t
 
   module State : sig
-    type 'a t =
-      { theta : 'a tree
-      ; g_avg : 'a tree
+    type ('a, 'd) t =
+      { theta : ('a, 'd) tree
+      ; g_avg : ('a, 'd) tree
       ; sigma_g_avg : 'a
       ; beta_1_t : 'a
       ; beta_2_t : 'a
       }
 
-    include Nx.Ptree.S with type 'a t := 'a t
+    include Nx.Ptree.S with type ('a, 'd) t := ('a, 'd) t
   end
 
-  type state = Nx.float32_t State.t
+  type 'd state = ('d Nx.float32_t, 'd) State.t
 
   module Mid : sig
-    type 'a t =
-      { theta : 'a tree
-      ; g_avg : 'a tree
-      ; g_avg_debias : 'a tree
+    type ('a, 'd) t =
+      { theta : ('a, 'd) tree
+      ; g_avg : ('a, 'd) tree
+      ; g_avg_debias : ('a, 'd) tree
       ; sigma_w : 'a
       ; sigma_g : 'a
       ; sigma_g_avg : 'a
@@ -70,30 +70,50 @@ module type S = sig
       ; beta_2_t : 'a
       }
 
-    include Nx.Ptree.S with type 'a t := 'a t
+    include Nx.Ptree.S with type ('a, 'd) t := ('a, 'd) t
   end
 
-  type mid = Nx.float32_t Mid.t
+  type 'd mid = ('d Nx.float32_t, 'd) Mid.t
 
-  val init : config:config -> Nx.float32_t tree -> state
-  val prepare : config:config -> state:state -> grads:Nx.float32_t tree -> mid
-  val solve : damping:float -> mid -> Nx.float32_t
-  val finish : config:config -> mid:mid -> Nx.float32_t -> state
-  val step : config:config -> state:state -> grads:Nx.float32_t tree -> state
+  val init : config:config -> ('d Nx.float32_t, 'd) tree -> 'd state
+
+  val prepare
+    :  config:config
+    -> state:'d state
+    -> grads:('d Nx.float32_t, 'd) tree
+    -> 'd mid
+
+  (** [solve ~damping mid] runs on the host: it places [mid]'s packed factors
+      there and its result beside them. *)
+  val solve : damping:float -> 'd mid -> 'd Nx.float32_t
+
+  val finish : config:config -> mid:'d mid -> 'd Nx.float32_t -> 'd state
+
+  val step
+    :  config:config
+    -> state:'d state
+    -> grads:('d Nx.float32_t, 'd) tree
+    -> 'd state
 
   module Compiled : sig
-    type t
+    type 'd t
 
-    val create : config:config -> t
-    val step : t -> config:config -> state:state -> grads:Nx.float32_t tree -> state
+    val create : config:config -> 'd t
+
+    val step
+      :  'd t
+      -> config:config
+      -> state:'d state
+      -> grads:('d Nx.float32_t, 'd) tree
+      -> 'd state
   end
 end
 
-module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
-  S with type 'a tree = 'a M.t = struct
+module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
+  S with type ('a, 'd) tree = ('a, 'd) M.t = struct
   module P = Nx.Ptree.Payload
 
-  type 'a tree = 'a M.t
+  type ('a, 'd) tree = ('a, 'd) M.t
   type config = Config.t
 
   open Config
@@ -102,9 +122,9 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
   let map2 f x y = P.map2 (module M) f x y
 
   module State = struct
-    type 'a t =
-      { theta : 'a M.t
-      ; g_avg : 'a M.t
+    type ('a, 'd) t =
+      { theta : ('a, 'd) M.t
+      ; g_avg : ('a, 'd) M.t
       ; sigma_g_avg : 'a
       ; beta_1_t : 'a
       ; beta_2_t : 'a
@@ -112,13 +132,13 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     [@@deriving ptree]
   end
 
-  type state = Nx.float32_t State.t
+  type 'd state = ('d Nx.float32_t, 'd) State.t
 
   module Mid = struct
-    type 'a t =
-      { theta : 'a M.t
-      ; g_avg : 'a M.t
-      ; g_avg_debias : 'a M.t
+    type ('a, 'd) t =
+      { theta : ('a, 'd) M.t
+      ; g_avg : ('a, 'd) M.t
+      ; g_avg_debias : ('a, 'd) M.t
       ; sigma_w : 'a
       ; sigma_g : 'a
       ; sigma_g_avg : 'a
@@ -128,7 +148,7 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     [@@deriving ptree]
   end
 
-  type mid = Nx.float32_t Mid.t
+  type 'd mid = ('d Nx.float32_t, 'd) Mid.t
 
   let init ~config theta =
     let zero = map (fun _ x -> zeros_like x) theta in
@@ -136,8 +156,8 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     { State.theta
     ; g_avg = zero
     ; sigma_g_avg = zero_factors
-    ; beta_1_t = scalar float32 config.beta_1
-    ; beta_2_t = scalar float32 config.beta_2
+    ; beta_1_t = scalar_like zero_factors config.beta_1
+    ; beta_2_t = scalar_like zero_factors config.beta_2
     }
 
   (* Everything the host solve needs, plus the pieces [finish] carries into
@@ -167,10 +187,10 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     ; beta_2_t = bump_tensor state.State.beta_2_t config.beta_2
     }
 
-  (* The host solve: unpack the two packed factor lists, assemble the blocks,
-     apply Eq. 10 blockwise, and pack the result. *)
+  (* The host solve: unpack the two packed factor lists on the host, assemble
+     the blocks, apply Eq. 10 blockwise, and pack the result beside [mid]. *)
   let solve ~damping mid =
-    let host = place Nx.Placement.host in
+    let host = place Nx.Host.on in
     let sigma_w = O.Second_order.unpack (host mid.Mid.sigma_w) in
     let sigma_g = O.Second_order.unpack (host mid.Mid.sigma_g) in
     let blocks_w = O.Second_order.blocks_of_factors sigma_w in
@@ -178,6 +198,7 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
     Solve.hessian_inverse_blocks ~damping blocks_w blocks_g
     |> O.Second_order.factors_of_blocks
     |> O.Second_order.pack
+    |> place (beside mid.Mid.sigma_w)
 
   let finish ~config ~mid hessian_inv =
     let factors = O.Second_order.unpack hessian_inv in
@@ -210,43 +231,44 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type 'a t = 'a M.t) :
 
   module Compiled = struct
     module Input = struct
-      type 'a t =
-        { state : 'a State.t
-        ; grads : 'a M.t
+      type ('a, 'd) t =
+        { state : ('a, 'd) State.t
+        ; grads : ('a, 'd) M.t
         }
       [@@deriving ptree]
     end
 
-    type input = Nx.float32_t Input.t
+    type 'd input = ('d Nx.float32_t, 'd) Input.t
 
     module Finish = struct
-      type 'a t =
-        { mid : 'a Mid.t
+      type ('a, 'd) t =
+        { mid : ('a, 'd) Mid.t
         ; hessian_inv : 'a
         }
       [@@deriving ptree]
     end
 
-    type finish_input = Nx.float32_t Finish.t
+    type 'd finish_input = ('d Nx.float32_t, 'd) Finish.t
 
-    (* [Nx.Ptree.instantiate] returns a structure with weak dtype parameters;
-       pinning each to the working dtype at the value level lets the jit take
-       them as input/output structures. *)
-    let state_ptree : state Nx.Ptree.t = Nx.Ptree.instantiate (module State)
-    let mid_ptree : mid Nx.Ptree.t = Nx.Ptree.instantiate (module Mid)
-    let input_ptree : input Nx.Ptree.t = Nx.Ptree.instantiate (module Input)
-    let finish_ptree : finish_input Nx.Ptree.t = Nx.Ptree.instantiate (module Finish)
-
-    type t =
-      { prepare : input -> mid
-      ; finish : finish_input -> state
+    type 'd t =
+      { prepare : 'd input -> 'd mid
+      ; finish : 'd finish_input -> 'd state
       }
 
-    let create ~config =
-      let prepare_fn (i : input) =
+    (* A description is at one dtype and one set, so [create] makes them at
+       the working dtype and the caller's set, for the jit to take them as
+       input/output structures. *)
+    let create (type d) ~config : d t =
+      let state_ptree : (d state, d) Nx.Ptree.t = Nx.Ptree.instantiate (module State) in
+      let mid_ptree : (d mid, d) Nx.Ptree.t = Nx.Ptree.instantiate (module Mid) in
+      let input_ptree : (d input, d) Nx.Ptree.t = Nx.Ptree.instantiate (module Input) in
+      let finish_ptree : (d finish_input, d) Nx.Ptree.t =
+        Nx.Ptree.instantiate (module Finish)
+      in
+      let prepare_fn (i : d input) =
         prepare ~config ~state:i.Input.state ~grads:i.Input.grads
       in
-      let finish_fn (f : finish_input) =
+      let finish_fn (f : d finish_input) =
         finish ~config ~mid:f.Finish.mid f.Finish.hessian_inv
       in
       { prepare = Rune.jit Nx.Ptree.(input_ptree @-> returns mid_ptree) prepare_fn

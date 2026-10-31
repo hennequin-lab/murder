@@ -31,20 +31,23 @@ The library splits along what can be compiled:
   eagerly on the host at O(k³) — the cheap part, against a model with P ≫ k
   parameters. The shift compiles, and runs where the parameters live.
 
-A loss is ordinary OCaml either way. `Sofo.observe` is a `custom_jvp` that only
-a sketch's total intercepts; every other Rune transformation runs its no-op
-function and drops the additions. The same `objective` therefore trains under
+A loss is ordinary OCaml either way. Inside a sketch, `Sofo.observe` is a
+`custom_jvp` that only the sketch's total intercepts; under every other Rune
+transformation it does nothing. The same `objective` therefore trains under
 `Rune.value_and_grad` (with, say, `Vega.adam_step`), under a bare `Rune.vmap`
 around `Rune.jvp` (a first-order subspace method), or under `Sofo.sketch` —
-swap the driver, not the model.
+swap the driver, not the model. A mark is made when the loss is traced, so a
+sketch is given the uncompiled loss: a `Rune.jit`ed loss first traced outside
+a sketch keeps no marks, and sketches with a zero `G̃`.
+`Sofo.Optim.sketch_jit` compiles the loss itself.
 
 ## A quick look: `example/linear.ml`
 
 Student–teacher linear regression with ill-conditioned inputs: draw a teacher
 `W*`, a student `W`, and minibatches `y = x·W*`, then train the student with
-the SOFO update. This is the whole example, with `--device` read by
-`example/devices.ml` (run it with `dune exec example/linear.exe`, and
-add `-- --device cuda` to run it on a CUDA GPU):
+the SOFO update. This is the whole example, with `-dev` read by `Cmdargs`
+(run it with `dune exec example/linear.exe`, and add `-- -dev nv` or
+`-- -dev amd` to run it on an NVIDIA or AMD GPU):
 
 ```ocaml
 open Base
@@ -57,79 +60,96 @@ let lr = 0.1
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Absolute 0.
 
-(* [--device] lists the devices to try, in order, as [Devices.first] reads
-   them: "cpu" (the default), "cuda", "cuda:1", "cuda,cpu". The sketch
-   accumulates in float64, which Metal cannot compute. *)
-let device = Devices.first Cmdargs.(get_string "--device" |> default "cpu")
+let device =
+  let gpu =
+    match Cmdargs.get_string "-dev" with
+    | Some "amd" | Some "AMD" ->
+      Rig.open_ (Rig_amd_amdgpu.gpu 0) |> Stdlib.Result.get_ok |> Option.some
+    | Some "nv" | Some "NV" ->
+      Rig.open_ (Rig_nv_nvidia.gpu 0) |> Stdlib.Result.get_ok |> Option.some
+    | _ -> None
+  in
+  match gpu with
+  | Some g -> g
+  | None -> Rig.host
+
+module D = (val Nx.devices [ device ])
+
+let placement = D.on
 
 module Model = struct
   module P = struct
-    type t = float32_t [@@deriving ptree]
+    type (_, 'd) t = 'd float32_t [@@deriving ptree]
   end
 
-  let init ~d_in ~d_out =
-    let open Infix in
-    randn float32 [| d_in; d_out |] /$ Float.(sqrt (of_int d_in))
+  let ptree : ((D.d float32_t, D.d) P.t, D.d) Nx.Ptree.t = Nx.Ptree.instantiate (module P)
 
-  let forward (w : P.t) x =
-    let open Infix in
+  let init ~d_in ~d_out =
+    let open Nx.Infix in
+    Rng.normal float32 [| d_in; d_out |] /$ Float.(sqrt (of_int d_in))
+
+  let forward (w : _ P.t) x =
+    let open Nx.Infix in
     x *@ w
 end
 
-let student =
-  Model.init ~d_in ~d_out |> Nx.Ptree.place Model.P.ptree (Nx.Placement.on device)
+let student = Model.init ~d_in ~d_out |> Nx.Ptree.place (module Model.P) placement
 
 let minibatch =
-  let open Infix in
-  let teacher = Model.init ~d_in ~d_out in
+  let open Nx.Infix in
+  let teacher = Model.init ~d_in ~d_out |> place placement in
   (* draw inputs from an ill-conditioned Gaussian;
      this covariance is the GGN (and also the Hessian in this case)! *)
   let input_cov_sqrt =
-    let u, _ = qr (randn float32 [| d_in; d_in |]) in
+    let u, _ = qr (Rng.normal float32 [| d_in; d_in |]) in
     let lambda =
       Array.init d_in ~f:(fun i -> Float.(1. / (1. + square (of_int Int.(i + 1)))))
       |> create float32 [| d_in; 1 |]
       |> fun x -> x / mean x
     in
-    sqrt lambda * u
+    sqrt lambda * u |> place placement
   in
   fun ~key bs ->
-    let x = Rng.normal key float32 [| bs; d_in |] *@ input_cov_sqrt in
+    let x = Rng.normal_at placement ~key float32 [| bs; d_in |] *@ input_cov_sqrt in
     let y = Model.forward teacher x in
     x, y
 
 let objective params key =
-  let open Infix in
   let x, y = minibatch ~key batch_size in
   let y' = Model.forward params x in
   Sofo.mse ~target:y y'
 
 (* The sketch compiles for the device the parameters are placed on; the
    keys are host values that join them on each call. *)
-let sketch_step = Sofo.Optim.sketch_jit ~k:n_tangents Model.P.ptree Rng.ptree objective
+let sketch_step =
+  Sofo.Optim.sketch_jit ~k:n_tangents placement Model.ptree (Ptree.v Rng.walk) objective
 
-let rec loop ~i (params : Model.P.t) (state : Sofo.Optim.state) =
+let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
   then params
   else (
-    let aux = Rng.fold_in state.key 0 in
+    let aux = Rng.place placement (Rng.fold_in state.key 0) in
     let out = sketch_step ~key:state.key ~aux params in
-    let params, state = Sofo.Optim.update ~lr ~damping Model.P.ptree state params out in
+    let params, state =
+      Sofo.Optim.update ~lr ~damping placement Model.ptree state params out
+    in
     let loss = item [] out.loss in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
     loop ~i:(i + 1) params state)
 
 let state = Sofo.Optim.init ~key:(Rng.key 1985) ()
-let () = Stdio.printf "device: %s\n%!" (Nx.Device.name device)
+let () = Stdio.printf "device: %s\n%!" (Rig.name device)
 let _ = loop ~i:0 student state
 ```
 
 How to read it:
 
-1. **The model is a parameter tree.** `type t = float32_t [@@deriving ptree]`
-   gives `Model.P.ptree` — the way sofo, Rune and Vega see every parameter leaf,
-   whatever the model's shape. Everything else the loss reads gets a structure
-   the same way; here it is `Rng.ptree`, the key a minibatch is drawn from.
+1. **The model is a parameter tree.** `type (_, 'd) t = 'd float32_t
+   [@@deriving ptree]` derives its walk, and `Model.ptree`, its
+   `Nx.Ptree.instantiate` on the set `D`, is the way sofo, Rune and Vega see
+   every parameter leaf, whatever the model's shape. Everything else the loss
+   reads gets a structure the same way; here it is `Ptree.v Rng.walk`, the key
+   a minibatch is drawn from.
 2. **The loss is a plain function that marks its own curvature.**
    `objective` draws a minibatch and returns a scalar. `Sofo.mse` computes the
    mean squared error _and_ observes it with the exact MSE curvature; for custom
@@ -142,9 +162,9 @@ How to read it:
    The direction key is kept separate (`Rng.fold_in state.key 0`), so data and
    subspace draws do not correlate.
 4. **The sketching half is compiled once.** `Sofo.Optim.sketch_jit
-   ~k Model.P.ptree Rng.ptree objective` builds the whole `(key, aux, params)`
-   computation under `Rune.jit` and returns the function to call: the first call
-   traces and compiles, every later one replays. The directions Θ are drawn
+   ~k placement Model.ptree (Ptree.v Rng.walk) objective` builds the whole
+   `(key, aux, params)` computation under `Rune.jit` and returns the function
+   to call: the first call traces and compiles, every later one replays. The directions Θ are drawn
    _inside_ it, from the key input, so replaying it each step samples a fresh
    128-dimensional subspace without retracing.
 5. **The loop replays, solves, steps.** One compiled call produces the loss, `C`,
@@ -152,8 +172,8 @@ How to read it:
    k-sized numbers, shifts the parameters in a compiled step where they live,
    and advances the direction stream with the parameters, so the next iteration
    cannot reuse the subspace it just measured. The parameters are placed on the
-   `--device` (`Nx.Ptree.place`), and everything that touches them is compiled
-   for it. `damping = \`Absolute 0.` and `lr = 0.1` make it a scaled Newton step
+   device `-dev` names (`Nx.Ptree.place`), and everything that touches them is
+   compiled for it. `damping = \`Absolute 0.` and `lr = 0.1` make it a scaled Newton step
    inside the subspace.
 
 ## API at a glance
@@ -161,9 +181,9 @@ How to read it:
 | What you want                                    | Entry point                                                                                          |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | Draw a subspace Θ                                 | `Sofo.Optim.directions structure ?key ~k params`                                                     |
-| Measure loss, `C`, `G̃` at `params`, eagerly       | `Sofo.sketch structure loss params dirs` → `'p Sofo.sketch`                                          |
-| Compile the measurement for a training run        | `Sofo.Optim.sketch_jit ~k structure aux_structure loss` → `~key ~aux params`                         |
-| One step on a compiled measurement                | `Sofo.Optim.update structure ~lr ?damping ?preconditioner state params out`                          |
+| Measure loss, `C`, `G̃` at `params`, eagerly       | `Sofo.sketch structure loss params dirs` → `('p, 'd) Sofo.sketch`                                    |
+| Compile the measurement for a training run        | `Sofo.Optim.sketch_jit ~k placement structure aux_structure loss` → `~key ~aux params`               |
+| One step on a compiled measurement                | `Sofo.Optim.update ~lr ?damping ?preconditioner placement structure state params out`                |
 | One step on an eager sketch                       | `Sofo.Optim.update_sketch structure ~lr ?damping ?preconditioner sk params`                          |
 | One complete eager iteration                      | `Sofo.Optim.step structure ~k ~lr state ~loss ~params`                                               |
 | The damped subspace solve alone                   | `Sofo.Optim.coordinates ?damping ?preconditioner ?gram ggn c`                                        |
@@ -186,8 +206,8 @@ implementation notes, including what each milestone settled.
 | `example/lorenz.ml`        | The paper's Lorenz endpoint task: a small RNN (`Rune.scan`) trained by the compiled SOFO loop, with an Adam loop (`Rune.value_and_grad` + `Vega.adam_step`) over the same `objective` kept (commented out) for comparison.                                                  |
 
 ```bash
-dune exec example/linear.exe -- --device cuda
-dune exec example/lorenz.exe -- -d /tmp --device cuda
+dune exec example/linear.exe -- -dev nv
+dune exec example/lorenz.exe -- -d /tmp -dev nv
 ```
 
 ## Building and testing

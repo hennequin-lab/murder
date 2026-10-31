@@ -188,7 +188,7 @@ let test_weights_and_stack () =
     (T.jacobian heavy q);
   raises_match
     ~msg:"a wrong number of weights is rejected"
-    (Exn.invalid_arg ~substring:"weight")
+    (Exn.invalid_arg ~sub:"weight")
     (fun () -> ignore (T.weight task [| 1.; 2. |]));
   (* A pose task and a geometric one stack into one residual. *)
   let pose = T.pose arm ~frame:tool ~target:(R.pose arm ~frame:tool q) in
@@ -199,7 +199,7 @@ let test_weights_and_stack () =
   check_jacobian "stacked" stacked q;
   raises_match
     ~msg:"stacking different models is rejected"
-    (Exn.invalid_arg ~substring:"different models")
+    (Exn.invalid_arg ~sub:"different models")
     (fun () ->
        let other = R.planar2 () in
        let q2 = create f32 [| 2 |] [| 0.3; 0.4 |] in
@@ -284,6 +284,24 @@ let test_solver () =
     [| true; true |]
     (arr batched.converged)
 
+(* Another device set *)
+
+(* A set of the host's devices, computed by the same kernels as the host, so a
+   value computed there is the host's, bit for bit. An operation that met a
+   constant left on the host would raise. *)
+let test_device_set () =
+  let module D = (val Nx.devices (Nx.rigs Nx.Host.v)) in
+  let on x = Nx.place D.on x in
+  let m = R.six_dof () in
+  let ee = R.frame m "ee" in
+  let target = R.pose m ~frame:ee (q_of [ 0.5; -0.4; 0.6; -0.8; 0.3; 0.7 ]) in
+  let q0 = q_of [ 0.3; -0.2; 0.4; -0.5; 0.1; 0.5 ] in
+  let host = Ik.solve (T.pose m ~frame:ee ~target) ~q:q0 in
+  let set = Ik.solve (T.pose m ~frame:ee ~target:(on target)) ~q:(on q0) in
+  equal ~msg:"iterations" int host.iterations set.iterations;
+  equal ~msg:"the solution" (array float_exact) (arr host.q) (arr set.q);
+  equal ~msg:"the residual" (array float_exact) (arr host.residual) (arr set.residual)
+
 let () =
   exit
     (run
@@ -299,4 +317,5 @@ let () =
            ]
        ; group "batching" [ test "a batch of configurations" test_batching ]
        ; group "solver" [ test "limits, the step limit, and batches" test_solver ]
+       ; group "device sets" [ test "a set besides the host" test_device_set ]
        ])

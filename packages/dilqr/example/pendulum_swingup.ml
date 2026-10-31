@@ -26,7 +26,7 @@ let dt = 0.1
    Swing UP from hanging (angle 0) to upright (angle π). *)
 module Pendulum = struct
   module Params = struct
-    type 'a t =
+    type ('a, _) t =
       { gravity : 'a
       ; mass : 'a
       ; length : 'a
@@ -63,7 +63,9 @@ module Pendulum = struct
     let dtheta = theta -$ target in
     sum ((dtheta * dtheta) + (omega * omega)) *$ 5.0
 
-  let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
+  let problem
+    : (Nx.float64_elt, (Nx.host Nx.float64_t, Nx.host) Params.t, Nx.host) Dilqr.Problem.t
+    =
     { dtype = float64
     ; n
     ; m
@@ -92,13 +94,17 @@ let loss ~target problem taus =
   let err = Infix.(slice [ R (0, 1) ] xf -$ target) in
   Infix.(ctrl + (sum (err * err) *$ 1.0))
 
-let theta : Nx.float64_t Pendulum.Params.t =
+let theta : (Nx.host Nx.float64_t, Nx.host) Pendulum.Params.t =
   { gravity = scalar64 9.81; mass = scalar64 1.0; length = scalar64 1.0 }
 
 let x0 = vec64 [| 0.0; 0.0 |]
 let us0 = Array.init Pendulum.horizon ~f:(fun _ -> create float64 [| 1 |] [| 0.0 |])
 
-let inputs : (Nx.float64_t Pendulum.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+let inputs
+  : ( (Nx.host Nx.float64_t, Nx.host) Pendulum.Params.t
+      , Nx.host Nx.float64_t )
+      Dilqr.Inputs.t
+  =
   { Dilqr.Inputs.theta; x0; us0 }
 
 let inputs_ptree = Dilqr.inputs Pendulum.problem
@@ -171,7 +177,13 @@ let solve_compiled adaptive =
   printf "\n── compiled (jit) solve and gradient ──\n";
   (* A fixed-iteration solve approximates the adaptive one, and its implicit
      gradient converges to the adaptive solve's as the solve converges. *)
-  let show name (g : (Nx.float64_t Pendulum.Params.t, Nx.float64_t) Dilqr.Inputs.t) =
+  let show
+        name
+        (g :
+          ( (Nx.host Nx.float64_t, Nx.host) Pendulum.Params.t
+            , Nx.host Nx.float64_t )
+            Dilqr.Inputs.t)
+    =
     printf
       "%-18s x0 = [%9.4g, %9.4g]  gravity = %9.4g\n%!"
       name

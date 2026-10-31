@@ -20,12 +20,12 @@ let scalar x = Nx.scalar float32 x
 
 let random_factors key d =
   List.init d ~f:(fun i ->
-    scalar (item [] (Nx.Rng.normal (Nx.Rng.fold_in key i) float32 [||])))
+    scalar (item [] (Nx.Rng.normal ~key:(Nx.Rng.fold_in key i) float32 [||])))
 
 let round4 x = Float.round (x *. 1e4) /. 1e4
 
 let distinct m =
-  let w, _ = eigh (cast float64 m) in
+  let w, _ = eigh float64 (cast float64 m) in
   Array.to_list (to_array w)
   |> List.map ~f:round4
   |> List.dedup_and_sort ~compare:Float.compare
@@ -35,7 +35,7 @@ let symmetrize m = Infix.((m + transpose m) *$ 0.5)
 let block_eigenvalues matrices =
   Array.to_list matrices
   |> List.concat_map ~f:(fun m ->
-    let w, _ = eigh (cast float64 (symmetrize m)) in
+    let w, _ = eigh float64 (cast float64 (symmetrize m)) in
     Array.to_list (to_array w) |> List.map ~f:round4)
   |> List.dedup_and_sort ~compare:Float.compare
 
@@ -132,7 +132,7 @@ let test_free_axes () =
   let d = List.length c.Compiler.basis.components in
   let factors =
     List.init d ~f:(fun i ->
-      Nx.Rng.normal (Nx.Rng.fold_in (Nx.Rng.key 19) i) float32 [| f; f |])
+      Nx.Rng.normal ~key:(Nx.Rng.fold_in (Nx.Rng.key 19) i) float32 [| f; f |])
   in
   let dense = symmetrize (c.Compiler.dense_block ~factors) in
   let matrices = Blocks.block_matrices b (Blocks.to_blocks b factors) in
