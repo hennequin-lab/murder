@@ -419,6 +419,28 @@ let motor_gen =
         axis_gen
         (float_range (-2.5) 2.5))
 
+(* Another device set *)
+
+(* A set of the host's devices, computed by the same kernels as the host, so a
+   value computed there is the host's, bit for bit. An operation that met a
+   constant left on the host would raise. *)
+let test_device_set () =
+  let module D = (val Nx.devices (Nx.rigs Nx.Host.v)) in
+  let on x = Nx.place D.on x in
+  let same msg host set = equal ~msg (tensor_exact ()) host (Nx.place Nx.Host.on set) in
+  let a = p3 1. 2. 3.
+  and b = p3 (-1.) 0.5 2. in
+  let m = M.mul (M.translate3 0.5 0. 1.) (M.rotate ~axis:(v3 0. 0. 1.) ~angle:(sc 0.7)) in
+  same "distance" (C.distance a b) (C.distance (on a) (on b));
+  same "a line" (C.line a b) (C.line (on a) (on b));
+  same
+    "a sphere of a point"
+    (C.sphere_of_point ~center:a ~radius:(sc 2.))
+    (C.sphere_of_point ~center:(on a) ~radius:(on (sc 2.)));
+  same "a grade" (C.grade 2 (C.gp a b)) (C.grade 2 (C.gp (on a) (on b)));
+  same "the dual" (C.dual a) (C.dual (on a));
+  same "the motor action" (C.apply_motor m a) (C.apply_motor (on m) (on a))
+
 let test_properties =
   group
     "properties"
@@ -481,5 +503,6 @@ let () =
        ; group "conformal" [ test "dilations and transversions" test_conformal ]
        ; group "motors" [ test "the packed motor bridge" test_motors ]
        ; group "inherited" [ test "the generic algebra in Cl(4,1)" test_inherited ]
+       ; group "device sets" [ test "a set besides the host" test_device_set ]
        ; test_properties
        ])
