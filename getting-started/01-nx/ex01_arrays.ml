@@ -29,4 +29,4 @@ let () =
     ; "a @ a^T", c
     ];
   Printf.printf "\nElement [1;2] of a: %.1f\n%!" (item [ 1; 2 ] a);
-  Printf.printf "The dtype is %s\n%!" (Nx_dtype.to_string (dtype a))
+  Printf.printf "The dtype is %s\n%!" (Dtype.name (dtype a))

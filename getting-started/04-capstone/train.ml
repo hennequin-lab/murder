@@ -9,7 +9,7 @@
 
 open Nx
 
-type 'a params =
+type ('a, _) params =
   { w1 : 'a
   ; b1 : 'a
   ; w2 : 'a
@@ -18,7 +18,7 @@ type 'a params =
 [@@deriving ptree]
 
 module Params = struct
-  type 'a t = 'a params
+  type ('a, 'd) t = ('a, 'd) params
 
   let walk = walk_params
 end
@@ -43,19 +43,21 @@ let init key =
   @@ fun () ->
   let open Infix in
   let scale k = Float.sqrt (2. /. float k) in
-  { w1 = randn float32 [| 2; 16 |] *$ scale 2
+  { w1 = Rng.normal float32 [| 2; 16 |] *$ scale 2
   ; b1 = zeros float32 [| 16 |]
-  ; w2 = randn float32 [| 16; 1 |] *$ scale 16
+  ; w2 = Rng.normal float32 [| 16; 1 |] *$ scale 16
   ; b2 = zeros float32 [| 1 |]
   }
 
 let make_data () =
   let n = 256 in
   let a =
-    Nx.Rng.with_key (Nx.Rng.key 1) @@ fun () -> Infix.(randn float32 [| n; 2 |] +$ 1.5)
+    Nx.Rng.with_key (Nx.Rng.key 1)
+    @@ fun () -> Infix.(Rng.normal float32 [| n; 2 |] +$ 1.5)
   in
   let b =
-    Nx.Rng.with_key (Nx.Rng.key 2) @@ fun () -> Infix.(randn float32 [| n; 2 |] +$ -1.5)
+    Nx.Rng.with_key (Nx.Rng.key 2)
+    @@ fun () -> Infix.(Rng.normal float32 [| n; 2 |] +$ -1.5)
   in
   let x = concatenate ~axis:0 [ a; b ] in
   let y = concatenate ~axis:0 [ zeros float32 [| n; 1 |]; ones float32 [| n; 1 |] ] in
