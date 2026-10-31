@@ -21,7 +21,7 @@ open Nx
 open Symo
 
 module Mlp = struct
-  type 'a t =
+  type ('a, _) t =
     { w1 : 'a (* hidden x input *)
     ; w2 : 'a (* output x hidden *)
     }
@@ -29,12 +29,12 @@ module Mlp = struct
 
   let hidden = 32
   let input_dim = 8
-  let dims : int list t = { w1 = [ hidden; input_dim ]; w2 = [ 1; hidden ] }
+  let dims : (int list, _) t = { w1 = [ hidden; input_dim ]; w2 = [ 1; hidden ] }
 
   (* Permuting hidden unit [h] permutes row [h] of [w1] and column [h] of
      [w2] by the same group element: one [Perm 0] group ties the two axes
      together. The other axes are [Id] (free, never transformed). *)
-  let symmetries : Symmetry.spec list t =
+  let symmetries : (Symmetry.spec list, _) t =
     { w1 = [ Symmetry.Perm 0; Symmetry.Id ]; w2 = [ Symmetry.Id; Symmetry.Perm 0 ] }
 end
 
@@ -44,16 +44,18 @@ let relu x = maximum x (zeros_like x)
 let batch = 128
 let steps = 500
 let print_every = 50
-let inputs = Nx.Rng.normal (Nx.Rng.key 0) float32 [| batch; Mlp.input_dim |]
+let inputs = Nx.Rng.normal ~key:(Nx.Rng.key 0) float32 [| batch; Mlp.input_dim |]
 
 let init key =
-  let w1 = Nx.Rng.normal (Nx.Rng.fold_in key 0) float32 [| Mlp.hidden; Mlp.input_dim |] in
-  let w2 = Nx.Rng.normal (Nx.Rng.fold_in key 1) float32 [| 1; Mlp.hidden |] in
+  let w1 =
+    Nx.Rng.normal ~key:(Nx.Rng.fold_in key 0) float32 [| Mlp.hidden; Mlp.input_dim |]
+  in
+  let w2 = Nx.Rng.normal ~key:(Nx.Rng.fold_in key 1) float32 [| 1; Mlp.hidden |] in
   { Mlp.w1 = Infix.(w1 *$ (1. /. Float.sqrt (Float.of_int Mlp.hidden)))
   ; w2 = Infix.(w2 *$ 0.5)
   }
 
-let forward (p : Nx.float32_t Mlp.t) x =
+let forward (p : (Nx.host Nx.float32_t, Nx.host) Mlp.t) x =
   let open Infix in
   let h = relu (x *@ transpose p.w1) in
   h *@ transpose p.w2
@@ -61,7 +63,7 @@ let forward (p : Nx.float32_t Mlp.t) x =
 let teacher = init (Nx.Rng.key 42)
 let targets = forward teacher inputs
 
-let loss (p : Nx.float32_t Mlp.t) =
+let loss (p : (Nx.host Nx.float32_t, Nx.host) Mlp.t) =
   let open Infix in
   let d = forward p inputs - targets in
   mean (d * d)

@@ -39,7 +39,7 @@ let coefficient ~dims comp data =
   match comp with
   | Single c -> coef c data
   | Sum cs ->
-    List.fold cs ~init:(scalar float32 0.0) ~f:(fun accu c -> Infix.(accu + coef c data))
+    List.map cs ~f:(fun c -> coef c data) |> List.reduce_exn ~f:(fun a b -> Infix.(a + b))
 
 (* The Gram matrix of the components, [B_ij = <c_i, c_j>]. Symmetric and
    positive semidefinite by construction, positive definite when the
