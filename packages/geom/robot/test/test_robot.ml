@@ -952,6 +952,28 @@ let test_names () =
     false
     (dup [ "base"; "a" ] [ joint ~limits:(1., 1.) "j" z "base" "a" ] [])
 
+(* Another device set *)
+
+(* A set of the host's devices, computed by the same kernels as the host, so a
+   value computed there is the host's, bit for bit. An operation that met a
+   constant left on the host would raise. *)
+let test_device_set () =
+  let module D = (val Nx.devices (Nx.rigs Nx.Host.v)) in
+  let on x = Nx.place D.on x in
+  let same msg host set = equal ~msg (array float_exact) (to_array host) (to_array set) in
+  let m = R.six_dof () in
+  let ee = R.frame m "ee" in
+  let q = cfg [ [ 0.1; -0.4; 0.7; 0.2; -0.3; 0.5 ]; [ 0.; 0.3; -0.2; 1.; 0.4; -0.6 ] ] in
+  same "pose" (R.pose m ~frame:ee q) (R.pose m ~frame:ee (on q));
+  same "link motors" (R.link_motors m q) (R.link_motors m (on q));
+  same "the Jacobian" (R.jacobian m ~frame:ee q) (R.jacobian m ~frame:ee (on q));
+  same "the twist" (R.twist m ~frame:ee q q) (R.twist m ~frame:ee (on q) (on q));
+  same "the bias" (R.bias m ~frame:ee q q) (R.bias m ~frame:ee (on q) (on q));
+  same
+    "manipulability"
+    (R.manipulability m ~frame:ee q)
+    (R.manipulability m ~frame:ee (on q))
+
 let () =
   exit
     (run
@@ -990,4 +1012,5 @@ let () =
            ; test "a frame on the root" test_root_frame
            ; test "names and printing" test_names
            ]
+       ; group "device sets" [ test "a set besides the host" test_device_set ]
        ])

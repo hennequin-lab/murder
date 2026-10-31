@@ -513,6 +513,28 @@ let motor_gen =
     (fun tw -> M.exp (create f32 [| 6 |] tw))
     Gen.(array ~size:(constant 6) (float_range (-1.5) 1.5))
 
+(* Another device set *)
+
+(* A set of the host's devices, computed by the same kernels as the host, so a
+   value computed there is the host's, bit for bit. An operation that met a
+   constant left on the host would raise. *)
+let test_device_set () =
+  let module D = (val Nx.devices (Nx.rigs Nx.Host.v)) in
+  let on x = Nx.place D.on x in
+  let same msg host set = equal ~msg (tensor_exact ()) host (Nx.place Nx.Host.on set) in
+  let m1 = M.mul (translation (vec3 1. 2. 3.)) (rot ~axis:(vec3 0. 0. 1.) 0.4)
+  and m2 = rot ~axis:(vec3 1. 0. 0.) 0.3 in
+  let twist = vec6 0.1 (-0.2) 0.3 1. 0. (-0.5) in
+  same "compose" (M.compose [ m1; m2 ]) (M.compose [ on m1; on m2 ]);
+  same "exp" (M.exp twist) (M.exp (on twist));
+  same "log" (M.log m1) (M.log (on m1));
+  same "slerp" (M.slerp m1 m2 (scalar 0.3)) (M.slerp (on m1) (on m2) (on (scalar 0.3)));
+  same "the adjoint" (M.adjoint m1) (M.adjoint (on m1));
+  same
+    "a rotation matrix"
+    (M.of_rotation (M.rotation m1))
+    (M.of_rotation (M.rotation (on m1)))
+
 let test_properties =
   group
     "properties"
@@ -590,5 +612,6 @@ let () =
        ; group "interpolation" [ test "slerp" test_slerp ]
        ; group "adjoint" [ test "the adjoint of a motion" test_adjoint ]
        ; group "printing" [ test "debug printing" test_printing ]
+       ; group "device sets" [ test "a set besides the host" test_device_set ]
        ; test_properties
        ])
