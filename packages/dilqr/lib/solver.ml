@@ -30,10 +30,11 @@ type 'a t =
   }
 
 (* [stack ts] is the array [ts] as one tensor with its length leading. *)
-let stack (ts : ('a, 'b) Nx.t array) : ('a, 'b) Nx.t = Nx.stack ~axis:0 (Array.to_list ts)
+let stack (ts : ('a, 'b, 'd) Nx.t array) : ('a, 'b, 'd) Nx.t =
+  Nx.stack ~axis:0 (Array.to_list ts)
 
 (* [unstack len t] is the rows of [t], as views. *)
-let unstack len (t : ('a, 'b) Nx.t) : ('a, 'b) Nx.t array =
+let unstack len (t : ('a, 'b, 'd) Nx.t) : ('a, 'b, 'd) Nx.t array =
   Array.init len ~f:(fun k -> slice [ I k ] t)
 
 (* [is_batched x0 us0] is [true] when the state and every control carry a
@@ -41,56 +42,61 @@ let unstack len (t : ('a, 'b) Nx.t) : ('a, 'b) Nx.t array =
 let is_batched x0 us0 =
   Array.length (shape x0) > 1 || Array.exists us0 ~f:(fun u -> Array.length (shape u) > 1)
 
-(* [ks p] is the step index of each step, a scalar row per step. *)
-let ks p = arange p.Problem.dtype 0 p.Problem.horizon 1
+(* [ks p x] is the step index of each step, a scalar row per step, beside
+   [x]. *)
+let ks p x = arange_at (beside x) p.Problem.dtype 0 p.Problem.horizon 1
 let dyn p theta ~k x u = p.Problem.dynamics theta ~k ~x ~u
 
 (* [states p theta x0 us] integrates the dynamics over the controls [us]
    ([horizon; m]), returning the state path ([horizon + 1; n]) as one scan. *)
-let states p theta (x0 : 'w Problem.value) (us : 'w Problem.value) : 'w Problem.value =
+let states p theta (x0 : ('w, 'd) Problem.value) (us : ('w, 'd) Problem.value)
+  : ('w, 'd) Problem.value
+  =
   let _, x =
     Rune.scan
       Nx.Ptree.tensor
       Nx.Ptree.(pair tensor tensor)
       Nx.Ptree.tensor
-      ~f:(fun x (u, k) ->
-        let x' = dyn p theta ~k x u in
-        x', x')
+      (fun x (u, k) ->
+         let x' = dyn p theta ~k x u in
+         x', x')
       ~init:x0
-      (us, ks p)
+      (us, ks p us)
   in
   concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] x0; x ]
 
 (* [cost_of p theta xs us] is the running + final loss along the trajectory
    ([horizon + 1; n]) under the controls ([horizon; m]), as one scan. *)
-let cost_of p theta (xs : 'w Problem.value) (us : 'w Problem.value) : 'w Problem.value =
+let cost_of p theta (xs : ('w, 'd) Problem.value) (us : ('w, 'd) Problem.value)
+  : ('w, 'd) Problem.value
+  =
   let _, losses =
     Rune.scan
       Nx.Ptree.unit
       Nx.Ptree.(pair (pair tensor tensor) tensor)
       Nx.Ptree.tensor
-      ~f:(fun () ((x, u), k) -> (), p.Problem.running_loss theta ~k ~x ~u)
+      (fun () ((x, u), k) -> (), p.Problem.running_loss theta ~k ~x ~u)
       ~init:()
-      ((slice [ R (0, p.Problem.horizon) ] xs, us), ks p)
+      ((slice [ R (0, p.Problem.horizon) ] xs, us), ks p us)
   in
   Infix.(p.Problem.final_loss theta ~x:(slice [ I p.Problem.horizon ] xs) + sum losses)
 
 (* [rollout_unbatched p theta x0 us] integrates the dynamics, returning the
    state path and the total cost (running + final, a scalar tensor). *)
-let rollout_unbatched p theta (x0 : 'w Problem.value) (us : 'w Problem.value array)
-  : 'w Problem.value array * 'w Problem.value
+let rollout_unbatched
+      p
+      theta
+      (x0 : ('w, 'd) Problem.value)
+      (us : ('w, 'd) Problem.value array)
+  : ('w, 'd) Problem.value array * ('w, 'd) Problem.value
   =
   let us = stack us in
   let xs = states p theta x0 us in
   unstack (p.Problem.horizon + 1) xs, cost_of p theta xs us
 
-(* The structure of a rollout, for the [Rune.vmap] that batches it. *)
-let rollout_structure () =
-  Nx.Ptree.(
-    iso
-      (fun (xs, cost) -> Array.of_list xs, cost)
-      (fun (xs, cost) -> Array.to_list xs, cost)
-      (pair (list tensor) tensor))
+(* The structure of a rollout, the states as a list, for the [Rune.vmap] that
+   batches it. *)
+let rollout_structure () = Nx.Ptree.(pair (list tensor) tensor)
 
 (* [rollout p theta x0 us] is {!rollout_unbatched}; batched inputs are rolled
    out member by member. *)
@@ -98,19 +104,23 @@ let rollout p theta x0 us0 =
   if not (is_batched x0 us0)
   then rollout_unbatched p theta x0 us0
   else (
-    let inputs : ('p, 'w Problem.value) Problem.Inputs.t =
+    let inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t =
       { Problem.Inputs.theta; x0; us0 }
     in
-    Rune.vmap
-      Nx.Ptree.(Problem.inputs p @-> returns (rollout_structure ()))
-      (fun (i : ('p, 'w Problem.value) Problem.Inputs.t) ->
-         rollout_unbatched p i.theta i.x0 i.us0)
-      inputs)
+    let xs, cost =
+      Rune.vmap
+        Nx.Ptree.(Problem.inputs p @-> returns (rollout_structure ()))
+        (fun (i : ('p, ('w, 'd) Problem.value) Problem.Inputs.t) ->
+           let xs, cost = rollout_unbatched p i.theta i.x0 i.us0 in
+           Array.to_list xs, cost)
+        inputs
+    in
+    Array.of_list xs, cost)
 
 (* The rows of one step's linearization: the state, the control and the step
    index. *)
 module Step_rows = struct
-  type 'a t =
+  type ('a, _) t =
     { x : 'a
     ; u : 'a
     ; k : 'a
@@ -126,7 +136,8 @@ let block_rows () = Nx.Ptree.instantiate (module Lqr.Rows)
 
 (* [step_blocks p theta row] linearizes dynamics and losses at one step, one
    [jacfwd'] or [grad'] pass per block. *)
-let step_blocks p theta (row : 'w Problem.value Step_rows.t) : 'w Problem.value Lqr.Rows.t
+let step_blocks p theta (row : (('w, 'd) Problem.value, 'd) Step_rows.t)
+  : (('w, 'd) Problem.value, 'd) Lqr.Rows.t
   =
   let x = row.x
   and u = row.u
@@ -162,16 +173,18 @@ let step_blocks p theta (row : 'w Problem.value Step_rows.t) : 'w Problem.value 
 (* [blocks_t p theta xs us] computes the linearization of dynamics and losses
    along the trajectory ([horizon + 1; n]) under the controls ([horizon; m]),
    as one scan. *)
-let blocks_t p theta (xs : 'w Problem.value) (us : 'w Problem.value)
-  : (float, 'w) Lqr.tape
+let blocks_t p theta (xs : ('w, 'd) Problem.value) (us : ('w, 'd) Problem.value)
+  : (float, 'w, 'd) Lqr.tape
   =
-  let rows = { Step_rows.x = slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p } in
+  let rows =
+    { Step_rows.x = slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p us }
+  in
   let _, blocks =
     Rune.scan
       Nx.Ptree.unit
       (step_rows ())
       (block_rows ())
-      ~f:(fun () row -> (), step_blocks p theta row)
+      (fun () row -> (), step_blocks p theta row)
       ~init:()
       rows
   in
@@ -184,22 +197,21 @@ let blocks_t p theta (xs : 'w Problem.value) (us : 'w Problem.value)
 
 (* [blocks_unbatched p theta xs us] linearizes dynamics and losses along the
    trajectory, from per-step arrays. *)
-let blocks_unbatched p theta (xs : 'w Problem.value array) (us : 'w Problem.value array)
-  : (float, 'w) Lqr.tape
+let blocks_unbatched
+      p
+      theta
+      (xs : ('w, 'd) Problem.value array)
+      (us : ('w, 'd) Problem.value array)
+  : (float, 'w, 'd) Lqr.tape
   =
   blocks_t p theta (stack xs) (stack us)
 
-(* The structure of a tape, for the [Rune.vmap] that batches a
-   linearization. *)
-let tape_structure () =
-  Nx.Ptree.(
-    iso
-      (fun (blocks, (fx, fxx)) -> { Lqr.blocks; fx; fxx })
-      (fun { Lqr.blocks; fx; fxx } -> blocks, (fx, fxx))
-      (pair (block_rows ()) (pair tensor tensor)))
+(* The structure of a tape, as the blocks and the terminal pair, for the
+   [Rune.vmap] that batches a linearization. *)
+let tape_structure () = Nx.Ptree.(pair (block_rows ()) (pair tensor tensor))
 
-let blocks p theta (xs : 'w Problem.value array) (us : 'w Problem.value array)
-  : (float, 'w) Lqr.tape
+let blocks p theta (xs : ('w, 'd) Problem.value array) (us : ('w, 'd) Problem.value array)
+  : (float, 'w, 'd) Lqr.tape
   =
   let batched =
     Array.exists xs ~f:(fun x -> Array.length (shape x) > 1)
@@ -213,15 +225,20 @@ let blocks p theta (xs : 'w Problem.value array) (us : 'w Problem.value array)
     let batch = Array.length (shape xs.(0)) - 1 in
     let xs = Nx.stack ~axis:batch (Array.to_list xs)
     and us = Nx.stack ~axis:batch (Array.to_list us) in
-    Rune.vmap
-      Nx.Ptree.(pair p.params (pair tensor tensor) @-> returns (tape_structure ()))
-      (fun (theta, (xs, us)) -> blocks_t p theta xs us)
-      (theta, (xs, us)))
+    let blocks, (fx, fxx) =
+      Rune.vmap
+        Nx.Ptree.(pair p.params (pair tensor tensor) @-> returns (tape_structure ()))
+        (fun (theta, (xs, us)) ->
+           let { Lqr.blocks; fx; fxx } = blocks_t p theta xs us in
+           blocks, (fx, fxx))
+        (theta, (xs, us))
+    in
+    { Lqr.blocks; fx; fxx })
 
 (* The per-step tangents of the first-order data: what a materialized tangent
    (an [Lqr.tangent]) holds, and what {!tangent} emits. *)
 module Tangent_data_rows = struct
-  type 'a t =
+  type ('a, _) t =
     { da : 'a
     ; db : 'a
     ; df : 'a
@@ -238,8 +255,8 @@ let tangent_data_rows () = Nx.Ptree.instantiate (module Tangent_data_rows)
    defined by taken inside it: the tangents of [A], [B], [f] and of the loss
    gradient, which is what a tangent of the LQR problem consumes. The tangents
    of the loss Hessians are never needed (see [Lqr]). *)
-let step_tangent p theta ~dtheta (row : 'w Problem.value Step_rows.t)
-  : 'w Problem.value Tangent_data_rows.t
+let step_tangent p theta ~dtheta (row : (('w, 'd) Problem.value, 'd) Step_rows.t)
+  : (('w, 'd) Problem.value, 'd) Tangent_data_rows.t
   =
   let x = row.x
   and u = row.u
@@ -265,16 +282,18 @@ let step_tangent p theta ~dtheta (row : 'w Problem.value Step_rows.t)
 
 (* [tangent_t p theta ~dtheta xs us] is the tangent of the first-order data
    along the stacked trajectory, as one scan over the horizon. *)
-let tangent_t p theta ~dtheta (xs : 'w Problem.value) (us : 'w Problem.value)
-  : (float, 'w) Lqr.tangent
+let tangent_t p theta ~dtheta (xs : ('w, 'd) Problem.value) (us : ('w, 'd) Problem.value)
+  : (float, 'w, 'd) Lqr.tangent
   =
-  let rows = { Step_rows.x = slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p } in
+  let rows =
+    { Step_rows.x = slice [ R (0, p.Problem.horizon) ] xs; u = us; k = ks p us }
+  in
   let _, t =
     Rune.scan
       Nx.Ptree.unit
       (step_rows ())
       (tangent_data_rows ())
-      ~f:(fun () row -> (), step_tangent p theta ~dtheta row)
+      (fun () row -> (), step_tangent p theta ~dtheta row)
       ~init:()
       rows
   in
@@ -293,8 +312,13 @@ let tangent_t p theta ~dtheta (xs : 'w Problem.value) (us : 'w Problem.value)
 (* [tangent p theta ~dtheta xs us] is {!tangent_t} at a per-step trajectory.
    The trajectory is one member's: a batched problem is mapped over the batch
    by the solve that calls this, so the whole call sees one member. *)
-let tangent p theta ~dtheta (xs : 'w Problem.value array) (us : 'w Problem.value array)
-  : (float, 'w) Lqr.tangent
+let tangent
+      p
+      theta
+      ~dtheta
+      (xs : ('w, 'd) Problem.value array)
+      (us : ('w, 'd) Problem.value array)
+  : (float, 'w, 'd) Lqr.tangent
   =
   tangent_t p theta ~dtheta (stack xs) (stack us)
 
@@ -306,7 +330,7 @@ let flip x = Nx.flip ~axes:[ 0 ] x
    tangent trajectory. Unlike {!Tangent_data_rows} it carries no tangent: the
    step computes those, and drops them once it has used them. *)
 module Tangent_stream_rows = struct
-  type 'a t =
+  type ('a, _) t =
     { x : 'a
     ; u : 'a
     ; k : 'a
@@ -326,8 +350,13 @@ let tangent_stream_rows () = Nx.Ptree.instantiate (module Tangent_stream_rows)
 (* [step_tangent_data p theta ~dtheta row] is the θ-tangent of the first-order
    data at one step, without the dynamics value: what the tangent backward pass
    consumes, and nothing else. *)
-let step_tangent_data p theta ~dtheta (row : 'w Problem.value Tangent_stream_rows.t)
-  : 'w Problem.value * ('w Problem.value * ('w Problem.value * 'w Problem.value))
+let step_tangent_data
+      p
+      theta
+      ~dtheta
+      (row : (('w, 'd) Problem.value, 'd) Tangent_stream_rows.t)
+  : ('w, 'd) Problem.value
+    * (('w, 'd) Problem.value * (('w, 'd) Problem.value * ('w, 'd) Problem.value))
   =
   let x = row.x
   and u = row.u
@@ -365,10 +394,10 @@ let tangent_solve
       p
       theta
       ~dtheta
-      ~(dx0 : 'w Problem.value)
-      (xs : 'w Problem.value array)
-      (us : 'w Problem.value array)
-  : (float, 'w) Lqr.solution
+      ~(dx0 : ('w, 'd) Problem.value)
+      (xs : ('w, 'd) Problem.value array)
+      (us : ('w, 'd) Problem.value array)
+  : (float, 'w, 'd) Lqr.solution
   =
   let horizon = p.Problem.horizon in
   let xs = stack xs
@@ -382,27 +411,27 @@ let tangent_solve
       Nx.Ptree.tensor
       Nx.Ptree.(pair (step_rows ()) tensor)
       Nx.Ptree.tensor
-      ~f:(fun g (row, a) ->
-        let df =
-          snd
-            (Rune.jvp
-               p.Problem.params
-               Nx.Ptree.tensor
-               (fun th -> dyn p th ~k:row.Step_rows.k row.x row.u)
-               theta
-               dtheta)
-        in
-        let g' = Infix.(Lqr.matvec a g + df) in
-        g', g')
+      (fun g (row, a) ->
+         let df =
+           snd
+             (Rune.jvp
+                p.Problem.params
+                Nx.Ptree.tensor
+                (fun th -> dyn p th ~k:row.Step_rows.k row.x row.u)
+                theta
+                dtheta)
+         in
+         let g' = Infix.(Lqr.matvec a g + df) in
+         g', g')
       ~init:dx0
-      ({ Step_rows.x = x0s; u = us; k = ks p }, tape.Lqr.blocks.a)
+      ({ Step_rows.x = x0s; u = us; k = ks p us }, tape.Lqr.blocks.a)
   in
   let g = concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] dx0; g_next ] in
   (* 2. The tangent backward pass, against the primal's factors. *)
   let rows =
     { Tangent_stream_rows.x = flip x0s
     ; u = flip us
-    ; k = flip (ks p)
+    ; k = flip (ks p us)
     ; g = flip (slice [ R (0, horizon) ] g)
     ; a = flip tape.Lqr.blocks.a
     ; b = flip tape.Lqr.blocks.b
@@ -428,25 +457,25 @@ let tangent_solve
       Nx.Ptree.tensor
       (tangent_stream_rows ())
       Nx.Ptree.tensor
-      ~f:(fun e row ->
-        let da, (db, (dlx, dlu)) = step_tangent_data p theta ~dtheta row in
-        let q, e' =
-          Lqr.tangent_step
-            ~e
-            { Lqr.Tangent_rows.a = row.Tangent_stream_rows.a
-            ; b = row.b
-            ; da
-            ; db
-            ; lxx = row.lxx
-            ; lux = row.lux
-            ; lx = row.lx
-            ; dlx
-            ; dlu
-            ; g = row.g
-            ; fb = row.fb
-            }
-        in
-        e', q)
+      (fun e row ->
+         let da, (db, (dlx, dlu)) = step_tangent_data p theta ~dtheta row in
+         let q, e' =
+           Lqr.tangent_step
+             ~e
+             { Lqr.Tangent_rows.a = row.Tangent_stream_rows.a
+             ; b = row.b
+             ; da
+             ; db
+             ; lxx = row.lxx
+             ; lux = row.lux
+             ; lx = row.lx
+             ; dlx
+             ; dlu
+             ; g = row.g
+             ; fb = row.fb
+             }
+         in
+         e', q)
       ~init:e_last
       rows
   in
@@ -456,9 +485,9 @@ let tangent_solve
       Nx.Ptree.tensor
       (Nx.Ptree.instantiate (module Lqr.Tangent_roll_rows))
       Nx.Ptree.(pair tensor tensor)
-      ~f:(fun v row ->
-        let du, v' = Lqr.tangent_roll_step ~v row in
-        v', (du, v'))
+      (fun v row ->
+         let du, v' = Lqr.tangent_roll_step ~v row in
+         v', (du, v'))
       ~init:(zeros_like dx0)
       { Lqr.Tangent_roll_rows.a = tape.Lqr.blocks.a
       ; b = tape.Lqr.blocks.b
@@ -472,7 +501,7 @@ let tangent_solve
 
 (* [pick ~w ~batched] selects one slice along axis 0 of a batched trajectory
    with a one-hot weight vector [w]. Pure tensor ops. *)
-let pick ~w ~(batched : ('a, 'b) Nx.t) : ('a, 'b) Nx.t =
+let pick ~w ~(batched : ('a, 'b, 'd) Nx.t) : ('a, 'b, 'd) Nx.t =
   let extra =
     Array.create ~len:(Array.length (shape batched) - Array.length (shape w)) 1
   in
@@ -499,9 +528,9 @@ let solve_fixed_unbatched
       ?(c1 = 1e-2)
       ~(iters : int)
       (theta : 'p)
-      (x0 : 'w Problem.value)
-      (us0 : 'w Problem.value array)
-  : 'w Problem.value t
+      (x0 : ('w, 'd) Problem.value)
+      (us0 : ('w, 'd) Problem.value array)
+  : ('w, 'd) Problem.value t
   =
   let alphas = Array.of_list alphas in
   (* A host float becomes a scalar tensor for the LQR core; zero means no
@@ -546,7 +575,9 @@ let solve_fixed_unbatched
     let costs = where accept costs (full_like costs 0.0) in
     let scores = where accept costs (full_like costs Float.infinity) in
     let best = cast int32 (argmin ~axis:0 scores) in
-    let w = cast (Nx.dtype !cost) (Nx.equal (arange int32 0 n_alpha 1) best) in
+    let w =
+      cast (Nx.dtype !cost) (Nx.equal (arange_at (beside best) int32 0 n_alpha 1) best)
+    in
     let mask =
       reshape
         (Array.append
@@ -571,14 +602,10 @@ let solve_fixed_unbatched
   ; cost = !cost
   }
 
-(* The structure of a solution: the states, the controls and the cost, for the
-   [Rune.vmap] that turns the unbatched solve into a batched one. *)
-let solution_structure () =
-  Nx.Ptree.(
-    iso
-      (fun (xs, (us, cost)) -> { xs = Array.of_list xs; us = Array.of_list us; cost })
-      (fun { xs; us; cost } -> Array.to_list xs, (Array.to_list us, cost))
-      (pair (list tensor) (pair (list tensor) tensor)))
+(* The structure of a solution: the states, the controls and the cost, the
+   states and controls as lists, for the [Rune.vmap] that turns the unbatched
+   solve into a batched one. *)
+let solution_structure () = Nx.Ptree.(pair (list tensor) (pair (list tensor) tensor))
 
 (* The fixed-iteration solve. Batched inputs (a leading batch axis on the
    parameters, the initial state and every initial control) are solved by
@@ -589,14 +616,20 @@ let solve_fixed p ?alphas ?mu ?c1 ~iters theta x0 us0 =
   if not (is_batched x0 us0)
   then solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters theta x0 us0
   else (
-    let inputs : ('p, 'w Problem.value) Problem.Inputs.t =
+    let inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t =
       { Problem.Inputs.theta; x0; us0 }
     in
-    Rune.vmap
-      Nx.Ptree.(Problem.inputs p @-> returns (solution_structure ()))
-      (fun (i : ('p, 'w Problem.value) Problem.Inputs.t) ->
-         solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters i.theta i.x0 i.us0)
-      inputs)
+    let xs, (us, cost) =
+      Rune.vmap
+        Nx.Ptree.(Problem.inputs p @-> returns (solution_structure ()))
+        (fun (i : ('p, ('w, 'd) Problem.value) Problem.Inputs.t) ->
+           let { xs; us; cost } =
+             solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters i.theta i.x0 i.us0
+           in
+           Array.to_list xs, (Array.to_list us, cost))
+        inputs
+    in
+    { xs = Array.of_list xs; us = Array.of_list us; cost })
 
 (* The traceable kernels of the adaptive solve, as one record. The eager and
    the compiled implementations differ only in these three functions: the
@@ -604,46 +637,49 @@ let solve_fixed p ?alphas ?mu ?c1 ~iters theta x0 us0 =
    backtracking, convergence — is unchanged. Every tensor is the stacked form
    the solver keeps between iterations, so a kernel is one call per iteration
    (or per line-search trial), not one per step. *)
-type ('w, 'p) kernels =
+type ('w, 'p, 'd) kernels =
   { rollout :
-      'p -> 'w Problem.value -> 'w Problem.value -> 'w Problem.value * 'w Problem.value
+      'p
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value * ('w, 'd) Problem.value
     (** [rollout theta x0 us] is the state path and the total cost. *)
   ; backward :
       'p
-      -> 'w Problem.value
-      -> 'w Problem.value
-      -> 'w Problem.value
-      -> (float, 'w) Lqr.gains * 'w Problem.value * 'w Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> (float, 'w, 'd) Lqr.gains * ('w, 'd) Problem.value * ('w, 'd) Problem.value
     (** [backward theta xs us mu] linearizes at the trajectory and runs the
         damped Riccati pass: the gains and the expected-decrease
         coefficients. *)
   ; trial :
       'p
-      -> 'w Problem.value
-      -> 'w Problem.value
-      -> 'w Problem.value
-      -> (float, 'w) Lqr.gains
-      -> 'w Problem.value
-      -> 'w Problem.value * 'w Problem.value * 'w Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> (float, 'w, 'd) Lqr.gains
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value * ('w, 'd) Problem.value * ('w, 'd) Problem.value
     (** [trial theta x0 xs us gains alpha] rolls out one line-search step
         and evaluates its cost. *)
   }
 
 (* The type of the compiled adaptive solve: {!solve} with the problem
    already given. *)
-type ('w, 'p) compiled =
+type ('w, 'p, 'd) compiled =
   ?max_iter:int
   -> ?conv_threshold:float
   -> ?c1:float
   -> ?ls_depth:int
   -> ?reg:Regularisation.t
   -> 'p
-  -> 'w Problem.value
-  -> 'w Problem.value array
-  -> 'w Problem.value t
+  -> ('w, 'd) Problem.value
+  -> ('w, 'd) Problem.value array
+  -> ('w, 'd) Problem.value t
 
 (* [eager_kernels p] runs the kernels as eager tensor code. *)
-let eager_kernels (p : ('w, 'p) Problem.t) : ('w, 'p) kernels =
+let eager_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) kernels =
   { rollout =
       (fun theta x0 us ->
         let xs = states p theta x0 us in
@@ -665,7 +701,7 @@ let eager_kernels (p : ('w, 'p) Problem.t) : ('w, 'p) kernels =
    and every later call replays their programs for the same shapes and
    placements. [mu] and [alpha] are inputs, not captured floats, so a new
    regularization or a new trial step does not retrace. *)
-let compiled_kernels ?beam ?parallel (p : ('w, 'p) Problem.t) : ('w, 'p) kernels =
+let compiled_kernels ?beam ?parallel (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) kernels =
   let rollout =
     Rune.jit
       ?beam
@@ -727,18 +763,18 @@ let compiled_kernels ?beam ?parallel (p : ('w, 'p) Problem.t) : ('w, 'p) kernels
    [kernels] is where the tensor work happens: {!eager_kernels} for the plain
    solve, {!compiled_kernels} for the compiled one. *)
 let solve_with
-      (type w p)
-      (p : (w, p) Problem.t)
-      (kernels : (w, p) kernels)
+      (type w p d)
+      (p : (w, p, d) Problem.t)
+      (kernels : (w, p, d) kernels)
       ?(max_iter = 20)
       ?(conv_threshold = 1e-6)
       ?(c1 = 1e-2)
       ?(ls_depth = 8)
       ?(reg = Regularisation.init)
       (theta : p)
-      (x0 : w Problem.value)
-      (us0 : w Problem.value array)
-  : w Problem.value t
+      (x0 : (w, d) Problem.value)
+      (us0 : (w, d) Problem.value array)
+  : (w, d) Problem.value t
   =
   if is_batched x0 us0
   then

@@ -59,6 +59,11 @@ changes do not need an entry.
   scans), and `loss_of_taus` is one scan rather than one loss per step. The
   local model's expected-decrease coefficient `d2` is `-d1`, as it always was
   numerically.
+- Ported to raven 19a5d88: the problem and every tensor type take the device
+  set of their tensors (`('w, 'p, 'd) Problem.t`, `('w, 'd) Problem.value`,
+  `(float, 'w, 'd) Lqr.tape`), `inputs problem` describes the inputs at that
+  set, and `Lqr.Rows`, `Lqr.Tangent_rows` and `Lqr.Tangent_roll_rows` are
+  `('a, _) t` structures, as a parameter record now is.
 
 ### ilqr-vae
 

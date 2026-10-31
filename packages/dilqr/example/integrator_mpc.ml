@@ -17,7 +17,7 @@ let dt = 0.1
 
 module Integrator = struct
   module Params = struct
-    type 'a t = { mass : 'a } [@@deriving ptree]
+    type ('a, _) t = { mass : 'a } [@@deriving ptree]
   end
 
   let n = 2
@@ -44,7 +44,9 @@ module Integrator = struct
     and vel = slice [ R (1, 2) ] x in
     sum ((pos * pos) + (vel * vel)) *$ 5.0
 
-  let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
+  let problem
+    : (Nx.float64_elt, (Nx.host Nx.float64_t, Nx.host) Params.t, Nx.host) Dilqr.Problem.t
+    =
     { dtype = float64
     ; n
     ; m
@@ -85,7 +87,9 @@ let grad_step =
 
 let () =
   printf "── double-integrator MPC ──\n%!";
-  let theta : Nx.float64_t Integrator.Params.t = { mass = scalar64 1.0 } in
+  let theta : (Nx.host Nx.float64_t, Nx.host) Integrator.Params.t =
+    { mass = scalar64 1.0 }
+  in
   let x0 = ref (vec64 [| 1.0; 0.0 |]) in
   let us = Array.init Integrator.horizon ~f:(fun _ -> create float64 [| 1 |] [| 0.0 |]) in
   (* warm-start the receding-horizon solves from the previous solution *)
@@ -93,7 +97,11 @@ let () =
     if step = 0
     then ()
     else (
-      let inputs : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+      let inputs
+        : ( (Nx.host Nx.float64_t, Nx.host) Integrator.Params.t
+            , Nx.host Nx.float64_t )
+            Dilqr.Inputs.t
+        =
         { Dilqr.Inputs.theta; x0 = !x0; us0 = us }
       in
       let taus = solve_step inputs in
@@ -116,7 +124,11 @@ let () =
   in
   mpc 8;
   (* gradient of the accumulated cost w.r.t. the mass parameter, compiled *)
-  let inputs : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+  let inputs
+    : ( (Nx.host Nx.float64_t, Nx.host) Integrator.Params.t
+        , Nx.host Nx.float64_t )
+        Dilqr.Inputs.t
+    =
     { Dilqr.Inputs.theta; x0 = !x0; us0 = us }
   in
   let grads = grad_step inputs in

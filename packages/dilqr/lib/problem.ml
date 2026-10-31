@@ -20,7 +20,7 @@ open Base
 open Nx
 
 (** The concrete tensor type: states, controls and losses at dtype ['w]. *)
-type 'w value = (float, 'w) Nx.t
+type ('w, 'd) value = (float, 'w, 'd) Nx.t
 
 (** The solve inputs: problem parameters, initial state, initial control
     guess. A structure of tensors, so that a differentiation with respect to
@@ -36,43 +36,42 @@ end
 
 (** The problem description. It is all data: the solver takes one of these,
     and the transformations take the parameter structure it carries. *)
-type ('w, 'p) t =
+type ('w, 'p, 'd) t =
   { dtype : (float, 'w) Nx.dtype (** the dtype, for scalar creation *)
   ; n : int (** state dimension *)
   ; m : int (** control dimension *)
   ; horizon : int (** number of control steps; states run from 0 to [horizon] *)
   ; verbose : bool (** per-iteration diagnostics on stdout *)
-  ; params : 'p Nx.Ptree.t
+  ; params : ('p, 'd) Nx.Ptree.t
     (** the parameter structure at [value], built with
         [Nx.Ptree.instantiate (module Params)] *)
-  ; dynamics : 'p -> k:'w value -> x:'w value -> u:'w value -> 'w value
+  ; dynamics :
+      'p -> k:('w, 'd) value -> x:('w, 'd) value -> u:('w, 'd) value -> ('w, 'd) value
     (** [x_{k+1} = dynamics theta ~k ~x ~u], shape [n]. [k] is the step
         index as a scalar tensor, so a time-varying problem indexes its
         parameters with it. *)
-  ; running_loss : 'p -> k:'w value -> x:'w value -> u:'w value -> 'w value
+  ; running_loss :
+      'p -> k:('w, 'd) value -> x:('w, 'd) value -> u:('w, 'd) value -> ('w, 'd) value
     (** scalar loss at step [k] *)
-  ; final_loss : 'p -> x:'w value -> 'w value (** scalar terminal loss *)
+  ; final_loss : 'p -> x:('w, 'd) value -> ('w, 'd) value (** scalar terminal loss *)
   }
 
 (** [inputs problem] is the structure of the solve inputs: the parameters at
     [theta], walked with the problem's own structure, then the initial state
     and every control of the initial guess. *)
-let inputs (type w p) (problem : (w, p) t) : (p, w value) Inputs.t Nx.Ptree.t =
-  let module I = struct
-    type 'a t =
-      { theta : p [@ptree.walk Nx.Ptree.Walk.structure problem.params]
-      ; x0 : 'a
-      ; us0 : 'a array
-      }
-    [@@deriving ptree]
+let inputs (type w p d) (problem : (w, p, d) t)
+  : ((p, (w, d) value) Inputs.t, d) Nx.Ptree.t
+  =
+  let module Controls = struct
+    type ('a, _) t = 'a array [@@deriving ptree]
   end
   in
-  Nx.Ptree.iso
-    (fun (i : w value I.t) : (p, w value) Inputs.t ->
-       { Inputs.theta = i.theta; x0 = i.x0; us0 = i.us0 })
-    (fun (i : (p, w value) Inputs.t) : w value I.t ->
-       { I.theta = i.theta; x0 = i.x0; us0 = i.us0 })
-    (Nx.Ptree.instantiate (module I))
+  Nx.Ptree.v (fun c { Inputs.theta; x0; us0 } ->
+    let open Nx.Ptree.Walk in
+    let theta = field c "theta" (structure problem.params) theta in
+    let x0 = field c "x0" tensor x0 in
+    let us0 = field c "us0" (under Controls.walk tensor) us0 in
+    { Inputs.theta; x0; us0 })
 
 (** [slice_last t ~start ~stop] slices the last axis of [t], whatever leading
     batch axes it carries. The state and control dimensions are the last axis
@@ -121,16 +120,16 @@ let split_taus p taus =
    over the stacked trajectory: one traced step for the whole horizon. *)
 let loss_of_taus_unbatched p theta taus =
   let horizon = p.horizon in
-  let ks = arange p.dtype 0 horizon 1 in
+  let ks = arange_at (beside taus) p.dtype 0 horizon 1 in
   let _, losses =
     Rune.scan
       Nx.Ptree.unit
       Nx.Ptree.(pair tensor tensor)
       Nx.Ptree.tensor
-      ~f:(fun () (row, k) ->
-        let x = slice [ R (0, p.n) ] row in
-        let u = slice [ R (p.n, p.n + p.m) ] row in
-        (), p.running_loss theta ~k ~x ~u)
+      (fun () (row, k) ->
+         let x = slice [ R (0, p.n) ] row in
+         let u = slice [ R (p.n, p.n + p.m) ] row in
+         (), p.running_loss theta ~k ~x ~u)
       ~init:()
       (slice [ R (0, horizon) ] taus, ks)
   in
