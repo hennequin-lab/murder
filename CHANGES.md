@@ -21,6 +21,8 @@ changes do not need an entry.
 - `Geom_viz` and `Geom_robot_viz` take objects, motions and configurations of
   any device set and read them on the host. `Camera.view` is a host motor, and
   `Frame.rgba` a host image.
+- `Cga.distance` of two coincident points is `0.`, with derivative `0.`.
+  Rounding could leave their `distance2` below zero, and the distance was NaN.
 
 ### cmdargs
 

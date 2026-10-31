@@ -152,7 +152,15 @@ let plane_through x y z = A.dual (A.op (A.op (A.op x y) z) (place (beside x) ein
 let sphere_through x y z w = A.dual (A.op (A.op (A.op x y) z) w)
 let incident x o = is_zero (A.inner x o)
 let distance2 x y = Infix.(A.scalar_prod x y *$ -2.)
-let distance x y = Nx.sqrt (distance2 x y)
+
+(* The root reads a placeholder where [distance2] is not positive, so that
+   neither its value nor its infinite derivative at zero reaches the result:
+   coincident points get distance zero and derivative zero in both modes. *)
+let distance x y =
+  let d2 = distance2 x y in
+  let pos = greater_s d2 0. in
+  where pos (Nx.sqrt (where pos d2 (ones_like d2))) (zeros_like d2)
+
 let meet a b = A.op a b
 let coeff_i a i = A.coeff a (Blade.of_int i)
 

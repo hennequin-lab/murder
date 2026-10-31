@@ -239,7 +239,10 @@ val incident : 'd t -> 'd t -> 'd Nx.bool_t
     [-2 (x dot y)], of shape [batch_shape]. *)
 val distance2 : 'd t -> 'd t -> 'd Nx.float32_t
 
-(** [distance x y] is [sqrt (distance2 x y)]. *)
+(** [distance x y] is [sqrt (distance2 x y)] where {!distance2} is positive,
+    and [0.] elsewhere, with derivative zero there. Rounding can leave
+    {!distance2} of two coincident points slightly below zero, where the root
+    would be NaN. *)
 val distance : 'd t -> 'd t -> 'd Nx.float32_t
 
 (** [meet a b] is the outer product [a and b] of two constraint blades. It is

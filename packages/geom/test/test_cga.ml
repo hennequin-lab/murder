@@ -71,6 +71,32 @@ let test_points () =
     (C.distance p (p3 0. 0. 0.));
   equal_scalar ~msg:"squared distance" 25. (C.distance2 (p3 0. 0. 0.) (p3 3. 4. 0.));
   equal_scalar ~msg:"distance is symmetric" 5. (C.distance (p3 3. 4. 0.) (p3 0. 0. 0.));
+  (* Rounding leaves [distance2 q q] at -2.4e-7 for this point. Its distance is
+     zero, and a residue of 1e-6 of either sign has a root below 1e-2. *)
+  let q = p3 (-0.9520394521181377) (-0.9520394521181377) 0.5894452266566428 in
+  equal_scalar
+    ~msg:"a point is at distance zero from itself"
+    ~eps:1e-2
+    0.
+    (C.distance q q);
+  (* At coincident points the distance has a kink, and its derivative is the
+     zero subgradient in both modes, whatever the sign rounding gave
+     [distance2]: [-2.4e-7] at [q], and zero at two origins. *)
+  List.iter
+    (fun (name, c) ->
+       let f v = C.distance (C.point v) (C.point c) in
+       equal_floats
+         ~msg:(name ^ ": grad at coincidence")
+         [| 0.; 0.; 0. |]
+         (Rune.grad' f c);
+       equal_scalar
+         ~msg:(name ^ ": jvp at coincidence")
+         0.
+         (snd (Rune.jvp' f c (v3 1. 1. 1.))))
+    [ ( "rounded below zero"
+      , v3 (-0.9520394521181377) (-0.9520394521181377) 0.5894452266566428 )
+    ; "two origins", v3 0. 0. 0.
+    ];
   let batch = C.point (create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 0.5 |]) in
   equal ~msg:"a batch of points" (array int) [| 2; 32 |] (C.shape batch);
   equal
