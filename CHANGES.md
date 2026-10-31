@@ -14,6 +14,10 @@ changes do not need an entry.
   `Motor.translate3`) give host values.
 - `Motor.compose []` raises `Invalid_argument`, where it was `Motor.one`: an
   empty list names no device set to make `one` on.
+- `Geom_robot`: configurations, motions and twists are `'d Robot.q`,
+  `'d Robot.motion` and `'d Robot.twist`, and `Task.t`, `Ik.state` and
+  `Ik.result` take the device set of their targets and configurations. A model
+  holds host motions: `joint_spec.origin` and `frame_spec.pose` are `Nx.host`.
 
 ### cmdargs
 

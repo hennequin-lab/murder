@@ -909,7 +909,7 @@ let test_names () =
   equal ~msg:"frame names" (array string) [| "ee"; "eye" |] (R.frame_names m);
   raises_match
     ~msg:"an unknown frame lists what the model has"
-    (Exn.invalid_arg ~substring:"eye")
+    (Exn.invalid_arg ~sub:"eye")
     (fun () -> ignore (R.frame m "wrist"));
   (* Names collide within their namespace, not across. *)
   let joint ?(origin = M.one) ?limits name kind parent child =
