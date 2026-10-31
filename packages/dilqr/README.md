@@ -74,7 +74,7 @@ module Nx = Nx
 
 module Integrator = struct
   module Params = struct
-    type 'a t = { mass : 'a } [@@deriving ptree]
+    type ('a, _) t = { mass : 'a } [@@deriving ptree]
   end
 
   let dt = 0.1
@@ -97,7 +97,7 @@ module Integrator = struct
 
   let final_loss _ ~x = Nx.mul_s (Nx.sum (Nx.mul x x)) 5.0
 
-  let problem : (Nx.float64_elt, Nx.float64_t Params.t) Dilqr.Problem.t =
+  let problem : (Nx.float64_elt, (Nx.host Nx.float64_t, Nx.host) Params.t, Nx.host) Dilqr.Problem.t =
     { dtype = Nx.float64
     ; n
     ; m
@@ -124,13 +124,13 @@ module Nx = Nx
 let vec64 a = Nx.create Nx.float64 [| Array.length a |] a
 let scalar64 v = Nx.scalar Nx.float64 v
 
-let theta : Nx.float64_t Integrator.Params.t = { mass = scalar64 1.0 }
+let theta : (Nx.host Nx.float64_t, Nx.host) Integrator.Params.t = { mass = scalar64 1.0 }
 let x0 = vec64 [| 1.0; 0.0 |]
 
 let us0 =
   Array.init Integrator.horizon ~f:(fun _ -> Nx.create Nx.float64 [| 1 |] [| 0.0 |])
 
-let inputs : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t =
+let inputs : ((Nx.host Nx.float64_t, Nx.host) Integrator.Params.t, Nx.host Nx.float64_t) Dilqr.Inputs.t =
   { Dilqr.Inputs.theta; x0; us0 }
 
 (* 1. Adaptive solve. *)
@@ -143,7 +143,7 @@ let () =
 (* 2. Differentiable fixed solve: any scalar loss of the trajectory gets its
    implicit gradient in (theta, x0). *)
 let solve_fixed = Dilqr.solve_fixed Integrator.problem in
-let objective (inputs : (Nx.float64_t Integrator.Params.t, Nx.float64_t) Dilqr.Inputs.t) =
+let objective (inputs : ((Nx.host Nx.float64_t, Nx.host) Integrator.Params.t, Nx.host Nx.float64_t) Dilqr.Inputs.t) =
   Dilqr.loss_of_taus
     Integrator.problem
     inputs.Dilqr.Inputs.theta
@@ -194,7 +194,7 @@ Everything lives under `Dilqr`. A problem is a `Dilqr.Problem.t` value, and
 every solver and helper takes it as its first argument.
 
 - **`Dilqr.Problem.t`** — the problem as a value: `dtype`, `n`, `m`,
-  `horizon`, `verbose`, the parameter structure `params : 'p Nx.Ptree.t`, and
+  `horizon`, `verbose`, the parameter structure `params : ('p, 'd) Nx.Ptree.t`, and
   the functions `dynamics`, `running_loss` and `final_loss`. The structure
   is built with `Nx.Ptree.instantiate (module Params)`. Being a record,
   problems can be stored, passed and chosen at runtime.

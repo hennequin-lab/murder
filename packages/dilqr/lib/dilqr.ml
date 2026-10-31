@@ -73,7 +73,7 @@ module Solver = Solver
     reverse-mode rule; {!module:Jvp} holds the forward-mode forms. *)
 
 (** A differentiable solve: the solve inputs in, the stacked trajectory out. *)
-type ('w, 'p) solve = ('p, 'w Problem.value) Inputs.t -> 'w Problem.value
+type ('w, 'p, 'd) solve = ('p, ('w, 'd) Problem.value) Inputs.t -> ('w, 'd) Problem.value
 
 let solve_adaptive p ?beam ?parallel = Implicit_grad.solve_adaptive_vjp p ?beam ?parallel
 let solve_fixed p = Implicit_grad.solve_fixed_vjp p

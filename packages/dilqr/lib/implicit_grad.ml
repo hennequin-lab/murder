@@ -42,7 +42,9 @@ type ('p, 'a) residual =
 
 (* [taus_of_stacked p xs us] is [Problem.taus_of] at stacked tensors: what a
    forward-mode solve returns. *)
-let taus_of_stacked p (xs : 'w Problem.value) (us : 'w Problem.value) : 'w Problem.value =
+let taus_of_stacked p (xs : ('w, 'd) Problem.value) (us : ('w, 'd) Problem.value)
+  : ('w, 'd) Problem.value
+  =
   let horizon = p.Problem.horizon in
   let last =
     concatenate ~axis:(-1) [ slice [ I horizon ] xs; zeros_like (slice [ I 0 ] us) ]
@@ -57,19 +59,19 @@ let outer a b = Infix.(unsqueeze ~axes:[ -1 ] a *@ unsqueeze ~axes:[ -2 ] b)
 let matvec m v = squeeze ~axes:[ -1 ] Infix.(m *@ unsqueeze ~axes:[ -1 ] v)
 
 (* [row t k] is the k-th step of a stacked tensor. *)
-let row (t : ('a, 'b) Nx.t) k = slice [ I k ] t
+let row (t : ('a, 'b, 'd) Nx.t) k = slice [ I k ] t
 
 (* [flip x] reverses the horizon axis. *)
 let flip x = Nx.flip ~axes:[ 0 ] x
 
 (* [stack_array ts] stacks the steps of [ts] along a new leading axis. *)
-let stack_array (ts : ('a, 'b) Nx.t array) : ('a, 'b) Nx.t =
+let stack_array (ts : ('a, 'b, 'd) Nx.t array) : ('a, 'b, 'd) Nx.t =
   stack ~axis:0 (Array.to_list ts)
 
 (* The implicit VJP. [ybar] is the cotangent on the stacked trajectory; the
    result holds cotangents on (theta, x0, us0). *)
-let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
-  : ('p, 'w Problem.value) Problem.Inputs.t
+let bwd p (res : ('p, ('w, 'd) Problem.value) residual) (ybar : ('w, 'd) Problem.value)
+  : ('p, ('w, 'd) Problem.value) Problem.Inputs.t
   =
   let { theta; x0 = _; us0 = _; xs; us } = res in
   let horizon = p.Problem.horizon
@@ -88,7 +90,9 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
     { Lqr.rlx =
         concatenate
           ~axis:0
-          [ zeros p.Problem.dtype [| 1; n |]; slice [ R (1, horizon); R (0, n) ] ybar ]
+          [ zeros_at (beside ybar) p.Problem.dtype [| 1; n |]
+          ; slice [ R (1, horizon); R (0, n) ] ybar
+          ]
     ; rlu = slice [ R (0, horizon); R (n, n + m) ] ybar
     ; rfx = yx horizon
     }
@@ -105,13 +109,13 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
       Nx.Ptree.(
         pair (pair tensor tensor) (pair tensor (pair tensor (pair tensor tensor))))
       Nx.Ptree.tensor
-      ~f:(fun dl ((a, lxx), (lux, (dx_k, (du_k, yx_k)))) ->
-        let open Infix in
-        let dl_k =
-          matvec (matrix_transpose a) dl
-          + (matvec lxx dx_k + (matvec (matrix_transpose lux) du_k + yx_k))
-        in
-        dl_k, dl)
+      (fun dl ((a, lxx), (lux, (dx_k, (du_k, yx_k)))) ->
+         let open Infix in
+         let dl_k =
+           matvec (matrix_transpose a) dl
+           + (matvec lxx dx_k + (matvec (matrix_transpose lux) du_k + yx_k))
+         in
+         dl_k, dl)
       ~init:Infix.(matvec tape.fxx (row dx horizon) + yx horizon)
       ( (flip tape.Lqr.blocks.a, flip tape.Lqr.blocks.lxx)
       , ( flip tape.Lqr.blocks.lux
@@ -141,7 +145,7 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
   (* Step 3: chain the block cotangents to θ with a nested grad over a
      scalar surrogate that recomputes the blocks from θ exactly like the
      forward pass, so derived quantities (a_k, c_k) propagate couplings. *)
-  let ks = arange p.Problem.dtype 0 horizon 1 in
+  let ks = arange_at (beside us_t) p.Problem.dtype 0 horizon 1 in
   let grad_theta =
     Rune.grad
       p.Problem.params
@@ -154,7 +158,7 @@ let bwd p (res : ('p, 'w Problem.value) residual) (ybar : 'w Problem.value)
                 Nx.Ptree.unit
                 Nx.Ptree.(pair (pair tensor tensor) tensor)
                 Nx.Ptree.tensor
-                ~f:(fun () ((x, u), k) -> (), p.Problem.dynamics theta ~k ~x ~u)
+                (fun () ((x, u), k) -> (), p.Problem.dynamics theta ~k ~x ~u)
                 ~init:()
                 ((x, us_t), ks))
          in
@@ -207,15 +211,15 @@ let adaptive_solver p ?beam ?parallel =
    many solves and many regularization or line-search settings without
    retracing. The primal still reads scalars on the host for its convergence
    and line-search control flow, so the closure is eager. *)
-let solve_adaptive_vjp (p : ('w, 'p) Problem.t) ?beam ?parallel =
+let solve_adaptive_vjp (p : ('w, 'p, 'd) Problem.t) ?beam ?parallel =
   let solve = adaptive_solver p ?beam ?parallel in
   fun ?max_iter
     ?conv_threshold
     ?c1
     ?ls_depth
     ?reg
-    (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
-    : 'w Problem.value ->
+    (inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t)
+    : ('w, 'd) Problem.value ->
     Rune.custom_vjp
       (Problem.inputs p)
       Nx.Ptree.tensor
@@ -234,8 +238,8 @@ let solve_fixed_vjp_unbatched
       ?alphas
       ?mu
       ?c1
-      (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
-  : 'w Problem.value
+      (inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t)
+  : ('w, 'd) Problem.value
   =
   Rune.custom_vjp
     (Problem.inputs p)
@@ -267,23 +271,23 @@ let solve_fixed_vjp p ?alphas ?mu ?c1 ~iters inputs =
    streaming tangent solve. The factors and the tape are computed here, in the
    map, so that a solve whose derivative nobody asks for does not pay for them —
    the same bargain the VJP's pullback makes. *)
-let tangent_of_solve p ~theta ~(sol : 'w Problem.value Solver.t) ~dx0 ~dtheta
-  : 'w Problem.value
+let tangent_of_solve p ~theta ~(sol : ('w, 'd) Problem.value Solver.t) ~dx0 ~dtheta
+  : ('w, 'd) Problem.value
   =
   let dsol = Solver.tangent_solve p theta ~dtheta ~dx0 sol.xs sol.us in
   taus_of_stacked p dsol.Lqr.xs dsol.Lqr.us
 
 (* The adaptive solve with its implicit forward-mode rule. The primal is the
    same closure as the reverse-mode entry point. *)
-let solve_adaptive_jvp (p : ('w, 'p) Problem.t) ?beam ?parallel =
+let solve_adaptive_jvp (p : ('w, 'p, 'd) Problem.t) ?beam ?parallel =
   let solve = adaptive_solver p ?beam ?parallel in
   fun ?max_iter
     ?conv_threshold
     ?c1
     ?ls_depth
     ?reg
-    (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
-    : 'w Problem.value ->
+    (inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t)
+    : ('w, 'd) Problem.value ->
     Rune.custom_jvp
       (Problem.inputs p)
       Nx.Ptree.tensor
@@ -301,8 +305,8 @@ let solve_fixed_jvp_unbatched
       ?alphas
       ?mu
       ?c1
-      (inputs : ('p, 'w Problem.value) Problem.Inputs.t)
-  : 'w Problem.value
+      (inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t)
+  : ('w, 'd) Problem.value
   =
   Rune.custom_jvp
     (Problem.inputs p)

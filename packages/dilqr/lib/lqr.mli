@@ -56,7 +56,7 @@
     [Dilqr.Solver.blocks] builds a tape, and how a caller assembles a problem
     of their own. *)
 module Rows : sig
-  type 'a t =
+  type ('a, _) t =
     { a : 'a (** ∂f_k/∂x, shape [horizon; n; n] *)
     ; b : 'a (** ∂f_k/∂u, shape [horizon; n; m] *)
     ; lx : 'a (** ∂l_k/∂x, shape [horizon; n] *)
@@ -69,45 +69,45 @@ module Rows : sig
   (** [walk c rows] is the structure of [rows], for [Rune.scan] and
       [Nx.Ptree.map]. Exposed because [Nx.Ptree.instantiate (module Rows)] is
       how a tape is built and traversed. *)
-  val walk : ('a, 'b) Nx.Ptree.Walk.cursor -> 'a t -> 'b t
+  val walk : ('a, 'b, 'd, 'e) Nx.Ptree.Walk.cursor -> ('a, 'd) t -> ('b, 'e) t
 end
 
 (** The quadratic problem the iLQR iteration solves at one linearization. *)
-type ('a, 'b) tape =
-  { blocks : ('a, 'b) Nx.t Rows.t
-  ; fx : ('a, 'b) Nx.t (** ∂φ/∂x at the final state, shape [n] *)
-  ; fxx : ('a, 'b) Nx.t (** ∂²φ/∂x² at the final state, shape [n; n] *)
+type ('a, 'b, 'd) tape =
+  { blocks : (('a, 'b, 'd) Nx.t, 'd) Rows.t
+  ; fx : ('a, 'b, 'd) Nx.t (** ∂φ/∂x at the final state, shape [n] *)
+  ; fxx : ('a, 'b, 'd) Nx.t (** ∂²φ/∂x² at the final state, shape [n; n] *)
   }
 
 (** A control law: [u_k = k_k + K_k x_k]. *)
-type ('a, 'b) gains =
-  { feedback : ('a, 'b) Nx.t (** K_k, shape [horizon; m; n] *)
-  ; feedforward : ('a, 'b) Nx.t (** k_k, shape [horizon; m] *)
+type ('a, 'b, 'd) gains =
+  { feedback : ('a, 'b, 'd) Nx.t (** K_k, shape [horizon; m; n] *)
+  ; feedforward : ('a, 'b, 'd) Nx.t (** k_k, shape [horizon; m] *)
   }
 
 (** The linear cost terms of a Riccati pass. The primal pass uses the tape's
     own gradients ({!lin_of_tape}); the adjoint pass substitutes cotangent
     slices. *)
-type ('a, 'b) lin =
-  { rlx : ('a, 'b) Nx.t (** [horizon; n] *)
-  ; rlu : ('a, 'b) Nx.t (** [horizon; m] *)
-  ; rfx : ('a, 'b) Nx.t (** [n] *)
+type ('a, 'b, 'd) lin =
+  { rlx : ('a, 'b, 'd) Nx.t (** [horizon; n] *)
+  ; rlu : ('a, 'b, 'd) Nx.t (** [horizon; m] *)
+  ; rfx : ('a, 'b, 'd) Nx.t (** [n] *)
   }
 
 (** [lin_of_tape tape] is the tape's own linear terms: the loss gradients and
     the terminal gradient. *)
-val lin_of_tape : (float, 'b) tape -> (float, 'b) lin
+val lin_of_tape : (float, 'b, 'd) tape -> (float, 'b, 'd) lin
 
 (** [sym x] is the symmetric part of [x]: [(x + xᵀ) / 2]. Riccati value
     Hessians are symmetric, so a computed one is symmetrized; a cotangent on
     a symmetric block is symmetrized for the same reason. *)
-val matvec : (float, 'b) Nx.t -> (float, 'b) Nx.t -> (float, 'b) Nx.t
+val matvec : (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t
 (** [matvec m v] is [m @ v] over every leading axis: a matrix broadcast against
     a batch of vectors. [Nx.matmul] would contract a batched vector's batch
     axis with the matrix, so the vector is promoted to a column and squeezed
     back. Every product with a value gradient here goes through it. *)
 
-val sym : (float, 'b) Nx.t -> (float, 'b) Nx.t
+val sym : (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t
 
 (** The per-step factors that the primal and every tangent of one LQR solve
     share. Build one with {!backward_common}.
@@ -121,9 +121,10 @@ val sym : (float, 'b) Nx.t -> (float, 'b) Nx.t
     [O (horizon · n²)] tape it is built from. {!costate}, the only other
     quantity a tangent batch shares, is computed separately and just as
     cheaply. *)
-type ('a, 'b) common =
-  { quu_chol : ('a, 'b) Nx.t (** the upper Cholesky factor of [Q_uu^μ], [horizon; m; m] *)
-  ; feedback : ('a, 'b) Nx.t (** K_k = -Q_uu⁻¹ Q_ux, [horizon; m; n] *)
+type ('a, 'b, 'd) common =
+  { quu_chol : ('a, 'b, 'd) Nx.t
+    (** the upper Cholesky factor of [Q_uu^μ], [horizon; m; m] *)
+  ; feedback : ('a, 'b, 'd) Nx.t (** K_k = -Q_uu⁻¹ Q_ux, [horizon; m; n] *)
   }
 
 (** [backward_common ?mu tape] runs the Hessian recursion of the Riccati
@@ -144,7 +145,10 @@ type ('a, 'b) common =
     regularized [Q_uu] that is not positive definite gives a NaN Cholesky
     factor, and every quantity computed from it is NaN: a caller that damps
     retries with a larger [mu] (see [Dilqr.Solver.solve]). *)
-val backward_common : ?mu:(float, 'b) Nx.t -> (float, 'b) tape -> (float, 'b) common
+val backward_common
+  :  ?mu:(float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) tape
+  -> (float, 'b, 'd) common
 
 (** [costate tape] is the primal costate [λ_{k+1}] at each step, shape
     [horizon; n]: row [k] is the value gradient the local model's own linear
@@ -154,7 +158,7 @@ val backward_common : ?mu:(float, 'b) Nx.t -> (float, 'b) tape -> (float, 'b) co
     A tangent of the local model needs it, and nothing about it depends on the
     tangent: compute it once and share it with every direction of a batch, as
     with {!backward_common}. One [Rune.scan] over the horizon. *)
-val costate : (float, 'b) tape -> (float, 'b) Nx.t
+val costate : (float, 'b, 'd) tape -> (float, 'b, 'd) Nx.t
 
 (** [backward_lin ~common ~tape ~lin] is the linear half of the same pass,
     with the factorization already in hand: the feedforward gain
@@ -170,23 +174,23 @@ val costate : (float, 'b) tape -> (float, 'b) Nx.t
     step. Called once for the primal linear terms, and once per tangent batch
     by {!solve_jvp}. *)
 val backward_lin
-  :  common:(float, 'b) common
-  -> tape:(float, 'b) tape
-  -> lin:(float, 'b) lin
-  -> (float, 'b) gains * (float, 'b) Nx.t * (float, 'b) Nx.t
+  :  common:(float, 'b, 'd) common
+  -> tape:(float, 'b, 'd) tape
+  -> lin:(float, 'b, 'd) lin
+  -> (float, 'b, 'd) gains * (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
 
 (** [backward ?mu ~tape ~lin] is {!backward_common} followed by
     {!backward_lin}: the whole Riccati pass over the horizon as one scan. *)
 val backward
-  :  ?mu:(float, 'b) Nx.t
-  -> (float, 'b) tape
-  -> lin:(float, 'b) lin
-  -> (float, 'b) gains * (float, 'b) Nx.t * (float, 'b) Nx.t
+  :  ?mu:(float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) tape
+  -> lin:(float, 'b, 'd) lin
+  -> (float, 'b, 'd) gains * (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
 
 (** A solution trajectory, as one tensor per trajectory. *)
-type ('a, 'b) solution =
-  { xs : ('a, 'b) Nx.t (** [horizon + 1; n] *)
-  ; us : ('a, 'b) Nx.t (** [horizon; m] *)
+type ('a, 'b, 'd) solution =
+  { xs : ('a, 'b, 'd) Nx.t (** [horizon + 1; n] *)
+  ; us : ('a, 'b, 'd) Nx.t (** [horizon; m] *)
   }
 
 (** [solve ?mu ~tape ~x0] is the solution of the quadratic problem: the Riccati
@@ -199,10 +203,10 @@ type ('a, 'b) solution =
     [mu] damps the backward pass (see {!backward_common}); the rollout is the
     same either way. *)
 val solve
-  :  ?mu:(float, 'b) Nx.t
-  -> (float, 'b) tape
-  -> x0:(float, 'b) Nx.t
-  -> (float, 'b) solution
+  :  ?mu:(float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) tape
+  -> x0:(float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) solution
 
 (** The tangent of a tape's first-order data: what {!solve_jvp} consumes.
 
@@ -211,16 +215,16 @@ val solve
     ([lxx], [luu], [lux], [φ_xx]) are not part of a tangent: the argmin's
     derivative is taken through the KKT system, whose matrix is the primal's,
     so they never enter. *)
-type ('a, 'b) tangent =
-  { da : ('a, 'b) Nx.t (** ∂A_k along the tangent, shape [horizon; n; n] *)
-  ; db : ('a, 'b) Nx.t (** ∂B_k, shape [horizon; n; m] *)
-  ; df : ('a, 'b) Nx.t
+type ('a, 'b, 'd) tangent =
+  { da : ('a, 'b, 'd) Nx.t (** ∂A_k along the tangent, shape [horizon; n; n] *)
+  ; db : ('a, 'b, 'd) Nx.t (** ∂B_k, shape [horizon; n; m] *)
+  ; df : ('a, 'b, 'd) Nx.t
     (** ∂f_k, the tangent of the dynamics' value at the nominal step, shape
         [horizon; n]. It is what drives the tangent trajectory; a change of
         [A] or [B] at a fixed nominal does not. *)
-  ; dlx : ('a, 'b) Nx.t (** ∂(∂l_k/∂x), shape [horizon; n] *)
-  ; dlu : ('a, 'b) Nx.t (** ∂(∂l_k/∂u), shape [horizon; m] *)
-  ; dfx : ('a, 'b) Nx.t (** ∂(∂φ/∂x) at the final state, shape [n] *)
+  ; dlx : ('a, 'b, 'd) Nx.t (** ∂(∂l_k/∂x), shape [horizon; n] *)
+  ; dlu : ('a, 'b, 'd) Nx.t (** ∂(∂l_k/∂u), shape [horizon; m] *)
+  ; dfx : ('a, 'b, 'd) Nx.t (** ∂(∂φ/∂x) at the final state, shape [n] *)
   }
 
 (** [solve_jvp ~common ~tape ~costate ~tangent ~dx0] is the tangent of
@@ -277,12 +281,12 @@ type ('a, 'b) tangent =
     fixed points, and checks {!solve_jvp} against central differences of
     {!solve}. *)
 val solve_jvp
-  :  common:(float, 'b) common
-  -> tape:(float, 'b) tape
-  -> costate:(float, 'b) Nx.t
-  -> tangent:(float, 'b) tangent
-  -> dx0:(float, 'b) Nx.t
-  -> (float, 'b) solution
+  :  common:(float, 'b, 'd) common
+  -> tape:(float, 'b, 'd) tape
+  -> costate:(float, 'b, 'd) Nx.t
+  -> tangent:(float, 'b, 'd) tangent
+  -> dx0:(float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) solution
 
 (** [rollout ~dyn ~x0 ~xs ~us ~gains ~alpha] integrates the {e true}
     dynamics under the control law [û_k = ū_k + α k_k + K_k (x̂_k - x̄_k)],
@@ -291,36 +295,44 @@ val solve_jvp
     [[horizon; m]], with any batch axes between the horizon and the
     dimensions. One line-search trial. *)
 val rollout
-  :  dyn:(k:(float, 'b) Nx.t -> (float, 'b) Nx.t -> (float, 'b) Nx.t -> (float, 'b) Nx.t)
-  -> x0:(float, 'b) Nx.t
-  -> xs:(float, 'b) Nx.t
-  -> us:(float, 'b) Nx.t
-  -> gains:(float, 'b) gains
+  :  dyn:
+       (k:(float, 'b, 'd) Nx.t
+        -> (float, 'b, 'd) Nx.t
+        -> (float, 'b, 'd) Nx.t
+        -> (float, 'b, 'd) Nx.t)
+  -> x0:(float, 'b, 'd) Nx.t
+  -> xs:(float, 'b, 'd) Nx.t
+  -> us:(float, 'b, 'd) Nx.t
+  -> gains:(float, 'b, 'd) gains
   -> alpha:float
-  -> (float, 'b) Nx.t * (float, 'b) Nx.t
+  -> (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
 
 (** [rollout_tensor ~dyn ~x0 ~xs ~us ~gains ~alpha] is {!rollout} with the
     step size as a scalar tensor. A traced line search passes [alpha] as an
     argument of the compiled trial, so one program serves every trial step;
     with a host [float] each step would be a separate program. *)
 val rollout_tensor
-  :  dyn:(k:(float, 'b) Nx.t -> (float, 'b) Nx.t -> (float, 'b) Nx.t -> (float, 'b) Nx.t)
-  -> x0:(float, 'b) Nx.t
-  -> xs:(float, 'b) Nx.t
-  -> us:(float, 'b) Nx.t
-  -> gains:(float, 'b) gains
-  -> alpha:(float, 'b) Nx.t
-  -> (float, 'b) Nx.t * (float, 'b) Nx.t
+  :  dyn:
+       (k:(float, 'b, 'd) Nx.t
+        -> (float, 'b, 'd) Nx.t
+        -> (float, 'b, 'd) Nx.t
+        -> (float, 'b, 'd) Nx.t)
+  -> x0:(float, 'b, 'd) Nx.t
+  -> xs:(float, 'b, 'd) Nx.t
+  -> us:(float, 'b, 'd) Nx.t
+  -> gains:(float, 'b, 'd) gains
+  -> alpha:(float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
 
 (** [rollout_linearized ~tape ~gains ~x0] integrates the linearized dynamics
     [x_{k+1} = A_k x_k + B_k u_k] under [u_k = k_k + K_k x_k] from [x0], as
     one scan. It is {!solve}'s forward pass, and — with the gains of a
     perturbed pass — the last step of the implicit VJP. *)
 val rollout_linearized
-  :  tape:(float, 'b) tape
-  -> gains:(float, 'b) gains
-  -> x0:(float, 'b) Nx.t
-  -> (float, 'b) Nx.t * (float, 'b) Nx.t
+  :  tape:(float, 'b, 'd) tape
+  -> gains:(float, 'b, 'd) gains
+  -> x0:(float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
 
 (** The per-step inputs of the tangent backward pass, with the horizon as their
     leading axis. A composition that streams the linearization instead of
@@ -328,7 +340,7 @@ val rollout_linearized
     of these per step and calls {!tangent_step}. Construct the structure with
     [Nx.Ptree.instantiate (module Tangent_rows)]. *)
 module Tangent_rows : sig
-  type 'a t =
+  type ('a, _) t =
     { a : 'a (** ∂f_k/∂x, shape [horizon; n; n] *)
     ; b : 'a (** ∂f_k/∂u, shape [horizon; n; m] *)
     ; da : 'a (** its tangent, [horizon; n; n] *)
@@ -342,12 +354,12 @@ module Tangent_rows : sig
     ; fb : 'a (** the feedback gain [K], [horizon; m; n] *)
     }
 
-  val walk : ('a, 'b) Nx.Ptree.Walk.cursor -> 'a t -> 'b t
+  val walk : ('a, 'b, 'd, 'e) Nx.Ptree.Walk.cursor -> ('a, 'd) t -> ('b, 'e) t
 end
 
 (** The per-step inputs of the tangent gain rollout. *)
 module Tangent_roll_rows : sig
-  type 'a t =
+  type ('a, _) t =
     { a : 'a (** ∂f_k/∂x, [horizon; n; n] *)
     ; b : 'a (** ∂f_k/∂u, [horizon; n; m] *)
     ; chol : 'a (** the upper Cholesky factor of [Q_uu^μ], [horizon; m; m] *)
@@ -355,20 +367,20 @@ module Tangent_roll_rows : sig
     ; q : 'a (** the tangent feedforward [q_k], [horizon; m] *)
     }
 
-  val walk : ('a, 'b) Nx.Ptree.Walk.cursor -> 'a t -> 'b t
+  val walk : ('a, 'b, 'd, 'e) Nx.Ptree.Walk.cursor -> ('a, 'd) t -> ('b, 'e) t
 end
 
 (** [tangent_step ~e row] is [(q, e')]: one step of the tangent backward pass,
     the tangent feedforward [q_k] and the next [e]. Linear in its inputs, so it
     serves a batch of directions as it stands. *)
 val tangent_step
-  :  e:(float, 'b) Nx.t
-  -> (float, 'b) Nx.t Tangent_rows.t
-  -> (float, 'b) Nx.t * (float, 'b) Nx.t
+  :  e:(float, 'b, 'd) Nx.t
+  -> ((float, 'b, 'd) Nx.t, 'd) Tangent_rows.t
+  -> (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
 
 (** [tangent_roll_step ~v row] is [(δu, v')]: one step of the tangent gain
     rollout, a triangular solve against the shared factor. *)
 val tangent_roll_step
-  :  v:(float, 'b) Nx.t
-  -> (float, 'b) Nx.t Tangent_roll_rows.t
-  -> (float, 'b) Nx.t * (float, 'b) Nx.t
+  :  v:(float, 'b, 'd) Nx.t
+  -> ((float, 'b, 'd) Nx.t, 'd) Tangent_roll_rows.t
+  -> (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t

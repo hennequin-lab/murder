@@ -119,27 +119,33 @@ module Inputs = Problem.Inputs
     parameters at [theta], the initial state [x0], and every control of the
     initial guess [us0]. It is what {!Rune.grad}, {!Rune.jvp},
     {!Rune.custom_vjp}, {!Rune.custom_jvp} and {!Rune.jit} take. *)
-val inputs : ('w, 'p) Problem.t -> ('p, 'w Problem.value) Inputs.t Nx.Ptree.t
+val inputs
+  :  ('w, 'p, 'd) Problem.t
+  -> (('p, ('w, 'd) Problem.value) Inputs.t, 'd) Nx.Ptree.t
 
 (** [taus_of problem xs us] stacks the trajectory into a [(K+1); n+m] tensor:
     row k is (x_k; u_k) for k < K, row K is (x_K; 0). The batch axes lead the
     horizon, so a batched trajectory stacks to [batch...; K+1; n+m]. *)
 val taus_of
-  :  ('w, 'p) Problem.t
-  -> 'w Problem.value array
-  -> 'w Problem.value array
-  -> 'w Problem.value
+  :  ('w, 'p, 'd) Problem.t
+  -> ('w, 'd) Problem.value array
+  -> ('w, 'd) Problem.value array
+  -> ('w, 'd) Problem.value
 
 (** [split_taus problem taus] is ([xs], [us]). *)
 val split_taus
-  :  ('w, 'p) Problem.t
-  -> 'w Problem.value
-  -> 'w Problem.value array * 'w Problem.value array
+  :  ('w, 'p, 'd) Problem.t
+  -> ('w, 'd) Problem.value
+  -> ('w, 'd) Problem.value array * ('w, 'd) Problem.value array
 
 (** [loss_of_taus problem theta taus] evaluates the problem's own running +
     final losses along the trajectory. Differentiable, traceable. A batched
     [theta] and trajectory are evaluated member by member. *)
-val loss_of_taus : ('w, 'p) Problem.t -> 'p -> 'w Problem.value -> 'w Problem.value
+val loss_of_taus
+  :  ('w, 'p, 'd) Problem.t
+  -> 'p
+  -> ('w, 'd) Problem.value
+  -> ('w, 'd) Problem.value
 
 (** The iLQR solvers. *)
 module Solver : sig
@@ -153,20 +159,20 @@ module Solver : sig
       [us] and returns the state path and total cost. Batched inputs are
       rolled out member by member. *)
   val rollout
-    :  ('w, 'p) Problem.t
+    :  ('w, 'p, 'd) Problem.t
     -> 'p
-    -> 'w Problem.value
-    -> 'w Problem.value array
-    -> 'w Problem.value array * 'w Problem.value
+    -> ('w, 'd) Problem.value
+    -> ('w, 'd) Problem.value array
+    -> ('w, 'd) Problem.value array * ('w, 'd) Problem.value
 
   (** [blocks problem theta xs us] linearizes dynamics and losses along the
       trajectory. A batched trajectory is linearized member by member. *)
   val blocks
-    :  ('w, 'p) Problem.t
+    :  ('w, 'p, 'd) Problem.t
     -> 'p
-    -> 'w Problem.value array
-    -> 'w Problem.value array
-    -> (float, 'w) Lqr.tape
+    -> ('w, 'd) Problem.value array
+    -> ('w, 'd) Problem.value array
+    -> (float, 'w, 'd) Lqr.tape
 
   (** [tangent problem theta dtheta xs us] is the derivative of the tape's
       first-order data along [dtheta], at the trajectory: the tangents of
@@ -182,12 +188,12 @@ module Solver : sig
       the whole solve over the directions ([Rune.vmap] around [Rune.jvp]), so
       that the primal solve and its factorization are shared. *)
   val tangent
-    :  ('w, 'p) Problem.t
+    :  ('w, 'p, 'd) Problem.t
     -> 'p
     -> dtheta:'p
-    -> 'w Problem.value array
-    -> 'w Problem.value array
-    -> (float, 'w) Lqr.tangent
+    -> ('w, 'd) Problem.value array
+    -> ('w, 'd) Problem.value array
+    -> (float, 'w, 'd) Lqr.tangent
 
   (** [tangent_solve problem theta ~dtheta ~dx0 xs us] is the tangent of the
       local model's LQR solve along the trajectory: the derivative of
@@ -210,13 +216,13 @@ module Solver : sig
       batched problem is mapped over the batch by the solve that calls this. *)
 
   val tangent_solve
-    :  ('w, 'p) Problem.t
+    :  ('w, 'p, 'd) Problem.t
     -> 'p
     -> dtheta:'p
-    -> dx0:'w Problem.value
-    -> 'w Problem.value array
-    -> 'w Problem.value array
-    -> (float, 'w) Lqr.solution
+    -> dx0:('w, 'd) Problem.value
+    -> ('w, 'd) Problem.value array
+    -> ('w, 'd) Problem.value array
+    -> (float, 'w, 'd) Lqr.solution
 
   (** Adaptive iLQR. Host-side control flow: unbatched (a batch would need one
       line search per member; {!solve_fixed} has it), and not itself traceable
@@ -224,29 +230,29 @@ module Solver : sig
       [c1 = 1e-2], [ls_depth = 8]. Fails when no step can be regularized into
       descent. {!compile} is the same solve with the tensor work compiled. *)
   val solve
-    :  ('w, 'p) Problem.t
+    :  ('w, 'p, 'd) Problem.t
     -> ?max_iter:int
     -> ?conv_threshold:float
     -> ?c1:float
     -> ?ls_depth:int
     -> ?reg:Regularisation.t
     -> 'p
-    -> 'w Problem.value
-    -> 'w Problem.value array
-    -> 'w Problem.value t
+    -> ('w, 'd) Problem.value
+    -> ('w, 'd) Problem.value array
+    -> ('w, 'd) Problem.value t
 
   (** The adaptive solve with its tensor work compiled. The type of the
       returned function is {!solve} minus the problem. *)
-  type ('w, 'p) compiled =
+  type ('w, 'p, 'd) compiled =
     ?max_iter:int
     -> ?conv_threshold:float
     -> ?c1:float
     -> ?ls_depth:int
     -> ?reg:Regularisation.t
     -> 'p
-    -> 'w Problem.value
-    -> 'w Problem.value array
-    -> 'w Problem.value t
+    -> ('w, 'd) Problem.value
+    -> ('w, 'd) Problem.value array
+    -> ('w, 'd) Problem.value t
 
   (** [compile ?beam ?parallel problem] is {!solve} with each traceable kernel
       — the dynamics and cost scans, the linearization and Riccati pass, and
@@ -264,7 +270,11 @@ module Solver : sig
       [Rune.jit]'s kernel-search options; with [beam] each kernel is
       searched for its fastest variant, and [parallel] compiles the
       candidates on that many domains. *)
-  val compile : ?beam:int -> ?parallel:int -> ('w, 'p) Problem.t -> ('w, 'p) compiled
+  val compile
+    :  ?beam:int
+    -> ?parallel:int
+    -> ('w, 'p, 'd) Problem.t
+    -> ('w, 'p, 'd) compiled
 
   (** Fixed-iteration iLQR with tensor-only control flow: traceable and
       JIT-compilable. Every time loop is a [Rune.scan], compiled as a loop,
@@ -278,15 +288,15 @@ module Solver : sig
       single-member solve is mapped over the batch): [cost] is then [B] and
       every state and control is [B; n] or [B; m]. *)
   val solve_fixed
-    :  ('w, 'p) Problem.t
+    :  ('w, 'p, 'd) Problem.t
     -> ?alphas:float list
     -> ?mu:float
     -> ?c1:float
     -> iters:int
     -> 'p
-    -> 'w Problem.value
-    -> 'w Problem.value array
-    -> 'w Problem.value t
+    -> ('w, 'd) Problem.value
+    -> ('w, 'd) Problem.value array
+    -> ('w, 'd) Problem.value t
 end
 
 (** Opaque data the solve's forward pass hands to its backward pass. *)
@@ -295,16 +305,16 @@ type ('p, 'a) residual
 (** The implicit VJP: cotangent on the stacked trajectory in, gradients on
     the solve inputs out. *)
 val bwd
-  :  ('w, 'p) Problem.t
-  -> ('p, 'w Problem.value) residual
-  -> 'w Problem.value
-  -> ('p, 'w Problem.value) Inputs.t
+  :  ('w, 'p, 'd) Problem.t
+  -> ('p, ('w, 'd) Problem.value) residual
+  -> ('w, 'd) Problem.value
+  -> ('p, ('w, 'd) Problem.value) Inputs.t
 
 (** {2 Differentiable solves} *)
 
 (** A differentiable solve: the solve inputs in, the stacked trajectory out.
     Both the reverse-mode and the forward-mode entry points have this type. *)
-type ('w, 'p) solve = ('p, 'w Problem.value) Inputs.t -> 'w Problem.value
+type ('w, 'p, 'd) solve = ('p, ('w, 'd) Problem.value) Inputs.t -> ('w, 'd) Problem.value
 
 (** [solve_adaptive problem ?beam ?parallel] is the adaptive iLQR solve with
     its implicit reverse-mode derivative. The returned function takes the
@@ -325,7 +335,7 @@ type ('w, 'p) solve = ('p, 'w Problem.value) Inputs.t -> 'w Problem.value
     curvature leaves [Q_uu] of the model at the solution indefinite, that
     factor is NaN and so is the gradient. *)
 val solve_adaptive
-  :  ('w, 'p) Problem.t
+  :  ('w, 'p, 'd) Problem.t
   -> ?beam:int
   -> ?parallel:int
   -> ?max_iter:int
@@ -333,7 +343,7 @@ val solve_adaptive
   -> ?c1:float
   -> ?ls_depth:int
   -> ?reg:Regularisation.t
-  -> ('w, 'p) solve
+  -> ('w, 'p, 'd) solve
 
 (** [solve_fixed problem] is the fixed-iteration iLQR solve with its implicit
     reverse-mode derivative. The returned function takes the fixed-solve
@@ -359,12 +369,12 @@ val solve_adaptive
     The derivative is taken at the undamped KKT system, as in
     {!solve_adaptive}. Use {!Jvp.solve_fixed} for forward mode. *)
 val solve_fixed
-  :  ('w, 'p) Problem.t
+  :  ('w, 'p, 'd) Problem.t
   -> ?alphas:float list
   -> ?mu:float
   -> ?c1:float
   -> iters:int
-  -> ('w, 'p) solve
+  -> ('w, 'p, 'd) solve
 
 (** The forward-mode forms of the two solves. Each returns the same primal
     trajectory as its reverse-mode counterpart; only the attached rule
@@ -384,7 +394,7 @@ module Jvp : sig
       factorization, is computed once (see the module documentation). The
       returned closure is eager and unbatched, like {!solve_adaptive}. *)
   val solve_adaptive
-    :  ('w, 'p) Problem.t
+    :  ('w, 'p, 'd) Problem.t
     -> ?beam:int
     -> ?parallel:int
     -> ?max_iter:int
@@ -392,7 +402,7 @@ module Jvp : sig
     -> ?c1:float
     -> ?ls_depth:int
     -> ?reg:Regularisation.t
-    -> ('w, 'p) solve
+    -> ('w, 'p, 'd) solve
 
   (** [Jvp.solve_fixed problem] is {!solve_fixed} with a custom forward-mode
       rule. Same primal, same batched inputs, same traceability: the tangent
@@ -425,10 +435,10 @@ module Jvp : sig
       taken as zero): take gradients with {!solve_fixed}, which is built for
       them. *)
   val solve_fixed
-    :  ('w, 'p) Problem.t
+    :  ('w, 'p, 'd) Problem.t
     -> ?alphas:float list
     -> ?mu:float
     -> ?c1:float
     -> iters:int
-    -> ('w, 'p) solve
+    -> ('w, 'p, 'd) solve
 end
