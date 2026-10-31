@@ -29,7 +29,7 @@
 (** {1:types Types} *)
 
 (** The type for motors. The last axis has length {!size}. *)
-type t = Nx.float32_t
+type 'd t = 'd Nx.float32_t
 
 (** [dtype] is {!Nx.float32}. *)
 val dtype : (float, Nx.float32_elt) Nx.dtype
@@ -40,34 +40,34 @@ val size : int
 (** {1:construction Construction} *)
 
 (** [one] is the identity motor. *)
-val one : t
+val one : Nx.host t
 
 (** [zero] is the zero motor. It is not a valid rigid motion; it is the neutral
     element of addition, not of composition. *)
-val zero : t
+val zero : Nx.host t
 
 (** [of_array a] is the unbatched motor with coefficients [a] in the basis
     order documented above.
 
     Raises [Invalid_argument] if [Array.length a <> size]. *)
-val of_array : float array -> t
+val of_array : float array -> Nx.host t
 
 (** [to_array m] is the coefficient array of an unbatched motor.
 
     Raises [Invalid_argument] if [m] has batch axes. *)
-val to_array : t -> float array
+val to_array : 'd t -> float array
 
 (** [of_nx x] views [x] as a motor, checking that its last axis is {!size}. *)
-val of_nx : Nx.float32_t -> t
+val of_nx : 'd Nx.float32_t -> 'd t
 
 (** [to_nx m] is [m] as an ordinary tensor. *)
-val to_nx : t -> Nx.float32_t
+val to_nx : 'd t -> 'd Nx.float32_t
 
 (** [shape m] is the shape of [m], including the trailing motor axis. *)
-val shape : t -> int array
+val shape : 'd t -> int array
 
 (** [batch_shape m] is the shape of [m] without the trailing motor axis. *)
-val batch_shape : t -> int array
+val batch_shape : 'd t -> int array
 
 (** {1:algebra Algebra} *)
 
@@ -79,21 +79,23 @@ val batch_shape : t -> int array
     ]}
 
     for the model's action. Batch axes broadcast. *)
-val mul : t -> t -> t
+val mul : 'd t -> 'd t -> 'd t
 
 (** [compose [m1; m2; ...; mn]] is [mul m1 (mul m2 (... mn))]: the motions are
-    applied from right to left, as matrices act on column vectors. [compose []]
-    is {!one}. *)
-val compose : t list -> t
+    applied from right to left, as matrices act on column vectors.
+
+    Raises [Invalid_argument] on [[]], which names no device set to make {!one}
+    on. *)
+val compose : 'd t list -> 'd t
 
 (** [inverse m] is the inverse motion [m^(-1)]. For a unit motor this is the
     reverse. *)
-val inverse : t -> t
+val inverse : 'd t -> 'd t
 
 (** [normalize m] divides [m] by its norm, so that [m m~ = 1]. A motor returned
     by {!exp}, {!translate} or {!rotate} is already normalised up to rounding;
     call this after a long product to remove drift. *)
-val normalize : t -> t
+val normalize : 'd t -> 'd t
 
 (** {1:motions Motions} *)
 
@@ -103,10 +105,10 @@ val normalize : t -> t
     {[
      T = exp (-(1/2) v e_infinity) = 1 - (1/2) v e_infinity.
     ]} *)
-val translate : Nx.float32_t -> t
+val translate : 'd Nx.float32_t -> 'd t
 
 (** [translate3 x y z] is [translate] of the single vector [(x, y, z)]. *)
-val translate3 : float -> float -> float -> t
+val translate3 : float -> float -> float -> Nx.host t
 
 (** [rotate ~axis ~angle] is the rotation of [angle] radians about [axis]. The
     axis has shape [batch_shape @ [|3|]] and is normalised internally; the
@@ -114,7 +116,7 @@ val translate3 : float -> float -> float -> t
     the conjugate of this motor by the corresponding translations.
 
     Raises [Invalid_argument] if an axis is zero. *)
-val rotate : axis:Nx.float32_t -> angle:Nx.float32_t -> t
+val rotate : axis:'d Nx.float32_t -> angle:'d Nx.float32_t -> 'd t
 
 (** [of_rotation r] is the rotation motor of the 3 by 3 rotation matrix [r], in
     row-major order, of shape [batch_shape @ [|3; 3|]]. This is the constructor
@@ -123,18 +125,18 @@ val rotate : axis:Nx.float32_t -> angle:Nx.float32_t -> t
 
     Raises [Invalid_argument] if [r] is not a proper rotation matrix within
     floating-point tolerance. *)
-val of_rotation : Nx.float32_t -> t
+val of_rotation : 'd Nx.float32_t -> 'd t
 
 (** [of_quaternion q] is the rotation motor of the unit quaternion [q], with
     components [(w, x, y, z)] along the last axis. [q] is normalised internally.
 
     Raises [Invalid_argument] if the quaternion has zero norm. *)
-val of_quaternion : Nx.float32_t -> t
+val of_quaternion : 'd Nx.float32_t -> 'd t
 
 (** [to_quaternion m] is the rotation part of [m] as a unit quaternion
     [(w, x, y, z)], dropping the translation. The sign is chosen so that the
     scalar part is non-negative. *)
-val to_quaternion : t -> Nx.float32_t
+val to_quaternion : 'd t -> 'd Nx.float32_t
 
 (** [translation m] is the vector [v] of shape [batch_shape m @ [|3|]] that is
     the image of the origin under [m]: the position of the frame [m] describes,
@@ -143,14 +145,14 @@ val to_quaternion : t -> Nx.float32_t
 
     The representative of the rotor is not sign-normalised, so the translation
     extracted is well defined whatever sign [m] carries. *)
-val translation : t -> Nx.float32_t
+val translation : 'd t -> 'd Nx.float32_t
 
 (** [rotation m] is the 3 by 3 rotation matrix of [m], in row-major order, of
     shape [batch_shape m @ [|3; 3|]]. It acts on column vectors, is the
     top-left block of {!adjoint}, and agrees with the Euclidean action of
     [m] on directions: for a motor [m] and a vector [x], [rotation m * x] is
     the direction [m] maps [x] to. *)
-val rotation : t -> Nx.float32_t
+val rotation : 'd t -> 'd Nx.float32_t
 
 (** {1:exponential Exponential and logarithm} *)
 
@@ -162,7 +164,7 @@ val rotation : t -> Nx.float32_t
     The implementation uses the closed form with the Rodrigues matrix and the
     [V] matrix, with small-angle limits at zero. The sign and frame conventions
     are those of the notes, §5.6. *)
-val exp : Nx.float32_t -> t
+val exp : 'd Nx.float32_t -> 'd t
 
 (** [log m] is the twist [(omega, v)] of shape [batch_shape @ [|6|]] whose
     exponential is [m], with the branch near the identity. It is the left
@@ -170,7 +172,7 @@ val exp : Nx.float32_t -> t
 
     The logarithm uses [atan2] and a small-angle limit; a rotation by exactly
     [pi] is a singular case and is handled by a stable branch. *)
-val log : t -> Nx.float32_t
+val log : 'd t -> 'd Nx.float32_t
 
 (** [slerp m0 m1 alpha] is the screw linear interpolation (ScLERP) from [m0] to
     [m1]:
@@ -181,16 +183,16 @@ val log : t -> Nx.float32_t
 
     [alpha] has shape [batch_shape] and values in [[0];[1]]; the endpoints are
     exact (up to rounding). *)
-val slerp : t -> t -> Nx.float32_t -> t
+val slerp : 'd t -> 'd t -> 'd Nx.float32_t -> 'd t
 
 (** {1:adjoint Adjoint} *)
 
 (** [adjoint m] is the 6 by 6 adjoint of the rigid motion acting on twists, of
     shape [batch_shape @ [|6; 6|]]. The adjoint of a composition is the product
     of the adjoints. *)
-val adjoint : t -> Nx.float32_t
+val adjoint : 'd t -> 'd Nx.float32_t
 
 (** {1:printing Printing} *)
 
 (** [pp ppf m] formats [m] for debugging. *)
-val pp : Format.formatter -> t -> unit
+val pp : Format.formatter -> 'd t -> unit

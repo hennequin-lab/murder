@@ -17,26 +17,26 @@ include Algebra.ALGEBRA with type kind = Nx.float32_elt
 (** {1:basis Basis} *)
 
 (** [e1] is the first basis vector. *)
-val e1 : t
+val e1 : Nx.host t
 
 (** [e2] is the second basis vector. *)
-val e2 : t
+val e2 : Nx.host t
 
 (** [e3] is the third basis vector. *)
-val e3 : t
+val e3 : Nx.host t
 
 (** {1:vectors Vectors} *)
 
 (** [vector v] embeds a Euclidean vector of shape [batch_shape @ [|3|]] as a
     grade-1 multivector. *)
-val vector : Nx.float32_t -> t
+val vector : 'd Nx.float32_t -> 'd t
 
 (** [vector3 x y z] is [vector] of the single vector [(x, y, z)]. *)
-val vector3 : float -> float -> float -> t
+val vector3 : float -> float -> float -> Nx.host t
 
 (** [to_vector a] extracts the grade-1 part of [a] as a tensor of shape
     [batch_shape @ [|3|]]. Higher-grade parts are ignored. *)
-val to_vector : t -> Nx.float32_t
+val to_vector : 'd t -> 'd Nx.float32_t
 
 (** {1:rotors Rotors} *)
 
@@ -52,9 +52,9 @@ val to_vector : t -> Nx.float32_t
     by [angle] about the axis, with the right-hand rule.
 
     Raises [Invalid_argument] if an axis is zero. *)
-val rotor : axis:Nx.float32_t -> angle:Nx.float32_t -> t
+val rotor : axis:'d Nx.float32_t -> angle:'d Nx.float32_t -> 'd t
 
 (** [apply_rotor r x] is [r x tilde(r)], the action of the rotor [r] on the
     multivector [x]. It is {!Algebra.sandwich} with the inverse replaced by the
     reverse, since [r] is unit. *)
-val apply_rotor : t -> t -> t
+val apply_rotor : 'd t -> 'd t -> 'd t

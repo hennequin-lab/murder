@@ -8,6 +8,12 @@ changes do not need an entry.
 ### geom
 
 - Imported from `hennequin-lab/geom`.
+- Multivectors and motors carry nx's device set, as `'d Cga.t` and
+  `'d Motor.t`: an operation computes where its operands lie. Constructors from
+  numbers (`scalar`, `one`, `basis`, `e`, `of_array`, `point3`, `Cga.einf`,
+  `Motor.translate3`) give host values.
+- `Motor.compose []` raises `Invalid_argument`, where it was `Motor.one`: an
+  empty list names no device set to make `one` on.
 
 ### cmdargs
 

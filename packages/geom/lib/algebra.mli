@@ -46,7 +46,7 @@ module type ALGEBRA = sig
   type kind
 
   (** The type for multivectors. The last axis is the blade axis. *)
-  type t = (float, kind) Nx.t
+  type 'd t = (float, kind, 'd) Nx.t
 
   (** The data type descriptor of the scalar kind. *)
   val dtype : (float, kind) Nx.dtype
@@ -64,110 +64,110 @@ module type ALGEBRA = sig
 
   (** [scalar x] is the unbatched scalar multivector with coefficient [x] on
       the identity blade. *)
-  val scalar : float -> t
+  val scalar : float -> Nx.host t
 
   (** [one] is [scalar 1.]. *)
-  val one : t
+  val one : Nx.host t
 
   (** [zero] is [scalar 0.]. *)
-  val zero : t
+  val zero : Nx.host t
 
   (** [basis b] is the unbatched multivector with coefficient [1.] on blade
       [b] and zero elsewhere.
 
       Raises [Invalid_argument] if [Blade.to_int b >= size]. *)
-  val basis : Blade.t -> t
+  val basis : Blade.t -> Nx.host t
 
   (** [e i] is the basis vector [e_i], that is, [basis (Blade.of_basis i)].
 
       Raises [Invalid_argument] if [i] is outside [[1];[n]]. *)
-  val e : int -> t
+  val e : int -> Nx.host t
 
   (** [pseudoscalar] is [e_1 ... e_n]. *)
-  val pseudoscalar : t
+  val pseudoscalar : Nx.host t
 
   (** [of_array a] is the unbatched multivector with coefficients [a], in
       increasing blade-index order.
 
       Raises [Invalid_argument] if [Array.length a <> size]. *)
-  val of_array : float array -> t
+  val of_array : float array -> Nx.host t
 
   (** [to_array a] is the coefficient array of an unbatched multivector, in
       increasing blade-index order.
 
       Raises [Invalid_argument] if [a] has batch axes. *)
-  val to_array : t -> float array
+  val to_array : 'd t -> float array
 
   (** [of_nx x] views [x] as a multivector, checking that its last axis has
       length [size].
 
       Raises [Invalid_argument] if the last axis is not [size]. *)
-  val of_nx : (float, kind) Nx.t -> t
+  val of_nx : (float, kind, 'd) Nx.t -> 'd t
 
   (** [to_nx a] is [a] as an ordinary tensor. It is the identity; the function
       exists to make the representation explicit at API boundaries. *)
-  val to_nx : t -> (float, kind) Nx.t
+  val to_nx : 'd t -> (float, kind, 'd) Nx.t
 
   (** {1:shape Shape and coefficients} *)
 
   (** [shape a] is the shape of [a], including the trailing blade axis. *)
-  val shape : t -> int array
+  val shape : 'd t -> int array
 
   (** [batch_shape a] is the shape of [a] without the trailing blade axis. *)
-  val batch_shape : t -> int array
+  val batch_shape : 'd t -> int array
 
   (** [coeff a b] is the coefficient of blade [b] in [a]: a tensor of shape
       [batch_shape a], without the blade axis. *)
-  val coeff : t -> Blade.t -> (float, kind) Nx.t
+  val coeff : 'd t -> Blade.t -> (float, kind, 'd) Nx.t
 
   (** [with_coeff a b c] is [a] with the coefficient of [b] replaced by [c].
       [c] must have shape [batch_shape a], or broadcast to it.
 
       Raises [Invalid_argument] if the shapes are incompatible. *)
-  val with_coeff : t -> Blade.t -> (float, kind) Nx.t -> t
+  val with_coeff : 'd t -> Blade.t -> (float, kind, 'd) Nx.t -> 'd t
 
   (** [grade k a] keeps the grade-[k] part of [a] and zeros the rest. For [k]
       outside [[0];[n]] the result is zero. *)
-  val grade : int -> t -> t
+  val grade : int -> 'd t -> 'd t
 
   (** [even a] keeps the even-grade part of [a]. *)
-  val even : t -> t
+  val even : 'd t -> 'd t
 
   (** [odd a] keeps the odd-grade part of [a]. *)
-  val odd : t -> t
+  val odd : 'd t -> 'd t
 
   (** {1:products Products} *)
 
   (** [gp a b] is the geometric product [a b]. Batch axes broadcast according
       to {!Nx}. *)
-  val gp : t -> t -> t
+  val gp : 'd t -> 'd t -> 'd t
 
   (** [op a b] is the outer (exterior) product [a and b]. *)
-  val op : t -> t -> t
+  val op : 'd t -> 'd t -> 'd t
 
   (** [inner a b] is the left contraction [a dot b]. For vectors it is the
       ordinary dot product. *)
-  val inner : t -> t -> t
+  val inner : 'd t -> 'd t -> 'd t
 
   (** [scalar_prod a b] is the scalar product [<tilde(a) b>_0], a tensor of
       shape [batch_shape] after broadcasting. *)
-  val scalar_prod : t -> t -> (float, kind) Nx.t
+  val scalar_prod : 'd t -> 'd t -> (float, kind, 'd) Nx.t
 
   (** [commutator a b] is [(a b - b a) / 2], the Lie bracket of bivectors. *)
-  val commutator : t -> t -> t
+  val commutator : 'd t -> 'd t -> 'd t
 
   (** {1:involutions Involutions} *)
 
   (** [reverse a] reverses the order of every product in [a]. On a grade-[k]
       blade it acts as [(-1)^(k (k - 1) / 2)]. *)
-  val reverse : t -> t
+  val reverse : 'd t -> 'd t
 
   (** [grade_involution a] multiplies the grade-[k] part of [a] by [(-1)^k]. *)
-  val grade_involution : t -> t
+  val grade_involution : 'd t -> 'd t
 
   (** [conjugate a] is the Clifford conjugate of [a], the composition of
       {!reverse} and {!grade_involution}. *)
-  val conjugate : t -> t
+  val conjugate : 'd t -> 'd t
 
   (** {1:duals Duals} *)
 
@@ -176,19 +176,19 @@ module type ALGEBRA = sig
 
       Raises [Invalid_argument] if the signature is degenerate, in which case
       [I] is not invertible. For a degenerate algebra use {!complement}. *)
-  val dual : t -> t
+  val dual : 'd t -> 'd t
 
   (** [undual a] is [a I], the inverse of {!dual}:
       [undual (dual a) = a].
 
       Raises [Invalid_argument] if the signature is degenerate. *)
-  val undual : t -> t
+  val undual : 'd t -> 'd t
 
   (** [complement a] is the signed Poincaré complement: on a basis blade
       [e_b], it is [complement_sign ~n b * e_(complement ~n b)]. It is defined
       for every signature and is the dual used in projective geometric
       algebra. *)
-  val complement : t -> t
+  val complement : 'd t -> 'd t
 
   (** [regressive a b] is the regressive (meet) product of [a] and [b],
       [a or b], defined through {!complement}:
@@ -196,43 +196,43 @@ module type ALGEBRA = sig
       {[
        a or b = complement (complement a and complement b)
       ]} *)
-  val regressive : t -> t -> t
+  val regressive : 'd t -> 'd t -> 'd t
 
   (** {1:norms Norms and inverses} *)
 
   (** [norm2 a] is the scalar [<tilde(a) a>_0], of shape [batch_shape a]. For a
       blade it is the squared magnitude up to sign. *)
-  val norm2 : t -> (float, kind) Nx.t
+  val norm2 : 'd t -> (float, kind, 'd) Nx.t
 
   (** [norm a] is [sqrt (abs (norm2 a))], the magnitude of a blade. *)
-  val norm : t -> (float, kind) Nx.t
+  val norm : 'd t -> (float, kind, 'd) Nx.t
 
   (** [normalize a] is [a] divided by {!norm}[ a]. For a null blade the result
       is unspecified (division by zero); check {!norm2} first. *)
-  val normalize : t -> t
+  val normalize : 'd t -> 'd t
 
   (** [inverse a] is the inverse of a blade or versor,
       [tilde(a) / <tilde(a) a>_0]. For a general multivector the inverse may
       not exist; the function does not detect this. *)
-  val inverse : t -> t
+  val inverse : 'd t -> 'd t
 
   (** {1:versors Versors and actions} *)
 
   (** [sandwich v x] is [v x v^(-1)], the action of the versor [v] on [x]. The
       inverse is computed from [tilde(v) v]; for a unit versor it is
       [tilde(v)] up to sign. *)
-  val sandwich : t -> t -> t
+  val sandwich : 'd t -> 'd t -> 'd t
 
   (** [adjoint v] is the matrix of the linear map [x -> v x v^(-1)] in the blade
       basis. Its shape is [batch_shape v @ [|size; size|]]; for a single versor
       it is [size] by [size]. *)
-  val adjoint : t -> (float, kind) Nx.t
+  val adjoint : 'd t -> (float, kind, 'd) Nx.t
 
   (** {1:printing Printing} *)
 
   (** [pp ppf a] formats [a] for debugging. For a batched value it prints the
       shape and the coefficients of each batch element. *)
-  val pp : Format.formatter -> t -> unit
+  val pp : Format.formatter -> 'd t -> unit
 end
 
 (** [Make (S) (K)] is the algebra of signature [S.signature] and scalar kind

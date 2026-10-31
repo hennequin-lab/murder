@@ -303,11 +303,11 @@ let test_dual () =
   equal_tensor ~msg:"undual after dual is the identity" x (A.undual (A.dual x));
   raises_match
     ~msg:"dual is undefined in a degenerate algebra"
-    (Exn.invalid_arg ~substring:"degenerate")
+    (Exn.invalid_arg ~sub:"degenerate")
     (fun () -> ignore (P.dual (P.e 1)));
   raises_match
     ~msg:"undual is undefined in a degenerate algebra"
-    (Exn.invalid_arg ~substring:"degenerate")
+    (Exn.invalid_arg ~sub:"degenerate")
     (fun () -> ignore (P.undual (P.e 1)))
 
 let test_complement () =
@@ -389,7 +389,7 @@ let test_adjoint () =
 
 (* Batching and broadcasting *)
 
-let take0 i a = take ~axis:0 ~indices:(Nx.scalar Nx.int64 (Int64.of_int i)) a
+let take0 i a = take ~axis:0 (Nx.scalar Nx.int64 (Int64.of_int i)) a
 
 let test_batching () =
   let x = A.of_array [| 1.; 0.5; -1.; 2.; 0.25; -0.5; 1.5; -2. |] in
@@ -440,31 +440,31 @@ let test_printing () =
 let test_errors () =
   raises_match
     ~msg:"basis checks the blade index"
-    (Exn.invalid_arg ~substring:"out of range")
+    (Exn.invalid_arg ~sub:"out of range")
     (fun () -> ignore (A.basis (B.of_int A.size)));
   raises_match
     ~msg:"e checks the basis index"
-    (Exn.invalid_arg ~substring:"out of range")
+    (Exn.invalid_arg ~sub:"out of range")
     (fun () -> ignore (A.e 0));
   raises_match
     ~msg:"e checks the upper bound"
-    (Exn.invalid_arg ~substring:"out of range")
+    (Exn.invalid_arg ~sub:"out of range")
     (fun () -> ignore (A.e 4));
   raises_match
     ~msg:"of_array checks the length"
-    (Exn.invalid_arg ~substring:"coefficients")
+    (Exn.invalid_arg ~sub:"coefficients")
     (fun () -> ignore (A.of_array [| 1.; 2. |]));
   raises_match
     ~msg:"to_array refuses batched values"
-    (Exn.invalid_arg ~substring:"unbatched")
+    (Exn.invalid_arg ~sub:"unbatched")
     (fun () -> ignore (A.to_array (A.of_nx (zeros A.dtype [| 2; A.size |]))));
   raises_match
     ~msg:"of_nx checks the blade axis"
-    (Exn.invalid_arg ~substring:"blade axis")
+    (Exn.invalid_arg ~sub:"blade axis")
     (fun () -> ignore (A.of_nx (zeros A.dtype [| 7 |])));
   raises_match
     ~msg:"batch_shape needs a blade axis"
-    (Exn.invalid_arg ~substring:"blade axis")
+    (Exn.invalid_arg ~sub:"blade axis")
     (fun () -> ignore (A.batch_shape (Nx.scalar A.dtype 1.)));
   raises_match ~msg:"with_coeff checks the coefficient shape" Exn.invalid_arg (fun () ->
     ignore

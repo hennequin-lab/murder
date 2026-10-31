@@ -73,18 +73,14 @@ let test_representation () =
     (array (float 1e-6))
     a
     (M.to_array (M.of_array a));
-  raises_match
-    ~msg:"of_array checks the length"
-    (Exn.invalid_arg ~substring:"8")
-    (fun () -> ignore (M.of_array [| 1.; 2. |]));
+  raises_match ~msg:"of_array checks the length" (Exn.invalid_arg ~sub:"8") (fun () ->
+    ignore (M.of_array [| 1.; 2. |]));
   raises_match
     ~msg:"to_array refuses a batch"
-    (Exn.invalid_arg ~substring:"unbatched")
+    (Exn.invalid_arg ~sub:"unbatched")
     (fun () -> ignore (M.to_array (M.of_nx (zeros M.dtype [| 2; 8 |]))));
-  raises_match
-    ~msg:"of_nx checks the motor axis"
-    (Exn.invalid_arg ~substring:"8")
-    (fun () -> ignore (M.of_nx (zeros M.dtype [| 7 |])));
+  raises_match ~msg:"of_nx checks the motor axis" (Exn.invalid_arg ~sub:"8") (fun () ->
+    ignore (M.of_nx (zeros M.dtype [| 7 |])));
   equal ~msg:"shape" (array int) [| 8 |] (M.shape M.one);
   equal ~msg:"batch shape" (array int) [||] (M.batch_shape M.one);
   let batch = M.translate (create f32 [| 2; 3 |] [| 1.; 2.; 3.; -1.; 0.; 1. |]) in
@@ -181,7 +177,7 @@ let test_rotation_matrices () =
     (M.of_rotation rx90);
   raises_match
     ~msg:"of_rotation checks the matrix shape"
-    (Exn.invalid_arg ~substring:"3x3")
+    (Exn.invalid_arg ~sub:"3x3")
     (fun () -> ignore (M.of_rotation (zeros M.dtype [| 2; 3 |])));
   let batch = stack ~axis:0 [ identity; rz90 ] in
   let m = M.of_rotation batch in
@@ -189,11 +185,11 @@ let test_rotation_matrices () =
   check_motor
     ~msg:"the first matrix"
     M.one
-    (M.of_nx (take ~axis:0 ~indices:(Nx.scalar Nx.int64 0L) m));
+    (M.of_nx (take ~axis:0 (Nx.scalar Nx.int64 0L) m));
   check_motor
     ~msg:"the second matrix"
     (rot ~axis:z_axis (Float.pi /. 2.))
-    (M.of_nx (take ~axis:0 ~indices:(Nx.scalar Nx.int64 1L) m));
+    (M.of_nx (take ~axis:0 (Nx.scalar Nx.int64 1L) m));
   (* Half turns have trace -1, so [of_rotation] takes one of its three
      diagonal branches instead of the trace branch. *)
   let rx180 = create f32 [| 3; 3 |] [| 1.; 0.; 0.; 0.; -1.; 0.; 0.; 0.; -1. |] in
@@ -247,7 +243,11 @@ let test_algebra () =
     ~msg:"normalize gives a unit motor"
     M.one
     (M.mul (M.normalize m) (M.inverse (M.normalize m)));
-  check_motor ~msg:"compose [] is one" M.one (M.compose []);
+  raises_match
+    ~msg:"compose [] has no set to make one on"
+    (Exn.invalid_arg ~sub:"empty list")
+    (fun () -> ignore (M.compose []));
+  check_motor ~msg:"compose [ m ] is m" m (M.compose [ m ]);
   check_motor
     ~msg:"compose applies the list in order"
     (M.compose [ m; translation (vec3 1. 2. 3.); rot ~axis:x_axis 0.4 ])
@@ -295,10 +295,8 @@ let test_exp () =
     ~msg:"exp of a small rotation"
     (rot ~axis:x_axis 1e-4)
     (M.exp (vec6 1e-4 0. 0. 0. 0. 0.));
-  raises_match
-    ~msg:"exp checks the twist axis"
-    (Exn.invalid_arg ~substring:"6")
-    (fun () -> ignore (M.exp (create f32 [| 5 |] [| 0.; 0.; 0.; 0.; 0. |])));
+  raises_match ~msg:"exp checks the twist axis" (Exn.invalid_arg ~sub:"6") (fun () ->
+    ignore (M.exp (create f32 [| 5 |] [| 0.; 0.; 0.; 0.; 0. |])));
   let twists =
     [ vec6 0. 0. 0. 0. 0. 1.
     ; vec6 0. 0. 0.5 0. 0. 0.

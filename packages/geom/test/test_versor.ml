@@ -156,15 +156,15 @@ let test_batches () =
   in
   let r = V.exp_simple b in
   equal ~msg:"a batch of bivectors" (array int) [| 2; 8 |] (E.shape r);
-  let take i = Nx.take ~axis:0 ~indices:(Nx.scalar Nx.int64 (Int64.of_int i)) b in
+  let take i = Nx.take ~axis:0 (Nx.scalar Nx.int64 (Int64.of_int i)) b in
   equal_tensor
     ~msg:"first exponentiated row"
     (V.exp_simple (take 0))
-    (Nx.take ~axis:0 ~indices:(Nx.scalar Nx.int64 0L) r);
+    (Nx.take ~axis:0 (Nx.scalar Nx.int64 0L) r);
   equal_tensor
     ~msg:"second exponentiated row"
     (V.exp_simple (take 1))
-    (Nx.take ~axis:0 ~indices:(Nx.scalar Nx.int64 1L) r)
+    (Nx.take ~axis:0 (Nx.scalar Nx.int64 1L) r)
 
 (* Properties *)
 

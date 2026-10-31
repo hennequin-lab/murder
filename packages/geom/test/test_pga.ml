@@ -215,7 +215,7 @@ let test_motors () =
 let test_inherited () =
   raises_match
     ~msg:"the Hodge dual is undefined in a degenerate algebra"
-    (Exn.invalid_arg ~substring:"degenerate")
+    (Exn.invalid_arg ~sub:"degenerate")
     (fun () -> ignore (P.dual (P.e 1)));
   equal_tensor
     ~msg:"the complement is defined"

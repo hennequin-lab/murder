@@ -5,7 +5,7 @@ module type VERSOR = sig
   type kind
 
   (** The type for multivectors of the underlying algebra. *)
-  type t
+  type 'd t
 
   (** [exp b] is the exponential of the bivector [b], the versor
       [sum_(k >= 0) b^k / k!]. For a simple bivector this is the closed form of
@@ -13,7 +13,7 @@ module type VERSOR = sig
 
       Raises [Invalid_argument] if [b] is outside the subset supported by the
       current implementation. *)
-  val exp : t -> t
+  val exp : 'd t -> 'd t
 
   (** [log v] is a bivector whose exponential is the versor [v], with the
       branch chosen near the identity. It is the left inverse of {!exp} on the
@@ -21,7 +21,7 @@ module type VERSOR = sig
 
       Raises [Invalid_argument] if [v] is not a versor or is outside the
       supported subset. *)
-  val log : t -> t
+  val log : 'd t -> 'd t
 
   (** [exp_simple b] is the exponential of a simple bivector, using the closed
       form
@@ -36,7 +36,7 @@ module type VERSOR = sig
       with the limiting value at [theta = 0]. It is always defined for a
       simple bivector, including the null generators of translations,
       transversions and shears. *)
-  val exp_simple : t -> t
+  val exp_simple : 'd t -> 'd t
 
   (** [slerp v0 v1 alpha] interpolates between the versors [v0] and [v1] along
       the group exponential:
@@ -49,14 +49,14 @@ module type VERSOR = sig
       [alpha = 0] gives [v0] and [alpha = 1] gives [v1]. The interpolation is
       the screw linear interpolation (ScLERP) of rigid motions when the versors
       are motors. *)
-  val slerp : t -> t -> (float, kind) Nx.t -> t
+  val slerp : 'd t -> 'd t -> (float, kind, 'd) Nx.t -> 'd t
 end
 
 (* --- implementation ------------------------------------------------------- *)
 
 module Make (A : Algebra.ALGEBRA) = struct
   type kind = A.kind
-  type t = A.t
+  type 'd t = 'd A.t
 
   let expand batch x = reshape (Array.append batch [| 1 |]) x
 
@@ -77,15 +77,16 @@ module Make (A : Algebra.ALGEBRA) = struct
     let s_pos = Infix.(Nx.sinh theta / theta_safe) in
     let f0 = where neg s_neg (where pos s_pos one) in
     let f = where small one f0 in
-    Infix.((expand batch c * A.one) + (expand batch f * b))
+    Infix.((expand batch c * place (beside b) A.one) + (expand batch f * b))
 
   let exp b =
     (* Scaling and squaring with a fixed 12-term Taylor series. This handles a
        general bivector, including the non-simple case. *)
     let factor = 1. /. 256. in
     let bs = Infix.(b *$ factor) in
-    let term = ref A.one
-    and sum = ref A.one in
+    let one = place (beside b) A.one in
+    let term = ref one
+    and sum = ref one in
     for k = 1 to 12 do
       (term := Infix.(A.gp !term bs /$ float_of_int k));
       sum := Infix.(!sum + !term)
