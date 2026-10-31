@@ -70,11 +70,11 @@ let p3_of_tensor t =
 
 let scalar_of_tensor t = item [] t
 
-let transform_point (m : Motor.t) (p : p3) =
-  let y = Pga.apply_motor m (Pga.point3 p.x p.y p.z) in
+let transform_point (m : 'd Motor.t) (p : p3) =
+  let y = Pga.apply_motor m (place (beside m) (Pga.point3 p.x p.y p.z)) in
   p3_of_tensor (Pga.point_coords y)
 
-let transform (m : Motor.t) = function
+let transform (m : 'd Motor.t) = function
   | Point p -> Point (transform_point m p)
   | Segment (a, b) -> Segment (transform_point m a, transform_point m b)
   | Polyline ps -> Polyline (List.map (transform_point m) ps)

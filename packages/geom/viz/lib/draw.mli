@@ -56,7 +56,7 @@ val static : ?layer:int -> ?style:style -> Primitive.t -> entity
 val moving
   :  ?layer:int
   -> ?style:style
-  -> motion:(float -> Geom.Motor.t)
+  -> motion:(float -> 'd Geom.Motor.t)
   -> Primitive.t
   -> entity
 

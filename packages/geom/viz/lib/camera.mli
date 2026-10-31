@@ -119,16 +119,16 @@ val ortho_scale : t -> float
 (** [view c] is the rigid motion that maps world coordinates into camera
     coordinates: [R (p - eye)] for the rotation [R] whose rows are
     {!right}, {!up} and the negated {!forward}. *)
-val view : t -> Geom.Motor.t
+val view : t -> Nx.host Geom.Motor.t
 
 (** [eye_point c] is the world-space [Pga.t] point of the eye. It is the point
     shared by every perspective view ray. *)
-val eye_point : t -> Geom.Pga.t
+val eye_point : t -> Nx.host Geom.Pga.t
 
 (** [image_plane c] is the world-space [Pga.t] plane of the image plane, the
     plane [z_cam = -focal]. It is the image of the local plane
     [Pga.plane3 0. 0. 1. (-.focal)] under the inverse view motor. *)
-val image_plane : t -> Geom.Pga.t
+val image_plane : t -> Nx.host Geom.Pga.t
 
 (** [ray c ~x ~y] is the world-space [Pga.t] line through the page point
     [(x, y)]. For a perspective camera it is the line through the eye and the
@@ -140,7 +140,7 @@ val image_plane : t -> Geom.Pga.t
     [x] and [y] are page coordinates: points, not pixels, with the origin at
     the top-left corner. Use {!ray} for picking, or to draw a line along a
     view ray. *)
-val ray : t -> x:float -> y:float -> Geom.Pga.t
+val ray : t -> x:float -> y:float -> Nx.host Geom.Pga.t
 
 (** {1:projection Projection} *)
 

@@ -78,10 +78,10 @@ val model : t -> Geom_robot.Robot.t
 
 (** [links t q] are the link segments, one between each pair of consecutive
     joint origins, of shape [[nlinks - 1]]. *)
-val links : t -> Geom_robot.Robot.q -> Geom_viz.Primitive.t list
+val links : t -> 'd Geom_robot.Robot.q -> Geom_viz.Primitive.t list
 
 (** [joints t q] are the joint spheres, one per link, the root's larger. *)
-val joints : t -> Geom_robot.Robot.q -> Geom_viz.Primitive.t list
+val joints : t -> 'd Geom_robot.Robot.q -> Geom_viz.Primitive.t list
 
 (** [base t] is the disc drawn under the root link. *)
 val base : t -> Geom_viz.Primitive.t
@@ -92,7 +92,7 @@ val tool
   :  t
   -> frame:Geom_robot.Robot.frame
   -> ?len:float
-  -> Geom_robot.Robot.q
+  -> 'd Geom_robot.Robot.q
   -> Geom_viz.Primitive.t
 
 (** [trail t ~frame ?len qs] is the polyline the named frame's origin traces
@@ -100,19 +100,19 @@ val tool
 val trail
   :  t
   -> frame:Geom_robot.Robot.frame
-  -> Geom_robot.Robot.q array
+  -> 'd Geom_robot.Robot.q array
   -> Geom_viz.Primitive.t
 
 (** [target ?radius pose] is a pose marker: a dashed circle of [radius]
     (default [0.13]) across the approach axis, a short dash along it, and a dot
     at the origin, all carried by [pose]. *)
-val target : ?radius:float -> Geom.Motor.t -> Geom_viz.Primitive.t list
+val target : ?radius:float -> 'd Geom.Motor.t -> Geom_viz.Primitive.t list
 
 (** {1 Scenes} *)
 
 (** [entities t q] are the entities of the robot at [q]: links, joints and the
     base, with the styles and paint layers of [t]. *)
-val entities : ?layer:int -> t -> Geom_robot.Robot.q -> Geom_viz.Draw.entity list
+val entities : ?layer:int -> t -> 'd Geom_robot.Robot.q -> Geom_viz.Draw.entity list
 
 (** [animated t ~q frame draw] are the entities of the robot following the
     configurations [q time], with the frame, trail and target markers the
@@ -126,10 +126,10 @@ val entities : ?layer:int -> t -> Geom_robot.Robot.q -> Geom_viz.Draw.entity lis
 val animated
   :  ?layer:int
   -> t
-  -> q:(float -> Geom_robot.Robot.q)
+  -> q:(float -> 'd Geom_robot.Robot.q)
   -> ?frame:Geom_robot.Robot.frame
-  -> ?trail:Geom_robot.Robot.q array
-  -> ?target:Geom.Motor.t
+  -> ?trail:'d Geom_robot.Robot.q array
+  -> ?target:'d Geom.Motor.t
   -> ?fps:int
   -> unit
   -> Geom_viz.Draw.entity list
@@ -152,16 +152,16 @@ val camera
     [to_] in [n] steps, as a function of the step index. It is the animation
     path a demo wants when the interesting thing is the pose, not the timing. *)
 val linear_path
-  :  Geom_robot.Robot.q
-  -> Geom_robot.Robot.q
+  :  'd Geom_robot.Robot.q
+  -> 'd Geom_robot.Robot.q
   -> n:int
   -> int
-  -> Geom_robot.Robot.q
+  -> 'd Geom_robot.Robot.q
 
 (** [sample ?fps qs time] is the configuration [qs] holds at [time], with
     [time] converted to an index at [fps] (default [24]) and clamped to the
     array. It is the [q] argument {!animated} wants for a precomputed path. *)
-val sample : ?fps:int -> Geom_robot.Robot.q array -> float -> Geom_robot.Robot.q
+val sample : ?fps:int -> 'd Geom_robot.Robot.q array -> float -> 'd Geom_robot.Robot.q
 
 (** [stage ?radius t] is a ground plane under the robot, of half-width [radius]
     (default [2.4]). *)

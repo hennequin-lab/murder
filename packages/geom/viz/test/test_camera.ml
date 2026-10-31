@@ -88,17 +88,15 @@ let test_validation () =
   let build ?(up = p3 0. 0. 1.) ?(fov_y = Float.pi /. 4.) ?(near = 0.1) ?(far = 1000.) () =
     C.create ~eye ~target ~up ~fov_y ~width ~height ~near ~far ()
   in
+  raises_match (fun e -> Exn.invalid_arg ~sub:"fov_y" e) (fun () -> build ~fov_y:0. ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"fov_y" e)
-    (fun () -> build ~fov_y:0. ());
-  raises_match
-    (fun e -> Exn.invalid_arg ~substring:"fov_y" e)
+    (fun e -> Exn.invalid_arg ~sub:"fov_y" e)
     (fun () -> build ~fov_y:Float.pi ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"parallel" e)
+    (fun e -> Exn.invalid_arg ~sub:"parallel" e)
     (fun () -> build ~up:(P.normalize (P.sub target eye)) ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"coincide" e)
+    (fun e -> Exn.invalid_arg ~sub:"coincide" e)
     (fun () ->
        C.create
          ~eye
@@ -109,10 +107,10 @@ let test_validation () =
          ~height
          ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"near" e)
+    (fun e -> Exn.invalid_arg ~sub:"near" e)
     (fun () -> build ~near:10. ~far:5. ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"width and height" e)
+    (fun e -> Exn.invalid_arg ~sub:"width and height" e)
     (fun () ->
        C.create
          ~eye
@@ -123,7 +121,7 @@ let test_validation () =
          ~height
          ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"ortho_scale" e)
+    (fun e -> Exn.invalid_arg ~sub:"ortho_scale" e)
     (fun () ->
        C.create
          ~ortho:true
@@ -136,7 +134,7 @@ let test_validation () =
          ~height
          ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"width and height" e)
+    (fun e -> Exn.invalid_arg ~sub:"width and height" e)
     (fun () ->
        C.create
          ~eye
@@ -147,7 +145,7 @@ let test_validation () =
          ~height
          ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"near" e)
+    (fun e -> Exn.invalid_arg ~sub:"near" e)
     (fun () ->
        C.create
          ~eye
@@ -158,14 +156,12 @@ let test_validation () =
          ~height
          ~near:Float.nan
          ());
+  raises_match (fun e -> Exn.invalid_arg ~sub:"near" e) (fun () -> build ~near:0. ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"near" e)
-    (fun () -> build ~near:0. ());
-  raises_match
-    (fun e -> Exn.invalid_arg ~substring:"near" e)
+    (fun e -> Exn.invalid_arg ~sub:"near" e)
     (fun () -> build ~far:Float.infinity ());
   raises_match
-    (fun e -> Exn.invalid_arg ~substring:"width and height" e)
+    (fun e -> Exn.invalid_arg ~sub:"width and height" e)
     (fun () ->
        C.create
          ~eye
