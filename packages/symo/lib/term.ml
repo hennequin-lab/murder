@@ -156,28 +156,28 @@ let coefficient ~(dims : int list Sides.t) term =
     | Index.Right rep :: rest -> sub_in (Bytes.get in_eq.right rep) rest
     | [] -> assert false);
   let in_eq = Sides.map in_eq ~f:Bytes.to_string in
-  let full_equation = in_eq.left ^ in_eq.right ^ "->" ^ out_eq in
+  let full_equation = Einsum.pattern (in_eq.left ^ in_eq.right ^ "->" ^ out_eq) in
   (* [Nx.einsum] rejects an empty operand, so a one-sided term uses the
      single-operand form of the equation; the missing side is then a scalar
      (it has no axes) and multiplies the result. *)
   let split_equation, sides =
     match in_eq.left, in_eq.right with
-    | left, "" -> left ^ "->" ^ out_eq, `Left
-    | "", right -> right ^ "->" ^ out_eq, `Right
-    | left, right -> left ^ "," ^ right ^ "->" ^ out_eq, `Both
+    | left, "" -> Einsum.pattern (left ^ "->" ^ out_eq), `Left
+    | "", right -> Einsum.pattern (right ^ "->" ^ out_eq), `Right
+    | left, right -> Einsum.pattern (left ^ "," ^ right ^ "->" ^ out_eq), `Both
   in
   let free_shape = Array.of_list (List.map term.free ~f:dim_of) in
   let expected_shape = Array.of_list (dims.left @ dims.right) in
   fun data ->
     let result =
       match data with
-      | `Full x -> einsum full_equation [| reshape expected_shape x |]
+      | `Full x -> einsum full_equation [ reshape expected_shape x ]
       | `Outer_product (x_left, x_right) ->
         let x_left = reshape (Array.of_list dims.left) x_left in
         let x_right = reshape (Array.of_list dims.right) x_right in
         (match sides with
-         | `Left -> Infix.(einsum split_equation [| x_left |] * x_right)
-         | `Right -> Infix.(einsum split_equation [| x_right |] * x_left)
-         | `Both -> einsum split_equation [| x_left; x_right |])
+         | `Left -> Infix.(einsum split_equation [ x_left ] * x_right)
+         | `Right -> Infix.(einsum split_equation [ x_right ] * x_left)
+         | `Both -> einsum split_equation [ x_left; x_right ])
     in
     Nx.Infix.(result *$ normalizer) |> reshape free_shape

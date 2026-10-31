@@ -60,6 +60,13 @@ changes do not need an entry.
 ### symo
 
 - Imported from `hennequin-lab/symo-raven`.
+- Ported to raven 19a5d88. The orbit machinery and the optimizer run on the
+  parameter tree's device set: a `Model` is an `Nx.Ptree.S` declared
+  `('a, _) t` with `dims` and `symmetries` at every set; the set is a new
+  parameter of `Orbit.S.t`, both `factors`, `Optim.S.tree`, `State.t`, `Mid.t`,
+  `state`, `mid` and `Compiled.t`; `random_transform` takes a `'d Nx.Rng.key`,
+  `Compiler.t`'s closures run on any set, and `ptree` describes the tree on
+  `Nx.host`.
 
 ### sofo
 

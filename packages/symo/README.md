@@ -52,17 +52,17 @@ keys) and one symmetry specification per leaf:
 open Symo
 
 module Mlp = struct
-  type 'a t =
+  type ('a, _) t =
     { w1 : 'a   (* hidden x input *)
     ; w2 : 'a   (* output x hidden *)
     }
   [@@deriving ptree]
 
-  let dims : int list t = { w1 = [ 32; 8 ]; w2 = [ 1; 32 ] }
+  let dims : (int list, _) t = { w1 = [ 32; 8 ]; w2 = [ 1; 32 ] }
 
   (* One permutation group ties the hidden axis of [w1] to the hidden axis of
      [w2]; the other axes are [Id] (free). *)
-  let symmetries : Symmetry.spec list t =
+  let symmetries : (Symmetry.spec list, _) t =
     { w1 = [ Symmetry.Perm 0; Symmetry.Id ]
     ; w2 = [ Symmetry.Id; Symmetry.Perm 0 ]
     }
@@ -82,8 +82,9 @@ module S = Symo.Make (Mlp)
 
 Differentiate the loss with `Rune.value_and_grad` over `S.ptree` and step the
 optimizer state; the compiled step is the one to use in a training loop. With
-`params` an initial `Nx.float32_t Mlp.t` and `loss` any scalar function of it
-(the example below regresses a student against a teacher):
+`params` an initial `(Nx.host Nx.float32_t, Nx.host) Mlp.t` and `loss` any
+scalar function of it (the example below regresses a student against a
+teacher):
 
 ```ocaml
 let config : S.config =
@@ -122,11 +123,11 @@ dune exec examples/student_teacher.exe
 ```text
 student-teacher MLP: 32 hidden units, 8 inputs, 128 examples
     step           mse
-       0      4.189058
-      50      0.035483
-     100      0.007039
+       0      2.840415
+      50      0.031715
+     100      0.006669
       ...
-     500      0.000165
+     500      0.002557
 ```
 
 `examples/rnn.ml` trains an RNN with `S.Compiled` and writes its diagnostics

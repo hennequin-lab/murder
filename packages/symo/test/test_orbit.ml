@@ -23,20 +23,20 @@ open Symo
 (* One leaf: a [2; 3] tensor whose second axis is permuted; the free axis is
    the first one. *)
 module Single = struct
-  type 'a t = { w : 'a } [@@deriving ptree]
+  type ('a, _) t = { w : 'a } [@@deriving ptree]
 
-  let dims : int list t = { w = [ 2; 3 ] }
-  let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ] }
+  let dims : (int list, _) t = { w = [ 2; 3 ] }
+  let symmetries : (Symmetry.spec list, _) t = { w = [ Id; Perm 0 ] }
 end
 
 module O = Orbit.Make (Single)
 
 (* One leaf with two independent permutation groups on two axes. *)
 module Two_groups = struct
-  type 'a t = { w : 'a } [@@deriving ptree]
+  type ('a, _) t = { w : 'a } [@@deriving ptree]
 
-  let dims : int list t = { w = [ 2; 2; 3 ] }
-  let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0; Perm 1 ] }
+  let dims : (int list, _) t = { w = [ 2; 2; 3 ] }
+  let symmetries : (Symmetry.spec list, _) t = { w = [ Id; Perm 0; Perm 1 ] }
 end
 
 module O2 = Orbit.Make (Two_groups)
@@ -44,14 +44,14 @@ module O2 = Orbit.Make (Two_groups)
 (* Two leaves: [w] carries group 0 on its second axis, [v] group 1 on its
    first. The groups are independent, so the global group is a product. *)
 module Multi = struct
-  type 'a t =
+  type ('a, _) t =
     { w : 'a
     ; v : 'a
     }
   [@@deriving ptree]
 
-  let dims : int list t = { w = [ 2; 3 ]; v = [ 3 ] }
-  let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ]; v = [ Perm 1 ] }
+  let dims : (int list, _) t = { w = [ 2; 3 ]; v = [ 3 ] }
+  let symmetries : (Symmetry.spec list, _) t = { w = [ Id; Perm 0 ]; v = [ Perm 1 ] }
 end
 
 module OM = Orbit.Make (Multi)
@@ -59,14 +59,14 @@ module OM = Orbit.Make (Multi)
 (* Two leaves sharing one group id: a global element must act on both with the
    same permutation. *)
 module Shared = struct
-  type 'a t =
+  type ('a, _) t =
     { a : 'a
     ; b : 'a
     }
   [@@deriving ptree]
 
-  let dims : int list t = { a = [ 3; 2 ]; b = [ 2; 3 ] }
-  let symmetries : Symmetry.spec list t = { a = [ Perm 0; Id ]; b = [ Id; Perm 0 ] }
+  let dims : (int list, _) t = { a = [ 3; 2 ]; b = [ 2; 3 ] }
+  let symmetries : (Symmetry.spec list, _) t = { a = [ Perm 0; Id ]; b = [ Id; Perm 0 ] }
 end
 
 module OS = Orbit.Make (Shared)
@@ -104,7 +104,7 @@ let group_elements (c : Compiler.t) =
 let random_perms (c : Compiler.t) =
   List.mapi c.basis.group_axes ~f:(fun i ids ->
     let dim = Index.dim_of ~dims:c.dims (List.hd_exn ids) in
-    Nx.Rng.permutation (Nx.Rng.fold_in (Nx.Rng.key 13) i) dim)
+    Nx.Rng.permutation ~key:(Nx.Rng.fold_in (Nx.Rng.key 13) i) dim)
 
 (* The permutations of [c] selected from a global assignment indexed by group
    id. *)
@@ -115,7 +115,7 @@ let perms_of_ids (c : Compiler.t) assignment =
    Exact references
    ------------------------------------------------------------------------ *)
 
-let vec x = reshape [| -1 |] (contiguous x)
+let vec x = reshape [| -1 |] (copy x)
 let mean tensors n = Infix.(List.reduce_exn tensors ~f:( + ) *$ (1. /. Float.of_int n))
 
 (* [R1(x)] for one compiled leaf, by enumeration. *)
@@ -161,8 +161,8 @@ let check_leaf ~msg ~tol expected got =
 let check_single
       ~msg
       ~tol
-      (expected : Nx.float32_t Single.t)
-      (got : Nx.float32_t Single.t)
+      (expected : (Nx.host Nx.float32_t, Nx.host) Single.t)
+      (got : (Nx.host Nx.float32_t, Nx.host) Single.t)
   =
   ignore
     (Nx.Ptree.Payload.map2
@@ -170,21 +170,26 @@ let check_single
        (fun _ e g -> check_leaf ~msg ~tol e g)
        expected
        got
-     : unit Single.t)
+     : (unit, Nx.host) Single.t)
 
 let multi_leaves t =
-  Nx.Ptree.Payload.fold (module Multi) (fun _ x acc -> x :: acc) t []
-  |> List.rev
-  |> Array.of_list
+  let acc = ref [] in
+  ignore (Nx.Ptree.Payload.map (module Multi) (fun _ x -> acc := x :: !acc) t : _ Multi.t);
+  List.rev !acc |> Array.of_list
 
-let check_multi ~msg ~tol (expected : Nx.float32_t Multi.t) (got : Nx.float32_t Multi.t) =
+let check_multi
+      ~msg
+      ~tol
+      (expected : (Nx.host Nx.float32_t, Nx.host) Multi.t)
+      (got : (Nx.host Nx.float32_t, Nx.host) Multi.t)
+  =
   ignore
     (Nx.Ptree.Payload.map2
        (module Multi)
        (fun _ e g -> check_leaf ~msg ~tol e g)
        expected
        got
-     : unit Multi.t)
+     : (unit, Nx.host) Multi.t)
 
 (* ------------------------------------------------------------------------
    Tests
@@ -192,7 +197,7 @@ let check_multi ~msg ~tol (expected : Nx.float32_t Multi.t) (got : Nx.float32_t 
 
 let test_first_order_exact () =
   let c = O.First_order.large.w in
-  let x = Nx.Rng.normal (Nx.Rng.key 11) float32 [| 2; 3 |] in
+  let x = Nx.Rng.normal ~key:(Nx.Rng.key 11) float32 [| 2; 3 |] in
   (* R1 is what [orbit_average] returns. The dense assembly is a compressed
      representation with its own normalization, so only the round trip through
      it is expected to reproduce itself. *)
@@ -209,7 +214,7 @@ let test_first_order_exact () =
 
 let test_first_order_equivariant () =
   let c = O.First_order.large.w in
-  let x = Nx.Rng.normal (Nx.Rng.key 12) float32 [| 2; 3 |] in
+  let x = Nx.Rng.normal ~key:(Nx.Rng.key 12) float32 [| 2; 3 |] in
   let perms = random_perms c in
   let transformed x = c.transform ~perms x in
   let projected x = (O.First_order.orbit_average { Single.w = x }).w in
@@ -221,7 +226,7 @@ let test_first_order_equivariant () =
 
 let test_second_order_exact () =
   let c = (O.Second_order.large ()).w.(0) in
-  let x = Nx.Rng.normal (Nx.Rng.key 21) float32 [| 2; 3 |] in
+  let x = Nx.Rng.normal ~key:(Nx.Rng.key 21) float32 [| 2; 3 |] in
   let expected = exact_r2 c x in
   let factors = O.Second_order.factors_of_pair { Single.w = x } { Single.w = x } in
   (* Factor estimation is a projection onto the invariant subspace, so the
@@ -238,7 +243,7 @@ let test_second_order_exact () =
   in
   check_leaf ~msg:"dense round trip" ~tol:1e-5 dense round_trip;
   (* The action of the assembled operator. *)
-  let v = { Single.w = Nx.Rng.normal (Nx.Rng.key 22) float32 [| 2; 3 |] } in
+  let v = { Single.w = Nx.Rng.normal ~key:(Nx.Rng.key 22) float32 [| 2; 3 |] } in
   let l = 6
   and r = 6 in
   let expected_v = Infix.(reshape [| l; r |] expected *@ vec v.w) in
@@ -247,7 +252,7 @@ let test_second_order_exact () =
 
 let test_two_groups_exact () =
   let c = O2.First_order.large.w in
-  let x = Nx.Rng.normal (Nx.Rng.key 31) float32 [| 2; 2; 3 |] in
+  let x = Nx.Rng.normal ~key:(Nx.Rng.key 31) float32 [| 2; 2; 3 |] in
   equal int 12 (List.length (group_elements c));
   let expected = exact_r1 c x in
   let got = (O2.First_order.orbit_average { Two_groups.w = x }).w in
@@ -258,7 +263,7 @@ let test_two_groups_exact () =
 let multi_global_elements = cartesian (List.map [ 3; 3 ] ~f:permutations)
 let multi_assignments = List.map multi_global_elements ~f:Array.of_list
 
-let exact_multi_r1 (x : Nx.float32_t Multi.t) =
+let exact_multi_r1 (x : (Nx.host Nx.float32_t, Nx.host) Multi.t) =
   let n = List.length multi_assignments in
   let acc =
     Nx.Ptree.Payload.map2
@@ -272,7 +277,10 @@ let exact_multi_r1 (x : Nx.float32_t Multi.t) =
   in
   Nx.Ptree.Payload.map (module Multi) (fun _ a -> Infix.(a *$ (1. /. Float.of_int n))) acc
 
-let exact_multi_r2_apply (x : Nx.float32_t Multi.t) (v : Nx.float32_t Multi.t) =
+let exact_multi_r2_apply
+      (x : (Nx.host Nx.float32_t, Nx.host) Multi.t)
+      (v : (Nx.host Nx.float32_t, Nx.host) Multi.t)
+  =
   let rows = OM.Second_order.large () in
   let row_arr = multi_leaves rows in
   let xs = multi_leaves x in
@@ -310,8 +318,8 @@ let exact_multi_r2_apply (x : Nx.float32_t Multi.t) (v : Nx.float32_t Multi.t) =
 
 let test_multi_leaf () =
   let x =
-    { Multi.w = Nx.Rng.normal (Nx.Rng.key 41) float32 [| 2; 3 |]
-    ; v = Nx.Rng.normal (Nx.Rng.key 42) float32 [| 3 |]
+    { Multi.w = Nx.Rng.normal ~key:(Nx.Rng.key 41) float32 [| 2; 3 |]
+    ; v = Nx.Rng.normal ~key:(Nx.Rng.key 42) float32 [| 3 |]
     }
   in
   let expected_r1 = exact_multi_r1 x in
@@ -321,8 +329,8 @@ let test_multi_leaf () =
     expected_r1
     (OM.First_order.orbit_average x);
   let v =
-    { Multi.w = Nx.Rng.normal (Nx.Rng.key 43) float32 [| 2; 3 |]
-    ; v = Nx.Rng.normal (Nx.Rng.key 44) float32 [| 3 |]
+    { Multi.w = Nx.Rng.normal ~key:(Nx.Rng.key 43) float32 [| 2; 3 |]
+    ; v = Nx.Rng.normal ~key:(Nx.Rng.key 44) float32 [| 3 |]
     }
   in
   let factors = OM.Second_order.factors_of_pair x x in
@@ -341,20 +349,20 @@ let test_multi_leaf () =
 
 let test_multi_leaf_invariance () =
   let x =
-    { Multi.w = Nx.Rng.normal (Nx.Rng.key 51) float32 [| 2; 3 |]
-    ; v = Nx.Rng.normal (Nx.Rng.key 52) float32 [| 3 |]
+    { Multi.w = Nx.Rng.normal ~key:(Nx.Rng.key 51) float32 [| 2; 3 |]
+    ; v = Nx.Rng.normal ~key:(Nx.Rng.key 52) float32 [| 3 |]
     }
   in
   let v =
-    { Multi.w = Nx.Rng.normal (Nx.Rng.key 53) float32 [| 2; 3 |]
-    ; v = Nx.Rng.normal (Nx.Rng.key 54) float32 [| 3 |]
+    { Multi.w = Nx.Rng.normal ~key:(Nx.Rng.key 53) float32 [| 2; 3 |]
+    ; v = Nx.Rng.normal ~key:(Nx.Rng.key 54) float32 [| 3 |]
     }
   in
   let factors = OM.Second_order.factors_of_pair x x in
   let c = OM.First_order.large in
   let assignment =
     Array.of_list
-      (List.map [ 3; 3 ] ~f:(fun dim -> Nx.Rng.permutation (Nx.Rng.key 55) dim))
+      (List.map [ 3; 3 ] ~f:(fun dim -> Nx.Rng.permutation ~key:(Nx.Rng.key 55) dim))
   in
   let transform_tree t =
     Nx.Ptree.Payload.map2
@@ -381,7 +389,11 @@ let shared_equal a b =
       a
       b
   in
-  Nx.Ptree.Payload.fold (module Shared) (fun _ e acc -> acc && e) equal true
+  let all = ref true in
+  ignore
+    (Nx.Ptree.Payload.map (module Shared) (fun _ e -> all := !all && e) equal
+     : _ Shared.t);
+  !all
 
 (* The images of [x] under the six global group elements, by enumeration. *)
 let shared_images x =
@@ -396,7 +408,7 @@ let shared_images x =
         x)
 
 let test_random_transform () =
-  let x = { Single.w = Nx.Rng.normal (Nx.Rng.key 61) float32 [| 2; 3 |] } in
+  let x = { Single.w = Nx.Rng.normal ~key:(Nx.Rng.key 61) float32 [| 2; 3 |] } in
   let key = Nx.Rng.key 62 in
   check_single
     ~msg:"random transform is deterministic"
@@ -428,8 +440,8 @@ let test_random_transform () =
 
 let test_random_transform_shared () =
   let x =
-    { Shared.a = Nx.Rng.normal (Nx.Rng.key 71) float32 [| 3; 2 |]
-    ; Shared.b = Nx.Rng.normal (Nx.Rng.key 72) float32 [| 2; 3 |]
+    { Shared.a = Nx.Rng.normal ~key:(Nx.Rng.key 71) float32 [| 3; 2 |]
+    ; Shared.b = Nx.Rng.normal ~key:(Nx.Rng.key 72) float32 [| 2; 3 |]
     }
   in
   let images = shared_images x in

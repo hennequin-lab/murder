@@ -79,8 +79,8 @@ type group =
   ; common : Kind.t list (* per-group kinds present on both sides *)
   ; table : float array (* [d; b_l; b_r], row-major *)
   ; index_of : (string, int) Hashtbl.t (* diagram key -> component *)
-  ; gram_l : Nx.float32_t array (* per common kind *)
-  ; gram_r : Nx.float32_t array
+  ; gram_l : Nx.host Nx.float32_t array (* per common kind *)
+  ; gram_r : Nx.host Nx.float32_t array
   ; d : int
   ; left_kinds : Kind.t array (* per flat test-vector index *)
   ; left_copies : int array
@@ -203,8 +203,8 @@ type t =
   ; free_l : int array (* the leaf's free ([Id]) dims, in axis order *)
   ; free_r : int array
   ; entries : (int * int * int) array (* kind, left copy, right copy *)
-  ; table : Nx.float32_t (* [n_entries; n_components] *)
-  ; inverse : Nx.float32_t (* [n_components; n_entries] *)
+  ; table : Nx.host Nx.float32_t (* [n_entries; n_components] *)
+  ; inverse : Nx.host Nx.float32_t (* [n_components; n_entries] *)
   }
 
 let build (compiler : Compiler.t) =
@@ -381,23 +381,29 @@ let build (compiler : Compiler.t) =
    Factors <-> blocks
    ------------------------------------------------------------------------ *)
 
-let to_blocks t (factors : Nx.float32_t list) =
+let to_blocks t (factors : 'd Nx.float32_t list) =
   let d = List.length factors in
   let n_entries = Array.length t.entries in
   let m = to_array t.table in
   List.init n_entries ~f:(fun e ->
-    List.foldi factors ~init:(scalar float32 0.0) ~f:(fun c acc f ->
-      let entry = m.((e * d) + c) in
-      Infix.(acc + (f *$ entry))))
+    List.foldi
+      factors
+      ~init:(scalar_like (List.hd_exn factors) 0.0)
+      ~f:(fun c acc f ->
+        let entry = m.((e * d) + c) in
+        Infix.(acc + (f *$ entry))))
 
-let of_blocks t (blocks : Nx.float32_t list) =
+let of_blocks t (blocks : 'd Nx.float32_t list) =
   let d = (shape t.table).(1) in
   let n_entries = Array.length t.entries in
   let m = to_array t.inverse in
   List.init d ~f:(fun c ->
-    List.foldi blocks ~init:(scalar float32 0.0) ~f:(fun e acc b ->
-      let entry = m.((c * n_entries) + e) in
-      Infix.(acc + (b *$ entry))))
+    List.foldi
+      blocks
+      ~init:(scalar_like (List.hd_exn blocks) 0.0)
+      ~f:(fun e acc b ->
+        let entry = m.((c * n_entries) + e) in
+        Infix.(acc + (b *$ entry))))
 
 (* ------------------------------------------------------------------------
    Block matrices

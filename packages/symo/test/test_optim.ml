@@ -20,10 +20,10 @@ open Symo
    [M_2(R) ⊗ span {I_3, J_3}], so a Hessian [A ⊗ (3 I + 0.7 J)] exercises the
    row-space structure that the blocks carry. *)
 module Quad = struct
-  type 'a t = { w : 'a } [@@deriving ptree]
+  type ('a, _) t = { w : 'a } [@@deriving ptree]
 
-  let dims : int list t = { w = [ 2; 3 ] }
-  let symmetries : Symmetry.spec list t = { w = [ Id; Perm 0 ] }
+  let dims : (int list, _) t = { w = [ 2; 3 ] }
+  let symmetries : (Symmetry.spec list, _) t = { w = [ Id; Perm 0 ] }
 end
 
 module Q = Make (Quad)
@@ -33,14 +33,16 @@ let relu x = maximum x (zeros_like x)
 (* A two-layer MLP with a hidden-permutation symmetry: the same group element
    permutes the rows of [w1] and the columns of [w2]. *)
 module Mlp = struct
-  type 'a t =
+  type ('a, _) t =
     { w1 : 'a
     ; w2 : 'a
     }
   [@@deriving ptree]
 
-  let dims : int list t = { w1 = [ 3; 2 ]; w2 = [ 1; 3 ] }
-  let symmetries : Symmetry.spec list t = { w1 = [ Perm 0; Id ]; w2 = [ Id; Perm 0 ] }
+  let dims : (int list, _) t = { w1 = [ 3; 2 ]; w2 = [ 1; 3 ] }
+
+  let symmetries : (Symmetry.spec list, _) t =
+    { w1 = [ Perm 0; Id ]; w2 = [ Id; Perm 0 ] }
 end
 
 module M = Make (Mlp)
@@ -98,7 +100,7 @@ let test_exchange_identity () =
   let a = mat32 [| 2; 2 |] [| 2.0; 0.5; 0.5; 1.0 |] in
   let c = Infix.((eye float32 3 *$ 3.0) + (ones float32 [| 3; 3 |] *$ 0.7)) in
   let h_large = kron23 a c in
-  let delta = Nx.Rng.normal (Nx.Rng.key 1) float32 [| 2; 3 |] in
+  let delta = Nx.Rng.normal ~key:(Nx.Rng.key 1) float32 [| 2; 3 |] in
   (* A non-invariant offset: the orbit average removes the row means. *)
   let w = Infix.(delta - mean ~axes:[ 1 ] ~keepdims:true delta) in
   let g = Infix.(a *$ 3.0 *@ w) in
@@ -117,7 +119,7 @@ let test_exchange_identity () =
 let test_newton_step () =
   let a = mat32 [| 2; 2 |] [| 2.0; 0.5; 0.5; 1.0 |] in
   let theta_star = create float32 [| 2; 3 |] [| 0.4; 0.4; 0.4; -0.2; -0.2; -0.2 |] in
-  let delta = Nx.Rng.normal (Nx.Rng.key 2) float32 [| 2; 3 |] in
+  let delta = Nx.Rng.normal ~key:(Nx.Rng.key 2) float32 [| 2; 3 |] in
   let w = Infix.(delta - mean ~axes:[ 1 ] ~keepdims:true delta) in
   let theta = Infix.(theta_star + w) in
   let g = Infix.(a *$ 3.0 *@ w) in
@@ -147,13 +149,13 @@ let test_newton_step () =
    End-to-end fixture
    ------------------------------------------------------------------------ *)
 
-let xs = Nx.Rng.normal (Nx.Rng.key 7) float32 [| 8; 2 |]
+let xs = Nx.Rng.normal ~key:(Nx.Rng.key 7) float32 [| 8; 2 |]
 
 let ys =
   let w = mat32 [| 2; 1 |] [| 1.0; -0.5 |] in
-  Infix.((xs *@ w) + (Nx.Rng.normal (Nx.Rng.key 8) float32 [| 8; 1 |] *$ 0.05))
+  Infix.((xs *@ w) + (Nx.Rng.normal ~key:(Nx.Rng.key 8) float32 [| 8; 1 |] *$ 0.05))
 
-let mlp_loss (p : Nx.float32_t Mlp.t) =
+let mlp_loss (p : (Nx.host Nx.float32_t, Nx.host) Mlp.t) =
   let open Infix in
   let h = relu (xs *@ transpose p.w1) in
   let out = h *@ transpose p.w2 in
@@ -162,8 +164,8 @@ let mlp_loss (p : Nx.float32_t Mlp.t) =
 
 let test_end_to_end () =
   let params =
-    { Mlp.w1 = Nx.Rng.normal (Nx.Rng.key 9) float32 [| 3; 2 |]
-    ; w2 = Nx.Rng.normal (Nx.Rng.key 10) float32 [| 1; 3 |]
+    { Mlp.w1 = Nx.Rng.normal ~key:(Nx.Rng.key 9) float32 [| 3; 2 |]
+    ; w2 = Nx.Rng.normal ~key:(Nx.Rng.key 10) float32 [| 1; 3 |]
     }
   in
   let config : M.config =
@@ -183,8 +185,8 @@ let test_end_to_end () =
    one hidden size are the blocks of its re-encoding at another. *)
 let test_transport_blocks () =
   let theta =
-    { Mlp.w1 = Nx.Rng.normal (Nx.Rng.key 41) float32 [| 3; 2 |]
-    ; w2 = Nx.Rng.normal (Nx.Rng.key 42) float32 [| 1; 3 |]
+    { Mlp.w1 = Nx.Rng.normal ~key:(Nx.Rng.key 41) float32 [| 3; 2 |]
+    ; w2 = Nx.Rng.normal ~key:(Nx.Rng.key 42) float32 [| 1; 3 |]
     }
   in
   let factors = M.Second_order.factors_of_pair theta theta in
@@ -195,6 +197,36 @@ let test_transport_blocks () =
   List.iter2_exn blocks blocks_wide ~f:(fun a b ->
     check ~msg:"transported blocks" ~tol:1e-4 a b)
 
+(* A set of its own over the host's device: its arrays are not host values,
+   so a step there places the compiled tables beside them and brings the
+   solve's result back. The kernels are the host's, so it computes what a
+   step on the host computes. *)
+module Other = (val Nx.devices (Nx.rigs Nx.Host.v))
+
+let test_other_set () =
+  let config : M.config =
+    { learning_rate = Some 0.5; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+  in
+  let tree k =
+    { Mlp.w1 = Nx.Rng.normal ~key:(Nx.Rng.key k) float32 [| 3; 2 |]
+    ; w2 = Nx.Rng.normal ~key:(Nx.Rng.key (k + 1)) float32 [| 1; 3 |]
+    }
+  in
+  let theta = tree 61
+  and grads = tree 63 in
+  let other x = Nx.Ptree.place (module Mlp) Other.on x in
+  let two_steps ~theta ~grads =
+    let state = M.init ~config theta in
+    let state = M.step ~config ~state ~grads in
+    M.step ~config ~state ~grads
+  in
+  let on_host = two_steps ~theta ~grads in
+  let on_other = two_steps ~theta:(other theta) ~grads:(other grads) in
+  check ~msg:"w1" ~tol:1e-6 on_host.theta.w1 on_other.theta.w1;
+  check ~msg:"w2" ~tol:1e-6 on_host.theta.w2 on_other.theta.w2;
+  check ~msg:"sigma_g_avg" ~tol:1e-6 on_host.sigma_g_avg on_other.sigma_g_avg;
+  check ~msg:"beta_2_t" ~tol:1e-6 on_host.beta_2_t on_other.beta_2_t
+
 let tests =
   [ test "EMA and debias schedules" test_schedules
   ; test "Solve inverts a known operator" test_solve_identity
@@ -202,6 +234,7 @@ let tests =
   ; test "Newton step on an invariant quadratic" test_newton_step
   ; test "transport preserves the blocks" test_transport_blocks
   ; test "end-to-end MLP training" test_end_to_end
+  ; test "a step on another set equals the host's" test_other_set
   ]
 
 let () = Stdlib.exit (run "symo optim" tests)

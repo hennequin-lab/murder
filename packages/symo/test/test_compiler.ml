@@ -34,12 +34,12 @@ let factor_shape ~dims (comp : Component.t) =
 
 let random_factors ~key ~dims components =
   List.mapi components ~f:(fun i comp ->
-    Nx.Rng.normal (Nx.Rng.fold_in key i) float32 (factor_shape ~dims comp))
+    Nx.Rng.normal ~key:(Nx.Rng.fold_in key i) float32 (factor_shape ~dims comp))
 
 let random_perms ~key ~dims group_axes =
   List.mapi group_axes ~f:(fun i ids ->
     let dim = Index.dim_of ~dims (List.hd_exn ids) in
-    Nx.Rng.permutation (Nx.Rng.fold_in key i) dim)
+    Nx.Rng.permutation ~key:(Nx.Rng.fold_in key i) dim)
 
 let check_coefficients ~dims components data =
   List.iter components ~f:(fun comp ->
@@ -56,8 +56,8 @@ let check_coefficients ~dims components data =
      two sides separately; it must agree with the dense path, which is what
      the brute force above checks. Regression: it used to materialize the
      [prod dims.left * prod dims.right] outer product. *)
-  let left = Nx.Rng.normal (Nx.Rng.key 16) float32 (Array.of_list dims.left) in
-  let right = Nx.Rng.normal (Nx.Rng.key 17) float32 (Array.of_list dims.right) in
+  let left = Nx.Rng.normal ~key:(Nx.Rng.key 16) float32 (Array.of_list dims.left) in
+  let right = Nx.Rng.normal ~key:(Nx.Rng.key 17) float32 (Array.of_list dims.right) in
   let full =
     let left_shape = Array.of_list (dims.left @ List.map dims.right ~f:(fun _ -> 1)) in
     let right_shape = Array.of_list (List.map dims.left ~f:(fun _ -> 1) @ dims.right) in
@@ -74,7 +74,7 @@ let check_basis ?(symmetric = false) ~name ~dims spec =
   let compiled = Compiler.compile ~symmetric ~dims spec in
   let components = compiled.basis.components in
   let data =
-    Nx.Rng.normal (Nx.Rng.key 11) float32 (Array.of_list (dims.left @ dims.right))
+    Nx.Rng.normal ~key:(Nx.Rng.key 11) float32 (Array.of_list (dims.left @ dims.right))
   in
   check_coefficients ~dims components data;
   let design = Component.design_matrix ~dims components in
@@ -110,7 +110,7 @@ let check_basis ?(symmetric = false) ~name ~dims spec =
         (to_array got)));
   (* [apply_block] is the action of the dense block on one vector. *)
   let right_size = List.fold dims.right ~init:1 ~f:Int.( * ) in
-  let v = Nx.Rng.normal (Nx.Rng.key 14) float32 [| right_size |] in
+  let v = Nx.Rng.normal ~key:(Nx.Rng.key 14) float32 [| right_size |] in
   let expected = Infix.(block *@ reshape [| right_size |] v) |> to_array in
   let got =
     compiled.apply_block

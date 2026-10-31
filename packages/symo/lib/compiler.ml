@@ -20,17 +20,23 @@
 open Base
 open Nx
 
-(* A compiled basis, instantiated at one set of dimensions. *)
+(* A compiled basis, instantiated at one set of dimensions. Its closures run
+   on any device set: their constants are made beside the operands they
+   meet, or placed there from the host. *)
 type t =
   { basis : Basis.t
   ; dims : int list Sides.t
-  ; apply_block : factors:Nx.float32_t list -> Nx.float32_t -> Nx.float32_t
-  ; dense_block : factors:Nx.float32_t list -> Nx.float32_t
+  ; apply_block : 'd. factors:'d Nx.float32_t list -> 'd Nx.float32_t -> 'd Nx.float32_t
+  ; dense_block : 'd. factors:'d Nx.float32_t list -> 'd Nx.float32_t
   ; estimate_factors :
-      [ `Full of Nx.float32_t | `Outer_product of Nx.float32_t * Nx.float32_t ]
-      -> Nx.float32_t list
-  ; transform : perms:Nx.int64_t list -> Nx.float32_t -> Nx.float32_t
+      'd.
+      [ `Full of 'd Nx.float32_t | `Outer_product of 'd Nx.float32_t * 'd Nx.float32_t ]
+      -> 'd Nx.float32_t list
+  ; transform : 'd. perms:'d Nx.int64_t list -> 'd Nx.float32_t -> 'd Nx.float32_t
   }
+
+(* A compiled term or component: [apply ~factor v], on any device set. *)
+type apply = { apply : 'd. factor:'d Nx.float32_t -> 'd Nx.float32_t -> 'd Nx.float32_t }
 
 let is_scalar t = Array.length (Nx.shape t) = 0
 
@@ -54,7 +60,7 @@ let tie_left_axes ~(dims : int list Sides.t) r ids =
     let shape = Array.create ~len:(1 + n_left) 1 in
     shape.(1 + left_pos i) <- dim;
     shape.(1 + left_pos j) <- dim;
-    Infix.(r * reshape shape (eye float32 dim))
+    Infix.(r * reshape shape (eye_at (beside r) float32 dim))
   in
   let rec go r = function
     | i :: (j :: _ as rest) -> go (step r i j) rest
@@ -131,7 +137,12 @@ let compile_apply_term ~(dims : int list Sides.t) term =
   let factor_labels = List.map term.free ~f:label in
   let v_eq = String.of_char_list ('z' :: Array.to_list v_labels) in
   let out_eq = String.of_char_list output_labels in
-  fun ~factor v ->
+  let pattern =
+    match factor_labels with
+    | [] -> Einsum.pattern (v_eq ^ "->" ^ out_eq)
+    | _ -> Einsum.pattern (String.of_char_list factor_labels ^ "," ^ v_eq ^ "->" ^ out_eq)
+  in
+  let apply ~factor v =
     let t =
       match factor_labels with
       | [] ->
@@ -139,33 +150,33 @@ let compile_apply_term ~(dims : int list Sides.t) term =
            multiply the contraction. [Nx.mul] broadcasts the scalar, and
            unlike [Nx.item] it stays traceable under [Rune.jit]. *)
         assert (is_scalar factor);
-        Infix.(einsum (v_eq ^ "->" ^ out_eq) [| v |] * factor)
-      | factor_labels ->
-        einsum
-          (String.of_char_list factor_labels ^ "," ^ v_eq ^ "->" ^ out_eq)
-          [| factor; v |]
+        Infix.(einsum pattern [ v ] * factor)
+      | _ -> einsum pattern [ factor; v ]
     in
     let batch = (Nx.shape v).(0) in
     let t = reshape (Array.append [| batch |] output_view) t in
     let t = List.fold !left_ties ~init:t ~f:(tie_left_axes ~dims) in
     let t = Infix.(t *$ normalizer) in
     broadcast_to (Array.append [| batch |] output_shape) t
+  in
+  { apply }
 
 let compile_apply_component ~dims = function
   | Component.Single term -> compile_apply_term ~dims term
   | Component.Sum terms ->
     let applies = List.map terms ~f:(compile_apply_term ~dims) in
-    fun ~factor v ->
-      List.fold applies ~init:(scalar float32 0.0) ~f:(fun accu apply ->
-        Infix.(accu + apply ~factor v))
+    let apply ~factor v =
+      List.fold applies ~init:(scalar_like v 0.0) ~f:(fun accu a ->
+        Infix.(accu + a.apply ~factor v))
+    in
+    { apply }
 
-(* [apply ~factors v] applies the block described by [factors] to a batch of
+(* [compile_apply applies ~factors v] applies the block described by
+   [factors], whose components compile to [applies], to a batch of
    vectors. *)
-let compile_apply ~dims components =
-  let applies = List.map components ~f:(compile_apply_component ~dims) in
-  fun ~factors v ->
-    List.fold2_exn factors applies ~init:(scalar float32 0.0) ~f:(fun acc factor apply ->
-      Infix.(acc + apply ~factor v))
+let compile_apply applies ~factors v =
+  List.fold2_exn factors applies ~init:(scalar_like v 0.0) ~f:(fun acc factor a ->
+    Infix.(acc + a.apply ~factor v))
 
 (* The pseudo-inverse of the symmetric design matrix, used only as a
    compile-time fallback for one that is not positive definite. Its
@@ -175,7 +186,7 @@ let compile_apply ~dims components =
    division. *)
 let pseudo_inverse m =
   let n = (Nx.shape m).(0) in
-  let w, u = eigh m in
+  let w, u = eigh float64 m in
   let tol = 1e-12 *. item [] (max (abs w)) in
   let inv_w = where (greater_s (abs w) tol) (recip w) (zeros_like w) in
   Infix.(u * reshape [| 1; n |] inv_w *@ transpose u)
@@ -205,44 +216,41 @@ let build_estimator design n =
          n;
        `Inverse (cast float32 (pseudo_inverse design64)))
 
-(* [estimate_factors data] projects [data] onto the basis and solves the
-   constant design system for the factor of each component. With a Cholesky
+(* [estimate_factors ~dims components estimator data] projects [data] onto the
+   basis and solves the constant design system, factored by [estimator]
+   ({!build_estimator}), for the factor of each component. With a Cholesky
    factor [L] the solve is two triangular solves; the explicit inverse is only
-   the fallback. Both paths are traceable. *)
-let compile_estimate_factors ~(dims : int list Sides.t) components =
+   the fallback. Both paths are traceable. [estimator]'s matrix, a host value,
+   is placed beside the projected data. *)
+let estimate_factors ~(dims : int list Sides.t) components estimator data =
   let n = List.length components in
-  let estimator = build_estimator (Component.design_matrix ~dims components) n in
-  fun data ->
-    let b =
-      List.map components ~f:(fun c -> Component.coefficient ~dims c data)
-      |> stack ~axis:0
-    in
-    let factor_shape =
-      Array.sub (Nx.shape b) ~pos:1 ~len:(Array.length (Nx.shape b) - 1)
-    in
-    let b = reshape [| n; -1 |] b in
-    let v =
-      match estimator with
-      | `Cholesky l ->
-        let y = solve_triangular l b in
-        solve_triangular ~transpose:true l y
-      | `Inverse inv -> Infix.(inv *@ b)
-    in
-    List.mapi components ~f:(fun i _ -> reshape factor_shape (slice [ Nx.I i ] v))
+  let b =
+    List.map components ~f:(fun c -> Component.coefficient ~dims c data) |> stack ~axis:0
+  in
+  let factor_shape = Array.sub (Nx.shape b) ~pos:1 ~len:(Array.length (Nx.shape b) - 1) in
+  let b = reshape [| n; -1 |] b in
+  let v =
+    match estimator with
+    | `Cholesky l ->
+      let l = place (beside b) l in
+      let y = solve_triangular l b in
+      solve_triangular ~transpose:Transpose l y
+    | `Inverse inv -> Infix.(place (beside b) inv *@ b)
+  in
+  List.mapi components ~f:(fun i _ -> reshape factor_shape (slice [ Nx.I i ] v))
 
 (* Apply one group element to a parameter-shaped tensor. [perms] holds one
    permutation per group id (in [group_axes] order); every axis tied to a
    group is permuted by that group's permutation. *)
-let transform ~(dims : int list Sides.t) group_axes =
+let transform ~(dims : int list Sides.t) group_axes ~perms t =
   let axis_of = Index.axis_of ~dims in
-  fun ~perms t ->
-    let original_shape = Nx.shape t in
-    let t = reshape (Array.of_list (dims.left @ dims.right)) t in
-    let t =
-      List.fold2_exn group_axes perms ~init:t ~f:(fun t ids perm ->
-        List.fold ids ~init:t ~f:(fun x id -> take ~axis:(axis_of id) ~indices:perm x))
-    in
-    reshape original_shape t
+  let original_shape = Nx.shape t in
+  let t = reshape (Array.of_list (dims.left @ dims.right)) t in
+  let t =
+    List.fold2_exn group_axes perms ~init:t ~f:(fun t ids perm ->
+      List.fold ids ~init:t ~f:(fun x id -> take ~axis:(axis_of id) perm x))
+  in
+  reshape original_shape t
 
 (* All set partitions of [lst], keeping each partition's blocks of size ≥ 2
    (singleton blocks are dropped, so a partition need not cover [lst]). *)
@@ -375,19 +383,23 @@ let basis_of_spec ~symmetric spec =
 
 let compile_basis ~(dims : int list Sides.t) (basis : Basis.t) =
   let components = basis.components in
-  let apply_block = compile_apply ~dims components in
+  let applies = List.map components ~f:(compile_apply_component ~dims) in
+  let apply_block ~factors v = compile_apply applies ~factors v in
   let dense_block ~factors =
     let _, right_size = side_counts ~dims in
     let v =
-      eye float32 right_size
+      eye_at (beside (List.hd_exn factors)) float32 right_size
       |> reshape (Array.append [| right_size |] (Array.of_list dims.right))
     in
     apply_block ~factors v
     |> reshape [| right_size; -1 |]
     |> fun x -> transpose ~axes:[ 1; 0 ] x
   in
-  let estimate_factors = compile_estimate_factors ~dims components in
-  let transform = transform ~dims basis.group_axes in
+  let estimator =
+    build_estimator (Component.design_matrix ~dims components) (List.length components)
+  in
+  let estimate_factors data = estimate_factors ~dims components estimator data in
+  let transform ~perms t = transform ~dims basis.group_axes ~perms t in
   { basis; dims; apply_block; dense_block; estimate_factors; transform }
 
 let compile ?(symmetric = false) ~dims spec =

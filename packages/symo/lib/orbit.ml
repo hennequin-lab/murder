@@ -27,19 +27,20 @@ open Nx
 module type Model = sig
   include Nx.Ptree.S
 
-  val dims : int list t
+  (** The dimensions hold no array, so they are at every set. *)
+  val dims : (int list, 'd) t
 
   (** One spec per axis of the parameter tensor: [Absent] pads a side with no
       axis, [Id] marks an untouched ("free") axis, and [Perm i] marks an axis
       transformed by group [i]. *)
-  val symmetries : Symmetry.spec list t
+  val symmetries : (Symmetry.spec list, 'd) t
 end
 
 module type S = sig
-  type 'a t
+  type ('a, 'd) t
 
-  val dims : int list t
-  val symmetries : Symmetry.spec list t
+  val dims : (int list, 'd) t
+  val symmetries : (Symmetry.spec list, 'd) t
 
   (** [random_transform ~key theta] applies a random element of the global
       symmetry group to the parameter tree [theta]: one uniformly random
@@ -47,39 +48,52 @@ module type S = sig
       tagged [Perm id] (all such axes share the group's dimension); [Id] axes
       are untouched. The element is drawn from [key] with
       {!Nx.Rng.fold_in}, so the function is pure and traces under
-      [Rune.jit] — pass the key as an input leaf there, as [Rune.jit] rejects
-      a captured key. *)
-  val random_transform : key:Nx.Rng.t -> Nx.float32_t t -> Nx.float32_t t
+      [Rune.jit]. *)
+  val random_transform
+    :  key:'d Nx.Rng.key
+    -> ('d Nx.float32_t, 'd) t
+    -> ('d Nx.float32_t, 'd) t
 
   module First_order : sig
-    type factors = Nx.float32_t list t
+    type 'd factors = ('d Nx.float32_t list, 'd) t
 
-    (** The per-tensor compilers. *)
-    val large : Compiler.t t
+    (** The per-tensor compilers. They hold no array, so the set is nominal:
+        the functions below use them with a tree on any set. *)
+    val large : (Compiler.t, Nx.host) t
 
-    val factors_of_params : Nx.float32_t t -> factors
-    val factors_of_dense : Nx.float32_t -> factors
-    val dense_of_factors : factors -> Nx.float32_t
-    val params_of_dense : Nx.float32_t -> Nx.float32_t t
-    val params_of_factors : factors -> Nx.float32_t t
+    val factors_of_params : ('d Nx.float32_t, 'd) t -> 'd factors
+    val factors_of_dense : 'd Nx.float32_t -> 'd factors
+    val dense_of_factors : 'd factors -> 'd Nx.float32_t
+    val params_of_dense : 'd Nx.float32_t -> ('d Nx.float32_t, 'd) t
+    val params_of_factors : 'd factors -> ('d Nx.float32_t, 'd) t
 
     (** The nearest invariant point, [R1]. *)
-    val orbit_average : Nx.float32_t t -> Nx.float32_t t
+    val orbit_average : ('d Nx.float32_t, 'd) t -> ('d Nx.float32_t, 'd) t
   end
 
   module Second_order : sig
     (** One factor list per pair of leaves: row [i] holds the blocks
         [(i, j)] for every leaf [j], in traversal order. *)
-    type factors = Nx.float32_t list array t
+    type 'd factors = ('d Nx.float32_t list array, 'd) t
 
-    val large : ?symmetric:bool -> unit -> Compiler.t array t
-    val factors_of_pair : ?symmetric:bool -> Nx.float32_t t -> Nx.float32_t t -> factors
-    val factors_of_dense : ?symmetric:bool -> Nx.float32_t -> factors
-    val dense_of_factors : ?symmetric:bool -> factors -> Nx.float32_t
+    val large : ?symmetric:bool -> unit -> (Compiler.t array, 'd) t
+
+    val factors_of_pair
+      :  ?symmetric:bool
+      -> ('d Nx.float32_t, 'd) t
+      -> ('d Nx.float32_t, 'd) t
+      -> 'd factors
+
+    val factors_of_dense : ?symmetric:bool -> 'd Nx.float32_t -> 'd factors
+    val dense_of_factors : ?symmetric:bool -> 'd factors -> 'd Nx.float32_t
 
     (** [apply ~factors v] applies the second-order operator assembled from
         [factors] to the parameter tree [v]. *)
-    val apply : ?symmetric:bool -> factors:factors -> Nx.float32_t t -> Nx.float32_t t
+    val apply
+      :  ?symmetric:bool
+      -> factors:'d factors
+      -> ('d Nx.float32_t, 'd) t
+      -> ('d Nx.float32_t, 'd) t
 
     (** The global kinds, in the canonical order of the assembled blocks. *)
     val kinds : Blocks.kind list
@@ -88,22 +102,22 @@ module type S = sig
         matrix per global kind, of size [sum_i m_{i,λ} f_i] ([m] the kind's
         multiplicity on leaf [i], [f] the leaf's free size). The copy bases are
         orthonormal, so a symmetric operator's blocks are symmetric. *)
-    val blocks_of_factors : ?symmetric:bool -> factors -> Nx.float32_t list
+    val blocks_of_factors : ?symmetric:bool -> 'd factors -> 'd Nx.float32_t list
 
     (** The inverse of {!blocks_of_factors}. *)
-    val factors_of_blocks : ?symmetric:bool -> Nx.float32_t list -> factors
+    val factors_of_blocks : ?symmetric:bool -> 'd Nx.float32_t list -> 'd factors
 
     (** The factor lists packed into one flat tensor (a compile-time layout),
         so the optimizer's state and the jit boundary stay tensor-valued. *)
     val factors_size : int
 
-    val pack : factors -> Nx.float32_t
-    val unpack : Nx.float32_t -> factors
+    val pack : 'd factors -> 'd Nx.float32_t
+    val unpack : 'd Nx.float32_t -> 'd factors
 
     (** [transport ~dims factors] re-encodes the operator at new dims (the
         permuted axes' dimensions; free axes are unchanged), preserving its
         blocks, hence its distinct spectrum and any function of it. *)
-    val transport : ?symmetric:bool -> dims:int list t -> factors -> factors
+    val transport : ?symmetric:bool -> dims:(int list, 'd) t -> 'd factors -> 'd factors
   end
 end
 
@@ -120,8 +134,7 @@ let offsets sizes =
 (* Split a flat vector at the given boundaries; [starts] has one entry per
    leaf, in traversal order. *)
 let split_flat starts dense =
-  array_split ~axis:0 (`Indices (List.tl_exn (Array.to_list starts))) dense
-  |> Array.of_list
+  split_at ~axis:0 (List.tl_exn (Array.to_list starts)) dense |> Array.of_list
 
 (* [extend ~groups ~all_groups kind] is [kind], a tuple over [groups], written
    as a tuple over [all_groups] (the empty kind for the groups it omits). *)
@@ -131,21 +144,25 @@ let extend ~groups ~all_groups kind =
     | Some (i, _) -> List.nth_exn kind i
     | None -> [])
 
-module Make (M : Model) : S with type 'a t = 'a M.t = struct
+module Make (M : Model) : S with type ('a, 'd) t = ('a, 'd) M.t = struct
   module P = Nx.Ptree.Payload
 
-  type 'a t = 'a M.t
+  type ('a, 'd) t = ('a, 'd) M.t
 
   let dims = M.dims
   let symmetries = M.symmetries
 
   (* The leaves in traversal order. *)
-  let to_list t = P.fold (module M) (fun _ x acc -> x :: acc) t [] |> List.rev
+  let to_list t =
+    let acc = ref [] in
+    ignore (P.map (module M) (fun _ x -> acc := x :: !acc) t : (unit, _) t);
+    List.rev !acc
+
   let to_array t = Array.of_list (to_list t)
   let n_leaves = List.length (to_list M.dims)
 
   (* The traversal index of every leaf. *)
-  let leaf_index =
+  let leaf_index : (int, Nx.host) t =
     let next = ref (-1) in
     P.map
       (module M)
@@ -153,6 +170,19 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
          Int.incr next;
          !next)
       M.dims
+
+  (* [at t] is the payload tree [t] at any set. Its payloads (compilers,
+     indices) hold no array, so it is rebuilt over [dims], which is at every
+     set, with [t]'s leaves in traversal order. *)
+  let at t =
+    let leaves = to_array t in
+    let next = ref (-1) in
+    P.map
+      (module M)
+      (fun _ _ ->
+         Int.incr next;
+         leaves.(!next))
+      dims
 
   let specs_arr = to_array symmetries
   let dims_arr = to_array M.dims
@@ -184,7 +214,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
           | _ -> false)))
 
   module First_order = struct
-    type factors = Nx.float32_t list t
+    type 'd factors = ('d Nx.float32_t list, 'd) t
 
     let compile d =
       P.map2
@@ -196,18 +226,21 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
         symmetries
         d
 
-    let large = compile dims
+    let large : (Compiler.t, Nx.host) t = compile dims
 
     let factors_of_params x =
       P.map2
         (module M)
-        (fun _ c x ->
-           c.Compiler.estimate_factors (`Outer_product (x, scalar float32 1.0)))
-        large
+        (fun _ c x -> c.Compiler.estimate_factors (`Outer_product (x, scalar_like x 1.0)))
+        (at large)
         x
 
     let dense_of_factors factors =
-      P.map2 (module M) (fun _ c f -> c.Compiler.dense_block ~factors:f) large factors
+      P.map2
+        (module M)
+        (fun _ c f -> c.Compiler.dense_block ~factors:f)
+        (at large)
+        factors
       |> to_list
       |> concatenate ~axis:0
 
@@ -216,16 +249,18 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
       P.map2
         (module M)
         (fun _ c i -> c.Compiler.estimate_factors (`Full pieces.(i)))
-        large
-        leaf_index
+        (at large)
+        (at leaf_index)
 
     let params_of_factors factors =
       P.map2
         (module M)
         (fun _ c f ->
-           c.Compiler.apply_block ~factors:f (ones float32 [| 1 |])
+           c.Compiler.apply_block
+             ~factors:f
+             (ones_at (beside (List.hd_exn f)) float32 [| 1 |])
            |> reshape (Array.of_list c.Compiler.dims.left))
-        large
+        (at large)
         factors
 
     let params_of_dense dense = params_of_factors (factors_of_dense dense)
@@ -259,14 +294,13 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
                dim))
     |> List.sort ~compare:(fun (a, _) (b, _) -> Int.compare a b)
 
-  (* [Nx.Rng.permutation] builds its sort keys by slicing the two columns of
-     an [n × 2] block and reshapes the result; under [Rune.jit] that slice is
-     miscompiled (the jitted permutation is not even a permutation), so draw
-     the sort keys with one float64 uniform instead. Its 53 random bits make
+  (* The permutation sorts one float64 uniform draw. Its 53 random bits make
      the permutation uniform for every practical [n], and the eager and
-     jitted draws agree exactly. *)
+     jitted draws agree exactly. [Nx.Rng.permutation] would serve as well,
+     drawing other permutations from the same key. *)
   let random_permutation ~key n =
-    argsort (Nx.Rng.uniform key float64 [| n |]) ~axis:0 ~descending:false
+    let draw = Nx.Rng.uniform_at (beside (Nx.Rng.to_tensor key)) ~key float64 [| n |] in
+    argsort draw ~axis:0 ~descending:false
 
   (* Draw the group element and apply it leafwise: each compiler's
      [group_ids] selects the permutations its own axes are tied to, so leaves
@@ -284,11 +318,11 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
              List.Assoc.find_exn perms id ~equal:Int.equal)
          in
          c.Compiler.transform ~perms x)
-      First_order.large
+      (at First_order.large)
       theta
 
   module Second_order = struct
-    type factors = Nx.float32_t list array t
+    type 'd factors = ('d Nx.float32_t list array, 'd) t
 
     let compile ~symmetric d =
       let dims_arr = to_array d in
@@ -307,7 +341,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
 
     let large_sym = compile ~symmetric:true dims
     let large_asym = compile ~symmetric:false dims
-    let large ?(symmetric = true) () = if symmetric then large_sym else large_asym
+    let large ?(symmetric = true) () = at (if symmetric then large_sym else large_asym)
 
     (* [pair_blocks sym.(i).(j)] is the [Blocks.t] of the pair [(i, j)]. *)
     let build_blocks cs = Array.map (to_array cs) ~f:(Array.map ~f:Blocks.build)
@@ -327,7 +361,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
            Array.mapi row ~f:(fun j c ->
              c.Compiler.estimate_factors (`Outer_product (a_arr.(i), b_arr.(j)))))
         cs
-        leaf_index
+        (at leaf_index)
 
     let dense_of_factors ?(symmetric = true) factors =
       let cs = large ~symmetric () in
@@ -341,7 +375,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
              |> Array.to_list
              |> concatenate ~axis:1)
           cs
-          leaf_index
+          (at leaf_index)
         |> to_list
       in
       let dense = concatenate ~axis:0 rows in
@@ -356,13 +390,13 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
         (fun _ compilers i ->
            let dense_row = row_pieces.(i) in
            let col_pieces =
-             array_split ~axis:1 (`Indices (List.tl_exn (Array.to_list starts))) dense_row
+             split_at ~axis:1 (List.tl_exn (Array.to_list starts)) dense_row
              |> Array.of_list
            in
            Array.mapi compilers ~f:(fun j c ->
              c.Compiler.estimate_factors (`Full col_pieces.(j))))
         cs
-        leaf_index
+        (at leaf_index)
 
     let apply ?(symmetric = true) ~factors v =
       let cs = large ~symmetric () in
@@ -375,7 +409,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
              Array.fold2_exn
                row
                f_arr.(i)
-               ~init:(0, scalar float32 0.0)
+               ~init:(0, scalar_like v_arr.(i) 0.0)
                ~f:(fun (j, acc) c f ->
                  let vj = v_arr.(j) in
                  let vj = unsqueeze ~axes:[ 0 ] vj in
@@ -384,7 +418,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
            in
            acc)
         cs
-        leaf_index
+        (at leaf_index)
 
     (* ----------------------------------------------------------------------
        Blocks
@@ -496,12 +530,12 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
                    let r = leaf_size.(gk).(i)
                    and c = leaf_size.(gk).(j) in
                    if Int.equal r 0 || Int.equal c 0
-                   then zeros float32 [| r; c |]
+                   then zeros_at (beside matrix) float32 [| r; c |]
                    else slice [ Nx.R (rows, rows + r); Nx.R (cols, cols + c) ] matrix)
              in
              Blocks.of_blocks b (Blocks.blocks_of_matrices b matrices)))
-        large_sym
-        leaf_index
+        (at large_sym)
+        (at leaf_index)
 
     (* ----------------------------------------------------------------------
        Flat packing
@@ -565,8 +599,8 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
            Array.map pair_blocks_sym.(i) ~f:(fun b ->
              let d = (Nx.shape b.Blocks.table).(1) in
              take d))
-        large_sym
-        leaf_index
+        (at large_sym)
+        (at leaf_index)
 
     let transport ?(symmetric = true) ~dims:new_dims factors =
       let new_arr = to_array new_dims in
@@ -589,7 +623,7 @@ module Make (M : Model) : S with type 'a t = 'a M.t = struct
                ~from_:pair_blocks.(i).(j)
                ~to_:new_blocks.(i).(j)
                f_arr.(i).(j)))
-        large_sym
-        leaf_index
+        (at large_sym)
+        (at leaf_index)
   end
 end
