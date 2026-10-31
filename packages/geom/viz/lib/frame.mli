@@ -27,7 +27,7 @@ val create : ?density:float -> width:float -> height:float -> Hugin_vg.Picture.t
     [[|h; w; 4|]], with [w × h] the page size multiplied by the density and
     rounded to the nearest integer. The first axis points down. Use it to
     post-process the image; {!png} is the encoded form. *)
-val rgba : t -> Nx.uint8_t
+val rgba : t -> Nx.host Nx.uint8_t
 
 (** [png t] is the PNG encoding of the page at the frame density. *)
 val png : t -> string

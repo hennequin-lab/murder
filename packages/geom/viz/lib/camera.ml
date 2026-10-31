@@ -23,8 +23,8 @@ type t =
   ; far : float
   ; ortho : bool
   ; ortho_scale : float
-  ; view : Motor.t
-  ; view_inv : Motor.t
+  ; view : host Motor.t
+  ; view_inv : host Motor.t
   }
 
 let create

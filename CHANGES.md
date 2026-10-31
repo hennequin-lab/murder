@@ -18,6 +18,9 @@ changes do not need an entry.
   `'d Robot.motion` and `'d Robot.twist`, and `Task.t`, `Ik.state` and
   `Ik.result` take the device set of their targets and configurations. A model
   holds host motions: `joint_spec.origin` and `frame_spec.pose` are `Nx.host`.
+- `Geom_viz` and `Geom_robot_viz` take objects, motions and configurations of
+  any device set and read them on the host. `Camera.view` is a host motor, and
+  `Frame.rgba` a host image.
 
 ### cmdargs
 
