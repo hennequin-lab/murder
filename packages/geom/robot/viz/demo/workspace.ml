@@ -37,13 +37,14 @@ let cloud =
   (* Seeded, so that the picture and the fraction it reports do not move between
      runs of an unchanged program. *)
   let q =
-    Rng.with_key (Rng.key 3) (fun () -> Infix.(randn f32 [| samples; 6 |] *$ 2.4))
+    Rng.with_key (Rng.key 3) (fun () -> Infix.(Rng.normal f32 [| samples; 6 |] *$ 2.4))
   in
   let positions = to_array (M.translation (R.pose model ~frame:tool q)) in
   (* sigma_min of the geometric Jacobian: how far this configuration is from
      losing a degree of freedom. *)
   let sigma_min =
-    to_array (cast f32 (slice [ A; I 5 ] (svdvals (R.jacobian model ~frame:tool q))))
+    let _, sv, _ = svd ~vectors:false f32 (R.jacobian model ~frame:tool q) in
+    to_array (slice [ A; I 5 ] sv)
   in
   Array.init samples (fun i ->
     let p =
