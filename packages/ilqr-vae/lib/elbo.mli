@@ -57,11 +57,11 @@ open Types
 
 (** One ELBO pass's result: the bound and its two terms, from the same
     draws. Use it to monitor training without paying for a second pass. *)
-type 'w t =
-  { elbo : 'w value (** the bound, a scalar *)
-  ; log_likelihood : 'w value
+type ('w, 's) t =
+  { elbo : ('w, 's) value (** the bound, a scalar *)
+  ; log_likelihood : ('w, 's) value
     (** the mean over draws of [Σ_k log p(o_k | z_k)], a scalar *)
-  ; kl : 'w value (** the sampled [E_q [log q − log p]], a scalar, at [β = 1] *)
+  ; kl : ('w, 's) value (** the sampled [E_q [log q − log p]], a scalar, at [β = 1] *)
   }
 
 (** [compute model params ~posterior data] rolls the dynamics out under the
@@ -82,12 +82,12 @@ type 'w t =
     Raises [Invalid_argument] if the data and posterior shapes disagree or if
     the sample batch is empty. *)
 val compute
-  :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t
-  -> ('w, 'd, 'l, 'p, 'e, 'r) Model.params
-  -> ?beta:'w value
-  -> posterior:'w Recognition.posterior
-  -> 'w value
-  -> 'w t
+  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
+  -> ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
+  -> ?beta:('w, 's) value
+  -> posterior:('w, 's) Recognition.posterior
+  -> ('w, 's) value
+  -> ('w, 's) t
 
 (** [loss model params ?iters ~key ~n_samples data] is the negated bound:
     the recognition's draws and {!compute}, in one call.
@@ -102,26 +102,26 @@ val compute
     mini-batch the key is split into one subkey per trial, so the draws are
     independent and the result is deterministic in [key]. *)
 val loss
-  :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t
-  -> ('w, 'd, 'l, 'p, 'e, 'r) Model.params
-  -> ?beta:'w value
+  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
+  -> ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
+  -> ?beta:('w, 's) value
   -> ?iters:int
-  -> key:Nx.Rng.t
+  -> key:'s Nx.Rng.key
   -> n_samples:int
-  -> 'w value
-  -> 'w value
+  -> ('w, 's) value
+  -> ('w, 's) value
 
 (** [loss_fixed model params ~iters ~key ~n_samples data] is {!loss} with
     [iters] required: the traceable and JIT-compilable objective. *)
 val loss_fixed
-  :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t
-  -> ('w, 'd, 'l, 'p, 'e, 'r) Model.params
-  -> ?beta:'w value
+  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
+  -> ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
+  -> ?beta:('w, 's) value
   -> iters:int
-  -> key:Nx.Rng.t
+  -> key:'s Nx.Rng.key
   -> n_samples:int
-  -> 'w value
-  -> 'w value
+  -> ('w, 's) value
+  -> ('w, 's) value
 
 (** [batch_loss_fixed model params ~key ~n_samples ~iters data] is the mean
     of {!loss_fixed} over a tensor mini-batch of trials: [data] is
@@ -136,7 +136,7 @@ val loss_fixed
     {[
       let step =
         Rune.jit
-          Nx.Ptree.(Model.structure model @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
+          Nx.Ptree.(Model.structure model @-> (Nx.Ptree.v Nx.Rng.walk) @-> tensor @-> returns tensor)
           (fun params key data ->
              Elbo.batch_loss_fixed model params ~key ~n_samples:16 ~iters:4 data)
       in
@@ -146,22 +146,22 @@ val loss_fixed
     The batch axes are part of the compiled program's key, as every tensor
     shape is. *)
 val batch_loss_fixed
-  :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t
-  -> ('w, 'd, 'l, 'p, 'e, 'r) Model.params
-  -> ?beta:'w value
-  -> key:Nx.Rng.t
+  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
+  -> ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
+  -> ?beta:('w, 's) value
+  -> key:'s Nx.Rng.key
   -> n_samples:int
   -> iters:int
-  -> 'w value
-  -> 'w value
+  -> ('w, 's) value
+  -> ('w, 's) value
 
 (** [log_prior model params ~x0 ~u] is the model's log prior at a latent
     sample: [log p(x_0) + Σ_k log p(u_k)], one value per sample. [x0] is
     [[batch…; n_samples; n]] and [u] is [[batch…; n_steps; n_samples; m]].
     It is the term the bound contrasts with [log q]. *)
 val log_prior
-  :  ('w, 'd, 'l, 'p, 'e, 'r) Model.t
-  -> ('w, 'd, 'l, 'p, 'e, 'r) Model.params
-  -> x0:'w value
-  -> u:'w value
-  -> 'w value
+  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
+  -> ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
+  -> x0:('w, 's) value
+  -> u:('w, 's) value
+  -> ('w, 's) value

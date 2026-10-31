@@ -76,6 +76,14 @@ changes do not need an entry.
   `[batch…; n_steps; n_samples; m]`, state paths `[batch…; n_steps + 1; …]`,
   and `Dynamics.integrate` takes `[batch…; n_steps; m]`. The new
   `Dynamics.integrate_samples` is the sample-batched form.
+- Ported to raven 19a5d88: every value, component, recognition and model
+  type takes the device set of its tensors, named `'s` (`('w, 's) value`,
+  `('w, 'p, 's) Dynamics.t`, `('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t`), keys
+  are `'s Nx.Rng.key`, and the parameter records are `('a, _) params`
+  structures (`('a, 's) params` where one nests another). The constructors
+  make host components, as nx's creations do.
+- `Model.structure` and `Recognition.gparams_structure` name their parts by
+  field alone: a path that was `0.dynamics.w` is `dynamics.w`.
 
 ### symo
 

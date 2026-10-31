@@ -72,25 +72,46 @@ let max_abs t = item (max (abs t))
    Concrete dtypes for the test models.
    ────────────────────────────────────────────────────────────────────────── *)
 
-type linear_params = Nx.float64_t D.Linear.params
-type mgu_params = Nx.float64_t D.Mgu.params
-type lik_params = Nx.float64_t L.Gaussian.params
-type poisson_params = Nx.float64_t L.Poisson.params
-type pri_params = Nx.float64_t P.Gaussian.params
-type ilqr_rec = Nx.float64_t Il.params
-type lfads_rec = Nx.float64_t Lf.params
+type linear_params = (Nx.host Nx.float64_t, Nx.host) D.Linear.params
+type mgu_params = (Nx.host Nx.float64_t, Nx.host) D.Mgu.params
+type lik_params = (Nx.host Nx.float64_t, Nx.host) L.Gaussian.params
+type poisson_params = (Nx.host Nx.float64_t, Nx.host) L.Poisson.params
+type pri_params = (Nx.host Nx.float64_t, Nx.host) P.Gaussian.params
+type ilqr_rec = (Nx.host Nx.float64_t, Nx.host) Il.params
+type lfads_rec = (Nx.host Nx.float64_t, Nx.host) Lf.params
 
 type iilqr_model =
-  (Nx.float64_elt, linear_params, lik_params, pri_params, pri_params, ilqr_rec) M.t
+  ( Nx.float64_elt
+    , linear_params
+    , lik_params
+    , pri_params
+    , pri_params
+    , ilqr_rec
+    , Nx.host )
+    M.t
 
 type iilqr_params =
-  (Nx.float64_elt, linear_params, lik_params, pri_params, pri_params, ilqr_rec) M.params
+  ( Nx.float64_elt
+    , linear_params
+    , lik_params
+    , pri_params
+    , pri_params
+    , ilqr_rec
+    , Nx.host )
+    M.params
 
 type lfads_model =
-  (Nx.float64_elt, mgu_params, lik_params, pri_params, pri_params, lfads_rec) M.t
+  (Nx.float64_elt, mgu_params, lik_params, pri_params, pri_params, lfads_rec, Nx.host) M.t
 
 type lfads_params =
-  (Nx.float64_elt, mgu_params, lik_params, pri_params, pri_params, lfads_rec) M.params
+  ( Nx.float64_elt
+    , mgu_params
+    , lik_params
+    , pri_params
+    , pri_params
+    , lfads_rec
+    , Nx.host )
+    M.params
 
 let setup ?(key = Nx.Rng.key 0) ~n ~m ~t_steps ~n_output () : iilqr_model * iilqr_params =
   let keys = Nx.Rng.split ~n:2 key in
@@ -291,7 +312,10 @@ let test_recognition_sampling () =
     { C.d = vec [ 0.7; 1.3 ]; t = create dtype [| 2; 2 |] [| 0.; -0.2; 0.; 0. |] }
   in
   let params =
-    { params with M.recognition = ({ Il.space_cov; time_cov } : Nx.float64_t Il.params) }
+    { params with
+      M.recognition =
+        ({ Il.space_cov; time_cov } : (Nx.host Nx.float64_t, Nx.host) Il.params)
+    }
   in
   let n_samples = 40_000 in
   let data = zeros dtype [| t_steps; 2 |] in
@@ -307,7 +331,20 @@ let test_recognition_sampling () =
   let scale = 1.0 /. Float.of_int (n_samples - 1) in
   let empirical = Infix.(u2 *@ matrix_transpose u2 *$ scale) in
   let dense = dense_covariance ~t_steps ~m time_cov space_cov in
-  check_close ~msg:"sampling covariance" ~tol:0.05 empirical dense
+  (* The second moment of [n] draws of a zero-mean Gaussian of covariance [Σ]
+     estimates each entry [Σ_ij] with standard error
+     [sqrt ((Σ_ii Σ_jj + Σ_ij²) / n)]: every entry lies within four of its
+     standard errors. *)
+  let variances = diagonal dense in
+  let stderr =
+    Infix.(
+      sqrt
+        (((reshape [| -1; 1 |] variances * reshape [| 1; -1 |] variances) + (dense * dense)
+         )
+         /$ Float.of_int n_samples))
+  in
+  let z = Infix.((empirical - dense) / stderr) in
+  less ~msg:"sampling covariance, in standard errors" float_exact ~than:4.0 (max_abs z)
 
 let test_recognition_log_prob () =
   let t_steps = 3
@@ -322,7 +359,10 @@ let test_recognition_log_prob () =
     { C.d = vec [ 1.1; 0.9 ]; t = create dtype [| 2; 2 |] [| 0.; 0.4; 0.; 0. |] }
   in
   let params =
-    { params with M.recognition = ({ Il.space_cov; time_cov } : Nx.float64_t Il.params) }
+    { params with
+      M.recognition =
+        ({ Il.space_cov; time_cov } : (Nx.host Nx.float64_t, Nx.host) Il.params)
+    }
   in
   let data = create dtype [| t_steps; 2 |] [| 0.1; -0.2; 0.3; 0.0; -0.4; 0.2 |] in
   let mu = (M.mean model params ~iters:60 data).R.u in
@@ -1053,15 +1093,15 @@ let test_lfads_sticking_the_landing () =
    trace. *)
 let plain_objective
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) M.t)
-      (params : (w, d, l, p, e, r) M.params)
+      (model : (w, d, l, p, e, r, 's) M.t)
+      (params : (w, d, l, p, e, r, 's) M.params)
       ~key
       ~n_samples
       ~iters
       data
   =
   let posterior = M.infer model params ~iters ~n_samples ~key data in
-  let samples : w R.samples = { R.x0 = posterior.R.x0; u = posterior.R.u } in
+  let samples : (w, 's) R.samples = { R.x0 = posterior.R.x0; u = posterior.R.u } in
   let log_prob = M.log_prob model params ~iters data samples in
   let posterior = { posterior with R.log_prob } in
   Infix.(-(El.compute model params ~posterior data).El.elbo)
@@ -1099,7 +1139,7 @@ let test_lfads_jit () =
   let eager = El.loss_fixed model params ~key ~n_samples:3 ~iters:4 data in
   let jitted =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> returns Nx.Ptree.tensor)
+      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> returns Nx.Ptree.tensor)
       (fun p k -> El.loss_fixed model p ~key:k ~n_samples:3 ~iters:4 data)
   in
   check_close ~msg:"lfads jit loss" ~tol:1e-10 (jitted params key) eager;
@@ -1111,7 +1151,7 @@ let test_lfads_jit () =
   in
   let jitted_grad =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> returns (pair tensor structure))
+      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> returns (pair tensor structure))
       (fun p k ->
          Rune.value_and_grad
            structure
@@ -1279,7 +1319,7 @@ let test_kl_schedule () =
   let key = Nx.Rng.key 31 in
   let compiled =
     Rune.jit
-      Nx.Ptree.(structure @-> tensor @-> Nx.Rng.ptree @-> returns tensor)
+      Nx.Ptree.(structure @-> tensor @-> Nx.Ptree.v Nx.Rng.walk @-> returns tensor)
       (fun p beta k -> El.loss_fixed model p ~beta ~iters:6 ~key:k ~n_samples:3 o)
   in
   let eager beta =
@@ -1320,7 +1360,7 @@ let test_jit () =
   let eager = El.loss_fixed model params ~key ~n_samples:4 ~iters:4 o in
   let jitted =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> returns Nx.Ptree.tensor)
+      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> returns Nx.Ptree.tensor)
       (fun p k -> El.loss_fixed model p ~key:k ~n_samples:4 ~iters:4 o)
   in
   check_close ~msg:"jit loss matches eager" ~tol:1e-12 (jitted params key) eager;
@@ -1332,7 +1372,7 @@ let test_jit () =
   in
   let jitted_grad =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> returns (pair tensor structure))
+      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> returns (pair tensor structure))
       (fun p k ->
          Rune.value_and_grad
            structure
@@ -1459,7 +1499,11 @@ let test_batched_iilqr () =
   in
   let compiled =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> tensor @-> returns (pair tensor structure))
+      Nx.Ptree.(
+        structure
+        @-> Nx.Ptree.v Nx.Rng.walk
+        @-> tensor
+        @-> returns (pair tensor structure))
       (fun p k data ->
          Rune.value_and_grad
            structure
@@ -1559,7 +1603,7 @@ let test_batched_lfads () =
   let eager = El.batch_loss_fixed model params ~key ~n_samples ~iters batch in
   let compiled =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
+      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> tensor @-> returns tensor)
       (fun p k data -> El.batch_loss_fixed model p ~key:k ~n_samples ~iters data)
   in
   check_close ~msg:"lfads batched jit loss" ~tol:1e-10 (compiled params key batch) eager
@@ -1690,7 +1734,13 @@ let test_training_smoke () =
   let params = ref params in
   for _ = 1 to 40 do
     let _, grads = Rune.value_and_grad structure objective !params in
-    let step : 'a 'b. Nx.Ptree.Path.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t =
+    let step
+      :  'a 'b.
+         Nx.Ptree.Path.t
+      -> ('a, 'b, Nx.host) Nx.t
+      -> ('a, 'b, Nx.host) Nx.t
+      -> ('a, 'b, Nx.host) Nx.t
+      =
       fun _ p g -> Infix.(p - (cast (Nx.dtype p) (Nx.scalar float64 lr) * g))
     in
     params := Nx.Ptree.map2 structure step !params grads
@@ -1737,7 +1787,13 @@ let test_lfads_training_smoke () =
   let params = ref params in
   for _ = 1 to 25 do
     let _, grads = Rune.value_and_grad structure objective !params in
-    let step : 'a 'b. Nx.Ptree.Path.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t -> ('a, 'b) Nx.t =
+    let step
+      :  'a 'b.
+         Nx.Ptree.Path.t
+      -> ('a, 'b, Nx.host) Nx.t
+      -> ('a, 'b, Nx.host) Nx.t
+      -> ('a, 'b, Nx.host) Nx.t
+      =
       fun _ p g -> Infix.(p - (cast (Nx.dtype p) (Nx.scalar float64 lr) * g))
     in
     params := Nx.Ptree.map2 structure step !params grads
@@ -1745,6 +1801,106 @@ let test_lfads_training_smoke () =
   let final = item (objective !params) in
   Stdio.printf "lfads training smoke: %.6g -> %.6g\n%!" initial final;
   require ~msg:"lfads training decreases the loss" Float.(final < initial)
+
+(* [visits s v] is the steps of [s]'s walk of [v], one per line. *)
+let visits s v =
+  String.concat
+    (List.map (Nx.Ptree.visits s v) ~f:(fun x ->
+       Stdlib.Format.asprintf "%a\n" Nx.Ptree.pp_visit x))
+
+(* The model's and the generative parameters' structures walk their
+   components' structures by hand, so their visits name every part: each
+   component under its field, the initial-state prior's presence, and every
+   array of each component. *)
+let test_structures () =
+  let model, params = setup ~n:2 ~m:1 ~t_steps:3 ~n_output:2 () in
+  expect (visits (M.structure model) params)
+  @@ Stdlib.__POS_OF__
+       {|
+    dynamics.w: a leaf
+    dynamics.b: Some
+    dynamics.b: a leaf
+    likelihood.c: a leaf
+    likelihood.bias: a leaf
+    likelihood.log_variances: a leaf
+    prior.log_spatial_stds: a leaf
+    prior.log_first_bin: a leaf
+    encoder_prior.log_spatial_stds: a leaf
+    encoder_prior.log_first_bin: a leaf
+    initial_prior: None
+    recognition.space_cov.d: a leaf
+    recognition.space_cov.t: a leaf
+    recognition.time_cov.d: a leaf
+    recognition.time_cov.t: a leaf
+  |};
+  expect (visits (R.gparams_structure (M.generative model)) (M.gparams params))
+  @@ Stdlib.__POS_OF__
+       {|
+    dynamics.w: a leaf
+    dynamics.b: Some
+    dynamics.b: a leaf
+    likelihood.c: a leaf
+    likelihood.bias: a leaf
+    likelihood.log_variances: a leaf
+    prior.log_spatial_stds: a leaf
+    prior.log_first_bin: a leaf
+    encoder_prior.log_spatial_stds: a leaf
+    encoder_prior.log_first_bin: a leaf
+  |};
+  let model, params = setup_lfads ~n:2 ~m:2 ~t_steps:3 ~n_output:2 () in
+  expect (visits (M.structure model) params)
+  @@ Stdlib.__POS_OF__
+       {|
+    dynamics.uf: a leaf
+    dynamics.uh: a leaf
+    dynamics.w: a leaf
+    dynamics.bf: a leaf
+    dynamics.bh: a leaf
+    likelihood.c: a leaf
+    likelihood.bias: a leaf
+    likelihood.log_variances: a leaf
+    prior.log_spatial_stds: a leaf
+    prior.log_first_bin: a leaf
+    encoder_prior.log_spatial_stds: a leaf
+    encoder_prior.log_first_bin: a leaf
+    initial_prior: Some
+    initial_prior.mean: a leaf
+    initial_prior.log_stds: a leaf
+    recognition.ic_fwd.uf: a leaf
+    recognition.ic_fwd.uh: a leaf
+    recognition.ic_fwd.w: a leaf
+    recognition.ic_fwd.bf: a leaf
+    recognition.ic_fwd.bh: a leaf
+    recognition.ic_bwd.uf: a leaf
+    recognition.ic_bwd.uh: a leaf
+    recognition.ic_bwd.w: a leaf
+    recognition.ic_bwd.bf: a leaf
+    recognition.ic_bwd.bh: a leaf
+    recognition.ci_fwd.uf: a leaf
+    recognition.ci_fwd.uh: a leaf
+    recognition.ci_fwd.w: a leaf
+    recognition.ci_fwd.bf: a leaf
+    recognition.ci_fwd.bh: a leaf
+    recognition.ci_bwd.uf: a leaf
+    recognition.ci_bwd.uh: a leaf
+    recognition.ci_bwd.w: a leaf
+    recognition.ci_bwd.bf: a leaf
+    recognition.ci_bwd.bh: a leaf
+    recognition.con.uf: a leaf
+    recognition.con.uh: a leaf
+    recognition.con.w: a leaf
+    recognition.con.bf: a leaf
+    recognition.con.bh: a leaf
+    recognition.ic_fwd_init: a leaf
+    recognition.ic_bwd_init: a leaf
+    recognition.ci_fwd_init: a leaf
+    recognition.ci_bwd_init: a leaf
+    recognition.con_init: a leaf
+    recognition.ic_readout: a leaf
+    recognition.ic_readout_bias: a leaf
+    recognition.u_readout: a leaf
+    recognition.u_readout_bias: a leaf
+  |}
 
 (* ────────────────────────────────────────────────────────────────────────── *)
 
@@ -1777,4 +1933,5 @@ let () =
        ; test "recognition swapping" test_swapping
        ; test "training smoke test" test_training_smoke
        ; test "lfads training smoke test" test_lfads_training_smoke
+       ; test "structures" test_structures
        ])

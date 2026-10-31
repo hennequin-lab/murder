@@ -57,7 +57,7 @@ let () =
 let step =
   Rune.jit
     Nx.Ptree.(
-      Model.structure model @-> Nx.Rng.ptree @-> tensor
+      Model.structure model @-> (Nx.Ptree.v Nx.Rng.walk) @-> tensor
       @-> returns (pair tensor (Model.structure model)))
     (fun params key batch ->
        Rune.value_and_grad
@@ -98,7 +98,7 @@ compiled program:
 let schedule = Schedule.linear_warmup ~steps:2000 Nx.float64 in
 let step =
   Rune.jit
-    Nx.Ptree.(Model.structure model @-> tensor @-> Nx.Rng.ptree @-> returns tensor)
+    Nx.Ptree.(Model.structure model @-> tensor @-> (Nx.Ptree.v Nx.Rng.walk) @-> returns tensor)
     (fun params beta key ->
        Elbo.loss_fixed model params ~beta ~key ~n_samples:16 ~iters:4 data)
 in

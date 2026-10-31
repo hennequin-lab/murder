@@ -7,26 +7,26 @@ open Base
 open Nx
 open Types
 
-type ('w, 'd, 'l, 'p, 'e, 'r) t =
+type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
   { dtype : (float, 'w) Nx.dtype
   ; n : int
   ; m : int
   ; n_steps : int
   ; n_output : int
-  ; dynamics : ('w, 'd) Dynamics.t
-  ; likelihood : ('w, 'l) Likelihood.t
-  ; prior : ('w, 'p) Prior.t
-  ; encoder_prior : ('w, 'e) Prior.t
-  ; initial_prior : 'w value Initial.params option
-  ; recognition : ('w, 'd, 'l, 'p, 'e, 'r) Recognition.t
+  ; dynamics : ('w, 'd, 's) Dynamics.t
+  ; likelihood : ('w, 'l, 's) Likelihood.t
+  ; prior : ('w, 'p, 's) Prior.t
+  ; encoder_prior : ('w, 'e, 's) Prior.t
+  ; initial_prior : (('w, 's) value, 's) Initial.params option
+  ; recognition : ('w, 'd, 'l, 'p, 'e, 'r, 's) Recognition.t
   }
 
-type ('w, 'd, 'l, 'p, 'e, 'r) params =
+type ('w, 'd, 'l, 'p, 'e, 'r, 's) params =
   { dynamics : 'd
   ; likelihood : 'l
   ; prior : 'p
   ; encoder_prior : 'e
-  ; initial_prior : 'w value Initial.params option
+  ; initial_prior : (('w, 's) value, 's) Initial.params option
   ; recognition : 'r
   }
 
@@ -141,7 +141,9 @@ let make
   ; recognition
   }
 
-let params (type w d l p e r) (model : (w, d, l, p, e, r) t) : (w, d, l, p, e, r) params =
+let params (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
+  : (w, d, l, p, e, r, 's) params
+  =
   { dynamics = model.dynamics.Dynamics.params
   ; likelihood = model.likelihood.Likelihood.params
   ; prior = model.prior.Prior.params
@@ -150,37 +152,40 @@ let params (type w d l p e r) (model : (w, d, l, p, e, r) t) : (w, d, l, p, e, r
   ; recognition = model.recognition.Recognition.params
   }
 
-let structure (type w d l p e r) (model : (w, d, l, p, e, r) t)
-  : (w, d, l, p, e, r) params Nx.Ptree.t
+let structure (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
+  : ((w, d, l, p, e, r, 's) params, 's) Nx.Ptree.t
   =
-  Nx.Ptree.iso
-    (fun (d, (l, (p, (e, (i, r))))) ->
-       { dynamics = d
-       ; likelihood = l
-       ; prior = p
-       ; encoder_prior = e
-       ; initial_prior = i
-       ; recognition = r
-       })
-    (fun r ->
-       ( r.dynamics
-       , (r.likelihood, (r.prior, (r.encoder_prior, (r.initial_prior, r.recognition)))) ))
-    Nx.Ptree.(
-      pair
-        (field "dynamics" model.dynamics.Dynamics.structure)
-        (pair
-           (field "likelihood" model.likelihood.Likelihood.structure)
-           (pair
-              (field "prior" model.prior.Prior.structure)
-              (pair
-                 (field "encoder_prior" model.encoder_prior.Prior.structure)
-                 (pair
-                    (option (field "initial_prior" (Initial.structure ())))
-                    (field "recognition" model.recognition.Recognition.structure))))))
+  Nx.Ptree.v (fun c r ->
+    let open Nx.Ptree.Walk in
+    let dynamics =
+      field c "dynamics" (structure model.dynamics.Dynamics.structure) r.dynamics
+    in
+    let likelihood =
+      field c "likelihood" (structure model.likelihood.Likelihood.structure) r.likelihood
+    in
+    let prior = field c "prior" (structure model.prior.Prior.structure) r.prior in
+    let encoder_prior =
+      field
+        c
+        "encoder_prior"
+        (structure model.encoder_prior.Prior.structure)
+        r.encoder_prior
+    in
+    let initial_prior =
+      field c "initial_prior" (option (structure (Initial.structure ()))) r.initial_prior
+    in
+    let recognition =
+      field
+        c
+        "recognition"
+        (structure model.recognition.Recognition.structure)
+        r.recognition
+    in
+    { dynamics; likelihood; prior; encoder_prior; initial_prior; recognition })
 
 (* [generative model] is the part of the model a recognition reads. [gparams params] is the matching part of the parameters. *)
-let generative (type w d l p e r) (model : (w, d, l, p, e, r) t)
-  : (w, d, l, p, e) Recognition.generative
+let generative (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
+  : (w, d, l, p, e, 's) Recognition.generative
   =
   { Recognition.dtype = model.dtype
   ; Recognition.n = model.n
@@ -193,7 +198,7 @@ let generative (type w d l p e r) (model : (w, d, l, p, e, r) t)
   ; Recognition.encoder_prior = model.encoder_prior
   }
 
-let gparams (type w d l p e r) (params : (w, d, l, p, e, r) params)
+let gparams (type w d l p e r) (params : (w, d, l, p, e, r, 's) params)
   : (w, d, l, p, e) Recognition.gparams
   =
   { Recognition.dynamics = params.dynamics
@@ -204,8 +209,8 @@ let gparams (type w d l p e r) (params : (w, d, l, p, e, r) params)
 
 let infer
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) t)
-      (params : (w, d, l, p, e, r) params)
+      (model : (w, d, l, p, e, r, 's) t)
+      (params : (w, d, l, p, e, r, 's) params)
       ?iters
       ~n_samples
       ~key
@@ -222,8 +227,8 @@ let infer
 
 let mean
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) t)
-      (params : (w, d, l, p, e, r) params)
+      (model : (w, d, l, p, e, r, 's) t)
+      (params : (w, d, l, p, e, r, 's) params)
       ?iters
       data
   =
@@ -236,8 +241,8 @@ let mean
 
 let log_prob
       (type w d l p e r)
-      (model : (w, d, l, p, e, r) t)
-      (params : (w, d, l, p, e, r) params)
+      (model : (w, d, l, p, e, r, 's) t)
+      (params : (w, d, l, p, e, r, 's) params)
       ?iters
       data
       samples

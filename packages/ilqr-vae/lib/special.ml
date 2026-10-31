@@ -27,7 +27,7 @@ let coefficients =
 let g = Float.of_int 7
 
 (* [lgamma x] is log Γ(x) for x > 0, elementwise. *)
-let lgamma (x : (float, 'w) Nx.t) : (float, 'w) Nx.t =
+let lgamma (x : (float, 'w, 's) Nx.t) : (float, 'w, 's) Nx.t =
   let z = Infix.(x -$ 1.0) in
   let a = ref (full_like x coefficients.(0)) in
   for i = 1 to Array.length coefficients - 1 do
