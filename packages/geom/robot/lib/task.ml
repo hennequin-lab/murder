@@ -8,12 +8,12 @@ open Nx
 module R = Robot
 module M = Motor
 
-type t =
+type 'd t =
   { model : R.t
   ; dim : int
   ; label : string
-  ; residual : R.q -> Nx.float32_t
-  ; jacobian : R.q -> Nx.float32_t
+  ; residual : 'd R.q -> 'd Nx.float32_t
+  ; jacobian : 'd R.q -> 'd Nx.float32_t
   }
 
 let model t = t.model
@@ -54,7 +54,7 @@ let mask_of blades =
     [| Array.length blades |]
     (Array.map (fun b -> Int64.of_int (Blade.to_int b)) blades)
 
-let gather mask x = take ~axis:(-1) ~indices:mask x
+let gather mask x = take ~axis:(-1) (place (beside x) mask) x
 
 (* [swap_last_two x] exchanges the last two axes: the motion Jacobian keeps the
    eight motor coefficients on the second-to-last axis, and [Cga.of_motor] wants
@@ -166,8 +166,8 @@ let weight t w =
   let vector = create float32 [| Array.length w |] w in
   let rows = reshape [| Array.length w; 1 |] vector in
   { t with
-    residual = (fun q -> Infix.(t.residual q * vector))
-  ; jacobian = (fun q -> Infix.(t.jacobian q * rows))
+    residual = (fun q -> Infix.(t.residual q * place (beside q) vector))
+  ; jacobian = (fun q -> Infix.(t.jacobian q * place (beside q) rows))
   }
 
 let scale t s = weight t (Array.make (dim t) s)

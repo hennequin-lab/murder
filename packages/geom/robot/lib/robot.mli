@@ -83,49 +83,49 @@ module type MOTION = sig
   type kind
 
   (** The type for motions. The last axis has length eight. *)
-  type t = (float, kind) Nx.t
+  type 'd t = (float, kind, 'd) Nx.t
 
   (** The data type descriptor of the scalar kind. *)
   val dtype : (float, kind) Nx.dtype
 
   (** [one] is the identity motion. *)
-  val one : t
+  val one : Nx.host t
 
   (** [mul m1 m2] applies [m2] first and [m1] second, as {!Motor.mul}. *)
-  val mul : t -> t -> t
+  val mul : 'd t -> 'd t -> 'd t
 
   (** [inverse m] is the inverse motion, as {!Motor.inverse}. *)
-  val inverse : t -> t
+  val inverse : 'd t -> 'd t
 
   (** [normalize m] removes the drift of a long product, as {!Motor.normalize}. *)
-  val normalize : t -> t
+  val normalize : 'd t -> 'd t
 
   (** [translate v] is the translation by the vector [v], as {!Motor.translate}. *)
-  val translate : (float, kind) Nx.t -> t
+  val translate : (float, kind, 'd) Nx.t -> 'd t
 
   (** [translate3 x y z] is [translate] of the unbatched vector [(x, y, z)]. *)
-  val translate3 : float -> float -> float -> t
+  val translate3 : float -> float -> float -> Nx.host t
 
   (** [rotate ~axis ~angle] is the rotation by [angle] radians about [axis], as
       {!Motor.rotate}. *)
-  val rotate : axis:(float, kind) Nx.t -> angle:(float, kind) Nx.t -> t
+  val rotate : axis:(float, kind, 'd) Nx.t -> angle:(float, kind, 'd) Nx.t -> 'd t
 
   (** [exp twist] is the screw motion of the twist [(omega, v)], as
       {!Motor.exp}. *)
-  val exp : (float, kind) Nx.t -> t
+  val exp : (float, kind, 'd) Nx.t -> 'd t
 
   (** [log m] is the twist whose [exp] is [m], as {!Motor.log}. *)
-  val log : t -> (float, kind) Nx.t
+  val log : 'd t -> (float, kind, 'd) Nx.t
 
   (** [adjoint m] is the 6 by 6 adjoint acting on twists, as {!Motor.adjoint}. *)
-  val adjoint : t -> (float, kind) Nx.t
+  val adjoint : 'd t -> (float, kind, 'd) Nx.t
 
   (** [translation m] is the position of the frame [m], as
       {!Motor.translation}. *)
-  val translation : t -> (float, kind) Nx.t
+  val translation : 'd t -> (float, kind, 'd) Nx.t
 
   (** [rotation m] is the 3 by 3 rotation of [m], as {!Motor.rotation}. *)
-  val rotation : t -> (float, kind) Nx.t
+  val rotation : 'd t -> (float, kind, 'd) Nx.t
 end
 
 (** The packed dual quaternion of {!Motor}: the [float32] instance. *)
@@ -137,17 +137,17 @@ module Make (Mo : MOTION) : sig
   (** {2:types Types} *)
 
   (** The type for motions of this instance. *)
-  type motion = Mo.t
+  type 'd motion = 'd Mo.t
 
   (** The type for twists: six-vectors [(omega, v)], on the last axis. *)
-  type twist = (float, Mo.kind) Nx.t
+  type 'd twist = (float, Mo.kind, 'd) Nx.t
 
   (** The type for configurations: [batch_shape @ [|dof|]], on the last axis. *)
-  type q = (float, Mo.kind) Nx.t
+  type 'd q = (float, Mo.kind, 'd) Nx.t
 
   (** The type for joint velocities. It has the shape of a configuration: the
       same columns, in the same order, as rates. *)
-  type qdot = q
+  type 'd qdot = 'd q
 
   (** A joint axis or direction, in the joint frame. It is normalised when the
       model is built. *)
@@ -187,7 +187,7 @@ module Make (Mo : MOTION) : sig
     ; kind : kind
     ; parent : string
     ; child : string
-    ; origin : motion
+    ; origin : Nx.host motion
     ; limits : (float * float) option
     }
 
@@ -196,7 +196,7 @@ module Make (Mo : MOTION) : sig
   type frame_spec =
     { name : string
     ; link : string
-    ; pose : motion
+    ; pose : Nx.host motion
     }
 
   (** [create ~links ~joints ?frames ()] is the model with these links, joints
@@ -266,26 +266,26 @@ module Make (Mo : MOTION) : sig
   (** [joint_motion m j q] is the local motion of joint [j]: the identity
       [origin] for a fixed joint, and [origin * exp (q_j * g_j)] otherwise, of
       shape [batch_shape @ [|8|]]. *)
-  val joint_motion : t -> int -> q -> motion
+  val joint_motion : t -> int -> 'd q -> 'd motion
 
   (** [link_motors m q] are the world poses of every link, of shape
       [batch_shape @ [|link_count; 8|]]. Link [i] is row [i], and the root is
       the identity. *)
-  val link_motors : t -> q -> motion
+  val link_motors : t -> 'd q -> 'd motion
 
   (** [frame_motors m q] are the world poses of every frame, of shape
       [batch_shape @ [|frame_count; 8|]], in the order of {!frame_names}. *)
-  val frame_motors : t -> q -> motion
+  val frame_motors : t -> 'd q -> 'd motion
 
   (** [pose m ~frame:f q] is the world pose of frame [f], of shape
       [batch_shape @ [|8|]]. *)
-  val pose : t -> frame:frame -> q -> motion
+  val pose : t -> frame:frame -> 'd q -> 'd motion
 
   (** [relative m ~from:a ~to_:b q] is [pose a^(-1) * pose b], the pose of
       frame [b] expressed in frame [a], of shape [batch_shape @ [|8|]]. It is
       the motion that carries coordinates of [b] into [a], and the natural
       quantity for a task that asks where one frame is seen from another. *)
-  val relative : t -> from:frame -> to_:frame -> q -> motion
+  val relative : t -> from:frame -> to_:frame -> 'd q -> 'd motion
 
   (** {2:differential Differential kinematics} *)
 
@@ -310,7 +310,7 @@ module Make (Mo : MOTION) : sig
       For a joint with more than one coordinate this formula would need the
       left-trivialised derivative of [exp], which is the identity only for the
       one-dimensional screws this layer models. *)
-  val motion_jacobian : t -> frame:frame -> q -> motion
+  val motion_jacobian : t -> frame:frame -> 'd q -> 'd motion
 
   (** [jacobian m ?space ~frame:f q] is the geometric Jacobian of the frame: the
       matrix of shape [batch_shape @ [|6; dof|]] whose column [i] is the twist
@@ -348,7 +348,7 @@ module Make (Mo : MOTION) : sig
       As for {!motion_jacobian}, there is one column per coordinate of [q] and a
       joint off the frame's chain contributes zeros, so [J * qdot] is the
       frame's velocity for a full-length [qdot]. *)
-  val jacobian : t -> ?space:[ `Body | `World ] -> frame:frame -> q -> twist
+  val jacobian : t -> ?space:[ `Body | `World ] -> frame:frame -> 'd q -> 'd twist
 
   (** {2:velocities Velocities and accelerations}
 
@@ -374,7 +374,7 @@ module Make (Mo : MOTION) : sig
       what a dynamics recursion wants; [`World] gives world axes, so the
       [link_count] rows are directly comparable in a picture or a velocity
       limit. *)
-  val link_twists : t -> ?space:[ `Body | `World ] -> q -> qdot -> twist
+  val link_twists : t -> ?space:[ `Body | `World ] -> 'd q -> 'd qdot -> 'd twist
 
   (** [twist m ?space ~frame q qdot] is the twist of a frame at velocity
       [qdot], of shape [batch_shape @ [|6|]]: its angular velocity and the
@@ -385,7 +385,7 @@ module Make (Mo : MOTION) : sig
       It is the same quantity as [`jacobian · qdot`]; the two are computed by
       different routes — a recursion over the joints and a sum over the
       chain's columns — and the test suite checks them against each other. *)
-  val twist : t -> ?space:[ `Body | `World ] -> frame:frame -> q -> qdot -> twist
+  val twist : t -> ?space:[ `Body | `World ] -> frame:frame -> 'd q -> 'd qdot -> 'd twist
 
   (** [bias m ?space ~frame q qdot] is the time derivative of {!twist}, of
       shape [batch_shape @ [|6|]]: the frame origin's acceleration and the
@@ -405,7 +405,7 @@ module Make (Mo : MOTION) : sig
       one that pairs with [Jdot] in the frame's own axes. Note that the body
       acceleration of a point is not the rotation of its world acceleration:
       the frame's own motion contributes the usual [omega x v]. *)
-  val bias : t -> ?space:[ `Body | `World ] -> frame:frame -> q -> qdot -> twist
+  val bias : t -> ?space:[ `Body | `World ] -> frame:frame -> 'd q -> 'd qdot -> 'd twist
 
   (** [jacobian_dot m ?space ~frame q qdot] is the time derivative of
       {!jacobian}, of shape [batch_shape @ [|6; dof|]], in the same convention:
@@ -416,7 +416,13 @@ module Make (Mo : MOTION) : sig
       closed form of its product with [qdot], which is what most callers want;
       the full matrix is here for second-order terms, and the two are checked
       against each other. *)
-  val jacobian_dot : t -> ?space:[ `Body | `World ] -> frame:frame -> q -> qdot -> twist
+  val jacobian_dot
+    :  t
+    -> ?space:[ `Body | `World ]
+    -> frame:frame
+    -> 'd q
+    -> 'd qdot
+    -> 'd twist
 
   (** {2:conditioning Conditioning}
 
@@ -434,7 +440,7 @@ module Make (Mo : MOTION) : sig
       There are [min 6 dof] of them: six for a full six-coordinate frame, and
       one per coordinate for a model with fewer. A redundant model has six that
       all mean something, since the world Jacobian has six rows. *)
-  val singular_values : t -> frame:frame -> q -> twist
+  val singular_values : t -> frame:frame -> 'd q -> 'd twist
 
   (** [manipulability m ~frame q] is Yoshikawa's measure, of shape
       [batch_shape]: the product of the [min 6 dof] largest singular values,
@@ -446,7 +452,7 @@ module Make (Mo : MOTION) : sig
       depends on the length unit of the model — and it knows nothing about the
       task, so a weighted version or {!singular_values} is often the more
       honest statistic. *)
-  val manipulability : t -> frame:frame -> q -> (float, Mo.kind) Nx.t
+  val manipulability : t -> frame:frame -> 'd q -> (float, Mo.kind, 'd) Nx.t
 
   (** {2:ad Differentiable kinematics}
 
@@ -468,7 +474,7 @@ module Make (Mo : MOTION) : sig
       [dq]: the sum over [i] of [motion_jacobian]-column [i] times [dq_i], of
       shape [batch_shape @ [|8|]]. It is linear in [dq], which is what a
       tangent map must be. *)
-  val pose_tangent : t -> frame:frame -> q -> q -> motion
+  val pose_tangent : t -> frame:frame -> 'd q -> 'd q -> 'd motion
 
   (** [pose_diff m ~frame:f] is {!pose} with the derivative {!pose_tangent}
       attached through {!Rune.custom_jvp}. Its values are {!pose}'s, its
@@ -476,7 +482,7 @@ module Make (Mo : MOTION) : sig
       branches {!pose} would differentiate — and higher derivatives
       differentiate the rule's code. Both modes use it, and it is traceable, so
       it can replace {!pose} anywhere a derivative is taken. *)
-  val pose_diff : t -> frame:frame -> q -> motion
+  val pose_diff : t -> frame:frame -> 'd q -> 'd motion
 
   (** {2:standard Models of standard robots} *)
 

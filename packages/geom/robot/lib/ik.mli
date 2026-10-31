@@ -46,21 +46,21 @@
 
 (** The type for a solver state: a configuration per sample and the damping
     that produced it. *)
-type state
+type 'd state
 
 (** [init ?lambda ~q ()] is the state at [q] with damping [lambda] (default
     [1e-3]). [q] has shape [batch_shape @ [|dof|]] and [lambda] is a scalar or
     has shape [batch_shape]; it is broadcast. *)
-val init : ?lambda:float -> q:Nx.float32_t -> unit -> state
+val init : ?lambda:float -> q:'d Nx.float32_t -> unit -> 'd state
 
 (** [q s] is the configuration of [s], of shape [batch_shape @ [|dof|]]. *)
-val q : state -> Nx.float32_t
+val q : 'd state -> 'd Nx.float32_t
 
 (** [lambda s] is the damping of [s], of shape [batch_shape]. *)
-val lambda : state -> Nx.float32_t
+val lambda : 'd state -> 'd Nx.float32_t
 
 (** [iterations s] is the number of steps taken since {!init}. *)
-val iterations : state -> int
+val iterations : 'd state -> int
 
 (** {1:steps Steps} *)
 
@@ -75,21 +75,21 @@ val iterations : state -> int
     non-increasing. *)
 val iterate
   :  ?step_limit:float
-  -> ?lower:Nx.float32_t
-  -> ?upper:Nx.float32_t
-  -> Task.t
-  -> state
-  -> state
+  -> ?lower:'d Nx.float32_t
+  -> ?upper:'d Nx.float32_t
+  -> 'd Task.t
+  -> 'd state
+  -> 'd state
 
 (** {1:solving Solving} *)
 
 (** The result of {!solve}. *)
-type result =
-  { q : Nx.float32_t (** the configuration, of shape [batch_shape @ [|dof|]] *)
-  ; residual : Nx.float32_t (** the residual's norm at [q], of shape [batch_shape] *)
+type 'd result =
+  { q : 'd Nx.float32_t (** the configuration, of shape [batch_shape @ [|dof|]] *)
+  ; residual : 'd Nx.float32_t (** the residual's norm at [q], of shape [batch_shape] *)
   ; iterations : int (** steps taken for the whole batch *)
-  ; lambda : Nx.float32_t (** the damping reached, of shape [batch_shape] *)
-  ; converged : Nx.bool_t
+  ; lambda : 'd Nx.float32_t (** the damping reached, of shape [batch_shape] *)
+  ; converged : 'd Nx.bool_t
     (** where the residual norm fell below the tolerance, of shape
         [batch_shape] *)
   }
@@ -108,8 +108,8 @@ val solve
   -> ?tolerance:float
   -> ?lambda:float
   -> ?step_limit:float
-  -> ?lower:Nx.float32_t
-  -> ?upper:Nx.float32_t
-  -> Task.t
-  -> q:Nx.float32_t
-  -> result
+  -> ?lower:'d Nx.float32_t
+  -> ?upper:'d Nx.float32_t
+  -> 'd Task.t
+  -> q:'d Nx.float32_t
+  -> 'd result

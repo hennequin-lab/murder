@@ -188,7 +188,7 @@ let test_weights_and_stack () =
     (T.jacobian heavy q);
   raises_match
     ~msg:"a wrong number of weights is rejected"
-    (Exn.invalid_arg ~substring:"weight")
+    (Exn.invalid_arg ~sub:"weight")
     (fun () -> ignore (T.weight task [| 1.; 2. |]));
   (* A pose task and a geometric one stack into one residual. *)
   let pose = T.pose arm ~frame:tool ~target:(R.pose arm ~frame:tool q) in
@@ -199,7 +199,7 @@ let test_weights_and_stack () =
   check_jacobian "stacked" stacked q;
   raises_match
     ~msg:"stacking different models is rejected"
-    (Exn.invalid_arg ~substring:"different models")
+    (Exn.invalid_arg ~sub:"different models")
     (fun () ->
        let other = R.planar2 () in
        let q2 = create f32 [| 2 |] [| 0.3; 0.4 |] in
