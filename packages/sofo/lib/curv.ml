@@ -25,27 +25,27 @@
 
 open Nx
 
-type t =
+type 'd t =
   | Scale of float
-  | Diag : ('a, 'b) Nx.t -> t
-  | Softmax_ce : float * Nx.packed -> t
-  | Hvp : (('a, 'b) Nx.t -> ('a, 'b) Nx.t) * ('a, 'b) Nx_dtype.t -> t
+  | Diag : ('a, 'b, 'd) Nx.t -> 'd t
+  | Softmax_ce : float * 'd Nx.packed -> 'd t
+  | Hvp : (('a, 'b, 'd) Nx.t -> ('a, 'b, 'd) Nx.t) * ('a, 'b) Nx.Dtype.t -> 'd t
 
 (* [apply t v] is H v for a tangent batch [v] of the prediction's shape: one
    leading lane axis, any number of trailing dimensions. *)
-let apply : type c d. t -> (c, d) Nx.t -> (c, d) Nx.t =
+let apply : type c s d. d t -> (c, s, d) Nx.t -> (c, s, d) Nx.t =
   fun t v ->
   match t with
-  | Scale s -> Infix.(v *$ Nx_dtype.of_float (Nx.dtype v) s)
+  | Scale s -> Infix.(v *$ Nx.Dtype.of_float (Nx.dtype v) s)
   | Diag w -> Infix.(v * cast (Nx.dtype v) w)
   | Softmax_ce (scale, Nx.P p) ->
     (* p⊙v − p (p·v), contracted per row over the class axis. *)
     let p = cast (Nx.dtype v) p in
     let pv = Infix.(sum (p * v) ~axes:[ -1 ] ~keepdims:true) in
     let hv = Infix.((p * v) - (p * pv)) in
-    if scale = 1.0 then hv else Infix.(hv *$ Nx_dtype.of_float (Nx.dtype hv) scale)
+    if scale = 1.0 then hv else Infix.(hv *$ Nx.Dtype.of_float (Nx.dtype hv) scale)
   | Hvp (f, dt) ->
-    (match Nx_dtype.equal_witness dt (Nx.dtype v) with
+    (match Nx.Dtype.equal_witness dt (Nx.dtype v) with
      | Some Type.Equal ->
        (* The usual case: the closure is written at this very dtype. *)
        Rune.vmap' f v
@@ -73,4 +73,5 @@ let softmax_ce ?(scale = 1.0) p = Softmax_ce (scale, Nx.P p)
    a loop over lanes. The closure must be linear in its argument and
    side-effect free. [y] is the prediction whose loss this describes; it fixes
    the element type [f] is written at, so captured tensors need no casting. *)
-let hvp ~(y : ('a, 'b) Nx.t) (f : ('a, 'b) Nx.t -> ('a, 'b) Nx.t) = Hvp (f, Nx.dtype y)
+let hvp ~(y : ('a, 'b, 'd) Nx.t) (f : ('a, 'b, 'd) Nx.t -> ('a, 'b, 'd) Nx.t) =
+  Hvp (f, Nx.dtype y)

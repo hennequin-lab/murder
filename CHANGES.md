@@ -86,3 +86,7 @@ changes do not need an entry.
 ### sofo
 
 - Imported from `hennequin-lab/sofo-raven`.
+- Arrays carry their device set: `Curv.t` is `'d Curv.t`, `sketch` is
+  `('p, 'd) sketch` and `Optim.step_info` is `('p, 'd) Optim.step_info`, and
+  `Optim.state`'s key is a host `Nx.Rng.key`. `softmax_ce` takes float logits.
+- `Optim.gram` raises on directions with no tensor leaf.

@@ -40,20 +40,20 @@ let check_arr ?(eps = 1e-9) ?(rel = 0.0) ~msg expected actual =
 let max_abs t = item [] (max (abs t))
 
 (* Keys are private tensors; this is how a test reads one. *)
-let key0 (key : Nx.Rng.t) = item [ 0 ] (key :> Nx.int32_t)
+let key0 (key : Nx.host Nx.Rng.key) = item [ 0 ] (key :> Nx.host Nx.int32_t)
 
 (* ── fixtures ────────────────────────────────────────────────────────────── *)
 
 (* A parameter structure with a float64 leaf, a float32 one, and an int leaf
    that no direction may move. *)
-type params =
-  { w : Nx.float64_t (* [d;o] *)
-  ; v : Nx.float32_t (* [d;1] *)
-  ; tag : Nx.int32_t (* [2] *)
+type 'd params =
+  { w : 'd Nx.float64_t (* [d;o] *)
+  ; v : 'd Nx.float32_t (* [d;1] *)
+  ; tag : 'd Nx.int32_t (* [2] *)
   }
 [@@deriving ptree]
 
-let params_ptree : params Nx.Ptree.t = ptree_params
+let params_ptree : (Nx.host params, Nx.host) Nx.Ptree.t = Nx.Ptree.v walk_params
 
 (* [Optim] takes a value structure — its type and its tree — not a walk
    module, so the parameter record is wrapped once at [params_ptree]; nothing
@@ -64,20 +64,20 @@ let o = 3
 let n = 32
 let k = 3
 let key = Nx.Rng.key 7
-let x = Nx.Rng.normal (Nx.Rng.key 1) f64 [| n; d |]
+let x = Nx.Rng.normal ~key:(Nx.Rng.key 1) f64 [| n; d |]
 let xv = cast f32 x
 
 (* Student-teacher data: the targets are reachable exactly, so the loss can
    actually be driven to zero and "the step decreases the loss" is a statement
    about the optimizer rather than about the noise floor of random labels. *)
-let w_teacher = Infix.(Nx.Rng.normal (Nx.Rng.key 2) f64 [| d; o |] *$ 0.5)
+let w_teacher = Infix.(Nx.Rng.normal ~key:(Nx.Rng.key 2) f64 [| d; o |] *$ 0.5)
 let targets = Infix.(x *@ w_teacher)
-let v_teacher = Infix.(Nx.Rng.normal (Nx.Rng.key 3) f32 [| d; 1 |] *$ 0.5)
+let v_teacher = Infix.(Nx.Rng.normal ~key:(Nx.Rng.key 3) f32 [| d; 1 |] *$ 0.5)
 let yv = Infix.(xv *@ v_teacher)
 
 let params () =
-  { w = Infix.(Nx.Rng.normal (Nx.Rng.key 4) f64 [| d; o |] *$ 0.1)
-  ; v = Infix.(Nx.Rng.normal (Nx.Rng.key 5) f32 [| d; 1 |] *$ 0.1)
+  { w = Infix.(Nx.Rng.normal ~key:(Nx.Rng.key 4) f64 [| d; o |] *$ 0.1)
+  ; v = Infix.(Nx.Rng.normal ~key:(Nx.Rng.key 5) f32 [| d; 1 |] *$ 0.1)
   ; tag = create Nx.int32 [| 2 |] [| 3l; 5l |]
   }
 
@@ -108,8 +108,8 @@ let test_directions_shapes_and_non_float_leaves () =
   equal ~msg:"w lane width" int d (Nx.shape thetas.w).(1);
   equal ~msg:"w lane height" int o (Nx.shape thetas.w).(2);
   equal ~msg:"v lanes" int k (Nx.shape thetas.v).(0);
-  equal ~msg:"v keeps its dtype" string "float32" (Nx_dtype.to_string (Nx.dtype thetas.v));
-  equal ~msg:"w keeps its dtype" string "float64" (Nx_dtype.to_string (Nx.dtype thetas.w));
+  equal ~msg:"v keeps its dtype" string "float32" (Nx.Dtype.name (Nx.dtype thetas.v));
+  equal ~msg:"w keeps its dtype" string "float64" (Nx.Dtype.name (Nx.dtype thetas.w));
   equal ~msg:"the tag gets lanes too" int k (Nx.shape thetas.tag).(0);
   check_arr
     ~msg:"a leaf that cannot carry a direction gets zeros"
@@ -142,10 +142,14 @@ let test_apply_picks_lanes () =
        check_arr ~msg:"apply e_i is lane i" (to_array (slice [ Nx.I i ] thetas.w)) step.w;
        equal
          ~msg:"the tag leaf gets the zero direction"
-         string
-         "[0, 0]"
-         (to_string step.tag);
-       equal ~msg:"... and the model's tag is not read" string (to_string b.tag) "[3, 5]")
+         (array int32)
+         [| 0l; 0l |]
+         (to_array step.tag);
+       equal
+         ~msg:"... and the model's tag is not read"
+         (array int32)
+         (to_array b.tag)
+         [| 3l; 5l |])
     (List.init k Fun.id)
 
 let test_apply_agrees_with_the_sketch () =
@@ -267,8 +271,8 @@ let test_update_leaves_dtypes_and_non_float_leaves_alone () =
   let p = params () in
   let sk = sketch_at p in
   let p' = Sofo.Optim.update_sketch params_ptree ~lr:1.0 sk p in
-  equal ~msg:"float64 stays float64" string "float64" (Nx_dtype.to_string (Nx.dtype p'.w));
-  equal ~msg:"float32 stays float32" string "float32" (Nx_dtype.to_string (Nx.dtype p'.v));
+  equal ~msg:"float64 stays float64" string "float64" (Nx.Dtype.name (Nx.dtype p'.w));
+  equal ~msg:"float32 stays float32" string "float32" (Nx.Dtype.name (Nx.dtype p'.v));
   equal
     ~msg:"a leaf that cannot carry a direction is untouched"
     string
@@ -310,12 +314,18 @@ let test_gram_of_constant_directions () =
 
 (* A per-lane rescaling of a direction tree: the same subspace, in a different
    basis. *)
-let stretch (type q) (structure : q Nx.Ptree.t) (s : Nx.float64_t) (t : q) : q =
+let stretch
+      (type q)
+      (structure : (q, Nx.host) Nx.Ptree.t)
+      (s : Nx.host Nx.float64_t)
+      (t : q)
+  : q
+  =
   let k = numel s in
   Nx.Ptree.map
     structure
     (fun _ leaf ->
-       if Nx_dtype.is Nx_dtype.Float (Nx.dtype leaf)
+       if Nx.Dtype.is Nx.Dtype.Float (Nx.dtype leaf)
        then (
          let shape =
            Array.append [| k |] (Array.make (Array.length (Nx.shape leaf) - 1) 1)
@@ -344,7 +354,9 @@ let test_whitening_makes_the_step_independent_of_the_basis () =
   check_arr ~eps:1e-6 ~msg:"whitened step, float32 leaf" (to_array a.v) b.v;
   (* and the same two draws without the whitening are two different steps, so
      the assertion above is not passing by accident *)
-  let z (sk : params Sofo.sketch) = Sofo.Optim.coordinates ~damping sk.ggn sk.c in
+  let z (sk : (Nx.host params, Nx.host) Sofo.sketch) =
+    Sofo.Optim.coordinates ~damping sk.ggn sk.c
+  in
   let sa = Sofo.Optim.apply params_ptree ~k sk_raw.dirs (z sk_raw) in
   let sb = Sofo.Optim.apply params_ptree ~k sk_str.dirs (z sk_str) in
   is_true
@@ -453,8 +465,7 @@ let loss_c p () = loss p
 
 (* [Sofo.Optim.sketch_jit] compiles the whole (key, aux, params) computation
    with [Rune.jit] and hands back the function to call. *)
-let sketch_step =
-  Sofo.Optim.sketch_jit ~k Nx.Placement.host params_ptree Nx.Ptree.unit loss_c
+let sketch_step = Sofo.Optim.sketch_jit ~k Nx.Host.on params_ptree Nx.Ptree.unit loss_c
 
 let test_compiled_sketch_matches_the_eager_one () =
   let p = params () in
@@ -473,7 +484,7 @@ let test_compiled_sketch_matches_the_eager_one () =
     Sofo.Optim.update
       ~lr:0.5
       ~damping:(`Relative_from_top 1e-3)
-      Nx.Placement.host
+      Nx.Host.on
       params_ptree
       st
       p
@@ -519,9 +530,7 @@ let test_compiled_loop_trains () =
      loss, and a state that never needs to leave the host. *)
   let p = params () in
   let k = 8 in
-  let step =
-    Sofo.Optim.sketch_jit ~k Nx.Placement.host params_ptree Nx.Ptree.unit loss_c
-  in
+  let step = Sofo.Optim.sketch_jit ~k Nx.Host.on params_ptree Nx.Ptree.unit loss_c in
   let st = Sofo.Optim.init ~key () in
   let rec go p st i prev best first =
     if i = 0
@@ -536,7 +545,7 @@ let test_compiled_loop_trains () =
         Sofo.Optim.update
           ~lr:1.0
           ~damping:(`Absolute 0.0)
-          Nx.Placement.host
+          Nx.Host.on
           params_ptree
           st
           p
@@ -557,16 +566,16 @@ let test_compiled_loop_trains () =
    targets. Leaves like this ride the input tree, so a compiled step reads a
    new one as an ordinary input. *)
 module Aux = struct
-  type _ t = { shift : Nx.float64_t (* [o] *) } [@@deriving ptree]
+  type (_, 'd) t = { shift : 'd Nx.float64_t (* [o] *) } [@@deriving ptree]
 end
 
 module Aux_c = struct
-  type t = Nx.float64_t Aux.t
+  type t = (Nx.host Nx.float64_t, Nx.host) Aux.t
 
-  let ptree : t Nx.Ptree.t = Nx.Ptree.instantiate (module Aux)
+  let ptree : (t, Nx.host) Nx.Ptree.t = Nx.Ptree.instantiate (module Aux)
 end
 
-let loss_with_aux p (a : Nx.float64_t Aux.t) =
+let loss_with_aux p (a : (Nx.host Nx.float64_t, Nx.host) Aux.t) =
   Sofo.mse ~target:Infix.(targets + a.shift) Infix.(x *@ p.w)
 
 let test_compiled_aux_reaches_the_loss () =
@@ -574,9 +583,7 @@ let test_compiled_aux_reaches_the_loss () =
      program already compiled, and it changes nothing about what is
      differentiated — the step still annihilates C. *)
   let p = params () in
-  let step =
-    Sofo.Optim.sketch_jit ~k Nx.Placement.host params_ptree Aux_c.ptree loss_with_aux
-  in
+  let step = Sofo.Optim.sketch_jit ~k Nx.Host.on params_ptree Aux_c.ptree loss_with_aux in
   let aux = { Aux.shift = create f64 [| o |] [| 1.0; -0.5; 0.25 |] } in
   let out = step ~key ~aux p in
   (* the same numbers as an eager sketch with the aux closed over *)
@@ -595,7 +602,7 @@ let test_compiled_aux_reaches_the_loss () =
     Sofo.Optim.update
       ~lr:1.0
       ~damping:(`Absolute 0.0)
-      Nx.Placement.host
+      Nx.Host.on
       params_ptree
       (Sofo.Optim.init ~key ())
       p

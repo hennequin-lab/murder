@@ -7,11 +7,9 @@
 
    A mark is a {!Rune.custom_jvp} with a unit result whose rule gathers the
    sketch's direction lanes and adds the little loss's Gauss-Newton block
-   YᵀHY to a total the sketch driver collects. Nothing else reads it: plain
-   execution and reverse mode never apply its tangent map — a unit result has
-   nothing to differentiate — so a marked loss is an ordinary loss under every
-   other optimizer, and the same model trains with {!Rune.value_and_grad} and
-   under a sketch.
+   YᵀHY to a total the sketch driver collects. Outside a sketch a mark makes
+   no rule, so a marked loss is an ordinary loss under every other optimizer,
+   and the same model trains with {!Rune.value_and_grad} and under a sketch.
 
    The rule reads the tangent of the *prediction*, not of the loss: the block
    is YᵀHY with Y the tangent batch of y and H the curvature description the
@@ -27,7 +25,7 @@
 open Nx
 
 let directions = Rune.axis ()
-let curvature : (float, Nx.float64_elt) Rune.Total.t = Rune.Total.make ()
+let curvature : (float, Nx.float64_elt, 'd) Rune.Total.t = Rune.Total.make ()
 
 let mark ~curv y =
   Rune.custom_jvp
@@ -62,7 +60,11 @@ let observe ~y ~curv l =
          "Sofo.observe: the mini loss must be a scalar (one element), got shape %a"
          pp_shape
          (shape l));
-  mark ~curv y
+  (* Rune traces a rule's tangent map wherever it traces the rule, as inside a
+     [Rune.scan] under [Rune.grad], applied or not, and [Rune.lanes] raises
+     outside the map it names: so a mark is made only inside the sketch's map.
+     [Rune.jit] keys its programs on the answer. *)
+  if Option.is_some (Rune.lane_count directions) then mark ~curv y
 
 (* Packaged little losses: the value is computed with ordinary operations, so
    its tangent comes from the standard rules, and the curvature is derived from
@@ -83,7 +85,7 @@ let mse ?w ~target y =
     | None -> mean sq, Curv.scale (2.0 /. n)
     | Some w ->
       let w = cast (Nx.dtype y) w in
-      let two_over_n = Nx_dtype.of_float (Nx.dtype y) (2.0 /. n) in
+      let two_over_n = Nx.Dtype.of_float (Nx.dtype y) (2.0 /. n) in
       mean Infix.(w * sq), Curv.diag Infix.(w *$ two_over_n)
   in
   observe ~y ~curv loss;
@@ -100,7 +102,7 @@ let sse ?w ~target y =
     | None -> sum sq, Curv.scale 2.0
     | Some w ->
       let w = cast (Nx.dtype y) w in
-      let two_over_n = Nx_dtype.of_float (Nx.dtype y) 2.0 in
+      let two_over_n = Nx.Dtype.of_float (Nx.dtype y) 2.0 in
       sum Infix.(w * sq), Curv.diag Infix.(w *$ two_over_n)
   in
   observe ~y ~curv loss;
@@ -123,7 +125,7 @@ let softmax_ce y labels =
   let rows = Array.fold_left ( * ) 1 labels_shape in
   let p = softmax y in
   let idx = reshape (Array.append labels_shape [| 1 |]) labels in
-  let picked = take_along_axis ~axis:(-1) ~indices:idx (log_softmax y) in
+  let picked = take_along_axis ~axis:(-1) idx (log_softmax y) in
   let loss = Infix.(-mean picked) in
   let curv = Curv.softmax_ce ~scale:(1.0 /. float_of_int rows) (Rune.detach p) in
   observe ~y ~curv loss;

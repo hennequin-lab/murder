@@ -38,13 +38,13 @@ let lanes ~k t =
   in
   create f64 (Array.append [| k |] s) data
 
-type params =
-  { w : Nx.float64_t
-  ; b : Nx.float64_t
+type 'd params =
+  { w : 'd Nx.float64_t
+  ; b : 'd Nx.float64_t
   }
 [@@deriving ptree]
 
-let params_ptree : params Nx.Ptree.t = ptree_params
+let params_ptree : (Nx.host params, Nx.host) Nx.Ptree.t = Nx.Ptree.v walk_params
 let x_data = mat 4 3 [| 0.2; -0.4; 0.6; 0.1; -0.7; 0.5; 0.3; 0.9; -0.2; 0.8; 0.4; -0.1 |]
 let target = mat 4 2 [| 0.5; -0.2; -0.3; 0.8; 0.6; 0.1; -0.9; 0.4 |]
 
@@ -101,7 +101,7 @@ let test_quadratic_expansion () =
   let p' =
     Nx.Ptree.map2
       params_ptree
-      (fun _ pl dp -> Infix.(pl + (dp *$ Nx_dtype.of_float (Nx.dtype dp) eps)))
+      (fun _ pl dp -> Infix.(pl + (dp *$ Nx.Dtype.of_float (Nx.dtype dp) eps)))
       p
       (sk.apply z)
   in
@@ -130,8 +130,8 @@ let test_ggn_matches_explicit_gram () =
   in
   let block y_tangent y h =
     let n = numel y in
-    let y_r = reshape [| k; n |] (contiguous y_tangent) in
-    let h_r = reshape [| n; n |] (contiguous h) in
+    let y_r = reshape [| k; n |] y_tangent in
+    let h_r = reshape [| n; n |] h in
     Infix.(y_r *@ h_r *@ transpose y_r)
   in
   let y1 = predict p
@@ -153,8 +153,8 @@ let test_ggn_matches_exact_jacobian () =
   let thetas = fixed_sampler k p in
   let sk = sketch k params_ptree data_loss p in
   let n = numel (predict p) in
-  let flat w b = ravel Infix.((x_data *@ w) + b) in
-  let jw = Rune.jacrev' (fun w -> flat (reshape (shape p.w) w) p.b) (ravel p.w) in
+  let flat w b = flatten Infix.((x_data *@ w) + b) in
+  let jw = Rune.jacrev' (fun w -> flat (reshape (shape p.w) w) p.b) (flatten p.w) in
   let jb = Rune.jacrev' (fun b -> flat p.w b) p.b in
   let j = concatenate ~axis:1 [ jw; jb ] in
   (* the mean-squared loss has H = (2/n)·I *)
