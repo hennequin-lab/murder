@@ -1139,7 +1139,7 @@ let test_lfads_jit () =
   let eager = El.loss_fixed model params ~key ~n_samples:3 ~iters:4 data in
   let jitted =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> returns Nx.Ptree.tensor)
+      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> returns Nx.Ptree.tensor)
       (fun p k -> El.loss_fixed model p ~key:k ~n_samples:3 ~iters:4 data)
   in
   check_close ~msg:"lfads jit loss" ~tol:1e-10 (jitted params key) eager;
@@ -1151,7 +1151,7 @@ let test_lfads_jit () =
   in
   let jitted_grad =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> returns (pair tensor structure))
+      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> returns (pair tensor structure))
       (fun p k ->
          Rune.value_and_grad
            structure
@@ -1319,7 +1319,7 @@ let test_kl_schedule () =
   let key = Nx.Rng.key 31 in
   let compiled =
     Rune.jit
-      Nx.Ptree.(structure @-> tensor @-> Nx.Ptree.v Nx.Rng.walk @-> returns tensor)
+      Nx.Ptree.(structure @-> tensor @-> Nx.Rng.ptree @-> returns tensor)
       (fun p beta k -> El.loss_fixed model p ~beta ~iters:6 ~key:k ~n_samples:3 o)
   in
   let eager beta =
@@ -1360,7 +1360,7 @@ let test_jit () =
   let eager = El.loss_fixed model params ~key ~n_samples:4 ~iters:4 o in
   let jitted =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> returns Nx.Ptree.tensor)
+      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> returns Nx.Ptree.tensor)
       (fun p k -> El.loss_fixed model p ~key:k ~n_samples:4 ~iters:4 o)
   in
   check_close ~msg:"jit loss matches eager" ~tol:1e-12 (jitted params key) eager;
@@ -1372,7 +1372,7 @@ let test_jit () =
   in
   let jitted_grad =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> returns (pair tensor structure))
+      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> returns (pair tensor structure))
       (fun p k ->
          Rune.value_and_grad
            structure
@@ -1499,11 +1499,7 @@ let test_batched_iilqr () =
   in
   let compiled =
     Rune.jit
-      Nx.Ptree.(
-        structure
-        @-> Nx.Ptree.v Nx.Rng.walk
-        @-> tensor
-        @-> returns (pair tensor structure))
+      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> tensor @-> returns (pair tensor structure))
       (fun p k data ->
          Rune.value_and_grad
            structure
@@ -1603,7 +1599,7 @@ let test_batched_lfads () =
   let eager = El.batch_loss_fixed model params ~key ~n_samples ~iters batch in
   let compiled =
     Rune.jit
-      Nx.Ptree.(structure @-> Nx.Ptree.v Nx.Rng.walk @-> tensor @-> returns tensor)
+      Nx.Ptree.(structure @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
       (fun p k data -> El.batch_loss_fixed model p ~key:k ~n_samples ~iters data)
   in
   check_close ~msg:"lfads batched jit loss" ~tol:1e-10 (compiled params key batch) eager

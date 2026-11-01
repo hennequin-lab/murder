@@ -70,7 +70,7 @@ let objective params key =
 (* The sketch compiles for the device the parameters are placed on; the
    keys are host values that join them on each call. *)
 let sketch_step =
-  Sofo.Optim.sketch_jit ~k:n_tangents placement Model.ptree (Ptree.v Rng.walk) objective
+  Sofo.Optim.sketch_jit ~k:n_tangents placement Model.ptree Rng.ptree objective
 
 let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter

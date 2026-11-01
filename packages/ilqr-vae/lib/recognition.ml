@@ -653,8 +653,7 @@ module Iilqr = struct
         let p =
           posterior_of_pair
             (Rune.vmap
-               Nx.Ptree.(
-                 pair tensor (Nx.Ptree.v Nx.Rng.walk) @-> returns (posterior_structure ()))
+               Nx.Ptree.(pair tensor Nx.Rng.ptree @-> returns (posterior_structure ()))
                (fun (data, key) ->
                   posterior_to_pair (infer_one gen gp ~params ?iters ~n_samples ~key data))
                (flat_data, keys))
@@ -1087,8 +1086,7 @@ module Lfads = struct
       let p =
         posterior_of_pair
           (Rune.vmap
-             Nx.Ptree.(
-               pair tensor (Nx.Ptree.v Nx.Rng.walk) @-> returns (posterior_structure ()))
+             Nx.Ptree.(pair tensor Nx.Rng.ptree @-> returns (posterior_structure ()))
              (fun (data, key) ->
                 posterior_to_pair
                   (infer_one ~phi ~with_inputs gen gp ~params ?iters ~n_samples ~key data))

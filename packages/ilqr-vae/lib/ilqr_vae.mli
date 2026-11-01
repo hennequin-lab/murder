@@ -58,7 +58,7 @@
       let step =
         Rune.jit
           Nx.Ptree.(
-            Model.structure model @-> (Nx.Ptree.v Nx.Rng.walk) @-> tensor
+            Model.structure model @-> Nx.Rng.ptree @-> tensor
             @-> returns (pair tensor (Model.structure model)))
           (fun params key data ->
              Rune.value_and_grad

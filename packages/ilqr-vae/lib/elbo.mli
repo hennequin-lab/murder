@@ -136,7 +136,7 @@ val loss_fixed
     {[
       let step =
         Rune.jit
-          Nx.Ptree.(Model.structure model @-> (Nx.Ptree.v Nx.Rng.walk) @-> tensor @-> returns tensor)
+          Nx.Ptree.(Model.structure model @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
           (fun params key data ->
              Elbo.batch_loss_fixed model params ~key ~n_samples:16 ~iters:4 data)
       in

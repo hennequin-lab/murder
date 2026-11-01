@@ -24,7 +24,7 @@
       let schedule = Schedule.linear_warmup ~steps:2000 dtype in
       let step =
         Rune.jit
-          Nx.Ptree.(structure @-> tensor @-> (Nx.Ptree.v Nx.Rng.walk) @-> tensor @-> returns tensor)
+          Nx.Ptree.(structure @-> tensor @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
           (fun params beta key data ->
              Elbo.batch_loss_fixed
                model params ~beta ~iters:4 ~key ~n_samples:16 data)

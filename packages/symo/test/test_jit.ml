@@ -142,7 +142,7 @@ let test_random_transform_jit () =
   let theta = params () in
   let jitted =
     Rune.jit
-      Nx.Ptree.(Nx.Ptree.v Nx.Rng.walk @-> returns M.ptree)
+      Nx.Ptree.(Nx.Rng.ptree @-> returns M.ptree)
       (fun key -> M.random_transform ~key theta)
   in
   List.iter (List.range 0 5) ~f:(fun seed ->

@@ -122,7 +122,7 @@ let objective params key =
 (* The sketch compiles for the device the parameters are placed on; the
    keys are host values that join them on each call. *)
 let sketch_step =
-  Sofo.Optim.sketch_jit ~k:n_tangents placement Model.ptree (Ptree.v Rng.walk) objective
+  Sofo.Optim.sketch_jit ~k:n_tangents placement Model.ptree Rng.ptree objective
 
 let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
@@ -148,7 +148,7 @@ How to read it:
    [@@deriving ptree]` derives its walk, and `Model.ptree`, its
    `Nx.Ptree.instantiate` on the set `D`, is the way sofo, Rune and Vega see
    every parameter leaf, whatever the model's shape. Everything else the loss
-   reads gets a structure the same way; here it is `Ptree.v Rng.walk`, the key
+   reads gets a structure the same way; here it is `Rng.ptree`, the key
    a minibatch is drawn from.
 2. **The loss is a plain function that marks its own curvature.**
    `objective` draws a minibatch and returns a scalar. `Sofo.mse` computes the
@@ -162,7 +162,7 @@ How to read it:
    The direction key is kept separate (`Rng.fold_in state.key 0`), so data and
    subspace draws do not correlate.
 4. **The sketching half is compiled once.** `Sofo.Optim.sketch_jit
-   ~k placement Model.ptree (Ptree.v Rng.walk) objective` builds the whole
+   ~k placement Model.ptree Rng.ptree objective` builds the whole
    `(key, aux, params)` computation under `Rune.jit` and returns the function
    to call: the first call traces and compiles, every later one replays. The directions Θ are drawn
    _inside_ it, from the key input, so replaying it each step samples a fresh

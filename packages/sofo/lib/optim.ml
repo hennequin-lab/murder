@@ -310,7 +310,7 @@ let sketch_jit
     Rune.jit
       ?beam
       ?parallel
-      Nx.Ptree.(v Nx.Rng.walk @-> a @-> p @-> returns (pair (v Out.walk) p))
+      Nx.Ptree.(Nx.Rng.ptree @-> a @-> p @-> returns (pair (v Out.walk) p))
       sketch
   in
   fun ~key ~aux params ->
