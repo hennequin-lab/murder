@@ -125,7 +125,7 @@ let singularity () =
   let m = R.six_dof () in
   let ee = R.frame m "ee" in
   let q = Infix.(Rng.normal f32 [| 512; 6 |] *$ 2.5) in
-  let _, sv, _ = svd ~vectors:false f32 (R.jacobian m ~frame:ee q) in
+  let sv = svdvals f32 (R.jacobian m ~frame:ee q) in
   let sigma_min = slice [ A; I 5 ] sv in
   Format.printf "  singular values              %s@." (shape_of sv);
   report "mean sigma_min" (mean sigma_min);

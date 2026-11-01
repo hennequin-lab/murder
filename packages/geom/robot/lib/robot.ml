@@ -636,9 +636,7 @@ module Make (Mo : MOTION) = struct
   (* Conditioning of a frame's motion, from the singular values of its world
      Jacobian. *)
 
-  let singular_values m ~frame:fi q =
-    let _, s, _ = svd ~vectors:false Mo.dtype (jacobian m ~frame:fi q) in
-    s
+  let singular_values m ~frame:fi q = svdvals Mo.dtype (jacobian m ~frame:fi q)
 
   let manipulability m ~frame:fi q =
     let sv = singular_values m ~frame:fi q in

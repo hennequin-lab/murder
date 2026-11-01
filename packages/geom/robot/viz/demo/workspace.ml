@@ -43,7 +43,7 @@ let cloud =
   (* sigma_min of the geometric Jacobian: how far this configuration is from
      losing a degree of freedom. *)
   let sigma_min =
-    let _, sv, _ = svd ~vectors:false f32 (R.jacobian model ~frame:tool q) in
+    let sv = svdvals f32 (R.jacobian model ~frame:tool q) in
     to_array (slice [ A; I 5 ] sv)
   in
   Array.init samples (fun i ->
