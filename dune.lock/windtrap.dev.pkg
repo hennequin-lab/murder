@@ -9,6 +9,6 @@
 (source
  (fetch
   (url
-   git+https://github.com/invariant-hq/windtrap.git#aeac8903769e756bf3a37304e3860073928d9736)))
+   git+https://github.com/invariant-hq/windtrap.git#6423db76370e35dfefa0fa2e7a8e6318323b8d81)))
 
 (dev)

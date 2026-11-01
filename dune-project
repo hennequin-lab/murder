@@ -23,7 +23,7 @@
 ; Move this SHA forward deliberately; dune.lock records the same commit.
 (pin
  (url
-  "git+https://github.com/raven-ml/raven.git#38f4b2503f96a9c0ef71ebdfe49618055fc7f50d")
+  "git+https://github.com/raven-ml/raven.git#fa337c8da89543ff8bc373f741315ca2ec13985f")
  (package
   (name lz))
  (package
@@ -47,10 +47,12 @@
  (package
   (name kaun)))
 
-; Windtrap is pinned to the commit Raven's CI uses.
+; Windtrap's releases are on opam, but Raven and litany pin it, and Dune
+; resolves a pinned project's pins recursively, so the pin below is what keeps
+; our lock on a version we name. It is windtrap's v0.3.0 release.
 (pin
  (url
-  "git+https://github.com/invariant-hq/windtrap.git#aeac8903769e756bf3a37304e3860073928d9736")
+  "git+https://github.com/invariant-hq/windtrap.git#6423db76370e35dfefa0fa2e7a8e6318323b8d81")
  (package
   (name windtrap))
  (package

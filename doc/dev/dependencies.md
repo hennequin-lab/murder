@@ -11,8 +11,12 @@ External sources are pinned in `dune-project`:
   every Raven package this repo and its downstream projects use (`lz`,
   `nx`, `rune`, `tolk`, `vega`, `jera`, `hugin`, `rig`, `munin`,
   `ppx_ptree`, `kaun`). Raven is not a package of this monorepo.
-- **windtrap** and **ppx_windtrap** — the commit Raven's own CI uses, so our
-  tests and Raven's agree.
+- **windtrap** and **ppx_windtrap** — windtrap's `v0.3.0` release, the
+  version just ahead of the commit Raven's CI uses. The release is on opam,
+  but Raven and litany pin windtrap themselves, and a pin inherited through a
+  pinned project wins over the package repositories, so this repo pins the
+  release too and names it. Drop this pin, and Raven's and litany's, to take
+  the opam release.
 - **litany** — a full SHA; it is not on opam.
 
 Pins belong in `dune-project`, not `dune-workspace`, because Dune resolves the
