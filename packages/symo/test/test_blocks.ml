@@ -25,7 +25,7 @@ let random_factors key d =
 let round4 x = Float.round (x *. 1e4) /. 1e4
 
 let distinct m =
-  let w, _ = eigh float64 (cast float64 m) in
+  let w = eigvalsh float64 (cast float64 m) in
   Array.to_list (to_array w)
   |> List.map ~f:round4
   |> List.dedup_and_sort ~compare:Float.compare
@@ -35,7 +35,7 @@ let symmetrize m = Infix.((m + transpose m) *$ 0.5)
 let block_eigenvalues matrices =
   Array.to_list matrices
   |> List.concat_map ~f:(fun m ->
-    let w, _ = eigh float64 (cast float64 (symmetrize m)) in
+    let w = eigvalsh float64 (cast float64 (symmetrize m)) in
     Array.to_list (to_array w) |> List.map ~f:round4)
   |> List.dedup_and_sort ~compare:Float.compare
 

@@ -91,7 +91,7 @@ let hessian_inverse ~damping sigma_w sigma_g =
 (* The largest singular value over a list of blocks. *)
 let global_smax blocks =
   List.fold blocks ~init:0.0 ~f:(fun acc x ->
-    let w, _ = eigh float64 (cast float64 x) in
+    let w = eigvalsh float64 (cast float64 x) in
     Float.max acc (item [] (max (abs w))))
 
 (* The damped symmetric power of every block, with one global [s_max]. *)
