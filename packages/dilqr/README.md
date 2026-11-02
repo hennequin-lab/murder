@@ -41,18 +41,15 @@ program's size grows with the iteration count, **not with the horizon**.
   regularization, and a line search realized as a masked argmin over a fixed
   trial schedule, so there is no host-side control flow: the solve traces and
   JIT-compiles, and it solves a batch of problems at once.
-- **Implicit gradients** (`solve_adaptive`, `solve_fixed`) — differentiable
-  solves wrapped in a `Rune.custom_vjp`. Put the fixed solve inside `Rune.jit`
-  with a `Rune.grad` inside, and the forward solve and the implicit VJP compile
+- **Implicit gradients, both modes** (`solve_adaptive`, `solve_fixed`) — the
+  same solve carries the implicit VJP and JVP. `Rune.grad` runs the adjoint
+  system of the local LQR QP; `Rune.jvp` reuses one Riccati backward pass at
+  the solution — the Cholesky factor of the regularized `Q_uu`, the feedback
+  gain and the costate — and then costs one cheap sweep plus one rollout per
+  direction. Map `Rune.jvp` over the directions with `Rune.vmap` and the primal
+  solve is computed once. Put the fixed solve inside `Rune.jit` with a
+  `Rune.grad` or `Rune.jvp` inside, and the solve and its derivative compile
   together into one program, on CPU or GPU.
-- **Implicit JVPs** (`Jvp.solve_adaptive`, `Jvp.solve_fixed`) — the same primal
-  solves wrapped in a `Rune.custom_jvp`. One Riccati backward pass at the
-  solution yields the factors every tangent shares — the Cholesky factor of
-  the regularized `Q_uu`, the feedback gain, and the costate — and each
-  direction then costs one cheap sweep plus one rollout. Map `Rune.jvp` over
-  the directions with `Rune.vmap` and the primal solve is computed once.
-  Rune cannot attach both rules to one function, so forward mode is explicit
-  in `Dilqr.Jvp`; the submodule disappears when Rune gains a combined rule.
 - **Static shapes, dynamic time** — state and control dimensions and the
   horizon are static, which is what the compiled scans are built from. The
   step index `k` travels as a scalar tensor, so time-varying problems index
@@ -172,16 +169,14 @@ The user code needs `ppx_ptree` preprocessed and the usual libraries:
 
 A few things worth knowing:
 
-- `solve_adaptive` is the adaptive solve with the implicit reverse-mode
-  rule. It is eager because the host owns the regularization, line search and
+- `solve_adaptive` is the adaptive solve with its implicit derivative in both
+  modes. It is eager because the host owns the regularization, line search and
   convergence logic; pass `~beam` or `~parallel` to compile its tensor
   kernels. It is unbatched.
 - `solve_fixed` is the fixed-iteration solve. It is traceable: put it inside
-  `Rune.jit` for a compiled solve and gradient. It is batched.
-- `Dilqr.Jvp.solve_adaptive` and `Dilqr.Jvp.solve_fixed` are the forward-mode
-  forms. They return the same primal trajectory; only the attached rule
-  differs. Reverse differentiation of the JVP form is degraded in Rune, so
-  take gradients with the default entry points.
+  `Rune.jit` for a compiled solve and derivative. It is batched. Calling
+  `Rune.grad` on it gives the implicit VJP; calling `Rune.jvp` gives the
+  implicit JVP.
 - The differentiable solves return the trajectory **stacked** as one
   `[K+1; n+m]` tensor: row `k` is `(x_k; u_k)` for `k < K`, row `K` is
   `(x_K; 0)`. `split_taus` recovers the per-step arrays.
@@ -201,11 +196,11 @@ every solver and helper takes it as its first argument.
 
 - **`Dilqr.inputs`** — the structure of the solve inputs (`theta`, `x0`,
   `us0`), built by walking the problem's parameter structure: what
-  `Rune.grad`, `Rune.custom_vjp` and `Rune.jit` take. `Dilqr.Inputs.t` is the
+  `Rune.grad`, `Rune.jvp` and `Rune.jit` take. `Dilqr.Inputs.t` is the
   corresponding record.
 
 - **`solve_adaptive problem ?beam ?parallel`** — adaptive iLQR with its
-  implicit reverse-mode derivative. It returns a function taking the adaptive
+  implicit derivative in both modes. It returns a function taking the adaptive
   options (`?max_iter`, `?conv_threshold`, `?c1`, `?ls_depth`, `?reg`) and the
   solve inputs, and returning the stacked trajectory. Defaults: `max_iter =
   20`, `conv_threshold = 1e-6`, `c1 = 1e-2`, `ls_depth = 8`, seeded
@@ -215,15 +210,10 @@ every solver and helper takes it as its first argument.
   Unbatched.
 
 - **`solve_fixed problem`** — fixed-iteration iLQR with its implicit
-  reverse-mode derivative. It returns a function taking `~iters`, an optional
+  derivative in both modes. It returns a function taking `~iters`, an optional
   trial schedule `alphas` (default `1; 1/2; …`, 8 trials), fixed `mu` (default
   none), Armijo `c1`, and the solve inputs. Traceable, JIT-compilable, never
   reads a tensor on the host, and batched.
-
-- **`Jvp.solve_adaptive`, `Jvp.solve_fixed`** — the same two primals with a
-  custom forward-mode rule instead of the reverse one. `Rune.jvp` applied to
-  them is the trajectory tangent, computed without differentiating a Cholesky
-  factor. See [Forward mode](#forward-mode).
 
 - **`Solver`** — the low-level record-returning solves (`solve`, `compile`,
   `solve_fixed`) and the tensor helpers used by the differentiable layer.
@@ -257,9 +247,9 @@ every solver and helper takes it as its first argument.
 
 ## Batched solves
 
-`solve_fixed` and `Jvp.solve_fixed` solve a **batch** of problems at
-once. Give every leaf of the parameters, of the initial state and of every
-initial control a leading batch axis. Say the quick-start problem's
+`solve_fixed` solves a **batch** of problems at once. Give every leaf of the
+parameters, of the initial state and of every initial control a leading batch
+axis. Say the quick-start problem's
 parameters also carry a per-member `target`, used by its running loss:
 
 ```ocaml
@@ -301,10 +291,9 @@ let grads =
 (* grads.theta.target : [b; 1];  grads.x0 : [b; 2];  ... *)
 ```
 
-Only the fixed solves are batched. `solve_adaptive` and
-`Jvp.solve_adaptive` are unbatched and say so: their regularization retries
-and Armijo backtracking are host-side control flow, and a batch would need one
-of each per member.
+Only the fixed solve is batched. `solve_adaptive` is unbatched and says so:
+its regularization retries and Armijo backtracking are host-side control flow,
+and a batch would need one of each per member.
 
 ## How the gradient works
 
@@ -356,13 +345,13 @@ derivative goes through the KKT system, whose matrix is the primal's.
 
 ## Forward mode
 
-`Rune.jvp` of a `Dilqr.Jvp.solve_*` function is its derivative along a tangent
-of the solve inputs. A **batch of directions** is one `Rune.vmap` around it,
-with the primal solve — and the factorization every direction reuses —
-computed once, outside the lanes:
+`Rune.jvp` of `Dilqr.solve_fixed` (or `Dilqr.solve_adaptive`) is its derivative
+along a tangent of the solve inputs. A **batch of directions** is one
+`Rune.vmap` around it, with the primal solve — and the factorization every
+direction reuses — computed once, outside the lanes:
 
 ```ocaml
-let solve = Dilqr.Jvp.solve_fixed problem in
+let solve = Dilqr.solve_fixed problem in
 let taus = solve ~iters:4 inputs in
 let dtaus =
   Rune.vmap

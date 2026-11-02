@@ -729,29 +729,6 @@ let test_solve_adaptive_compiled () =
     (compiled ~max_iter:20 inputs)
     (eager ~max_iter:20 inputs)
 
-(* The reverse and forward entry points differ only in the attached rule: the
-   primal trajectory is the same for both. *)
-let test_ad_modes_share_the_primal () =
-  let module P = Integrator in
-  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { mass = scalar64 1.0 } in
-  let x0 = vec64 [| 1.0; 0.0 |] in
-  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
-  let inputs
-    : ((Nx.host Nx.float64_t, Nx.host) P.Params.t, Nx.host Nx.float64_t) Dilqr.Inputs.t
-    =
-    { Dilqr.Inputs.theta; x0; us0 }
-  in
-  check_close
-    ~msg:"fixed reverse and forward primals"
-    ~tol:1e-12
-    (Dilqr.Jvp.solve_fixed P.problem ~iters:5 inputs)
-    (Dilqr.solve_fixed P.problem ~iters:5 inputs);
-  check_close
-    ~msg:"adaptive reverse and forward primals"
-    ~tol:1e-12
-    (Dilqr.Jvp.solve_adaptive P.problem ~max_iter:20 inputs)
-    (Dilqr.solve_adaptive P.problem ~max_iter:20 inputs)
-
 (* The adaptive solve has one host-side line search; batches are for the
    fixed solve. *)
 let test_adaptive_rejects_batches () =
@@ -808,7 +785,7 @@ let test_jvp_is_the_transpose_of_the_vjp () =
       (Rune.jvp
          structure
          Nx.Ptree.tensor
-         (fun i -> Dilqr.Jvp.solve_fixed P.problem ~iters:6 i)
+         (fun i -> Dilqr.solve_fixed P.problem ~iters:6 i)
          inputs
          dinputs)
   in
@@ -829,7 +806,7 @@ let test_jvp_matches_finite_differences () =
   let inputs = pendulum_inputs () in
   let structure = Dilqr.inputs P.problem in
   let solve = Dilqr.solve_adaptive P.problem in
-  let solve_jvp = Dilqr.Jvp.solve_adaptive P.problem in
+  let solve_jvp = solve in
   let solve i = solve ~max_iter:100 ~conv_threshold:1e-10 i in
   (* A loss on the trajectory, smooth in the trajectory. *)
   let loss taus =
@@ -941,7 +918,7 @@ let test_batched_forward_mode () =
            (Rune.jvp
               structure
               Nx.Ptree.tensor
-              (fun i -> Dilqr.Jvp.solve_fixed P.problem ~iters:4 i)
+              (fun i -> Dilqr.solve_fixed P.problem ~iters:4 i)
               inputs
               di))
       dirs
@@ -959,7 +936,7 @@ let test_batched_forward_mode () =
         (Rune.jvp
            structure
            Nx.Ptree.tensor
-           (fun j -> Dilqr.Jvp.solve_fixed P.problem ~iters:4 j)
+           (fun j -> Dilqr.solve_fixed P.problem ~iters:4 j)
            inputs
            (one dirs))
     in
@@ -976,7 +953,7 @@ let test_batched_forward_mode () =
                 (Rune.jvp
                    structure
                    Nx.Ptree.tensor
-                   (fun i -> Dilqr.Jvp.solve_fixed P.problem ~iters:4 i)
+                   (fun i -> Dilqr.solve_fixed P.problem ~iters:4 i)
                    inputs
                    di))
            dirs)
@@ -1071,7 +1048,6 @@ let () =
        ; test
            "differentiable adaptive compiles the same solve"
            test_solve_adaptive_compiled
-       ; test "forward and reverse share the primal" test_ad_modes_share_the_primal
        ; test
            "forward mode is the transpose of the reverse mode"
            test_jvp_is_the_transpose_of_the_vjp
