@@ -61,11 +61,168 @@ let next st = { key = Nx.Rng.fold_in st.key st.step; step = st.step + 1 }
 
 (* ── directions and their contraction ────────────────────────────────────── *)
 
-let directions (type p d) (structure : (p, d) Nx.Ptree.t) ?key ~k (params : p) : p =
-  match key with
-  | Some key -> Sketch.sample structure ~key ~k params
-  | None ->
-    Nx.Rng.with_key (Nx.Rng.next_key ()) (fun () -> Sketch.sample structure ~k params)
+(* [columns rows] is the transpose of a list of equal-length lists. It is how
+   [tangents] visits the same leaf of every tangent. *)
+let rec columns : 'd Nx.packed list list -> 'd Nx.packed list list = function
+  | [] -> []
+  | rows ->
+    (match rows with
+     | [] :: _ -> []
+     | _ -> List.map List.hd rows :: columns (List.map List.tl rows))
+
+(* [stack_column leaves] stacks one leaf of each tangent on a new leading axis.
+   The first tangent fixes the dtype, as [Nx.stack] requires one; a later leaf
+   of another float dtype is cast to it, so a list of tangents may mix the
+   dtypes the caller computed them in. *)
+let stack_column : 'd Nx.packed list -> 'd Nx.packed = function
+  | [] -> invalid_arg "Sofo.Optim.tangents: a tangent has no tensor leaf"
+  | P first :: rest ->
+    let rec go acc = function
+      | [] -> P (Nx.stack (List.rev acc))
+      | P x :: xs -> go (Nx.cast (Nx.dtype first) x :: acc) xs
+    in
+    go [ first ] rest
+
+let tangents (type p d) (structure : (p, d) Nx.Ptree.t) (ts : p list) : p =
+  match ts with
+  | [] -> invalid_arg "Sofo.Optim.tangents: at least one tangent is required"
+  | first :: _ ->
+    let leaves t = fst (Nx.Ptree.flatten structure t) in
+    let stacked = List.map stack_column (columns (List.map leaves ts)) in
+    Nx.Ptree.rebuild structure ~like:first stacked
+
+(* [custom_lanes structure params custom] is the number of lanes in [custom],
+   checking that every float leaf is a parameter leaf with a lane axis in
+   front. Leaves that cannot carry a direction are ignored: their lanes are
+   zero in the completed set. *)
+let custom_lanes (type p d) (structure : (p, d) Nx.Ptree.t) (params : p) (custom : p)
+  : int
+  =
+  let ps, _ = Nx.Ptree.flatten structure params in
+  let cs, _ = Nx.Ptree.flatten structure custom in
+  let rec go lanes ps cs =
+    match ps, cs with
+    | [], [] -> Option.value lanes ~default:0
+    | P p :: ps, P c :: cs ->
+      if Nx.Dtype.is Nx.Dtype.Float (Nx.dtype p)
+      then (
+        let p_shape = Nx.shape p in
+        let c_shape = Nx.shape c in
+        if Array.length c_shape <> Array.length p_shape + 1
+        then
+          invalid_arg
+            (Format.asprintf
+               "Sofo.Optim.directions: a custom tangent leaf has shape %a, expected a \
+                lane axis in front of %a"
+               pp_shape
+               c_shape
+               pp_shape
+               p_shape);
+        let lanes_here = c_shape.(0) in
+        Array.iteri
+          (fun i d ->
+             if d <> p_shape.(i)
+             then
+               invalid_arg
+                 (Format.asprintf
+                    "Sofo.Optim.directions: a custom tangent leaf has shape %a, expected \
+                     a lane axis in front of %a"
+                    pp_shape
+                    c_shape
+                    pp_shape
+                    p_shape))
+          (Array.sub c_shape 1 (Array.length p_shape));
+        let lanes =
+          match lanes with
+          | None -> Some lanes_here
+          | Some lanes when lanes = lanes_here -> Some lanes
+          | Some lanes ->
+            invalid_arg
+              (Printf.sprintf
+                 "Sofo.Optim.directions: custom tangent leaves disagree on the number of \
+                  lanes (%d and %d)"
+                 lanes
+                 lanes_here)
+        in
+        go lanes ps cs)
+      else go lanes ps cs
+    | _ ->
+      invalid_arg
+        "Sofo.Optim.directions: the custom tangents do not follow the parameter structure"
+  in
+  go None ps cs
+
+(* [assemble ...] puts the custom lanes before the random ones, leaf by leaf,
+   and gives leaves that cannot carry a direction [k] zero lanes. *)
+let assemble (type p d) (structure : (p, d) Nx.Ptree.t) ~k ~params ~custom ~random : p =
+  let ps, _ = Nx.Ptree.flatten structure params in
+  let cs, _ = Nx.Ptree.flatten structure custom in
+  let rs =
+    match random with
+    | None -> None
+    | Some random -> Some (fst (Nx.Ptree.flatten structure random))
+  in
+  let rec go ps cs rs =
+    match ps, cs with
+    | [], [] ->
+      (match rs with
+       | None | Some [] -> []
+       | Some (_ :: _) -> invalid_arg "Sofo.Optim.directions: too many random directions")
+    | P p :: ps, P c :: cs ->
+      let p_shape = Nx.shape p in
+      let at = beside p in
+      let make r =
+        if Nx.Dtype.is Nx.Dtype.Float (Nx.dtype p)
+        then (
+          let c = Nx.place at c |> Nx.cast (Nx.dtype p) in
+          match r with
+          | None -> P c
+          | Some r -> P (Nx.concatenate ~axis:0 [ c; r ]))
+        else P (zeros_at at (Nx.dtype p) (Array.append [| k |] p_shape))
+      in
+      (match rs with
+       | None -> make None :: go ps cs None
+       | Some [] -> invalid_arg "Sofo.Optim.directions: too few random directions"
+       | Some (P r :: rest) ->
+         let r = Nx.cast (Nx.dtype p) r in
+         make (Some r) :: go ps cs (Some rest))
+    | _ ->
+      invalid_arg
+        "Sofo.Optim.directions: the custom tangents do not follow the parameter structure"
+  in
+  Nx.Ptree.rebuild structure ~like:params (go ps cs rs)
+
+let directions
+      (type p d)
+      (structure : (p, d) Nx.Ptree.t)
+      ?key
+      ?(custom : p option)
+      ~k
+      (params : p)
+  : p
+  =
+  let random k =
+    match key with
+    | Some key -> Sketch.sample structure ~key ~k params
+    | None ->
+      Nx.Rng.with_key (Nx.Rng.next_key ()) (fun () -> Sketch.sample structure ~k params)
+  in
+  match custom with
+  | None -> random k
+  | Some custom ->
+    let m = custom_lanes structure params custom in
+    if m > k
+    then
+      invalid_arg
+        (Printf.sprintf
+           "Sofo.Optim.directions: %d custom tangents do not fit in k = %d"
+           m
+           k);
+    if m = 0
+    then random k
+    else (
+      let random = if m = k then None else Some (random (k - m)) in
+      assemble structure ~k ~params ~custom ~random)
 
 let apply (type p d) (structure : (p, d) Nx.Ptree.t) ~k (thetas : p) (z : d Nx.float64_t)
   : p
@@ -254,6 +411,7 @@ let step
       ~lr
       ?damping
       ?preconditioner
+      ?custom
       (st : state)
       ~(loss : p -> (c, e, d) Nx.t)
       ~(params : p)
@@ -263,7 +421,7 @@ let step
   (* Whole on every device of the set, as [sketch_jit] places it: a leaf on
      another device than the first reads it there. *)
   let key = Nx.Rng.place (Nx.Placement.on (Nx.Placement.devices at)) st.key in
-  let thetas = directions structure ~key ~k params in
+  let thetas = directions structure ~key ~k ?custom params in
   let sk = Sketch.run structure loss params thetas in
   let params = update_sketch structure ~lr ?damping ?preconditioner sk params in
   params, next st, sk
@@ -301,8 +459,8 @@ let sketch_jit
     [@@deriving ptree]
   end
   in
-  let sketch key aux params =
-    let dirs = directions p ~key ~k params in
+  let sketch key aux (custom : 'p option) params =
+    let dirs = directions p ~key ?custom ~k params in
     let sk = Sketch.run p (fun params -> loss params aux) params dirs in
     Out.{ loss = sk.loss; c = sk.c; ggn = sk.ggn; gram = gram p ~k dirs }, dirs
   in
@@ -310,14 +468,15 @@ let sketch_jit
     Rune.jit
       ?beam
       ?parallel
-      Nx.Ptree.(Nx.Rng.ptree @-> a @-> p @-> returns (pair (v Out.walk) p))
+      Nx.Ptree.(Nx.Rng.ptree @-> a @-> option p @-> p @-> returns (pair (v Out.walk) p))
       sketch
   in
-  fun ~key ~aux params ->
+  fun ~key ~aux ?custom params ->
     let key = Nx.Rng.place (Nx.Placement.uncut placement) key in
+    let custom = Option.map (place_all p placement) custom in
     let aux = place_all a placement aux in
     let params = place_all p placement params in
-    let out, dirs = f key aux params in
+    let out, dirs = f key aux custom params in
     { loss = out.loss; c = out.c; ggn = out.ggn; gram = out.gram; dirs }
 
 (* [params - lr * Θ z], compiled, so it runs where the parameters and the

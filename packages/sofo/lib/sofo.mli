@@ -276,16 +276,46 @@ module Optim : sig
 
   (** {2 Directions} *)
 
-  (** [directions structure ?key ~k params] is Θ: one standard-normal [k]-lane
-      batch per float leaf, and zero lanes for leaves that cannot carry a
-      direction (an RNG key, an index, a counter — they do not participate).
-      [structure] is the parameter structure. A pure function of [key] (or of
-      the ambient scope when [key] is omitted), so the compiled step can draw
-      it from a key that is an input leaf, and a caller can reproduce a step's
-      subspace by name. {!sketch} takes these directions as an argument, so
-      this is how a caller draws them. Each batch lies whole on its leaf's
-      devices. *)
-  val directions : ('p, 'd) Nx.Ptree.t -> ?key:'d Nx.Rng.key -> k:int -> 'p -> 'p
+  (** [tangents structure ts] is a direction tree whose lane [i] is the
+      parameter-shaped tangent [List.nth ts i], each leaf stacked on a new
+      leading axis. [structure] is the parameter structure. The first tangent
+      fixes each leaf's dtype; a later leaf of another float dtype is cast to
+      it, as [Nx.stack] requires.
+
+      This is the constructor for the [~custom] argument of {!directions},
+      {!step} and {!sketch_jit}. A custom tangent is one parameter-shaped
+      direction, not a lane of one; [tangents] puts the list on the lane axis
+      the sketch expects.
+
+      Raises [Invalid_argument] if [ts] is empty or if their leaves do not
+      have the same shapes. *)
+  val tangents : ('p, 'd) Nx.Ptree.t -> 'p list -> 'p
+
+  (** [directions structure ?key ?custom ~k params] is Θ: [k] tangent lanes,
+      completed from [custom] when one is supplied. Without [custom] every
+      lane is standard-normal, and the draw is the pure function of [key] (or
+      of the ambient scope when [key] is omitted) it always was. [structure]
+      is the parameter structure. Each batch lies whole on its leaf's
+      devices.
+
+      [custom] is a batched parameter tree, typically built by {!tangents}:
+      its [m] lanes become lanes [0 .. m-1] of the result, and [k - m] random
+      lanes follow. With [m = k] no random lane is drawn. Custom lanes are
+      kept as supplied — the sketch whitens the whole basis, so their scale
+      does not matter — and must be linearly independent for the whitening to
+      see a full-rank subspace. A leaf that cannot carry a direction gets [k]
+      zero lanes.
+
+      Raises [Invalid_argument] if [custom] has more than [k] lanes, if its
+      float leaves disagree on the number of lanes, or if a leaf is not the
+      corresponding parameter leaf with a lane axis in front. *)
+  val directions
+    :  ('p, 'd) Nx.Ptree.t
+    -> ?key:'d Nx.Rng.key
+    -> ?custom:'p
+    -> k:int
+    -> 'p
+    -> 'p
 
   (** [apply structure ~k thetas z] is Θz: the parameter-space direction the
       sketch coordinates [z] denote, each leaf in its parameter's dtype.
@@ -403,19 +433,20 @@ module Optim : sig
 
   (** {2 One eager step} *)
 
-  (** [step structure ~k ~lr ?damping ?preconditioner st ~loss ~params]
-      sketches [loss] at [params] along directions drawn from [st]'s key,
-      applies the update, and returns the new parameters, the next state and
-      the sketch — the loss, C and G̃, for logging. [structure] is the
-      parameter structure. One call is one training iteration, eager end to
-      end; use {!sketch_jit} with {!update} when the sketching half should be
-      compiled. *)
+  (** [step structure ~k ~lr ?damping ?preconditioner ?custom st ~loss ~params] sketches [loss] at [params] along directions drawn from [st]'s
+      key, applies the update, and returns the new parameters, the next state
+      and the sketch — the loss, C and G̃, for logging. [structure] is the
+      parameter structure. [custom] is passed to {!directions}, so an eager
+      loop may replace the custom set at every iteration. One call is one
+      training iteration, eager end to end; use {!sketch_jit} with {!update}
+      when the sketching half should be compiled. *)
   val step
     :  ('p, 'd) Nx.Ptree.t
     -> k:int
     -> lr:float
     -> ?damping:damping
     -> ?preconditioner:preconditioner
+    -> ?custom:'p
     -> state
     -> loss:('p -> ('c, 'e, 'd) Nx.t)
     -> params:'p
@@ -424,7 +455,7 @@ module Optim : sig
   (** {2 The compiled half}
 
       {!sketch_jit} is the sketching computation as a pure function of
-      [(key, aux, params)], compiled by [Rune.jit]. Build it once —
+      [(key, aux, custom, params)], compiled by [Rune.jit]. Build it once —
 
       {[
       let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss
@@ -432,7 +463,8 @@ module Optim : sig
 
       — and every later call replays: the shapes of the inputs do not change
       across a training run, the directions come from the key the caller
-      threads, and so does the aux, so a fresh subspace or a new batch costs
+      threads, the aux carries the new data, and [custom] carries the custom
+      tangents, so a fresh subspace, a new batch or a new custom set costs
       nothing. What comes back is everything the update needs and nothing that
       needs a factorization. *)
 
@@ -447,16 +479,27 @@ module Optim : sig
   (** [sketch_jit ~k structure aux_structure loss] draws Θ from [key],
       sketches [loss] at [params] with [aux], and returns the numbers together
       with the directions. It is the whole computation — [Rune.jit] over the
-      key, the aux and the parameters — so the function it returns compiles on
-      its first call, replays on every later one, and is pure and
-      differentiable in nothing. Each call places the parameters and the aux
-      at [placement], and [key], a host key, whole on its devices.
+      key, the aux, the custom tangents and the parameters — so the function
+      it returns compiles on its first call, replays on every later one, and
+      is pure and differentiable in nothing. Each call places the parameters,
+      the aux and the custom tangents at [placement], and [key], a host key,
+      whole on its devices.
 
       [loss] takes the parameters and the aux, in that order. It is the same
       function the eager entry points take, closed over its aux —
       [Sofo.sketch structure (fun params -> loss params aux) params dirs] for a
       caller's own directions, and likewise {!step}'s [~loss] — so one
-      objective serves the compiled half and the eager one. *)
+      objective serves the compiled half and the eager one.
+
+      The returned function takes [custom] as an optional input, not as a
+      value captured when {!sketch_jit} is built. Its compiled signature
+      carries [Nx.Ptree.option structure], so [custom] may change between
+      calls: [None] draws all [k] lanes randomly, and [Some dirs] puts the
+      [m] lanes of [dirs] first and completes them with [k - m] random ones.
+      Changing only the values of a [Some] set with the same lane count and
+      leaf shapes replays the compiled program; switching [None]/[Some] or
+      changing [m] traces a new program once, because the option's presence
+      and the custom leaves' shapes are part of [Rune.jit]'s key. *)
   val sketch_jit
     :  ?beam:int
     -> ?parallel:int
@@ -467,6 +510,7 @@ module Optim : sig
     -> ('p -> 'aux -> ('a, 'b, 'd) Nx.t)
     -> key:Nx.host Nx.Rng.key
     -> aux:'aux
+    -> ?custom:'p
     -> 'p
     -> ('p, 'd) step_info
 

@@ -100,6 +100,12 @@ changes do not need an entry.
 ### sofo
 
 - Imported from `hennequin-lab/sofo-raven`.
+- `Optim.directions`, `Optim.step` and `Optim.sketch_jit` take `?custom`, a
+  batched set of tangents that becomes the first lanes of the sketch and is
+  completed with random lanes up to `k`; `Optim.tangents` stacks a list of
+  parameter-shaped tangents on the lane axis. In `sketch_jit` the custom set
+  is an input of the compiled program (`Nx.Ptree.option`), so it may change
+  between replays; with a fixed lane count only its values need to change.
 - Arrays carry their device set: `Curv.t` is `'d Curv.t`, `sketch` is
   `('p, 'd) sketch` and `Optim.step_info` is `('p, 'd) Optim.step_info`, and
   `Optim.state`'s key is a host `Nx.Rng.key`. `softmax_ce` takes float logits.

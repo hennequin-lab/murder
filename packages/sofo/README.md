@@ -180,12 +180,13 @@ How to read it:
 
 | What you want                                    | Entry point                                                                                          |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Draw a subspace Θ                                 | `Sofo.Optim.directions structure ?key ~k params`                                                     |
+| Draw a subspace Θ                                 | `Sofo.Optim.directions structure ?key ?custom ~k params`                                             |
+| Turn a list of custom tangents into Θ             | `Sofo.Optim.tangents structure ts`, for the `?custom` of `directions`, `step` and `sketch_jit`        |
 | Measure loss, `C`, `G̃` at `params`, eagerly       | `Sofo.sketch structure loss params dirs` → `('p, 'd) Sofo.sketch`                                    |
-| Compile the measurement for a training run        | `Sofo.Optim.sketch_jit ~k placement structure aux_structure loss` → `~key ~aux params`               |
+| Compile the measurement for a training run        | `Sofo.Optim.sketch_jit ~k placement structure aux_structure loss` → `~key ~aux ?custom params`       |
 | One step on a compiled measurement                | `Sofo.Optim.update ~lr ?damping ?preconditioner placement structure state params out`                |
 | One step on an eager sketch                       | `Sofo.Optim.update_sketch structure ~lr ?damping ?preconditioner sk params`                          |
-| One complete eager iteration                      | `Sofo.Optim.step structure ~k ~lr state ~loss ~params`                                               |
+| One complete eager iteration                      | `Sofo.Optim.step structure ~k ~lr ?custom state ~loss ~params`                                       |
 | The damped subspace solve alone                   | `Sofo.Optim.coordinates ?damping ?preconditioner ?gram ggn c`                                        |
 | Whiten the basis, apply coordinates               | `Sofo.Optim.gram`, `Sofo.Optim.apply`, `sk.apply`                                                    |
 | Describe a little loss's curvature                | `Curv.scale`, `Curv.diag`, `Curv.softmax_ce`, `Curv.hvp`                                             |
