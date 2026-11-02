@@ -457,15 +457,18 @@ let test_whitening_makes_the_step_independent_of_the_basis () =
          (max_abs Infix.(sa.w - p.w)))
     (max_abs Infix.(sa.w - sb.w) > 0.01 *. max_abs Infix.(sa.w - p.w))
 
-let test_whitening_needs_k_parameters () =
-  (* k orthonormal directions need k dimensions to live in. With fewer
-     parameters than lanes the Gram is singular and there is no whitening to be
-     had, so the update says so instead of returning infinities. *)
+let test_k_is_capped_at_the_parameter_count () =
+  (* k orthonormal directions need k dimensions to live in. Asking for more
+     lanes than there are float parameters is capped instead of producing a
+     singular Gram matrix and failing in the update. *)
   let p = params () in
-  let k = 2 * ((d * o) + d) in
-  let sk = Sofo.sketch params_ptree loss p (sampler k p) in
-  raises_match Exn.invalid_arg (fun () ->
-    ignore (Sofo.Optim.update_sketch params_ptree ~lr:0.1 sk p))
+  let capacity = (d * o) + d in
+  let requested = 2 * capacity in
+  let sk = Sofo.sketch params_ptree loss p (sampler requested p) in
+  equal ~msg:"the sketch spans at most the float parameters" int capacity sk.k;
+  equal ~msg:"the directions are capped" int capacity (Nx.shape sk.dirs.w).(0);
+  equal ~msg:"the non-float leaf follows the cap" int capacity (Nx.shape sk.dirs.tag).(0);
+  ignore (Sofo.Optim.update_sketch params_ptree ~lr:0.1 sk p)
 
 (* ── the state and the eager step ────────────────────────────────────────── *)
 
@@ -590,6 +593,20 @@ let test_compiled_sketch_matches_the_eager_one () =
   check_arr ~eps:1e-6 ~msg:"compiled update" (to_array a.w) b.w;
   check_arr ~rel:1e-5 ~msg:"compiled update (float32)" (to_array a.v) b.v;
   equal ~msg:"compiled update leaves the tag" string (to_string a.tag) (to_string b.tag)
+
+let test_compiled_k_is_capped () =
+  let p = params () in
+  let capacity = (d * o) + d in
+  let requested = 2 * capacity in
+  let step =
+    Sofo.Optim.sketch_jit ~k:requested Nx.Host.on params_ptree Nx.Ptree.unit loss_c
+  in
+  let out = step ~key ~aux:() p in
+  equal ~msg:"C is capped" int capacity (Nx.shape out.c).(0);
+  equal ~msg:"the Gram is capped" int capacity (Nx.shape out.gram).(0);
+  equal ~msg:"the directions are capped" int capacity (Nx.shape out.dirs.w).(0);
+  ignore
+    (Sofo.Optim.update ~lr:0.1 Nx.Host.on params_ptree (Sofo.Optim.init ~key ()) p out)
 
 let test_step_uses_custom () =
   let p = params () in
@@ -812,7 +829,7 @@ let tests =
   ; group
       "whitening the basis"
       [ test "gram accumulates leafwise" test_gram_of_constant_directions
-      ; test "k lanes need k parameters" test_whitening_needs_k_parameters
+      ; test "k is capped at the parameter count" test_k_is_capped_at_the_parameter_count
       ; test
           "the step does not depend on the basis"
           test_whitening_makes_the_step_independent_of_the_basis
@@ -836,6 +853,7 @@ let tests =
           test_compiled_sketch_matches_the_eager_one
       ; test "jitted sketch matches eager" test_jitted_sketch_matches_eager
       ; test "custom is a compiled input" test_compiled_custom_is_an_input
+      ; test "compiled k is capped" test_compiled_k_is_capped
       ; test "compiled custom matches eager" test_compiled_custom_matches_eager
       ; test "a compiled loop trains" test_compiled_loop_trains
       ; test "aux reaches the loss" test_compiled_aux_reaches_the_loss

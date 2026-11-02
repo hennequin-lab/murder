@@ -163,7 +163,9 @@ val softmax_ce : (float, 'b, 'd) Nx.t -> 'd Nx.int64_t -> (float, 'b, 'd) Nx.t
 
 (** A sketch's results, on the parameters' device set ['d]. *)
 type ('p, 'd) sketch =
-  { k : int (** The number of directions the sketch spans. *)
+  { k : int
+    (** The number of directions the sketch spans, at most the number of
+        float parameters. *)
   ; loss : 'd Nx.float64_t (** The primal total loss, as a float64 scalar. *)
   ; c : 'd Nx.float64_t
     (** C = Θᵀ∇c, shape [k]: the gradient sketched onto the sampled
@@ -306,9 +308,14 @@ module Optim : sig
       see a full-rank subspace. A leaf that cannot carry a direction gets [k]
       zero lanes.
 
-      Raises [Invalid_argument] if [custom] has more than [k] lanes, if its
-      float leaves disagree on the number of lanes, or if a leaf is not the
-      corresponding parameter leaf with a lane axis in front. *)
+      [k] is capped at the number of float parameters in [params]: more lanes
+      than the parameter space has dimensions would make the Gram matrix
+      singular, so the draw spans at most that many lanes. The cap applies to
+      the completed total, custom lanes included.
+
+      Raises [Invalid_argument] if [custom] has more lanes than the capped
+      [k], if its float leaves disagree on the number of lanes, or if a leaf
+      is not the corresponding parameter leaf with a lane axis in front. *)
   val directions
     :  ('p, 'd) Nx.Ptree.t
     -> ?key:'d Nx.Rng.key
@@ -436,10 +443,10 @@ module Optim : sig
   (** [step structure ~k ~lr ?damping ?preconditioner ?custom st ~loss ~params] sketches [loss] at [params] along directions drawn from [st]'s
       key, applies the update, and returns the new parameters, the next state
       and the sketch — the loss, C and G̃, for logging. [structure] is the
-      parameter structure. [custom] is passed to {!directions}, so an eager
-      loop may replace the custom set at every iteration. One call is one
-      training iteration, eager end to end; use {!sketch_jit} with {!update}
-      when the sketching half should be compiled. *)
+      parameter structure. [custom] is passed to {!directions}, as is the cap
+      on [k], so an eager loop may replace the custom set at every iteration.
+      One call is one training iteration, eager end to end; use {!sketch_jit}
+      with {!update} when the sketching half should be compiled. *)
   val step
     :  ('p, 'd) Nx.Ptree.t
     -> k:int
@@ -499,7 +506,8 @@ module Optim : sig
       Changing only the values of a [Some] set with the same lane count and
       leaf shapes replays the compiled program; switching [None]/[Some] or
       changing [m] traces a new program once, because the option's presence
-      and the custom leaves' shapes are part of [Rune.jit]'s key. *)
+      and the custom leaves' shapes are part of [Rune.jit]'s key. [k] is
+      capped at the number of float parameters, as {!directions} describes. *)
   val sketch_jit
     :  ?beam:int
     -> ?parallel:int
