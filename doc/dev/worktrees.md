@@ -20,7 +20,17 @@ same time.
 ./dev wt new geom-motor fix/motor-scale main  # name, branch, base
 ./dev wt list
 ./dev wt rm geom-motor                      # refuses a dirty checkout
+./dev wt rm geom-motor --force              # discards its uncommitted files
 ```
+
+The branch argument is resolved in three steps: a local branch, then
+`origin/<branch>`, then a new branch at the base. A branch that only the remote
+has is fetched and checked out tracking `origin/<branch>`, so
+`./dev wt new my-copy next` gives you a colleague's pushed work rather than a
+fresh copy of `main` under the same name.
+
+`new` also refuses a branch that another worktree has checked out, and names
+that checkout. Use another branch, or work in that checkout.
 
 `new` creates the worktree under `../murder-wt` and runs `./dev setup` in it:
 git hooks, the dev tools and the `.cmt` files. Each worktree installs its own
@@ -150,5 +160,6 @@ and the human pushes it from either checkout.
 | `The package "x" is defined more than once` | worktree inside the repo | move it outside, `git worktree remove --force` |
 | `Don't know about directory ...` | hidden worktree inside the repo | same |
 | `is already checked out at ...` | branch used by another worktree | use another branch, or remove that worktree |
+| `./dev setup failed` after `new` | the checkout exists but is unprepared | fix the cause and run `./dev setup` there, or `./dev wt rm --force <name>` |
 | build waits, then runs alone | two Dune builds share one `_build` | give each worktree its own `_build` |
 | build looks stuck | a Dune server is busy | `dune rpc ping`, then read the first error |
