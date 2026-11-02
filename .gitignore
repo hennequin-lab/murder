@@ -7,6 +7,9 @@ _opam/
 *.install
 runs/
 
+# Demo render output
+**/demo/out*/
+
 # Local tutorial scratch space
 getting-started/**/scratch/
 
