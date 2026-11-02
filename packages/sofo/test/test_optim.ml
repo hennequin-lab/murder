@@ -88,6 +88,19 @@ let loss p =
   let l2 = Sofo.mse ~target:yv Infix.(xv *@ p.v) in
   Infix.(l1 + cast f64 l2)
 
+(* Two parameter-shaped tangents, for the custom set the tests complete with
+   random lanes. The int leaf is inert, as it is in a direction draw. *)
+let custom_tangents () =
+  [ { w = full f64 [| d; o |] 1.0
+    ; v = full f32 [| d; 1 |] 2.0
+    ; tag = zeros Nx.int32 [| 2 |]
+    }
+  ; { w = full f64 [| d; o |] (-0.5)
+    ; v = full f32 [| d; 1 |] 0.25
+    ; tag = zeros Nx.int32 [| 2 |]
+    }
+  ]
+
 (* Θ is a pure function of the key, so a fixed key makes every reference below
    use the same subspace as the sketch it checks. *)
 let thetas_of p = Sofo.Optim.directions params_ptree ~key ~k p
@@ -163,6 +176,83 @@ let test_apply_agrees_with_the_sketch () =
   and b = Sofo.Optim.apply params_ptree ~k (thetas_of p) z in
   check_arr ~msg:"same direction" (to_array a.w) b.w;
   check_arr ~msg:"same float32 direction" (to_array a.v) b.v
+
+let test_tangents_stack_a_list () =
+  (* [tangents] puts the list on the lane axis: lane [i] is the [i]th tangent,
+     not a coordinate of one. *)
+  let ts = custom_tangents () in
+  let custom = Sofo.Optim.tangents params_ptree ts in
+  equal ~msg:"one lane per tangent" int 2 (Nx.shape custom.w).(0);
+  equal ~msg:"the int leaf gets lanes too" int 2 (Nx.shape custom.tag).(0);
+  List.iteri
+    (fun i t ->
+       check_arr
+         ~msg:(Printf.sprintf "lane %d of w" i)
+         (to_array t.w)
+         (slice [ Nx.I i ] custom.w);
+       check_arr
+         ~msg:(Printf.sprintf "lane %d of v" i)
+         (to_array t.v)
+         (slice [ Nx.I i ] custom.v))
+    ts
+
+let test_directions_completes_custom () =
+  (* The custom lanes are the prefix of the draw, and the random completion is
+     the same draw an all-random sketch of [k - m] lanes would make. *)
+  let p = params () in
+  let custom = Sofo.Optim.tangents params_ptree (custom_tangents ()) in
+  let k = 5 in
+  let m = 2 in
+  let dirs = Sofo.Optim.directions params_ptree ~key ~custom ~k p in
+  let random = Sofo.Optim.directions params_ptree ~key ~k:(k - m) p in
+  equal ~msg:"the total lane count" int k (Nx.shape dirs.w).(0);
+  equal ~msg:"the int leaf gets k lanes" int k (Nx.shape dirs.tag).(0);
+  check_arr
+    ~msg:"the int leaf stays zero"
+    [| 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0 |]
+    (cast f64 dirs.tag);
+  for i = 0 to m - 1 do
+    check_arr
+      ~msg:(Printf.sprintf "custom w lane %d" i)
+      (to_array (slice [ Nx.I i ] custom.w))
+      (slice [ Nx.I i ] dirs.w);
+    check_arr
+      ~msg:(Printf.sprintf "custom v lane %d" i)
+      (to_array (slice [ Nx.I i ] custom.v))
+      (slice [ Nx.I i ] dirs.v)
+  done;
+  for i = 0 to k - m - 1 do
+    check_arr
+      ~msg:(Printf.sprintf "random w lane %d" i)
+      (to_array (slice [ Nx.I i ] random.w))
+      (slice [ Nx.I (m + i) ] dirs.w);
+    check_arr
+      ~msg:(Printf.sprintf "random v lane %d" i)
+      (to_array (slice [ Nx.I i ] random.v))
+      (slice [ Nx.I (m + i) ] dirs.v)
+  done
+
+let test_directions_custom_fills_k () =
+  let p = params () in
+  let custom = Sofo.Optim.tangents params_ptree (custom_tangents ()) in
+  let dirs = Sofo.Optim.directions params_ptree ~key ~custom ~k:2 p in
+  check_arr ~msg:"all custom w" (to_array custom.w) dirs.w;
+  check_arr ~msg:"all custom v" (to_array custom.v) dirs.v;
+  is_true ~msg:"the int leaf is still zero" (max_abs (cast f64 dirs.tag) = 0.0)
+
+let test_directions_reject_bad_custom () =
+  let p = params () in
+  let custom = Sofo.Optim.tangents params_ptree (custom_tangents ()) in
+  raises_match Exn.invalid_arg (fun () ->
+    ignore (Sofo.Optim.directions params_ptree ~key ~custom ~k:1 p));
+  let mismatched =
+    { w = ones f64 [| 2; d; o |]
+    ; v = ones f32 [| 1; d; 1 |]
+    ; tag = zeros Nx.int32 [| 2; 2 |]
+    }
+  in
+  raises_match Exn.invalid_arg (fun () ->
+    ignore (Sofo.Optim.directions params_ptree ~key ~custom:mismatched ~k:4 p))
 
 (* ── the solve ───────────────────────────────────────────────────────────── *)
 
@@ -501,6 +591,33 @@ let test_compiled_sketch_matches_the_eager_one () =
   check_arr ~rel:1e-5 ~msg:"compiled update (float32)" (to_array a.v) b.v;
   equal ~msg:"compiled update leaves the tag" string (to_string a.tag) (to_string b.tag)
 
+let test_step_uses_custom () =
+  let p = params () in
+  let st = Sofo.Optim.init ~key () in
+  let custom = Sofo.Optim.tangents params_ptree (custom_tangents ()) in
+  let _, _, sk =
+    Sofo.Optim.step
+      params_ptree
+      ~k:8
+      ~lr:1.0
+      ~damping:(`Absolute 0.0)
+      ~custom
+      st
+      ~loss
+      ~params:p
+  in
+  equal ~msg:"the step keeps the total lane count" int 8 (Nx.shape sk.dirs.w).(0);
+  for i = 0 to 1 do
+    check_arr
+      ~msg:(Printf.sprintf "the step keeps custom w lane %d" i)
+      (to_array (slice [ Nx.I i ] custom.w))
+      (slice [ Nx.I i ] sk.dirs.w);
+    check_arr
+      ~msg:(Printf.sprintf "the step keeps custom v lane %d" i)
+      (to_array (slice [ Nx.I i ] custom.v))
+      (slice [ Nx.I i ] sk.dirs.v)
+  done
+
 let test_jitted_sketch_matches_eager () =
   (* [sketch_jit] compiles the computation; jit fuses kernels, so the numbers
      agree with an eager sketch up to floating point. Calling it again replays
@@ -524,6 +641,51 @@ let test_jitted_sketch_matches_eager () =
   is_false
     ~msg:"a new key draws a new subspace"
     (max_abs Infix.(other.dirs.w - jitted.dirs.w) = 0.0)
+
+let test_compiled_custom_is_an_input () =
+  (* [custom] is an input leaf, not a captured value: one compiled step sees a
+     new custom set when it is called with one. *)
+  let p = params () in
+  let k = 4 in
+  let step = Sofo.Optim.sketch_jit ~k Nx.Host.on params_ptree Nx.Ptree.unit loss_c in
+  let first = Sofo.Optim.tangents params_ptree (custom_tangents ()) in
+  let second =
+    Sofo.Optim.tangents
+      params_ptree
+      [ { w = full f64 [| d; o |] 3.0
+        ; v = full f32 [| d; 1 |] (-2.0)
+        ; tag = zeros Nx.int32 [| 2 |]
+        }
+      ; { w = full f64 [| d; o |] 0.125
+        ; v = full f32 [| d; 1 |] 0.75
+        ; tag = zeros Nx.int32 [| 2 |]
+        }
+      ]
+  in
+  let out1 = step ~key ~aux:() ~custom:first p in
+  let out2 = step ~key ~aux:() ~custom:second p in
+  check_arr
+    ~msg:"the first call uses its custom set"
+    (to_array first.w)
+    (concatenate ~axis:0 [ slice [ Nx.I 0 ] out1.dirs.w; slice [ Nx.I 1 ] out1.dirs.w ]);
+  check_arr
+    ~msg:"the second call uses the new one"
+    (to_array second.w)
+    (concatenate ~axis:0 [ slice [ Nx.I 0 ] out2.dirs.w; slice [ Nx.I 1 ] out2.dirs.w ]);
+  is_true
+    ~msg:"the compiled step did not capture the first set"
+    (max_abs Infix.(slice [ Nx.I 0 ] out1.dirs.w - slice [ Nx.I 0 ] out2.dirs.w) > 0.0)
+
+let test_compiled_custom_matches_eager () =
+  let p = params () in
+  let custom = Sofo.Optim.tangents params_ptree (custom_tangents ()) in
+  let out = sketch_step ~key ~aux:() ~custom p in
+  let dirs = Sofo.Optim.directions params_ptree ~key ~custom ~k p in
+  let eager = Sofo.sketch params_ptree loss p dirs in
+  check_arr ~eps:1e-6 ~msg:"loss" (to_array eager.loss) out.loss;
+  check_arr ~rel:1e-5 ~msg:"C" (to_array eager.c) out.c;
+  check_arr ~eps:1e-6 ~rel:1e-5 ~msg:"G̃" (to_array eager.ggn) out.ggn;
+  check_arr ~eps:1e-12 ~msg:"Θ" (to_array dirs.w) out.dirs.w
 
 let test_compiled_loop_trains () =
   (* The deployment end to end: one jitted sketch, eager steps, a decreasing
@@ -623,6 +785,10 @@ let tests =
       ; test "Θ is a pure function of the key" test_directions_are_pure_in_the_key
       ; test "apply picks the lanes" test_apply_picks_lanes
       ; test "apply agrees with the sketch's" test_apply_agrees_with_the_sketch
+      ; test "tangents stacks a list" test_tangents_stack_a_list
+      ; test "custom lanes are completed" test_directions_completes_custom
+      ; test "custom lanes can fill k" test_directions_custom_fills_k
+      ; test "bad custom sets are rejected" test_directions_reject_bad_custom
       ]
   ; group
       "the solve"
@@ -658,6 +824,7 @@ let tests =
           "step decreases the loss and advances"
           test_step_decreases_the_loss_and_advances
       ; test "step is reproducible" test_step_is_reproducible
+      ; test "step uses the custom set" test_step_uses_custom
       ; test
           "an unobserved term adds no block to a step"
           test_step_ignores_an_unobserved_term
@@ -668,6 +835,8 @@ let tests =
           "compiled sketch matches the eager one"
           test_compiled_sketch_matches_the_eager_one
       ; test "jitted sketch matches eager" test_jitted_sketch_matches_eager
+      ; test "custom is a compiled input" test_compiled_custom_is_an_input
+      ; test "compiled custom matches eager" test_compiled_custom_matches_eager
       ; test "a compiled loop trains" test_compiled_loop_trains
       ; test "aux reaches the loss" test_compiled_aux_reaches_the_loss
       ]
