@@ -152,6 +152,17 @@ let custom_lanes (type p d) (structure : (p, d) Nx.Ptree.t) (params : p) (custom
   in
   go None ps cs
 
+(* The number of parameters that can carry a direction. Leaves that cannot —
+   an RNG key, an index, a counter — have zero lanes and contribute no
+   curvature, so they do not enlarge the subspace. *)
+let parameter_count (type p d) (structure : (p, d) Nx.Ptree.t) (params : p) : int =
+  Nx.Ptree.fold
+    structure
+    (fun _ leaf total ->
+       if Nx.Dtype.is Nx.Dtype.Float (Nx.dtype leaf) then total + numel leaf else total)
+    params
+    0
+
 (* [assemble ...] puts the custom lanes before the random ones, leaf by leaf,
    and gives leaves that cannot carry a direction [k] zero lanes. *)
 let assemble (type p d) (structure : (p, d) Nx.Ptree.t) ~k ~params ~custom ~random : p =
@@ -201,6 +212,10 @@ let directions
       (params : p)
   : p
   =
+  (* A sketch cannot span more dimensions than the parameters that can carry a
+     direction. Capping here keeps the Gram matrix full rank when a caller asks
+     for more lanes than there are float parameters. *)
+  let k = Int.min k (parameter_count structure params) in
   let random k =
     match key with
     | Some key -> Sketch.sample structure ~key ~k params
@@ -461,6 +476,7 @@ let sketch_jit
   in
   let sketch key aux (custom : 'p option) params =
     let dirs = directions p ~key ?custom ~k params in
+    let k = Sketch.k_of p dirs in
     let sk = Sketch.run p (fun params -> loss params aux) params dirs in
     Out.{ loss = sk.loss; c = sk.c; ggn = sk.ggn; gram = gram p ~k dirs }, dirs
   in

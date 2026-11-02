@@ -105,6 +105,9 @@ changes do not need an entry.
   parameter-shaped tangents on the lane axis. In `sketch_jit` the custom set
   is an input of the compiled program (`Nx.Ptree.option`), so it may change
   between replays; with a fixed lane count only its values need to change.
+- The direction draw caps `k` at the number of float parameters, so asking
+  for more tangents than the parameter space has dimensions no longer makes
+  the Gram matrix singular.
 - Arrays carry their device set: `Curv.t` is `'d Curv.t`, `sketch` is
   `('p, 'd) sketch` and `Optim.step_info` is `('p, 'd) Optim.step_info`, and
   `Optim.state`'s key is a host `Nx.Rng.key`. `softmax_ce` takes float logits.
