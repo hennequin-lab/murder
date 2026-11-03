@@ -61,7 +61,7 @@ let test_properties () =
       done;
       equal ~msg:(name ^ " symmetry") (float 1e-12) 0.0 !worst;
       (* positive definite: the factor exists and inverts *)
-      let l = M.factor (model name) d in
+      let l = M.factor d.mass_matrix in
       let b = Nx.ones Nx.float64 [| nv |] in
       let x = M.solve l b in
       let residual = Nx.sub (Nx.matmul d.mass_matrix x) b in

@@ -80,7 +80,7 @@ Deviations and findings:
   from `zeros_like d.*` rather than allocating on the host, which is what lets
   the whole pass be `vmap`ped.
 
-## M2 — inertia, bias, passive forces, integration (in progress)
+## M2 — inertia, bias, passive forces, integration (done)
 
 **Landed: the position stage's inertia.** `Mass.forward` computes
 `subtree_com`, `com`, `cinert`, `cdof` and a dense `mass_matrix`, and
@@ -102,10 +102,33 @@ this milestone's work:
   fixture is dense and symmetric, so both triangles are filled from the same
   dot product.
 
-**Remaining:** the velocity stage (`cvel`, `cdof_dot`), the RNE bias, springs
-and dampers, the Euler advance, and `Forward`/`Step`; then the trajectory
-fixture (`traj_qpos/qvel/qacc`, recorded and not yet read) and gate G2. The
-fixture files already carry the arrays for all of it.
+**Landed: the velocity stage, the bias force, passive forces, and the step.**
+`Bias.forward` computes `cvel`, `cdof_dot` and `qfrc_bias` by the abbreviated
+RNE; `Passive.forward` adds hinge and slide springs and per-dof damping;
+`Forward.forward` composes the stages and solves `mass_matrix qacc =
+qfrc_smooth`; `Step.step` is the semi-implicit Euler advance. The stage arrays
+match MuJoCo within 1e-12 and ten steps of the whole engine match `mj_step`
+within 1e-10 (the composed tolerance; the stages are the 1e-12 ones).
+
+**The Euler integrator is implicit in the damping.** When any dof has
+damping, MuJoCo's `mj_Euler` integrates with `M + h diag(B)` rather than with
+`M`, so the velocity update is not `qvel + h qacc`. That difference is 3% of
+the step for the sprung pendulum and the trajectory fixture caught it. With no
+damping the explicit path is used, as in the C engine.
+
+Two more corrections: the three axes of a ball joint take their velocity
+derivatives from one time-stamped velocity, so all three must be taken before
+any of them advances it; and `mj_step` leaves `qacc` from before the step, so
+the recorder now calls `mj_forward` before recording it.
+
+**Gate G2.** A compiled step costs 28–30 us and an eager one 400–2100 us for
+the four corpus models (`bench/bench_step.ml`). That is inside G2's 100 us
+pass threshold at batch 1. The batched number needs the step's two host reads
+(`timestep`, the damping test) hoisted into `Step.compile`, which is M3's
+work; it is not measured yet.
+
+**Remaining in M2:** nothing for the contact-free path. G2's batched row is
+measured after `Step.compile`.
 
 Additions to `Data`: `cinert` and `cdof_dot`. The fixture recorder now writes
 the stage arrays and a ten-step `mj_step` trajectory, and the `pendulum`

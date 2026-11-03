@@ -182,3 +182,5 @@ let batch_data ds =
         (fun _ a b -> Nx.concatenate ~axis:0 [ a; Nx.unsqueeze ~axes:[ 0 ] b ])
         acc
         x)
+
+let fixture_traj name = read_fixture (fixtures ^ "/" ^ name ^ ".traj.mjbf")

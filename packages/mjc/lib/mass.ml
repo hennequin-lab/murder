@@ -52,27 +52,6 @@ let inert_com ~inertia ~mat ~dif ~mass =
   let ryz = rot_ij 1 2 - (mass * d 1 * d 2) in
   cols [ rxx; ryy; rzz; rxy; rxz; ryz; mass * d 0; mass * d 1; mass * d 2; mass ]
 
-(* mju_mulInertVec: a ten-entry inertia times a six-entry motion vector. *)
-(* Both operands are one body's or one dof's vector, so their components are
-   0-d and the result is stacked back into [6]. *)
-let mul_inert_vec i v =
-  let ic k = Nx.get [ k ] i in
-  let vc k = Nx.get [ k ] v in
-  let open Infix in
-  let r0 =
-    (ic 0 * vc 0) + (ic 3 * vc 1) + (ic 4 * vc 2) - (ic 8 * vc 4) + (ic 7 * vc 5)
-  in
-  let r1 =
-    (ic 3 * vc 0) + (ic 1 * vc 1) + (ic 5 * vc 2) + (ic 8 * vc 3) - (ic 6 * vc 5)
-  in
-  let r2 =
-    (ic 4 * vc 0) + (ic 5 * vc 1) + (ic 2 * vc 2) - (ic 7 * vc 3) + (ic 6 * vc 4)
-  in
-  let r3 = (ic 8 * vc 1) - (ic 7 * vc 2) + (ic 9 * vc 3) in
-  let r4 = (ic 6 * vc 2) - (ic 8 * vc 0) + (ic 9 * vc 4) in
-  let r5 = (ic 7 * vc 0) - (ic 6 * vc 1) + (ic 9 * vc 5) in
-  Nx.stack ~axis:0 [ r0; r1; r2; r3; r4; r5 ]
-
 let zeros3 like =
   Nx.zeros_like (Nx.reshape [| 3 |] (Nx.slice [ R (0, 3) ] (Nx.get [ 0 ] like)))
 
@@ -172,7 +151,9 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
   done;
   let mass_matrix = ref (Nx.zeros f64 [| nv; nv |]) in
   for v = 0 to nv - 1 do
-    let buf = mul_inert_vec (Nx.get [ t.dof_bodyid.(v) ] !crb) (Nx.get [ v ] !cdof) in
+    let buf =
+      Rigid.mul_inert_vec (Nx.get [ t.dof_bodyid.(v) ] !crb) (Nx.get [ v ] !cdof)
+    in
     let j = ref v in
     while !j >= 0 do
       let value =
@@ -189,7 +170,7 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
 
 type factor = Nx.host Nx.float64_t
 
-let factor (_m : Model.host) (d : Data.host) : factor = Nx.cholesky d.mass_matrix
+let factor (a : Nx.host Nx.float64_t) : factor = Nx.cholesky a
 
 let solve (l : factor) b =
   let y = Nx.solve_triangular ~triangle:Lower l b in

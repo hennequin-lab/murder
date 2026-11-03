@@ -112,3 +112,69 @@ let mat_vec m v =
   let m3 = Nx.reshape [| n; 3; 3 |] m in
   let v3 = Nx.reshape [| n; 3; 1 |] v in
   Nx.reshape [| n; 3 |] (Nx.matmul m3 v3)
+
+let dot6 a b = Nx.dot a b
+
+let cross_motion vel v =
+  let g = Nx.get in
+  let open Infix in
+  let z = g [ 0 ] vel
+  and o = g [ 1 ] vel
+  and t = g [ 2 ] vel in
+  let th = g [ 3 ] vel
+  and fo = g [ 4 ] vel
+  and fi = g [ 5 ] vel in
+  let v0 = g [ 0 ] v
+  and v1 = g [ 1 ] v
+  and v2 = g [ 2 ] v in
+  let v3 = g [ 3 ] v
+  and v4 = g [ 4 ] v
+  and v5 = g [ 5 ] v in
+  let r0 = Nx.neg (t * v1) + (o * v2) in
+  let r1 = (t * v0) - (z * v2) in
+  let r2 = Nx.neg (o * v0) + (z * v1) in
+  let r3 = Nx.neg (t * v4) + (o * v5) + (Nx.neg (fi * v1) + (fo * v2)) in
+  let r4 = (t * v3) - (z * v5) + ((fi * v0) - (th * v2)) in
+  let r5 = Nx.neg (o * v3) + (z * v4) + (Nx.neg (fo * v0) + (th * v1)) in
+  Nx.stack ~axis:0 [ r0; r1; r2; r3; r4; r5 ]
+
+let cross_force vel f =
+  let g = Nx.get in
+  let open Infix in
+  let z = g [ 0 ] vel
+  and o = g [ 1 ] vel
+  and t = g [ 2 ] vel in
+  let th = g [ 3 ] vel
+  and fo = g [ 4 ] vel
+  and fi = g [ 5 ] vel in
+  let f0 = g [ 0 ] f
+  and f1 = g [ 1 ] f
+  and f2 = g [ 2 ] f in
+  let f3 = g [ 3 ] f
+  and f4 = g [ 4 ] f
+  and f5 = g [ 5 ] f in
+  let r0 = Nx.neg (t * f1) + (o * f2) + (Nx.neg (fi * f4) + (fo * f5)) in
+  let r1 = (t * f0) - (z * f2) + ((fi * f3) - (th * f5)) in
+  let r2 = Nx.neg (o * f0) + (z * f1) + (Nx.neg (fo * f3) + (th * f4)) in
+  let r3 = Nx.neg (t * f4) + (o * f5) in
+  let r4 = (t * f3) - (z * f5) in
+  let r5 = Nx.neg (o * f3) + (z * f4) in
+  Nx.stack ~axis:0 [ r0; r1; r2; r3; r4; r5 ]
+
+let mul_inert_vec i v =
+  let ic k = Nx.get [ k ] i in
+  let vc k = Nx.get [ k ] v in
+  let open Infix in
+  let r0 =
+    (ic 0 * vc 0) + (ic 3 * vc 1) + (ic 4 * vc 2) - (ic 8 * vc 4) + (ic 7 * vc 5)
+  in
+  let r1 =
+    (ic 3 * vc 0) + (ic 1 * vc 1) + (ic 5 * vc 2) + (ic 8 * vc 3) - (ic 6 * vc 5)
+  in
+  let r2 =
+    (ic 4 * vc 0) + (ic 5 * vc 1) + (ic 2 * vc 2) - (ic 7 * vc 3) + (ic 6 * vc 4)
+  in
+  let r3 = (ic 8 * vc 1) - (ic 7 * vc 2) + (ic 9 * vc 3) in
+  let r4 = (ic 6 * vc 2) - (ic 8 * vc 0) + (ic 9 * vc 4) in
+  let r5 = (ic 7 * vc 0) - (ic 6 * vc 1) + (ic 9 * vc 5) in
+  Nx.stack ~axis:0 [ r0; r1; r2; r3; r4; r5 ]

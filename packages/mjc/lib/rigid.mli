@@ -78,3 +78,26 @@ val vec_normalize : ('s, 'd) f -> ('s, 'd) f
 (** [mat_vec m v] is the matrix-vector product of the row-major [[n;9]]
     matrices [m] with the [[n;3]] vectors [v], giving [[n;3]]. *)
 val mat_vec : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f
+
+(** {1:spatial Spatial 6-vectors}
+
+    A spatial motion is a 3-vector of rotation followed by a 3-vector of
+    translation; a spatial force is a 3-vector of torque followed by a
+    3-vector of force. Each function here takes rank-1 tensors of six
+    components. *)
+
+(** [dot6 a b] is the inner product of two 6-vectors. *)
+val dot6 : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f
+
+(** [cross_motion vel v] is the motion cross product of [vel] with the motion
+    [v], MuJoCo's [mji_crossMotion]. *)
+val cross_motion : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f
+
+(** [cross_force vel f] is the force cross product of the motion [vel] with
+    the force [f], MuJoCo's [mji_crossForce]. *)
+val cross_force : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f
+
+(** [mul_inert_vec i v] is a ten-entry inertia times a motion 6-vector,
+    MuJoCo's [mju_mulInertVec]: six rotational entries, three first moments,
+    the mass. *)
+val mul_inert_vec : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f

@@ -144,7 +144,7 @@ POSE_FIELDS = [
 # MuJoCo has no separate global centre of mass in 3.17: subtree_com[0] is it.
 STAGE_FIELDS = [
     "subtree_com", "cinert", "cdof", "cvel", "cdof_dot",
-    "qfrc_bias", "qfrc_passive",
+    "qfrc_bias", "qfrc_passive", "qfrc_smooth",
 ]
 
 TRAJ_STEPS = 10
@@ -198,6 +198,9 @@ def record(name, xml, outdir, rng):
     traj_qvel = [np.array(d.qvel)]
     traj_qacc = []
     for _ in range(TRAJ_STEPS):
+        # mj_step leaves qacc as it was before the step, so recompute it at
+        # the state it belongs to.
+        mujoco.mj_forward(m, d)
         traj_qacc.append(np.array(d.qacc))
         mujoco.mj_step(m, d)
         traj_qpos.append(np.array(d.qpos))

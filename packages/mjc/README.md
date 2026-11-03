@@ -7,11 +7,10 @@ whole step with `Rune.grad`.
 
 ## Status
 
-**M2 in progress.** Forward kinematics and the position stage's inertia
-quantities — subtree centre of mass, centre-of-mass inertia, motion subspaces
-and the mass matrix — match MuJoCo 3.17 to 1e-12 on a four-model parity
-corpus; `mj_integratePos` matches to 1e-15 and the mass matrix factors and
-solves. The library
+**M2 complete.** Forward kinematics, the mass matrix, the velocity stage, the
+bias force, springs and dampers, and the semi-implicit Euler step match MuJoCo
+3.17 on a four-model parity corpus: the stage arrays to 1e-12, and ten steps
+of the whole engine to 1e-10. A compiled step costs about 30 us. The library
 is private and has no `(package ...)` stanza yet, so it cannot be depended on
 from outside this repository. The G0 linear-algebra gate passes with margin:
 [`doc/spike-la.md`](doc/spike-la.md). What exists, and what each milestone
