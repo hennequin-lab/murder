@@ -15,6 +15,7 @@ let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
      no constraints the solver leaves qacc and qfrc_constraint as they are. *)
   let qacc = Mass.solve (Mass.factor d.mass_matrix) qfrc_smooth in
   let d = { d with qfrc_smooth; qacc } in
+  let d = Constraint.equality m d in
   let d = Constraint.limits m d in
   let d = Constraint.impedance m d in
   Solver.forward ?linear m d

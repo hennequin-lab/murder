@@ -53,10 +53,18 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
   let b = select (Nx.sub (Nx.matmul d.efc_J d.qacc) d.efc_aref) in
   (* Active-set Newton on the quadratic. A limit row can only push, so a row
      is in the free set while its force is positive or its reduced gradient is
-     negative; the frozen rows are pinned to zero by an identity block, which
-     keeps the system square and positive definite. The first iteration takes
-     every row free, so a cold start reaches the unconstrained optimum before
-     any row is frozen. *)
+     negative; equality rows are always free, since they pull and push. The
+     frozen rows are pinned to zero by an identity block, which keeps the
+     system square and positive definite. The first iteration takes every row
+     free, so a cold start reaches the unconstrained optimum before any row is
+     frozen. *)
+  (* Equality rows are two-sided: their force takes either sign, so they stay
+     free and their step is never projected. *)
+  let bilateral =
+    Nx.equal
+      d.efc_type
+      (Nx.scalar Nx.int32 (Stdlib.Int32.of_int Constraint.type_equality))
+  in
   let lambda = ref (select d.efc_force) in
   let iters = Int.min (Int.of_float (Nx.item [] p.iterations)) max_iterations in
   for i = 1 to iters do
@@ -67,7 +75,9 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
       else
         Nx.logical_and
           mask
-          (Nx.logical_or (Nx.greater_s !lambda 0.0) (Nx.less_s grad 0.0))
+          (Nx.logical_or
+             bilateral
+             (Nx.logical_or (Nx.greater_s !lambda 0.0) (Nx.less_s grad 0.0)))
     in
     let ff = Nx.where free (Nx.ones_like rows) (Nx.zeros_like rows) in
     let outer = Nx.matmul (Nx.reshape [| nb; 1 |] ff) (Nx.reshape [| 1; nb |] ff) in
@@ -79,8 +89,12 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
       | `Cholesky -> Mass.solve (Mass.factor am) rhs
       | `Cg -> cg ~iters:nb am rhs
     in
+    let stepped = Nx.add !lambda step in
     lambda
-    := Nx.where free (Nx.maximum_s (Nx.add !lambda step) 0.0) (Nx.zeros_like !lambda)
+    := Nx.where
+         free
+         (Nx.where bilateral stepped (Nx.maximum_s stepped 0.0))
+         (Nx.zeros_like !lambda)
   done;
   let qfrc_constraint = Nx.matmul jt !lambda in
   let qacc = Nx.add d.qacc (Mass.solve l qfrc_constraint) in

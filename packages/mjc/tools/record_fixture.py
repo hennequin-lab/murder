@@ -125,6 +125,11 @@ MODELS = {
     </body>
   </worldbody>
 </mujoco>""",
+    # Equality rows of all three shapes, each in its own subtree, plus one
+    # hinge whose spring drives it past its range so limit rows share the
+    # buffer. See the model's own comment.
+    "looped": open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "test", "fixtures", "looped.xml")).read(),
 }
 
 

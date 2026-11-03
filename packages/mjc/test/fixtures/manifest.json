@@ -53,6 +53,16 @@
       "nv": 2,
       "nstates": 32,
       "xml_sha256": "5599c2d0c4ae6804"
+    },
+    {
+      "name": "looped",
+      "nbody": 6,
+      "ngeom": 5,
+      "njnt": 5,
+      "nq": 17,
+      "nv": 15,
+      "nstates": 32,
+      "xml_sha256": "e48a095f3c14f881"
     }
   ]
 }

@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 4
+let version = 5
 
 (* Layout, in writing order:
 
@@ -33,6 +33,7 @@ let counts =
   [ "nbody"
   ; "ngeom"
   ; "njnt"
+  ; "neq"
   ; "nsite"
   ; "ntendon"
   ; "nu"
@@ -66,6 +67,8 @@ let int_arrays =
   ; "geom_conaffinity"
   ; "geom_priority"
   ; "site_bodyid"
+  ; "eq_type"
+  ; "eq_objtype"
   ]
 
 let name_tables = [ "body_names"; "jnt_names"; "geom_names"; "site_names" ]
@@ -79,6 +82,7 @@ let fields =
   ; "body_mass"
   ; "body_inertia"
   ; "body_subtreemass"
+  ; "body_invweight0"
   ; "jnt_axis"
   ; "jnt_pos"
   ; "jnt_range"
@@ -106,6 +110,12 @@ let fields =
   ; "site_pos"
   ; "site_quat"
   ; "site_size"
+  ; "eq_obj1id"
+  ; "eq_obj2id"
+  ; "eq_data"
+  ; "eq_solref"
+  ; "eq_solimp"
+  ; "eq_active0"
   ; "gravity"
   ; "timestep"
   ; "iterations"
@@ -147,6 +157,28 @@ let geom_type_of_code c =
   | 6 -> Topo.Box
   | 7 -> Topo.Mesh
   | c -> raise (Invalid_argument (Printf.sprintf "unknown geom type %d" c))
+
+let eq_type_code = function
+  | Topo.Connect -> 0
+  | Topo.Weld -> 1
+  | Topo.Joint -> 2
+
+let eq_objtype_code = function
+  | Topo.Eq_body -> 1
+  | Topo.Eq_site -> 6
+
+let eq_type_of_code = function
+  | 0 -> Topo.Connect
+  | 1 -> Topo.Weld
+  | 2 -> Topo.Joint
+  | c -> raise (Invalid_argument (Printf.sprintf "unsupported equality type %d" c))
+
+(* A joint equality names joints, not bodies or sites, and MuJoCo leaves its
+   object type at zero: both codes mean "a body" here. *)
+let eq_objtype_of_code = function
+  | 0 | 1 -> Topo.Eq_body
+  | 6 -> Topo.Eq_site
+  | c -> raise (Invalid_argument (Printf.sprintf "unsupported equality object %d" c))
 
 (* {1 Writing} *)
 
@@ -200,6 +232,7 @@ let to_string (m : Model.host) : (string, string) Result.t =
       [ t.nbody
       ; t.ngeom
       ; t.njnt
+      ; t.neq
       ; t.nsite
       ; t.ntendon
       ; t.nu
@@ -234,6 +267,8 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; t.geom_conaffinity
       ; t.geom_priority
       ; t.site_bodyid
+      ; Array.map t.eq_type ~f:eq_type_code
+      ; Array.map t.eq_objtype ~f:eq_objtype_code
       ]
       ~f:(put_ints buf);
     put_i32 buf (List.length name_tables);
@@ -248,6 +283,7 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.body_mass
       ; p.body_inertia
       ; p.body_subtreemass
+      ; p.body_invweight0
       ; p.jnt_axis
       ; p.jnt_pos
       ; p.jnt_range
@@ -275,6 +311,12 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.site_pos
       ; p.site_quat
       ; p.site_size
+      ; p.eq_obj1id
+      ; p.eq_obj2id
+      ; p.eq_data
+      ; p.eq_solref
+      ; p.eq_solimp
+      ; p.eq_active0
       ; p.gravity
       ; p.timestep
       ; p.iterations
@@ -394,6 +436,7 @@ let parse (c : cursor) : Model.host =
     ; nbody = field "nbody" counts_map
     ; ngeom = field "ngeom" counts_map
     ; njnt = field "njnt" counts_map
+    ; neq = field "neq" counts_map
     ; nsite = field "nsite" counts_map
     ; ntendon = field "ntendon" counts_map
     ; nu = field "nu" counts_map
@@ -424,6 +467,8 @@ let parse (c : cursor) : Model.host =
     ; geom_conaffinity = i "geom_conaffinity"
     ; geom_priority = i "geom_priority"
     ; site_bodyid = i "site_bodyid"
+    ; eq_type = Array.map (i "eq_type") ~f:eq_type_of_code
+    ; eq_objtype = Array.map (i "eq_objtype") ~f:eq_objtype_of_code
     ; body_names = field "body_names" names
     ; jnt_names = field "jnt_names" names
     ; geom_names = field "geom_names" names
@@ -438,6 +483,7 @@ let parse (c : cursor) : Model.host =
     ; body_mass = tensor "body_mass"
     ; body_inertia = tensor "body_inertia"
     ; body_subtreemass = tensor "body_subtreemass"
+    ; body_invweight0 = tensor "body_invweight0"
     ; jnt_axis = tensor "jnt_axis"
     ; jnt_pos = tensor "jnt_pos"
     ; jnt_range = tensor "jnt_range"
@@ -465,6 +511,12 @@ let parse (c : cursor) : Model.host =
     ; site_pos = tensor "site_pos"
     ; site_quat = tensor "site_quat"
     ; site_size = tensor "site_size"
+    ; eq_obj1id = tensor "eq_obj1id"
+    ; eq_obj2id = tensor "eq_obj2id"
+    ; eq_data = tensor "eq_data"
+    ; eq_solref = tensor "eq_solref"
+    ; eq_solimp = tensor "eq_solimp"
+    ; eq_active0 = tensor "eq_active0"
     ; gravity = tensor "gravity"
     ; timestep = tensor "timestep"
     ; iterations = tensor "iterations"

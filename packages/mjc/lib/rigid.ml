@@ -31,6 +31,16 @@ let quat_mul a b =
     ; (aw * bz) + (ax * by) - (ay * bx) + (az * bw)
     ]
 
+let quat_mul_axis q v =
+  let z = Nx.slice [ R (0, 1) ] v in
+  quat_mul q (Nx.concatenate ~axis:0 [ Nx.mul_s z 0.0; v ])
+
+let quat_deriv q omega =
+  (* MuJoCo's [mju_derivQuat] multiplies from the left: [(0, omega) * q]. *)
+  let z = Nx.slice [ R (0, 1) ] omega in
+  let pure = Nx.concatenate ~axis:0 [ Nx.mul_s z 0.0; omega ] in
+  Nx.mul_s (quat_mul pure q) 0.5
+
 let quat_conj q =
   of_cols [ comp 0 q; Nx.neg (comp 1 q); Nx.neg (comp 2 q); Nx.neg (comp 3 q) ]
 

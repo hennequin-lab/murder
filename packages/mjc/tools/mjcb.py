@@ -17,7 +17,7 @@ MJCB_MAGIC = b"MJCB"
 MJCB_END = b"MJCE"
 MJBF_MAGIC = b"MJBF"
 MJBF_END = b"MJFE"
-VERSION = 4
+VERSION = 5
 
 # Topology arrays, in the order the format writes them.
 INT_ARRAYS = [
@@ -25,6 +25,7 @@ INT_ARRAYS = [
     "body_rootid", "jnt_type", "jnt_bodyid", "jnt_qposadr", "jnt_dofadr",
     "dof_bodyid", "dof_jntid", "dof_parentid", "geom_bodyid", "geom_type",
     "geom_contype", "geom_conaffinity", "geom_priority", "site_bodyid",
+    "eq_type", "eq_objtype",
 ]
 
 # MuJoCo joint codes to ours: free 0, ball 1, slide 2, hinge 3 becomes
@@ -39,6 +40,7 @@ def fields(m):
         ("body_ipos", m.body_ipos), ("body_iquat", m.body_iquat),
         ("body_mass", m.body_mass), ("body_inertia", m.body_inertia),
         ("body_subtreemass", m.body_subtreemass),
+        ("body_invweight0", m.body_invweight0),
         ("jnt_axis", m.jnt_axis), ("jnt_pos", m.jnt_pos),
         ("jnt_range", m.jnt_range), ("jnt_limited", m.jnt_limited),
         ("jnt_stiffness", m.jnt_stiffness),
@@ -55,6 +57,10 @@ def fields(m):
         ("geom_solref", m.geom_solref), ("geom_solimp", m.geom_solimp),
         ("site_pos", m.site_pos), ("site_quat", m.site_quat),
         ("site_size", m.site_size),
+        ("eq_obj1id", m.eq_obj1id), ("eq_obj2id", m.eq_obj2id),
+        ("eq_data", m.eq_data), ("eq_solref", m.eq_solref),
+        ("eq_solimp", m.eq_solimp),
+        ("eq_active0", np.asarray(m.eq_active0, dtype=np.float64)),
         ("gravity", m.opt.gravity), ("timestep", np.asarray(m.opt.timestep)),
         ("iterations", np.asarray(m.opt.iterations)),
         ("tolerance", np.asarray(m.opt.tolerance)),
@@ -108,12 +114,24 @@ def _names(m, objtype, n):
     return [mujoco.mj_id2name(m, objtype, i) or "" for i in range(n)]
 
 
+# Rows an equality constraint contributes, by MuJoCo's eq_type code.
+EQ_ROWS = {0: 3, 1: 6, 2: 1, 3: 1, 4: 0, 5: 0, 6: 0}
+
+
 def budgets(m):
-    """Compile-time budgets for a model, from its size."""
+    """Compile-time budgets for a model, from its size.
+
+    The row budget covers what v1 can instantiate: two sides for every hinge
+    or slide limit, the equality rows, and one friction row per dof. Contacts
+    are not counted yet; a model with a contact budget of its own overrides
+    this.
+    """
     ng = m.ngeom
+    limited = sum(1 for t in m.jnt_type if int(t) in (2, 3))
+    eq = sum(EQ_ROWS.get(int(t), 0) for t in m.eq_type)
     return {
         "nconmax": max(16, 2 * ng),
-        "nefcmax": max(4, 2 * m.njnt),
+        "nefcmax": max(4, 2 * limited + eq + m.nv),
         "max_geom_pairs": max(16, 2 * ng),
     }
 
@@ -131,8 +149,8 @@ def model_bytes(m, nconmax=None, nefcmax=None, max_geom_pairs=None, name=None):
     _put_u16(buf, 0)
     _put_string(buf, name or "model")
     _put_string(buf, mujoco.__version__)
-    _put_i32(buf, 14)
-    for v in (m.nbody, m.ngeom, m.njnt, m.nsite, m.ntendon, m.nu, m.na,
+    _put_i32(buf, 15)
+    for v in (m.nbody, m.ngeom, m.njnt, m.neq, m.nsite, m.ntendon, m.nu, m.na,
               m.nsensor, m.nmesh, m.nq, m.nv, nconmax, nefcmax, max_geom_pairs):
         _put_i32(buf, v)
     _put_i32(buf, len(INT_ARRAYS))

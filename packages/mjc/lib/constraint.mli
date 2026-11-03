@@ -29,11 +29,16 @@ val type_limit_tendon : int
 val type_contact_frictionless : int
 val type_contact_pyramidal : int
 
-(** [limits m d] is [d] with the joint-limit rows assembled into [efc_type],
-    [efc_id], [efc_pos], [efc_margin] and [efc_J], and [nefc] set to their
-    count. It reads [d.qpos] and the model's ranges, margins and limit flags.
-    A row that does not fit in the model's [nefcmax] budget raises through
-    [Nx.check] rather than being dropped silently. *)
+(** [equality m d] writes the rows of every active equality constraint, from
+    row 0, and sets [nefc] to their number. It is the first stage to run: the
+    limit and contact stages append after it. *)
+val equality : Model.host -> Data.host -> Data.host
+
+(** [limits m d] appends one row per active joint limit after the rows already
+    in the buffer, and adds their count to [nefc]. It reads [d.qpos] and the
+    model's ranges, margins and limit flags. A row that does not fit in the
+    model's [nefcmax] budget raises through [Nx.check] rather than being
+    dropped silently. *)
 val limits : Model.host -> Data.host -> Data.host
 
 (** {1:impedance Impedance} *)

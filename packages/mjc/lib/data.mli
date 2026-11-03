@@ -50,6 +50,18 @@ type ('a, 'd) t =
   ; efc_id : 'd Nx.int32_t (** [[nefcmax]], the joint or other object. *)
   ; efc_pos : 'a (** [[nefcmax]], constraint position (violation). *)
   ; efc_margin : 'a (** [[nefcmax]], the position at which it activates. *)
+  ; efc_posnorm : 'a
+    (** [[nefcmax]], the position the impedance is read at: the row's own
+        violation, except for an equality, which reads the norm over its
+        block of rows. *)
+  ; efc_diagA : 'a
+    (** [[nefcmax]], the row's approximate inverse inertia [1/J M⁻¹ Jᵀ],
+        which sets its regularisation. *)
+  ; efc_solref : 'a (** [[nefcmax;2]], the row's stiffness and damping. *)
+  ; efc_solimp : 'a (** [[nefcmax;5]], the row's impedance. *)
+  ; efc_jdotv : 'a
+    (** [[nefcmax]], the row's [Jdot qvel]: the reference acceleration
+        must cancel it or the constraint would drift. *)
   ; efc_J : 'a (** [[nefcmax;nv]], the Jacobian rows. *)
   ; efc_vel : 'a (** [[nefcmax]], the row velocity [J qvel]. *)
   ; efc_R : 'a (** [[nefcmax]], the impedance's regularisation. *)

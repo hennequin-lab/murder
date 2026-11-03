@@ -27,6 +27,9 @@ module Params : sig
     ; body_mass : 'a (** [[nbody]] *)
     ; body_inertia : 'a (** [[nbody;3]], diagonal inertia, principal axes. *)
     ; body_subtreemass : 'a (** [[nbody]], the mass of the subtree at a body. *)
+    ; body_invweight0 : 'a
+      (** [[nbody;2]], approximate [1/J M⁻¹ Jᵀ] for translation and
+          rotation at the reference configuration. *)
     ; jnt_axis : 'a (** [[njnt;3]], joint axis in the body frame. *)
     ; jnt_pos : 'a (** [[njnt;3]], joint anchor in the body frame. *)
     ; jnt_range : 'a (** [[njnt;2]], limits. *)
@@ -54,6 +57,12 @@ module Params : sig
     ; site_pos : 'a (** [[nsite;3]], site frame in the body frame. *)
     ; site_quat : 'a (** [[nsite;4]], site frame in the body frame. *)
     ; site_size : 'a (** [[nsite;3]] *)
+    ; eq_obj1id : 'a (** [[neq]], the body or site of the first object. *)
+    ; eq_obj2id : 'a (** [[neq]], the second, [-1] when there is none. *)
+    ; eq_data : 'a (** [[neq;12]], anchors, reference pose and coefficients. *)
+    ; eq_solref : 'a (** [[neq;2]] *)
+    ; eq_solimp : 'a (** [[neq;5]] *)
+    ; eq_active0 : 'a (** [[neq]], [1] where the constraint is on. *)
     ; gravity : 'a (** [[3]] *)
     ; timestep : 'a (** [[]], a 0-d tensor. *)
     ; iterations : 'a (** [[]], the solver's iteration budget. *)
@@ -114,6 +123,7 @@ type shape_key =
   ; nbody : int
   ; ngeom : int
   ; njnt : int
+  ; neq : int
   ; nq : int
   ; nv : int
   ; nsite : int

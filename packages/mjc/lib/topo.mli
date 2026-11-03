@@ -38,6 +38,18 @@ type geom_type =
   | Box
   | Mesh
 
+(** The type for equality-constraint types. Modules of v1 support connect,
+    weld and joint; the other MuJoCo kinds are rejected when a model loads. *)
+type eq_type =
+  | Connect (** Two anchor points coincide: a ball joint. *)
+  | Weld (** Rigid attachment: relative position and orientation. *)
+  | Joint (** A scalar coupling between two joints, through a cubic. *)
+
+(** The type for what an equality constrains. *)
+type eq_objtype =
+  | Eq_body
+  | Eq_site
+
 (** {1:model The structure} *)
 
 type t =
@@ -46,6 +58,7 @@ type t =
   ; nbody : int (** Bodies, including the world body [0]. *)
   ; ngeom : int
   ; njnt : int
+  ; neq : int (** Equality constraints. *)
   ; nsite : int
   ; ntendon : int
   ; nu : int (** Actuators. *)
@@ -76,6 +89,9 @@ type t =
   ; geom_conaffinity : int array (** [[ngeom]], collision mask. *)
   ; geom_priority : int array (** [[ngeom]], contact override. *)
   ; site_bodyid : int array (** [[nsite]] *)
+  ; eq_type : eq_type array (** [[neq]] *)
+  ; eq_objtype : eq_objtype array
+    (** [[neq]], what [eq_obj1id] and [eq_obj2id] index in the model. *)
   ; body_names : string array (** [[nbody]] *)
   ; jnt_names : string array (** [[njnt]] *)
   ; geom_names : string array (** [[ngeom]] *)

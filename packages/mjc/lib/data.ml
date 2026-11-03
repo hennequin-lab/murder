@@ -41,6 +41,11 @@ type ('a, 'd) t =
   ; efc_id : 'd Nx.int32_t
   ; efc_pos : 'a
   ; efc_margin : 'a
+  ; efc_posnorm : 'a
+  ; efc_diagA : 'a
+  ; efc_solref : 'a
+  ; efc_solimp : 'a
+  ; efc_jdotv : 'a
   ; efc_J : 'a
   ; efc_vel : 'a
   ; efc_R : 'a
@@ -101,6 +106,11 @@ let create (m : Model.host) : host =
   ; efc_id = Nx.zeros Nx.int32 [| t.nefcmax |]
   ; efc_pos = zeros [| t.nefcmax |]
   ; efc_margin = zeros [| t.nefcmax |]
+  ; efc_posnorm = zeros [| t.nefcmax |]
+  ; efc_diagA = zeros [| t.nefcmax |]
+  ; efc_solref = zeros [| t.nefcmax; 2 |]
+  ; efc_solimp = zeros [| t.nefcmax; 5 |]
+  ; efc_jdotv = zeros [| t.nefcmax |]
   ; efc_J = zeros [| t.nefcmax; t.nv |]
   ; efc_vel = zeros [| t.nefcmax |]
   ; efc_R = zeros [| t.nefcmax |]

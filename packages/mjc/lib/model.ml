@@ -15,6 +15,7 @@ module Params = struct
     ; body_mass : 'a
     ; body_inertia : 'a
     ; body_subtreemass : 'a
+    ; body_invweight0 : 'a
     ; jnt_axis : 'a
     ; jnt_pos : 'a
     ; jnt_range : 'a
@@ -42,6 +43,12 @@ module Params = struct
     ; site_pos : 'a
     ; site_quat : 'a
     ; site_size : 'a
+    ; eq_obj1id : 'a
+    ; eq_obj2id : 'a
+    ; eq_data : 'a
+    ; eq_solref : 'a
+    ; eq_solimp : 'a
+    ; eq_active0 : 'a
     ; gravity : 'a
     ; timestep : 'a
     ; iterations : 'a
@@ -76,6 +83,7 @@ type shape_key =
   ; nbody : int
   ; ngeom : int
   ; njnt : int
+  ; neq : int
   ; nq : int
   ; nv : int
   ; nsite : int
@@ -94,6 +102,7 @@ let shape_key (m : _ t) : shape_key =
   ; nbody = t.nbody
   ; ngeom = t.ngeom
   ; njnt = t.njnt
+  ; neq = t.neq
   ; nq = t.nq
   ; nv = t.nv
   ; nsite = t.nsite
@@ -111,12 +120,13 @@ let equal_shape_key (a : shape_key) (b : shape_key) = Poly.equal a b
 let pp_shape_key ppf k =
   Format.fprintf
     ppf
-    "dtype=%s nbody=%d ngeom=%d njnt=%d nq=%d nv=%d nsite=%d ntendon=%d nu=%d na=%d \
-     nsensor=%d nconmax=%d nefcmax=%d max_geom_pairs=%d"
+    "dtype=%s nbody=%d ngeom=%d njnt=%d neq=%d nq=%d nv=%d nsite=%d ntendon=%d nu=%d \
+     na=%d nsensor=%d nconmax=%d nefcmax=%d max_geom_pairs=%d"
     k.dtype
     k.nbody
     k.ngeom
     k.njnt
+    k.neq
     k.nq
     k.nv
     k.nsite
@@ -151,6 +161,7 @@ let validate (m : host) : (unit, string) Result.t =
   want "body_mass" [| t.nbody |] p.body_mass;
   want "body_inertia" [| t.nbody; 3 |] p.body_inertia;
   want "body_subtreemass" [| t.nbody |] p.body_subtreemass;
+  want "body_invweight0" [| t.nbody; 2 |] p.body_invweight0;
   want "jnt_axis" [| t.njnt; 3 |] p.jnt_axis;
   want "jnt_pos" [| t.njnt; 3 |] p.jnt_pos;
   want "jnt_range" [| t.njnt; 2 |] p.jnt_range;
@@ -178,6 +189,12 @@ let validate (m : host) : (unit, string) Result.t =
   want "site_pos" [| t.nsite; 3 |] p.site_pos;
   want "site_quat" [| t.nsite; 4 |] p.site_quat;
   want "site_size" [| t.nsite; 3 |] p.site_size;
+  want "eq_obj1id" [| t.neq |] p.eq_obj1id;
+  want "eq_obj2id" [| t.neq |] p.eq_obj2id;
+  want "eq_data" [| t.neq; 12 |] p.eq_data;
+  want "eq_solref" [| t.neq; 2 |] p.eq_solref;
+  want "eq_solimp" [| t.neq; 5 |] p.eq_solimp;
+  want "eq_active0" [| t.neq |] p.eq_active0;
   want "gravity" [| 3 |] p.gravity;
   want "timestep" [||] p.timestep;
   want "iterations" [||] p.iterations;

@@ -189,8 +189,29 @@ iteration per row, exact at these sizes) and needs no factorisation. The two
 agree on every fixture state to 1e-8, which is M3's acceptance item for the
 solver pair.
 
-**Remaining in M3:** equality rows (connect, weld, joint, tendon) with their
-`Jdot·v` reference correction, friction loss rows, and `implicitfast`. The `.mjcb` format is
+**Equality rows landed, two gaps left.** Connect, weld and joint equalities
+now instantiate rows (3, 6 and 1), the solver treats them as two-sided, and a
+new `Jacobian` module supplies the point Jacobian and its `Jdot·v` from
+`cdof`/`cdof_dot` in MuJoCo's com-referenced convention. `.mjcb` goes to
+version 5 (`neq`, `eq_type`, `eq_objtype`, `body_invweight0`, `eq_*`) and a
+`looped` corpus model carries one of each kind. Data gains `efc_diagA`,
+`efc_solref`, `efc_solimp`, `efc_jdotv` and `efc_posnorm`: a row now carries
+the solver parameters and inverse inertia it was built with, instead of the
+impedance stage re-deriving them by row type.
+
+The rows, their anchors and their Jacobians match MuJoCo to 1e-12 on every
+corpus state. Two mismatches remain, both localised and both written up in
+`test/test_constraint.ml` where the two tests sit unregistered:
+
+- the weld's rotational `Jdot·v`: the quaternion term is off by about 1e-4
+  relative. `mju_derivQuat` multiplies from the *left* (`0.5 (0,ω) q`), which
+  this port now does, but something else in the three-term product rule
+  still differs;
+- one corpus state where MuJoCo instantiates one limit row more than this
+  port, so the row counts differ (13 against 12).
+
+**Remaining in M3:** close those two, then friction-loss rows and
+`implicitfast`. The `.mjcb` format is
 version 4: it carries `dof_invweight0`, `iterations` and `tolerance`, and the
 converter now sizes `nefcmax` from the model's joints rather than a padding
 constant.

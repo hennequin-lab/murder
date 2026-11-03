@@ -12,6 +12,18 @@ type jnt_type =
   | Ball
   | Free
 
+(** The type for equality-constraint types. MuJoCo's codes are not
+    contiguous; the converter maps the ones v1 supports and rejects the rest. *)
+type eq_type =
+  | Connect (** Ball joint: two anchor points coincide. *)
+  | Weld (** Rigid: relative position and orientation. *)
+  | Joint (** Scalar coupling between two joints, through a cubic. *)
+
+(** The type for the objects an equality constrains. *)
+type eq_objtype =
+  | Eq_body
+  | Eq_site
+
 type geom_type =
   | Plane
   | Hfield
@@ -28,6 +40,7 @@ type t =
   ; nbody : int
   ; ngeom : int
   ; njnt : int
+  ; neq : int (** Equality constraints. *)
   ; nsite : int
   ; ntendon : int
   ; nu : int
@@ -58,6 +71,8 @@ type t =
   ; geom_conaffinity : int array
   ; geom_priority : int array
   ; site_bodyid : int array
+  ; eq_type : eq_type array (** [[neq]] *)
+  ; eq_objtype : eq_objtype array (** [[neq]] *)
   ; body_names : string array
   ; jnt_names : string array
   ; geom_names : string array
@@ -156,6 +171,10 @@ let validate (t : t) : (unit, string) Result.t =
   len "geom_bodyid" t.ngeom t.geom_bodyid;
   if Array.length t.geom_type <> t.ngeom
   then add "geom_type has length %d, expected %d" (Array.length t.geom_type) t.ngeom;
+  if Array.length t.eq_type <> t.neq
+  then add "eq_type has length %d, expected %d" (Array.length t.eq_type) t.neq;
+  if Array.length t.eq_objtype <> t.neq
+  then add "eq_objtype has length %d, expected %d" (Array.length t.eq_objtype) t.neq;
   len "geom_contype" t.ngeom t.geom_contype;
   len "geom_conaffinity" t.ngeom t.geom_conaffinity;
   len "geom_priority" t.ngeom t.geom_priority;
@@ -170,6 +189,7 @@ let validate (t : t) : (unit, string) Result.t =
     [ "nbody", t.nbody
     ; "ngeom", t.ngeom
     ; "njnt", t.njnt
+    ; "neq", t.neq
     ; "nsite", t.nsite
     ; "ntendon", t.ntendon
     ; "nu", t.nu

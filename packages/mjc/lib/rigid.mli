@@ -27,6 +27,15 @@ type ('s, 'd) f = (float, 's, 'd) Nx.t
     [[n;4]] operands. *)
 val quat_mul : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f
 
+(** [quat_mul_axis q v] is [q] times the pure quaternion [(0, v)]: the
+    rotation of [q] applied to [v], in quaternion form. *)
+val quat_mul_axis : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f
+
+(** [quat_deriv q omega] is the time derivative of [q] when the angular
+    velocity is [omega]: [0.5 * (0, omega) * q], which is the side MuJoCo
+    multiplies on. *)
+val quat_deriv : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f
+
 (** [quat_conj q] is [q]'s conjugate [[w;-x;-y;-z]], the inverse rotation for a
     unit quaternion. *)
 val quat_conj : ('s, 'd) f -> ('s, 'd) f
