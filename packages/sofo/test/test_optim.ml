@@ -594,6 +594,36 @@ let test_compiled_sketch_matches_the_eager_one () =
   check_arr ~rel:1e-5 ~msg:"compiled update (float32)" (to_array a.v) b.v;
   equal ~msg:"compiled update leaves the tag" string (to_string a.tag) (to_string b.tag)
 
+(* A curvature computed from the prediction is a *captured* tensor: the
+   mark's rule closes over it, and a rule must not use a value the
+   differentiation tracks. [Rune.detach] is what makes the curvature a constant
+   of the forward pass; without it a compiled sketch raises
+   "Rune.custom_jvp: the rule uses a value its own differentiation tracks".
+   [Sofo.mse] and [Sofo.sse] detach their weights for this reason. *)
+let loss_of_a_prediction_curvature p =
+  let y = Infix.(x *@ p.w) in
+  let d = Infix.(y - targets) in
+  let h = Rune.detach (full_like y (2.0 /. float_of_int (numel y))) in
+  let curv = Sofo.Curv.hvp ~y (fun v -> Infix.(h * v)) in
+  let l = mean Infix.(d * d) in
+  Sofo.observe ~y ~curv l;
+  l
+
+let test_compiled_sketch_with_a_prediction_curvature () =
+  let step =
+    Sofo.Optim.sketch_jit ~k Nx.Host.on params_ptree Nx.Ptree.unit (fun p () ->
+      loss_of_a_prediction_curvature p)
+  in
+  let p = params () in
+  let out = step ~key ~aux:() p in
+  let sk = Sofo.sketch params_ptree loss_of_a_prediction_curvature p (thetas_of p) in
+  check_arr ~eps:1e-6 ~msg:"loss" (to_array out.loss) sk.loss;
+  check_arr
+    ~rel:1e-5
+    ~msg:"G̃ from a curvature of the prediction"
+    (to_array out.ggn)
+    sk.ggn
+
 let test_compiled_k_is_capped () =
   let p = params () in
   let capacity = (d * o) + d in
@@ -851,6 +881,9 @@ let tests =
       [ test
           "compiled sketch matches the eager one"
           test_compiled_sketch_matches_the_eager_one
+      ; test
+          "a curvature of the prediction compiles"
+          test_compiled_sketch_with_a_prediction_curvature
       ; test "jitted sketch matches eager" test_jitted_sketch_matches_eager
       ; test "custom is a compiled input" test_compiled_custom_is_an_input
       ; test "compiled k is capped" test_compiled_k_is_capped

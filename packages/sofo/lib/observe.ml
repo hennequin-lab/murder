@@ -97,7 +97,10 @@ let observe ~y ~curv l =
 
 (* [mse ?w y target] is the mean weighted squared error
    [mean (w * (y - target)²)], marked with its exact curvature
-   [diag (2 w / numel y)] — [Curv.scale (2 / numel y)] without weights. *)
+   [diag (2 w / numel y)] — [Curv.scale (2 / numel y)] without weights. A
+   weight is data of the curvature, not a differentiable path: the mark's rule
+   captures it, and a rule must not use a value the differentiation tracks
+   ({!Rune.custom_jvp}), so it is detached. *)
 let mse ?w ~target y =
   let shape_y = shape y in
   if shape_y <> shape target
@@ -111,7 +114,7 @@ let mse ?w ~target y =
     | Some w ->
       let w = cast (Nx.dtype y) w in
       let two_over_n = Nx.Dtype.of_float (Nx.dtype y) (2.0 /. n) in
-      mean Infix.(w * sq), Curv.diag Infix.(w *$ two_over_n)
+      mean Infix.(w * sq), Curv.diag (Rune.detach Infix.(w *$ two_over_n))
   in
   observe ~y ~curv loss;
   loss
@@ -128,7 +131,7 @@ let sse ?w ~target y =
     | Some w ->
       let w = cast (Nx.dtype y) w in
       let two_over_n = Nx.Dtype.of_float (Nx.dtype y) 2.0 in
-      sum Infix.(w * sq), Curv.diag Infix.(w *$ two_over_n)
+      sum Infix.(w * sq), Curv.diag (Rune.detach Infix.(w *$ two_over_n))
   in
   observe ~y ~curv loss;
   loss

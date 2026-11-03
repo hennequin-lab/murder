@@ -72,6 +72,12 @@ let softmax_ce ?(scale = 1.0) p = Softmax_ce (scale, Nx.P p)
    it over the lane axis — one vectorized translation of the closure rather than
    a loop over lanes. The closure must be linear in its argument and
    side-effect free. [y] is the prediction whose loss this describes; it fixes
-   the element type [f] is written at, so captured tensors need no casting. *)
+   the element type [f] is written at, so captured tensors need no casting.
+
+   {b Captures.} A sketch's mark is a {!Rune.custom_jvp} whose rule is built
+   from the description, so [f] must not use a value the differentiation
+   tracks: a curvature computed from the prediction is a value of the forward
+   pass, and is passed through {!Rune.detach} before it is captured. Without
+   that, a compiled sketch raises ["Rune.custom_jvp: the rule uses a value its own differentiation tracks; pass it as an argument"]. *)
 let hvp ~(y : ('a, 'b, 'd) Nx.t) (f : ('a, 'b, 'd) Nx.t -> ('a, 'b, 'd) Nx.t) =
   Hvp (f, Nx.dtype y)

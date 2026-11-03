@@ -118,3 +118,10 @@ changes do not need an entry.
   the call, a rune bug.
 - A sketch must be given the uncompiled loss: a `Rune.jit`ed loss first traced
   outside a sketch keeps no marks, and its sketch has a zero GGN.
+- An observed curvature is a captured value of the mark's custom rule, and
+  rune refuses a rule that uses one the differentiation tracks. `mse` and
+  `sse` now detach their weight, and `Curv.hvp` states the requirement for its
+  closure: a curvature computed from the prediction must be passed through
+  `Rune.detach`. Without it, `sketch_jit` raises `Rune.custom_jvp: the rule
+  uses a value its own differentiation tracks` where an eager sketch quietly
+  works.
