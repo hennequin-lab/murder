@@ -13,6 +13,11 @@ recognition is a value of type `Recognition.t` with its own parameters;
 `Model.make` takes one, and everything else — the ELBO, sampling, training,
 JIT compilation — is unchanged by the choice.
 
+The model's dimensions are not arguments: `n` and `m` come from the
+dynamics, `n_output` from the likelihood and `n_steps` from the recognition
+(the only component that knows the horizon), and `Model.make` checks that
+the components agree with each other.
+
 ```ocaml
 open Base
 open Stdio
@@ -21,10 +26,6 @@ open Ilqr_vae
 let model =
   Model.make
     Nx.float64
-    ~n:3
-    ~m:3
-    ~n_steps:32
-    ~n_output:3
     ~dynamics:
       (Dynamics.Linear_nonlinear.make
          ~dt:0.01

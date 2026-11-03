@@ -120,20 +120,7 @@ let setup ?(key = Nx.Rng.key 0) ~n ~m ~t_steps ~n_output () : iilqr_model * iilq
   let prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
   let encoder_prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
   let recognition = Il.make ~n ~m ~n_steps:t_steps ~n_output dtype in
-  let model =
-    M.make
-      dtype
-      ~n
-      ~m
-      ~n_steps:t_steps
-      ~n_output
-      ~dynamics
-      ~likelihood
-      ~prior
-      ~encoder_prior
-      ~recognition
-      ()
-  in
+  let model = M.make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition () in
   model, M.params model
 
 let setup_lfads
@@ -172,10 +159,6 @@ let setup_lfads
   let model =
     M.make
       dtype
-      ~n
-      ~m
-      ~n_steps:t_steps
-      ~n_output
       ~dynamics
       ~likelihood
       ~prior
@@ -1021,10 +1004,6 @@ let test_lfads_sticking_the_landing () =
   let model =
     M.make
       dtype
-      ~n
-      ~m
-      ~n_steps:t_steps
-      ~n_output:2
       ~dynamics
       ~likelihood
       ~prior
@@ -1621,10 +1600,6 @@ let test_swapping () =
   let make recognition initial_prior =
     M.make
       dtype
-      ~n
-      ~m
-      ~n_steps:t_steps
-      ~n_output:2
       ~dynamics
       ~likelihood
       ~prior
@@ -1702,7 +1677,44 @@ let test_swapping () =
             ~n_steps:t_steps
             ~n_output:2
             dtype)
-         None))
+         None));
+  (* the model takes its dimensions from the components, so it checks that
+     they agree with each other *)
+  require
+    ~msg:"the model takes its dimensions from the components"
+    (Int.equal iilqr.M.n n
+     && Int.equal iilqr.M.m m
+     && Int.equal iilqr.M.n_steps t_steps
+     && Int.equal iilqr.M.n_output 2);
+  let rejects_model
+        ?(dynamics = dynamics)
+        ?(likelihood = likelihood)
+        ?(prior = prior)
+        ?(encoder_prior = encoder_prior)
+        ?(recognition = Il.make ~n ~m ~n_steps:t_steps ~n_output:2 dtype)
+        ()
+    =
+    rejects (fun () ->
+      M.make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition ())
+  in
+  require
+    ~msg:"a recognition built for another state dimension is rejected"
+    (rejects_model
+       ~recognition:(Il.make ~n:(n + 1) ~m ~n_steps:t_steps ~n_output:2 dtype)
+       ());
+  require
+    ~msg:"a likelihood built for another state dimension is rejected"
+    (rejects_model
+       ~likelihood:(L.Gaussian.make ~key:(Nx.Rng.key 34) ~n:(n + 1) ~n_output:2 dtype)
+       ());
+  require
+    ~msg:"a likelihood with another observation dimension is rejected"
+    (rejects_model
+       ~likelihood:(L.Gaussian.make ~key:(Nx.Rng.key 34) ~n ~n_output:3 dtype)
+       ());
+  require
+    ~msg:"a prior over other inputs is rejected"
+    (rejects_model ~prior:(P.Gaussian.make ~m:(m + 1) ~spatial_std:1.0 dtype) ())
 
 (* ──────────────────────────────────────────────────────────────────────────
    End to end

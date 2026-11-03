@@ -89,8 +89,8 @@ type ('w, 's) posterior =
   ; log_prob : ('w, 's) value
   }
 
-(** The dimensions a recognition is built for, checked against the model's by
-    {!Model.make}. *)
+(** The dimensions a recognition is built for. {!Model.make} takes [n_steps]
+    from here and checks the rest against the other components. *)
 type dims =
   { n : int
   ; m : int
@@ -749,7 +749,8 @@ module Iilqr = struct
   (** [make ?space_sigma2 ?time_sigma2 ~n ~m ~n_steps ~n_output dtype] is the
       iLQR recognition with covariance factors initialized to
       [space_sigma2 · I] and [time_sigma2 · I]. The dimensions are the
-      model's; {!Model.make} checks them. *)
+      model's; {!Model.make} checks them against the other components and
+      takes the horizon from here. *)
   let make ?space_sigma2 ?time_sigma2 ~n ~m ~n_steps ~n_output dtype =
     { dims = { n; m; n_steps; n_output }
     ; infers_initial = false

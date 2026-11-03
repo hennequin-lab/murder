@@ -91,8 +91,9 @@ type ('w, 's) posterior =
   ; log_prob : ('w, 's) value
   }
 
-(** The dimensions a recognition is built for. {!Model.make} checks them
-    against the model's. *)
+(** The dimensions a recognition is built for. {!Model.make} takes [n_steps]
+    from here — no other component knows the horizon — and checks the rest
+    against the other components. *)
 type dims =
   { n : int
   ; m : int

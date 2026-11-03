@@ -21,10 +21,6 @@
     let model =
       Model.make
         Nx.float64
-        ~n:3
-        ~m:3
-        ~n_steps:32
-        ~n_output:3
         ~dynamics:
           (Dynamics.Linear_nonlinear.make
              ~dt:0.01
@@ -99,25 +95,26 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) params =
   ; recognition : 'r
   }
 
-(** [make dtype ~n ~m ~n_steps ~n_output ~dynamics ~likelihood ~prior ~encoder_prior ~recognition ?initial_prior ()] is the model they
-    describe.
+(** [make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition ?initial_prior ()] is the model they describe.
+
+    {b No dimension arguments.} Every dimension the model needs is already a
+    field of one of its components: [n] and [m] of the dynamics, [n_output]
+    of the likelihood, and [n_steps] of the recognition — the only component
+    that knows the horizon, since a dynamics or a likelihood is defined for
+    any horizon. [make] reads them from there and checks that the components
+    agree with each other: their constructors take the dimensions separately,
+    so a mismatch is a mistake the type system does not catch.
 
     [recognition] says how the latents are inferred ({!Recognition.Iilqr} or
-    {!Recognition.Lfads}, or a value built the same way); its dimensions
-    must agree with the model's. [initial_prior] must be given exactly when
-    the recognition infers the initial state — LFADS does, iLQR fixes
-    [x_0 = 0] and must not have one.
+    {!Recognition.Lfads}, or a value built the same way). [initial_prior] must
+    be given exactly when the recognition infers the initial state — LFADS
+    does, iLQR fixes [x_0 = 0] and must not have one.
 
-    Raises [Invalid_argument] if a dimension is not positive, if a
-    component's own dimensions disagree with [n], [m], [n_steps] or
-    [n_output], if the recognition was built for other dimensions, or if the
-    initial-state prior and the recognition do not match. *)
+    Raises [Invalid_argument] if a dimension is not positive, if the
+    components disagree on one, or if the initial-state prior and the
+    recognition do not match. *)
 val make
   :  (float, 'w) Nx.dtype
-  -> n:int
-  -> m:int
-  -> n_steps:int
-  -> n_output:int
   -> dynamics:('w, 'd, 's) Dynamics.t
   -> likelihood:('w, 'l, 's) Likelihood.t
   -> prior:('w, 'p, 's) Prior.t

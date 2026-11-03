@@ -32,78 +32,40 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) params =
 
 let require_dim name value = if value <= 0 then invalid_arg (name ^ " must be positive")
 
-let make
-      dtype
-      ~n
-      ~m
-      ~n_steps
-      ~n_output
-      ~dynamics
-      ~likelihood
-      ~prior
-      ~encoder_prior
-      ~recognition
-      ?initial_prior
-      ()
-  =
-  require_dim "Model.make: n" n;
-  require_dim "Model.make: m" m;
-  require_dim "Model.make: n_steps" n_steps;
-  require_dim "Model.make: n_output" n_output;
-  if not (Int.equal dynamics.Dynamics.n n)
+(* [what] is the dimension the model takes as its own, [who] the component
+   field that must agree with it. *)
+let require_agree ~who ~who_is what expected =
+  if not (Int.equal who_is expected)
   then
     invalid_arg
-      (Printf.sprintf "Model.make: dynamics.n is %d but n is %d" dynamics.Dynamics.n n);
-  if not (Int.equal dynamics.Dynamics.m m)
-  then
-    invalid_arg
-      (Printf.sprintf "Model.make: dynamics.m is %d but m is %d" dynamics.Dynamics.m m);
-  if not (Int.equal likelihood.Likelihood.n n)
-  then
-    invalid_arg
-      (Printf.sprintf
-         "Model.make: likelihood.n is %d but n is %d"
-         likelihood.Likelihood.n
-         n);
-  if not (Int.equal likelihood.Likelihood.n_output n_output)
-  then
-    invalid_arg
-      (Printf.sprintf
-         "Model.make: likelihood.n_output is %d but n_output is %d"
-         likelihood.Likelihood.n_output
-         n_output);
-  if not (Int.equal prior.Prior.m m)
-  then
-    invalid_arg (Printf.sprintf "Model.make: prior.m is %d but m is %d" prior.Prior.m m);
-  if not (Int.equal encoder_prior.Prior.m m)
-  then
-    invalid_arg
-      (Printf.sprintf
-         "Model.make: encoder_prior.m is %d but m is %d"
-         encoder_prior.Prior.m
-         m);
+      (Printf.sprintf "Model.make: %s is %d but %s is %d" who who_is what expected)
+
+let make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition ?initial_prior () =
+  (* Every dimension is already a field of a component: the state and input
+     dimensions of the dynamics, the observation dimension of the likelihood,
+     the horizon of the recognition. The model takes them from there and only
+     checks that the components agree with each other. *)
+  let n = dynamics.Dynamics.n in
+  let m = dynamics.Dynamics.m in
+  let n_output = likelihood.Likelihood.n_output in
+  let n_steps = recognition.Recognition.dims.Recognition.n_steps in
+  require_dim "Model.make: dynamics.n" n;
+  require_dim "Model.make: dynamics.m" m;
+  require_dim "Model.make: likelihood.n_output" n_output;
+  require_dim "Model.make: recognition n_steps" n_steps;
+  require_agree ~who:"likelihood.n" ~who_is:likelihood.Likelihood.n "dynamics.n" n;
+  require_agree ~who:"prior.m" ~who_is:prior.Prior.m "dynamics.m" m;
+  require_agree ~who:"encoder_prior.m" ~who_is:encoder_prior.Prior.m "dynamics.m" m;
   (* The recognition is built for a shape of model; a mismatch would fail
      later, inside a solve, with a shape error far from its cause. *)
   let dims = recognition.Recognition.dims in
-  if
-    not
-      (Int.equal dims.Recognition.n n
-       && Int.equal dims.Recognition.m m
-       && Int.equal dims.Recognition.n_steps n_steps
-       && Int.equal dims.Recognition.n_output n_output)
-  then
-    invalid_arg
-      (Printf.sprintf
-         "Model.make: recognition is built for n=%d m=%d n_steps=%d n_output=%d, but the \
-          model is n=%d m=%d n_steps=%d n_output=%d"
-         dims.Recognition.n
-         dims.Recognition.m
-         dims.Recognition.n_steps
-         dims.Recognition.n_output
-         n
-         m
-         n_steps
-         n_output);
+  require_agree ~who:"recognition.n" ~who_is:dims.Recognition.n "dynamics.n" n;
+  require_agree ~who:"recognition.m" ~who_is:dims.Recognition.m "dynamics.m" m;
+  require_agree
+    ~who:"recognition.n_output"
+    ~who_is:dims.Recognition.n_output
+    "likelihood.n_output"
+    n_output;
   (* A recognition that infers the initial state needs a prior over it, and
      one that fixes [x_0 = 0] must not be given one: the ELBO's initial-state
      term would not cancel. *)
@@ -127,7 +89,10 @@ let make
      if not (Int.equal size n)
      then
        invalid_arg
-         (Printf.sprintf "Model.make: initial_prior has size %d but must be %d" size n));
+         (Printf.sprintf
+            "Model.make: initial_prior has size %d but dynamics.n is %d"
+            size
+            n));
   { dtype
   ; n
   ; m

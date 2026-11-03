@@ -85,6 +85,11 @@ changes do not need an entry.
   make host components, as nx's creations do.
 - `Model.structure` and `Recognition.gparams_structure` name their parts by
   field alone: a path that was `0.dynamics.w` is `dynamics.w`.
+- `Model.make` takes no dimensions. Every one of them is a field of a
+  component — `n` and `m` of the dynamics, `n_output` of the likelihood,
+  `n_steps` of the recognition — so the model reads them from there and only
+  checks that the components agree. `Recognition.dims` is still the source of
+  the horizon, which no other component knows.
 
 ### symo
 
