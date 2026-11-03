@@ -108,6 +108,23 @@ MODELS = {
     </body>
   </worldbody>
 </mujoco>""",
+    # Joint limits, both sides, on a hinge and a slide; the sampled states
+    # leave the ranges so that the limit rows are exercised.
+    "limited": """
+<mujoco model="limited">
+  <compiler angle="radian"/>
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="arm" pos="0 0 1">
+      <joint name="shoulder" type="hinge" axis="0 1 0" range="-0.4 0.4"/>
+      <geom name="arm" type="capsule" size="0.02 0.3" pos="0 0 -0.3"/>
+      <body name="slider" pos="0 0 -0.6">
+        <joint name="extend" type="slide" axis="1 0 0" range="-0.1 0.15"/>
+        <geom name="hand" type="sphere" size="0.05"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>""",
 }
 
 
@@ -118,11 +135,16 @@ def random_qpos(m, rng):
         kind = int(m.jnt_type[j])  # mjJNT_FREE 0, BALL 1, SLIDE 2, HINGE 3
         limited = bool(m.jnt_limited[j])
         lo, hi = (m.jnt_range[j] if limited else (-1.0, 1.0))
+        # A limited joint is sampled past its range half the time, so that the
+        # constraint rows are exercised rather than always satisfied.
+        pad = 0.6 * (hi - lo) if limited else 0.0
         if kind == 3:  # hinge
-            qpos[adr] = rng.uniform(lo, hi)
+            qpos[adr] = rng.uniform(lo - pad, hi + pad)
         elif kind == 2:  # slide
-            qpos[adr] = rng.uniform(lo / 4 if limited else -0.2,
-                                    hi / 4 if limited else 0.2)
+            if limited:
+                qpos[adr] = rng.uniform(lo - (0.6 * (hi - lo)), hi + (0.6 * (hi - lo)))
+            else:
+                qpos[adr] = rng.uniform(-0.2, 0.2)
         elif kind == 1:  # ball
             q = rng.normal(size=4)
             qpos[adr:adr + 4] = q / np.linalg.norm(q)
@@ -138,6 +160,11 @@ POSE_FIELDS = [
     "geom_xpos", "geom_xmat", "site_xpos", "site_xmat",
 ]
 
+# Constraint rows, which the C engine sizes at run time; the fixture pads them
+# to the widest state and records the count separately.
+EFC_FIELDS = ["efc_type", "efc_id", "efc_pos", "efc_margin", "efc_J",
+              "efc_vel", "efc_R", "efc_D", "efc_aref", "efc_force"]
+
 # Written by mj_forward after the pose: the position stage's centre of mass,
 # centre-of-mass inertia and motion subspaces, then the velocity stage's
 # spatial velocities and the forces it leaves behind.
@@ -152,6 +179,9 @@ TRAJ_STEPS = 10
 
 def record(name, xml, outdir, rng):
     m = mujoco.MjModel.from_xml_string(xml)
+    # The port is dense; record the rows in the layout the port uses, whatever
+    # the model's own auto choice would be at this size.
+    m.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
     d = mujoco.MjData(m)
     xml_path = os.path.join(outdir, f"{name}.xml")
     with open(xml_path, "w") as f:
@@ -170,13 +200,33 @@ def record(name, xml, outdir, rng):
         mujoco.mj_fullM(m, d, full)
         fields = {f: np.array(getattr(d, f)) for f in POSE_FIELDS + STAGE_FIELDS}
         fields["mass_matrix"] = full
-        states.append((qpos, fields))
+        nefc = int(d.nefc)
+        efc = {"nefc": nefc}
+        for f in EFC_FIELDS:
+            if f == "efc_J":
+                v = np.array(d.efc_J)[: nefc * m.nv].reshape(nefc, m.nv)
+            else:
+                v = np.array(getattr(d, f))[:nefc]
+            efc[f] = v
+        states.append((qpos, fields, efc))
         qvels.append(qvel)
 
     tensors = {"qpos": np.stack([s[0] for s in states])}
     tensors["qvel"] = np.stack(qvels)
     for f in POSE_FIELDS + STAGE_FIELDS + ["mass_matrix"]:
         tensors[f] = np.stack([s[1][f] for s in states])
+    width = max(1, max(s[2]["nefc"] for s in states))
+    tensors["nefc"] = np.array([s[2]["nefc"] for s in states], dtype=float)
+    for f in EFC_FIELDS:
+        rows = [np.asarray(s[2][f], dtype=float) for s in states]
+        shape = (width,) if not f == "efc_J" else (width, m.nv)
+        padded = np.zeros((len(states),) + shape)
+        for i, r in enumerate(rows):
+            if f == "efc_J":
+                padded[i, : r.shape[0], :] = r
+            else:
+                padded[i, : r.shape[0]] = r
+        tensors[f] = padded
 
     # Position integration, from the same states and velocities.
     qpos_next = []

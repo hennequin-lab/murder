@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 1
+let version = 2
 
 (* Layout, in writing order:
 
@@ -84,6 +84,9 @@ let fields =
   ; "jnt_range"
   ; "jnt_limited"
   ; "jnt_stiffness"
+  ; "jnt_margin"
+  ; "jnt_solref"
+  ; "jnt_solimp"
   ; "dof_armature"
   ; "dof_damping"
   ; "dof_frictionloss"
@@ -247,6 +250,9 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.jnt_range
       ; p.jnt_limited
       ; p.jnt_stiffness
+      ; p.jnt_margin
+      ; p.jnt_solref
+      ; p.jnt_solimp
       ; p.dof_armature
       ; p.dof_damping
       ; p.dof_frictionloss
@@ -431,6 +437,9 @@ let parse (c : cursor) : Model.host =
     ; jnt_range = tensor "jnt_range"
     ; jnt_limited = tensor "jnt_limited"
     ; jnt_stiffness = tensor "jnt_stiffness"
+    ; jnt_margin = tensor "jnt_margin"
+    ; jnt_solref = tensor "jnt_solref"
+    ; jnt_solimp = tensor "jnt_solimp"
     ; dof_armature = tensor "dof_armature"
     ; dof_damping = tensor "dof_damping"
     ; dof_frictionloss = tensor "dof_frictionloss"

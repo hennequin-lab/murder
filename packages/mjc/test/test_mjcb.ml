@@ -30,6 +30,9 @@ let params (m : Model.host) : (string * Nx.host Nx.float64_t) list =
   ; "jnt_range", p.jnt_range
   ; "jnt_limited", p.jnt_limited
   ; "jnt_stiffness", p.jnt_stiffness
+  ; "jnt_margin", p.jnt_margin
+  ; "jnt_solref", p.jnt_solref
+  ; "jnt_solimp", p.jnt_solimp
   ; "dof_armature", p.dof_armature
   ; "dof_damping", p.dof_damping
   ; "dof_frictionloss", p.dof_frictionloss

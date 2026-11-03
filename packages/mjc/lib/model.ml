@@ -19,6 +19,9 @@ module Params = struct
     ; jnt_pos : 'a
     ; jnt_range : 'a
     ; jnt_limited : 'a
+    ; jnt_margin : 'a
+    ; jnt_solref : 'a
+    ; jnt_solimp : 'a
     ; jnt_stiffness : 'a
     ; dof_armature : 'a
     ; dof_damping : 'a
@@ -149,6 +152,9 @@ let validate (m : host) : (unit, string) Result.t =
   want "jnt_pos" [| t.njnt; 3 |] p.jnt_pos;
   want "jnt_range" [| t.njnt; 2 |] p.jnt_range;
   want "jnt_limited" [| t.njnt |] p.jnt_limited;
+  want "jnt_margin" [| t.njnt |] p.jnt_margin;
+  want "jnt_solref" [| t.njnt; 2 |] p.jnt_solref;
+  want "jnt_solimp" [| t.njnt; 5 |] p.jnt_solimp;
   want "jnt_stiffness" [| t.njnt |] p.jnt_stiffness;
   want "dof_armature" [| t.nv |] p.dof_armature;
   want "dof_damping" [| t.nv |] p.dof_damping;

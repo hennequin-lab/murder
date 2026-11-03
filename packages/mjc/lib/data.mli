@@ -45,6 +45,17 @@ type ('a, 'd) t =
   ; qfrc_constraint : 'a (** [[nv]], constraint forces. *)
   ; qfrc_smooth : 'a (** [[nv]], the total force before constraints. *)
   ; mass_matrix : 'a (** [[nv;nv]], the mass matrix. *)
+  ; nefc : 'd Nx.int32_t (** [[]], the number of constraint rows. *)
+  ; efc_type : 'd Nx.int32_t (** [[nefcmax]], row type. *)
+  ; efc_id : 'd Nx.int32_t (** [[nefcmax]], the joint or other object. *)
+  ; efc_pos : 'a (** [[nefcmax]], constraint position (violation). *)
+  ; efc_margin : 'a (** [[nefcmax]], the position at which it activates. *)
+  ; efc_J : 'a (** [[nefcmax;nv]], the Jacobian rows. *)
+  ; efc_vel : 'a (** [[nefcmax]], the row velocity [J qvel]. *)
+  ; efc_R : 'a (** [[nefcmax]], the impedance's regularisation. *)
+  ; efc_D : 'a (** [[nefcmax]], the impedance's diagonal weight. *)
+  ; efc_aref : 'a (** [[nefcmax]], the reference acceleration. *)
+  ; efc_force : 'a (** [[nefcmax]], the force, also the warmstart. *)
   }
 [@@deriving ptree]
 

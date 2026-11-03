@@ -36,6 +36,17 @@ type ('a, 'd) t =
   ; qfrc_constraint : 'a
   ; qfrc_smooth : 'a
   ; mass_matrix : 'a
+  ; nefc : 'd Nx.int32_t
+  ; efc_type : 'd Nx.int32_t
+  ; efc_id : 'd Nx.int32_t
+  ; efc_pos : 'a
+  ; efc_margin : 'a
+  ; efc_J : 'a
+  ; efc_vel : 'a
+  ; efc_R : 'a
+  ; efc_D : 'a
+  ; efc_aref : 'a
+  ; efc_force : 'a
   }
 [@@deriving ptree]
 
@@ -85,6 +96,17 @@ let create (m : Model.host) : host =
   ; qfrc_constraint = zeros [| t.nv |]
   ; qfrc_smooth = zeros [| t.nv |]
   ; mass_matrix = zeros [| t.nv; t.nv |]
+  ; nefc = Nx.scalar Nx.int32 0l
+  ; efc_type = Nx.zeros Nx.int32 [| t.nefcmax |]
+  ; efc_id = Nx.zeros Nx.int32 [| t.nefcmax |]
+  ; efc_pos = zeros [| t.nefcmax |]
+  ; efc_margin = zeros [| t.nefcmax |]
+  ; efc_J = zeros [| t.nefcmax; t.nv |]
+  ; efc_vel = zeros [| t.nefcmax |]
+  ; efc_R = zeros [| t.nefcmax |]
+  ; efc_D = zeros [| t.nefcmax |]
+  ; efc_aref = zeros [| t.nefcmax |]
+  ; efc_force = zeros [| t.nefcmax |]
   }
 
 let validate (m : Model.host) (d : host) : (unit, string) Result.t =
@@ -131,6 +153,14 @@ let validate (m : Model.host) (d : host) : (unit, string) Result.t =
   want "qfrc_constraint" [| t.nv |] d.qfrc_constraint;
   want "qfrc_smooth" [| t.nv |] d.qfrc_smooth;
   want "mass_matrix" [| t.nv; t.nv |] d.mass_matrix;
+  want "efc_pos" [| t.nefcmax |] d.efc_pos;
+  want "efc_margin" [| t.nefcmax |] d.efc_margin;
+  want "efc_J" [| t.nefcmax; t.nv |] d.efc_J;
+  want "efc_vel" [| t.nefcmax |] d.efc_vel;
+  want "efc_R" [| t.nefcmax |] d.efc_R;
+  want "efc_D" [| t.nefcmax |] d.efc_D;
+  want "efc_aref" [| t.nefcmax |] d.efc_aref;
+  want "efc_force" [| t.nefcmax |] d.efc_force;
   match List.rev !problems with
   | [] -> Ok ()
   | problems ->

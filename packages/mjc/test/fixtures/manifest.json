@@ -43,6 +43,16 @@
       "nv": 4,
       "nstates": 32,
       "xml_sha256": "83163fecd62cb628"
+    },
+    {
+      "name": "limited",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "5599c2d0c4ae6804"
     }
   ]
 }

@@ -7,6 +7,10 @@ whole step with `Rune.grad`.
 
 ## Status
 
+**M3 in progress.** Joint-limit constraint rows match MuJoCo exactly (count,
+type, id, position, margin, Jacobian); the reduced system, the solver and the
+constrained acceleration are next.
+
 **M2 complete.** Forward kinematics, the mass matrix, the velocity stage, the
 bias force, springs and dampers, and the semi-implicit Euler step match MuJoCo
 3.17 on a four-model parity corpus: the stage arrays to 1e-12, and ten steps

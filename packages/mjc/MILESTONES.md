@@ -1,6 +1,6 @@
 # mjc — milestones
 
-Status: **M0–M2 complete**; the number sheet for each is in
+Status: **M0–M2 complete, M3 in progress (limit rows landed)**; the number sheet for each is in
 [`doc/log.md`](doc/log.md). This document cuts the design note
 [`PLAN.md`](PLAN.md) into increments that can be built, tested and stopped one
 at a time. `PLAN.md` carries the measurements and the reasoning; this file
@@ -358,7 +358,7 @@ lets the viewer drive the loop.
 
 ---
 
-### M3 — Constraints without contacts, and the solvers
+### M3 — Constraints without contacts, and the solvers (in progress)
 
 **3 weeks · gate G3**
 

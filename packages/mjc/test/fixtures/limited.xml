@@ -1,0 +1,14 @@
+<mujoco model="limited">
+  <compiler angle="radian"/>
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="arm" pos="0 0 1">
+      <joint name="shoulder" type="hinge" axis="0 1 0" range="-0.4 0.4"/>
+      <geom name="arm" type="capsule" size="0.02 0.3" pos="0 0 -0.3"/>
+      <body name="slider" pos="0 0 -0.6">
+        <joint name="extend" type="slide" axis="1 0 0" range="-0.1 0.15"/>
+        <geom name="hand" type="sphere" size="0.05"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

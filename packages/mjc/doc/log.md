@@ -141,3 +141,27 @@ Additions to `Data`: `cinert` and `cdof_dot`. The fixture recorder now writes
 the stage arrays and a ten-step `mj_step` trajectory, and the `pendulum`
 fixture carries a spring and a damper so `qfrc_passive` is not identically
 zero.
+
+## M3 — constraints without contacts, and the solvers (in progress)
+
+**Landed: the format, the limit rows, and the gate decision.**
+
+- The `.mjcb` format is version 2: it carries `jnt_margin`, `jnt_solref` and
+  `jnt_solimp`, which a limit row needs.
+- A fifth corpus model, `limited`, has a limited hinge and a limited slide,
+  and the recorder samples it past its ranges so that limit rows exist. The
+  fixture records `nefc` and the padded `efc_type`, `efc_id`, `efc_pos`,
+  `efc_margin`, `efc_J`, `efc_vel`, `efc_R`, `efc_D`, `efc_aref` and
+  `efc_force` per state, with the Jacobian forced dense: the port is dense.
+- `Constraint.limits` assembles the limit rows, in MuJoCo's order, into the
+  fixed buffer, with `nefc` as a tensor and inactive rows scattered past it.
+  It matches the fixture exactly on all 32 states: the row count, type, id,
+  position, margin and Jacobian.
+- [`adr/0010-solver-policy.md`](adr/0010-solver-policy.md) settles G3: Euler
+  is non-metric, so the classical formulation is the one to reproduce, and
+  Newton with a fixed budget and no line search is the first cut.
+
+**Remaining:** `dof_invweight0` at load, `solimp`/`solref` to `R` and
+`efc_aref`, the reduced system and Newton/CG, the constrained acceleration and
+`efc_force`, the implicit-in-velocity integrator, then equality, friction loss
+and the constrained trajectory fixture. The formula sheet is in the ADR.
