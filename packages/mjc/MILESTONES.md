@@ -345,10 +345,10 @@ for unconstrained models.
    `doc/perf.md`, and G0's numbers still hold for the real (not synthetic)
    step.
 
-**Gate G2.** The real step's composed cost decides the pitch. If a real
-`nv = 27` forward step exceeds 150 µs/env at `vmap` 256, go back to the
-factorization before building constraints on top of it; M3 multiplies the
-number of solves.
+**Gate G2: pass.** With `Step.compile`, the batched step costs 1.5–4.9
+us per environment at `vmap` 256 on the corpus (nv ≤ 6), against a 100 us pass
+threshold; a compiled single step is 26–32 us. The humanoid-sized measurement
+arrives with the M4 corpus.
 
 **Demo.** `mjc-view --model pendulum.mjcb --sim` drops a double pendulum and
 lets the viewer drive the loop.

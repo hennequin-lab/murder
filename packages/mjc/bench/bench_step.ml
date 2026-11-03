@@ -3,8 +3,10 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-(* The composed step: microseconds per step, eager and compiled, for the
-   corpus models. Run: dune exec packages/mjc/bench/bench_step.exe *)
+(* The composed step: microseconds per step, eager, compiled, and batched for
+   the per-environment cost. Run:
+
+   dune exec packages/mjc/bench/bench_step.exe *)
 
 open Base
 open Mjc
@@ -20,9 +22,8 @@ let load name =
     Stdlib.exit 1
 
 let time ~steps f x =
-  (* warm up, then time *)
   let x = ref x in
-  for _ = 1 to 50 do
+  for _ = 1 to 20 do
     x := f !x
   done;
   let t0 = now () in
@@ -31,31 +32,46 @@ let time ~steps f x =
   done;
   (now () -. t0) /. Float.of_int steps
 
+(* Every leaf stacked along a new leading axis: the axis [Rune.vmap] maps
+   over. *)
+let batch ds =
+  match ds with
+  | [] -> invalid_arg "batch"
+  | [ d ] -> d
+  | d0 :: d1 :: rest ->
+    let both = Nx.Ptree.map2 Data.ptree (fun _ a b -> Nx.stack ~axis:0 [ a; b ]) d0 d1 in
+    List.fold rest ~init:both ~f:(fun acc x ->
+      Nx.Ptree.map2
+        Data.ptree
+        (fun _ a b -> Nx.concatenate ~axis:0 [ a; Nx.unsqueeze ~axes:[ 0 ] b ])
+        acc
+        x)
+
+let lanes = 256
+let us s = Float.round (s *. 1e7) /. 10.0
+
 let () =
   Printf.printf
-    "| model | nv | nbody | eager step | compiled step |\n\
-     | --- | ---: | ---: | ---: | ---: |\n";
+    "| model | nv | nbody | eager | compiled | vmap %d, per env |\n\
+     | --- | ---: | ---: | ---: | ---: | ---: |\n"
+    lanes;
   List.iter [ "pendulum"; "chain6"; "floating"; "ball" ] ~f:(fun name ->
     let m = load name in
     let d = Data.create m in
     let eager = time ~steps:2000 (fun d -> Step.step m d) d in
-    let compiled_time =
-      try
-        let f = Rune.jit Nx.Ptree.(Data.ptree @-> returns Data.ptree) (Step.step m) in
-        let _ = f d in
-        Some (time ~steps:2000 f d)
-      with
-      | e ->
-        Printf.eprintf "%s: %s\n" name (Exn.to_string e);
-        None
-    in
-    let us s = Float.round (s *. 1e7) /. 10.0 in
+    let compiled = Step.compile m in
+    let one = Step.run compiled in
+    let _ = one d in
+    let compiled_time = time ~steps:2000 one d in
+    let batched = batch (List.init lanes ~f:(fun _ -> Data.create m)) in
+    let vec = Rune.vmap Nx.Ptree.(Data.ptree @-> returns Data.ptree) one in
+    let _ = vec batched in
+    let per_env = time ~steps:10 vec batched /. Float.of_int lanes in
     Printf.printf
-      "| %s | %d | %d | %.1f us | %s |\n"
+      "| %s | %d | %d | %.1f us | %.1f us | %.1f us |\n"
       name
       m.topo.nv
       m.topo.nbody
       (us eager)
-      (match compiled_time with
-       | None -> "-"
-       | Some s -> Printf.sprintf "%.1f us" (us s)))
+      (us compiled_time)
+      (us per_env))

@@ -121,14 +121,21 @@ derivatives from one time-stamped velocity, so all three must be taken before
 any of them advances it; and `mj_step` leaves `qacc` from before the step, so
 the recorder now calls `mj_forward` before recording it.
 
-**Gate G2.** A compiled step costs 28–30 us and an eager one 400–2100 us for
-the four corpus models (`bench/bench_step.ml`). That is inside G2's 100 us
-pass threshold at batch 1. The batched number needs the step's two host reads
-(`timestep`, the damping test) hoisted into `Step.compile`, which is M3's
-work; it is not measured yet.
+**Gate G2: pass, with the caveat that the corpus is small.** With
+`Step.compile` hoisting the model's two host reads and jitting the pipeline:
 
-**Remaining in M2:** nothing for the contact-free path. G2's batched row is
-measured after `Step.compile`.
+| model | nv | eager | compiled | vmap 256, per env |
+| --- | ---: | ---: | ---: | ---: |
+| pendulum | 1 | 406 us | 26.0 us | 1.9 us |
+| chain6 | 6 | 2198 us | 32.4 us | 2.4 us |
+| floating | 6 | 647 us | 31.8 us | 4.9 us |
+| ball | 4 | 877 us | 29.6 us | 1.5 us |
+
+The batched step is 1.5–4.9 us per environment, well inside G2's 100 us pass
+threshold. The models are small (nv ≤ 6), so this does not yet say what a
+humanoid costs; the M4 corpus adds one. The eager path is 20–80× slower than
+the compiled one: it is dispatch-bound, which is the design note's finding 1
+at engine scale.
 
 Additions to `Data`: `cinert` and `cdof_dot`. The fixture recorder now writes
 the stage arrays and a ten-step `mj_step` trajectory, and the `pendulum`
