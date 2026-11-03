@@ -1,0 +1,6 @@
+(tests
+ (names test_mjcb test_rigid test_pose test_fk)
+ (modules support test_mjcb test_rigid test_pose test_fk)
+ (deps
+  (glob_files fixtures/*))
+ (libraries base mjc nx rune windtrap))

@@ -1,0 +1,4 @@
+(executable
+ (name spike_la)
+ (modules spike_la)
+ (libraries base mjc nx rune unix))

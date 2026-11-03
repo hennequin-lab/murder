@@ -1,0 +1,11 @@
+<mujoco model="floating">
+  <option timestep="0.001"/>
+  <worldbody>
+    <body name="box">
+      <freejoint name="root"/>
+      <geom name="box" type="box" size="0.1 0.2 0.3" pos="0 0 0.1"
+            quat="0.9238795 0.3826834 0 0" rgba="0.2 0.6 0.8 1"/>
+      <site name="mark" pos="0.1 0 0.3"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,78 @@
+(*---------------------------------------------------------------------------
+  Copyright (c) 2026 The mjc authors. All rights reserved.
+  SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
+(** Data: the state a step advances, and the results it leaves behind.
+
+    A {!t} is one structure, part state and part output. Everything that
+    {!Nx.Ptree} walks is a tensor of the model's dtype: the state at the top,
+    then the derived quantities a test, a viewer or a later stage reads.
+
+    All shapes are unbatched. [qpos] is [[nq]], [xpos] is [[nbody;3]], and so
+    on; batching is a leading axis that {!Rune.vmap} adds to the leaves and
+    removes inside the mapped function. *)
+
+(** {1:data The structure} *)
+
+type ('a, 'd) t =
+  { time : 'a (** [[]], seconds. *)
+  ; qpos : 'a (** [[nq]], joint coordinates. *)
+  ; qvel : 'a (** [[nv]], joint velocities. *)
+  ; qacc : 'a (** [[nv]], joint accelerations. *)
+  ; act : 'a (** [[na]], actuator activation states. *)
+  ; ctrl : 'a (** [[nu]], actuator controls. *)
+  ; qfrc_applied : 'a (** [[nv]], external forces, set by the caller. *)
+  ; xpos : 'a (** [[nbody;3]], body frames, world. *)
+  ; xquat : 'a (** [[nbody;4]], body frames, world. *)
+  ; xipos : 'a (** [[nbody;3]], inertial frames, world. *)
+  ; ximat : 'a (** [[nbody;9]], inertial frames, world. *)
+  ; geom_xpos : 'a (** [[ngeom;3]], geom frames, world. *)
+  ; geom_xmat : 'a (** [[ngeom;9]], geom frames, world. *)
+  ; site_xpos : 'a (** [[nsite;3]], site frames, world. *)
+  ; site_xmat : 'a (** [[nsite;9]], site frames, world. *)
+  ; xanchor : 'a (** [[njnt;3]], joint anchors, world. *)
+  ; xaxis : 'a (** [[njnt;3]], joint axes, world. *)
+  ; cvel : 'a (** [[nbody;6]], spatial velocities in the body frame. *)
+  ; cdof : 'a (** [[nv;6]], motion subspace of each dof. *)
+  ; com : 'a (** [[3]], centre of mass. *)
+  ; subtree_com : 'a (** [[nbody;3]], centre of mass of each subtree. *)
+  ; qfrc_bias : 'a (** [[nv]], Coriolis, centrifugal and gravity forces. *)
+  ; qfrc_passive : 'a (** [[nv]], springs, dampers and fluid forces. *)
+  ; qfrc_actuator : 'a (** [[nv]], actuator forces. *)
+  ; qfrc_constraint : 'a (** [[nv]], constraint forces. *)
+  ; qfrc_smooth : 'a (** [[nv]], the total force before constraints. *)
+  ; mass_matrix : 'a (** [[nv;nv]], the mass matrix. *)
+  }
+[@@deriving ptree]
+
+(** The type for [float64] data on the host, which is what every v1 kernel
+    takes. *)
+type host = (Nx.host Nx.float64_t, Nx.host) t
+
+(** {1:structure Structure} *)
+
+(** [ptree] describes a {!t} to the transformations. *)
+val ptree : (host, Nx.host) Nx.Ptree.t
+
+(** {1:construction Construction and accessors} *)
+
+(** [create m] is the state of model [m] at rest: [qpos] is [m.qpos0], every
+    other leaf is zero, and [time] is zero with a zero time step. *)
+val create : Model.host -> host
+
+(** [nq m] and [nv m] are the model's counts, repeated for convenience. *)
+val nq : Model.host -> int
+
+(** [nv m] is the number of velocity coordinates. *)
+val nv : Model.host -> int
+
+(** {1:checks Checks} *)
+
+(** [validate m d] is [Ok ()] when every leaf of [d] has the shape [m]'s
+    topology implies, and [Error message] otherwise, naming the field, the
+    expected shape and the shape found. *)
+val validate : Model.host -> host -> (unit, string) result
+
+(** [pp] formats the state's counts and the time. *)
+val pp : Format.formatter -> host -> unit

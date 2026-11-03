@@ -1,0 +1,30 @@
+<mujoco model="chain6">
+  <option timestep="0.001"/>
+  <worldbody>
+    <body name="l0" pos="0 0 1">
+      <joint name="j0" type="hinge" axis="0 0 1"/>
+      <geom name="g0" type="capsule" size="0.03 0.15" pos="0 0 -0.15"/>
+      <body name="l1" pos="0 0 -0.3" quat="0.9659258 0.258819 0 0">
+        <joint name="j1" type="hinge" axis="1 0 0"/>
+        <geom name="g1" type="capsule" size="0.03 0.15" pos="0 0 -0.15"/>
+        <body name="l2" pos="0 0 -0.3">
+          <joint name="j2" type="hinge" axis="0 1 0"/>
+          <geom name="g2" type="capsule" size="0.03 0.15" pos="0 0 -0.15"/>
+          <body name="l3" pos="0 0 -0.3">
+            <joint name="j3" type="slide" axis="0 0 1"/>
+            <geom name="g3" type="capsule" size="0.03 0.15" pos="0 0 -0.15"/>
+            <body name="l4" pos="0 0 -0.3" quat="0.9238795 0 0.3826834 0">
+              <joint name="j4" type="hinge" axis="0 0 1"/>
+              <geom name="g4" type="capsule" size="0.03 0.15" pos="0 0 -0.15"/>
+              <body name="l5" pos="0 0 -0.3">
+                <joint name="j5" type="hinge" axis="1 0 0"/>
+                <geom name="g5" type="capsule" size="0.03 0.15" pos="0 0 -0.15"/>
+                <site name="tool" pos="0 0 -0.3"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

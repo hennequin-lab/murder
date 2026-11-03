@@ -1,0 +1,48 @@
+{
+  "generator": "tools/record_fixture.py",
+  "mujoco": "3.17.0",
+  "seed": 20261103,
+  "dt": 0.001,
+  "models": [
+    {
+      "name": "pendulum",
+      "nbody": 2,
+      "ngeom": 1,
+      "njnt": 1,
+      "nq": 1,
+      "nv": 1,
+      "nstates": 32,
+      "xml_sha256": "d920dc66ac2422d2"
+    },
+    {
+      "name": "chain6",
+      "nbody": 7,
+      "ngeom": 6,
+      "njnt": 6,
+      "nq": 6,
+      "nv": 6,
+      "nstates": 32,
+      "xml_sha256": "84fe3a0adb627c86"
+    },
+    {
+      "name": "floating",
+      "nbody": 2,
+      "ngeom": 1,
+      "njnt": 1,
+      "nq": 7,
+      "nv": 6,
+      "nstates": 32,
+      "xml_sha256": "da8cfc05828940af"
+    },
+    {
+      "name": "ball",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 5,
+      "nv": 4,
+      "nstates": 32,
+      "xml_sha256": "83163fecd62cb628"
+    }
+  ]
+}

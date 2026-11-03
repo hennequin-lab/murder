@@ -9,6 +9,7 @@ repositories.
 | `geom` | alpha | Geometric algebra for robotics on the Raven stack |
 | `dilqr` | alpha | Differentiable iLQR on Nx tensors |
 | `ilqr-vae` | alpha | iLQR-VAE: control-based learning of input-driven dynamics |
+| `mjc` | alpha | Differentiable MuJoCo-compatible physics on Nx and Rune |
 | `symo` | alpha | Weight-space symmetry for curvature estimation |
 | `sofo` | alpha | Second-order forward-mode optimization |
 

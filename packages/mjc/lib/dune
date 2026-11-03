@@ -1,0 +1,5 @@
+(library
+ (name mjc)
+ (libraries base nx)
+ (preprocess
+  (pps ppx_ptree)))
