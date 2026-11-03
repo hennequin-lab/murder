@@ -26,6 +26,7 @@ module Params = struct
     ; dof_armature : 'a
     ; dof_damping : 'a
     ; dof_frictionloss : 'a
+    ; dof_invweight0 : 'a
     ; qpos0 : 'a
     ; qpos_spring : 'a
     ; geom_pos : 'a
@@ -43,6 +44,8 @@ module Params = struct
     ; site_size : 'a
     ; gravity : 'a
     ; timestep : 'a
+    ; iterations : 'a
+    ; tolerance : 'a
     }
   [@@deriving ptree]
 end
@@ -159,6 +162,7 @@ let validate (m : host) : (unit, string) Result.t =
   want "dof_armature" [| t.nv |] p.dof_armature;
   want "dof_damping" [| t.nv |] p.dof_damping;
   want "dof_frictionloss" [| t.nv |] p.dof_frictionloss;
+  want "dof_invweight0" [| t.nv |] p.dof_invweight0;
   want "qpos0" [| t.nq |] p.qpos0;
   want "qpos_spring" [| t.nq |] p.qpos_spring;
   want "geom_pos" [| t.ngeom; 3 |] p.geom_pos;
@@ -176,6 +180,8 @@ let validate (m : host) : (unit, string) Result.t =
   want "site_size" [| t.nsite; 3 |] p.site_size;
   want "gravity" [| 3 |] p.gravity;
   want "timestep" [||] p.timestep;
+  want "iterations" [||] p.iterations;
+  want "tolerance" [||] p.tolerance;
   match Topo.validate t, List.rev !problems with
   | Error e, _ -> Error e
   | Ok (), [] -> Ok ()

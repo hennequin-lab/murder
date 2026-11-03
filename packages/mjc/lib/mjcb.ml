@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 2
+let version = 4
 
 (* Layout, in writing order:
 
@@ -90,6 +90,7 @@ let fields =
   ; "dof_armature"
   ; "dof_damping"
   ; "dof_frictionloss"
+  ; "dof_invweight0"
   ; "qpos0"
   ; "qpos_spring"
   ; "geom_pos"
@@ -107,6 +108,8 @@ let fields =
   ; "site_size"
   ; "gravity"
   ; "timestep"
+  ; "iterations"
+  ; "tolerance"
   ]
 
 let jnt_type_code = function
@@ -256,6 +259,7 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.dof_armature
       ; p.dof_damping
       ; p.dof_frictionloss
+      ; p.dof_invweight0
       ; p.qpos0
       ; p.qpos_spring
       ; p.geom_pos
@@ -273,6 +277,8 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.site_size
       ; p.gravity
       ; p.timestep
+      ; p.iterations
+      ; p.tolerance
       ]
       ~f:(fun name x ->
         put_string buf name;
@@ -443,6 +449,7 @@ let parse (c : cursor) : Model.host =
     ; dof_armature = tensor "dof_armature"
     ; dof_damping = tensor "dof_damping"
     ; dof_frictionloss = tensor "dof_frictionloss"
+    ; dof_invweight0 = tensor "dof_invweight0"
     ; qpos0 = tensor "qpos0"
     ; qpos_spring = tensor "qpos_spring"
     ; geom_pos = tensor "geom_pos"
@@ -460,6 +467,8 @@ let parse (c : cursor) : Model.host =
     ; site_size = tensor "site_size"
     ; gravity = tensor "gravity"
     ; timestep = tensor "timestep"
+    ; iterations = tensor "iterations"
+    ; tolerance = tensor "tolerance"
     }
   in
   { Model.topo; params }

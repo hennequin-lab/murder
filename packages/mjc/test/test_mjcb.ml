@@ -36,6 +36,7 @@ let params (m : Model.host) : (string * Nx.host Nx.float64_t) list =
   ; "dof_armature", p.dof_armature
   ; "dof_damping", p.dof_damping
   ; "dof_frictionloss", p.dof_frictionloss
+  ; "dof_invweight0", p.dof_invweight0
   ; "qpos0", p.qpos0
   ; "qpos_spring", p.qpos_spring
   ; "geom_pos", p.geom_pos

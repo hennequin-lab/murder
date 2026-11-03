@@ -11,5 +11,10 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
   let qfrc_smooth =
     Nx.add (Nx.sub (Nx.add d.qfrc_passive d.qfrc_applied) d.qfrc_bias) d.qfrc_actuator
   in
+  (* The smooth acceleration, then the constraint rows and their solve. With
+     no constraints the solver leaves qacc and qfrc_constraint as they are. *)
   let qacc = Mass.solve (Mass.factor d.mass_matrix) qfrc_smooth in
-  { d with qfrc_smooth; qacc }
+  let d = { d with qfrc_smooth; qacc } in
+  let d = Constraint.limits m d in
+  let d = Constraint.impedance m d in
+  Solver.forward m d

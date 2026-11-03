@@ -17,7 +17,7 @@ MJCB_MAGIC = b"MJCB"
 MJCB_END = b"MJCE"
 MJBF_MAGIC = b"MJBF"
 MJBF_END = b"MJFE"
-VERSION = 2
+VERSION = 4
 
 # Topology arrays, in the order the format writes them.
 INT_ARRAYS = [
@@ -46,6 +46,7 @@ def fields(m):
         ("jnt_solimp", m.jnt_solimp),
         ("dof_armature", m.dof_armature), ("dof_damping", m.dof_damping),
         ("dof_frictionloss", m.dof_frictionloss),
+        ("dof_invweight0", m.dof_invweight0),
         ("qpos0", m.qpos0), ("qpos_spring", m.qpos_spring),
         ("geom_pos", m.geom_pos), ("geom_quat", m.geom_quat),
         ("geom_size", m.geom_size), ("geom_rgba", m.geom_rgba),
@@ -55,6 +56,8 @@ def fields(m):
         ("site_pos", m.site_pos), ("site_quat", m.site_quat),
         ("site_size", m.site_size),
         ("gravity", m.opt.gravity), ("timestep", np.asarray(m.opt.timestep)),
+        ("iterations", np.asarray(m.opt.iterations)),
+        ("tolerance", np.asarray(m.opt.tolerance)),
     ]
 
 
@@ -110,7 +113,7 @@ def budgets(m):
     ng = m.ngeom
     return {
         "nconmax": max(16, 2 * ng),
-        "nefcmax": max(64, 4 * ng),
+        "nefcmax": max(4, 2 * m.njnt),
         "max_geom_pairs": max(16, 2 * ng),
     }
 

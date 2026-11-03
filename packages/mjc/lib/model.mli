@@ -38,6 +38,7 @@ module Params : sig
     ; dof_armature : 'a (** [[nv]] *)
     ; dof_damping : 'a (** [[nv]] *)
     ; dof_frictionloss : 'a (** [[nv]] *)
+    ; dof_invweight0 : 'a (** [[nv]], [1 / M_ii] at the reference configuration. *)
     ; qpos0 : 'a (** [[nq]], the reference configuration. *)
     ; qpos_spring : 'a (** [[nq]], the spring reference configuration. *)
     ; geom_pos : 'a (** [[ngeom;3]], geom frame in the body frame. *)
@@ -55,6 +56,8 @@ module Params : sig
     ; site_size : 'a (** [[nsite;3]] *)
     ; gravity : 'a (** [[3]] *)
     ; timestep : 'a (** [[]], a 0-d tensor. *)
+    ; iterations : 'a (** [[]], the solver's iteration budget. *)
+    ; tolerance : 'a (** [[]], and its tolerance. *)
     }
   [@@deriving ptree]
 end

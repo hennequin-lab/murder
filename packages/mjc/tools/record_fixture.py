@@ -163,7 +163,7 @@ POSE_FIELDS = [
 # Constraint rows, which the C engine sizes at run time; the fixture pads them
 # to the widest state and records the count separately.
 EFC_FIELDS = ["efc_type", "efc_id", "efc_pos", "efc_margin", "efc_J",
-              "efc_vel", "efc_R", "efc_D", "efc_aref", "efc_force"]
+              "efc_vel", "efc_R", "efc_D", "efc_aref", "efc_b", "efc_force"]
 
 # Written by mj_forward after the pose: the position stage's centre of mass,
 # centre-of-mass inertia and motion subspaces, then the velocity stage's

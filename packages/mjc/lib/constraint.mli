@@ -35,3 +35,23 @@ val type_contact_pyramidal : int
     A row that does not fit in the model's [nefcmax] budget raises through
     [Nx.check] rather than being dropped silently. *)
 val limits : Model.host -> Data.host -> Data.host
+
+(** {1:impedance Impedance} *)
+
+(** [impedance m d] is [d] with [efc_vel], [efc_R], [efc_D] and [efc_aref]
+    computed for the assembled rows, following [mj_constraintUpdate]'s
+    classical (non-discrete) path:
+
+    {v
+      efc_vel = J qvel
+      R       = max(1e-15, (1 - imp) * diagA / imp),  diagA = dof_invweight0
+      D       = 1 / R
+      aref    = -B * efc_vel - K * I * (efc_pos - efc_margin)
+    v}
+
+    [imp] and its derivative come from the row's [solimp] evaluated at its
+    position, and [K], [B] from its [solref], with MuJoCo's refsafe clamp
+    [solref.0 >= 2 dt] and its standard-versus-direct reference rule. Rows
+    beyond [nefc] are given [R = 1] and [D = 0] so that a fixed-size system
+    stays positive definite. *)
+val impedance : Model.host -> Data.host -> Data.host

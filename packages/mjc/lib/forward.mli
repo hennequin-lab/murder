@@ -23,6 +23,8 @@
 
     and [qacc = mass_matrix^-1 qfrc_smooth].
 
-    With constraints, M3's solver replaces [qacc]; without them it is the
-    whole answer, as [qacc_smooth] is in the C engine. *)
+    Then the joint-limit rows are assembled, their impedance computed, and
+    {!Solver.forward} solves for the row forces and the final [qacc]. With no
+    active row it returns the smooth acceleration unchanged, as the C engine
+    does. *)
 val forward : Model.host -> Data.host -> Data.host

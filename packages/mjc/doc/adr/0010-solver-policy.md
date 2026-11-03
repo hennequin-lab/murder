@@ -39,10 +39,21 @@ rows are assembled; equality, friction loss and contact follow in that order.
 
 ## Newton, and not PGS
 
-The reduced system is `A = J M^-1 J^T`, dense, of size `nefc`. Newton factors
-`A` (Cholesky), solves for `λ`, projects each row with the impedance, and
-repeats. CG applies the same `A` as an operator built from `solveM` and `J`,
-which needs no factor of `A` but converges linearly.
+The reduced system is `A = J M^-1 J^T + diag R`, dense, of size `nefcmax`.
+Newton solves `A λ = -b` over the free rows and pins the rest to zero with an
+identity block, so the system stays square and positive definite and the
+active set is handled exactly.
+
+**Not Newton with projection.** Projecting a full Newton step after each
+iteration has fixed points that are not KKT points: the first fixture run
+returned twice MuJoCo's force because a row that should have been frozen was
+carried in the solve. The free set is therefore explicit: a row is free while
+its force is positive or its reduced gradient is negative, and the first
+iteration takes every row free so a cold start reaches the unconstrained
+optimum before anything is frozen.
+
+CG applies `A` as an operator built from `solveM` and `J`, which needs no
+factor of `A` but converges linearly; it is not implemented yet.
 
 Policy for v1:
 
@@ -59,8 +70,7 @@ Policy for v1:
 ## What this costs
 
 The per-row quantities and the Jacobian are reproduced exactly, so `efc_pos`,
-`efc_J`, `efc_R` and `efc_aref` are comparable array by array. The solved `λ`
-is comparable only when the iteration policy matches; the tests therefore
-check `λ` against the fixture within a stated tolerance and separately check
-that the acceleration matches to the step's tolerance, which is what the
-physics depends on.
+`efc_J`, `efc_R`, `efc_D` and `efc_aref` are comparable array by array at
+1e-12. The solved `λ` is comparable only when the iteration policy matches, so
+the tests hold it to 1e-6 and hold a ten-step constrained trajectory to the
+same 1e-6, which is what the physics depends on.

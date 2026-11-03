@@ -161,7 +161,30 @@ zero.
   is non-metric, so the classical formulation is the one to reproduce, and
   Newton with a fixed budget and no line search is the first cut.
 
-**Remaining:** `dof_invweight0` at load, `solimp`/`solref` to `R` and
-`efc_aref`, the reduced system and Newton/CG, the constrained acceleration and
-`efc_force`, the implicit-in-velocity integrator, then equality, friction loss
-and the constrained trajectory fixture. The formula sheet is in the ADR.
+**Landed: the impedance and the solver.** `Constraint.impedance` computes
+`efc_vel`, `efc_R`, `efc_D` and `efc_aref` from `solimp`/`solref`, matching
+MuJoCo to 1e-12 on every state of the `limited` fixture. `Solver.forward`
+solves the row forces on `A = J M⁻¹Jᵀ + diag R` and writes `efc_force`,
+`qfrc_constraint` and the final `qacc`; the constrained trajectory matches
+`mj_step` to 1e-6 over ten steps.
+
+The solver had to be an **active-set Newton, not Newton-with-projection**.
+Projecting a full Newton step lands on a fixed point that is not the KKT
+point: for one of the fixture states it returned a force twice the right one
+because a row that should have been frozen stayed free. Freezing the rows
+(free while the force is positive or the reduced gradient is negative, pinned
+by an identity block) converges in two or three iterations. The force is
+compared at 1e-6 rather than 1e-12 because the port takes a fixed Newton path
+while the C engine runs a primal solver with a line search; both minimise the
+same quadratic.
+
+**Cost.** A compiled step went from 26–32 us to 49–83 us, and the batched
+step from 1.5–4.9 to 2.7–16.9 us per environment. The solver is why: a masked
+`nefcmax × nefcmax` factorisation per iteration does not vectorise like the
+rest of the pipeline. Still inside G2's 100 us threshold.
+
+**Remaining in M3:** equality rows (connect, weld, joint, tendon), friction
+loss, the matriz-free CG solver, and `implicitfast`. The `.mjcb` format is
+version 4: it carries `dof_invweight0`, `iterations` and `tolerance`, and the
+converter now sizes `nefcmax` from the model's joints rather than a padding
+constant.
