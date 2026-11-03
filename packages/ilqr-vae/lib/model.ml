@@ -161,15 +161,17 @@ let generative (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
   ; Recognition.likelihood = model.likelihood
   ; Recognition.prior = model.prior
   ; Recognition.encoder_prior = model.encoder_prior
+  ; Recognition.initial_prior = model.initial_prior
   }
 
 let gparams (type w d l p e r) (params : (w, d, l, p, e, r, 's) params)
-  : (w, d, l, p, e) Recognition.gparams
+  : (w, d, l, p, e, 's) Recognition.gparams
   =
   { Recognition.dynamics = params.dynamics
   ; Recognition.likelihood = params.likelihood
   ; Recognition.prior = params.prior
   ; Recognition.encoder_prior = params.encoder_prior
+  ; Recognition.initial_prior = params.initial_prior
   }
 
 let infer

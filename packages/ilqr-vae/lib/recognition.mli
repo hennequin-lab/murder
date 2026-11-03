@@ -60,14 +60,22 @@ type ('w, 'd, 'l, 'p, 'e, 's) generative =
   ; likelihood : ('w, 'l, 's) Likelihood.t
   ; prior : ('w, 'p, 's) Prior.t (** the generative prior over inputs *)
   ; encoder_prior : ('w, 'e, 's) Prior.t (** the prior of the iLQR cost, [p̃] *)
+  ; initial_prior : (('w, 's) value, 's) Initial.params option
+    (** the prior over the initial state. The iLQR encoder infers an initial
+        state exactly when it is [Some]: the prior is then the boundary
+        condition of the encoder's control problem, so it is a term of the
+        cost the solve differentiates. *)
   }
 
-(** The corresponding parameters: a subset of {!Model.params}. *)
-type ('w, 'd, 'l, 'p, 'e) gparams =
+(** The corresponding parameters: a subset of {!Model.params}. The device set
+    ['s] is that of the initial-state prior's tensors, which the encoder
+    prices. *)
+type ('w, 'd, 'l, 'p, 'e, 's) gparams =
   { dynamics : 'd
   ; likelihood : 'l
   ; prior : 'p
   ; encoder_prior : 'e
+  ; initial_prior : (('w, 's) value, 's) Initial.params option
   }
 
 (** One reparameterized draw of a trial's latents: the initial state, of shape
@@ -113,7 +121,7 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
   ; params : 'r (** the parameters a fresh model starts from *)
   ; infer :
       ('w, 'd, 'l, 'p, 'e, 's) generative
-      -> ('w, 'd, 'l, 'p, 'e) gparams
+      -> ('w, 'd, 'l, 'p, 'e, 's) gparams
       -> params:'r
       -> ?iters:int
       -> n_samples:int
@@ -122,14 +130,14 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
       -> ('w, 's) posterior
   ; mean :
       ('w, 'd, 'l, 'p, 'e, 's) generative
-      -> ('w, 'd, 'l, 'p, 'e) gparams
+      -> ('w, 'd, 'l, 'p, 'e, 's) gparams
       -> params:'r
       -> ?iters:int
       -> ('w, 's) value
       -> ('w, 's) samples
   ; log_prob :
       ('w, 'd, 'l, 'p, 'e, 's) generative
-      -> ('w, 'd, 'l, 'p, 'e) gparams
+      -> ('w, 'd, 'l, 'p, 'e, 's) gparams
       -> params:'r
       -> ?iters:int
       -> ('w, 's) value
@@ -160,7 +168,7 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
 val infer
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) t
   -> ('w, 'd, 'l, 'p, 'e, 's) generative
-  -> ('w, 'd, 'l, 'p, 'e) gparams
+  -> ('w, 'd, 'l, 'p, 'e, 's) gparams
   -> params:'r
   -> ?iters:int
   -> n_samples:int
@@ -176,7 +184,7 @@ val infer
 val mean
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) t
   -> ('w, 'd, 'l, 'p, 'e, 's) generative
-  -> ('w, 'd, 'l, 'p, 'e) gparams
+  -> ('w, 'd, 'l, 'p, 'e, 's) gparams
   -> params:'r
   -> ?iters:int
   -> ('w, 's) value
@@ -192,7 +200,7 @@ val mean
 val log_prob
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) t
   -> ('w, 'd, 'l, 'p, 'e, 's) generative
-  -> ('w, 'd, 'l, 'p, 'e) gparams
+  -> ('w, 'd, 'l, 'p, 'e, 's) gparams
   -> params:'r
   -> ?iters:int
   -> ('w, 's) value
@@ -204,7 +212,7 @@ val log_prob
     generative parameters. *)
 val gparams_structure
   :  ('w, 'd, 'l, 'p, 'e, 's) generative
-  -> (('w, 'd, 'l, 'p, 'e) gparams, 's) Nx.Ptree.t
+  -> (('w, 'd, 'l, 'p, 'e, 's) gparams, 's) Nx.Ptree.t
 
 (** {1 iLQR recognition} *)
 
@@ -222,18 +230,41 @@ val gparams_structure
 
     and the posterior is [N(μ_u, Σ_time ⊗ Σ_space)]: the two covariance
     factors are the parameters of this module, so the recognition owns them.
-    The initial state is deterministic at zero, so the model must be built
-    without an initial-state prior.
+
+    {b The initial state.} With [infer_initial] (default [false]) the initial
+    state is a latent and [x_0 = 0] is replaced by "x_0 is free, priced by the
+    model's {!Initial} prior", which the encoder's problem then carries as its
+    step-0 running loss. The mean is not a variable of the solve: it is a
+    variational parameter whose value is the joint mode of the local quadratic
+    model, reached in a fixed number of rounds of "solve from the current
+    estimate, then take the Laplace mean the new model implies". The
+    covariance is [exp (2 log_scale) · P⁻¹] with [P] the Hessian of the
+    encoder's cost in [x_0], which is the exact posterior precision of a linear
+    model and the Gauss-Newton one otherwise.
+
+    Both are values rather than functions of the parameters the bound
+    follows: the draws and the density take them stopped, as they take the two
+    covariance factors, and [log_scale] is the block's one free parameter and
+    the only part of it that carries a gradient. The term left out is the
+    bound's derivative in the distribution's own mean and precision, which is
+    zero where the bound is stationary in [q]; following it would mean
+    differentiating the Riccati recursion behind [P], or making [x_0] a
+    variable of the solve.
 
     The parameters are learned by the ELBO's gradient, and the gradient
-    reaches the model's dynamics, likelihood and encoder prior through
-    {!Dilqr}'s implicit VJP of the solve. *)
+    reaches the model's dynamics, likelihood, encoder prior and initial-state
+    prior through {!Dilqr}'s implicit VJP of the solve. Circularity is
+    confined to the rounds: [x_0] is held fixed while the solve is
+    differentiated. *)
 module Iilqr : sig
   (** The recognition's parameters: the Cholesky factors of the two
       covariances, exactly as {!Covariance.params}. *)
   type ('a, 's) params =
     { space_cov : ('a, 's) Covariance.params (** [[m]]-dimensional factor *)
     ; time_cov : ('a, 's) Covariance.params (** [[n_steps]]-dimensional factor *)
+    ; initial_log_scale : 'a option
+      (** a scalar when the initial state is inferred: the log scale of its
+          covariance, [exp (2 log_scale) · P⁻¹]. Absent when it is fixed. *)
     }
   [@@deriving ptree]
 
@@ -241,13 +272,14 @@ module Iilqr : sig
       value, so that it stays polymorphic in the dtype. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [init ?space_sigma2 ?time_sigma2 ~n ~m ~n_steps ~n_output dtype] is the
-      initial parameters: factors of [space_sigma2 · I] and [time_sigma2 · I],
-      both [1.] by default. Raises [Invalid_argument] if a dimension is not
-      positive. *)
+  (** [init ?space_sigma2 ?time_sigma2 ?infer_initial ~n ~m ~n_steps ~n_output dtype] is the initial parameters: factors of [space_sigma2 · I] and
+      [time_sigma2 · I], both [1.] by default, and the initial state's log
+      scale at [0] when [infer_initial] (default [false]). Raises
+      [Invalid_argument] if a dimension is not positive. *)
   val init
     :  ?space_sigma2:float
     -> ?time_sigma2:float
+    -> ?infer_initial:bool
     -> n:int
     -> m:int
     -> n_steps:int
@@ -259,9 +291,9 @@ module Iilqr : sig
       as a {!Dilqr.Problem.t} whose parameters are [gp]. *)
   val problem
     :  ('w, 'd, 'l, 'p, 'e, 's) generative
-    -> ('w, 'd, 'l, 'p, 'e) gparams
+    -> ('w, 'd, 'l, 'p, 'e, 's) gparams
     -> ('w, 's) value
-    -> ('w, ('w, 'd, 'l, 'p, 'e) gparams, 's) Dilqr.Problem.t
+    -> ('w, ('w, 'd, 'l, 'p, 'e, 's) gparams, 's) Dilqr.Problem.t
 
   (** [posterior_mean gen gp ?u_init ?max_iter ?conv_threshold data] is the
       adaptive iLQR solution's controls, of shape [[n_steps; m]]. [u_init]
@@ -270,10 +302,11 @@ module Iilqr : sig
       eager only, so do not put it inside {!Rune.jit}. *)
   val posterior_mean
     :  ('w, 'd, 'l, 'p, 'e, 's) generative
-    -> ('w, 'd, 'l, 'p, 'e) gparams
+    -> ('w, 'd, 'l, 'p, 'e, 's) gparams
     -> ?u_init:('w, 's) value
     -> ?max_iter:int
     -> ?conv_threshold:float
+    -> ?rounds:int
     -> ('w, 's) value
     -> ('w, 's) value
 
@@ -282,20 +315,46 @@ module Iilqr : sig
       traceable and JIT-compilable together with its implicit VJP. *)
   val posterior_mean_fixed
     :  ('w, 'd, 'l, 'p, 'e, 's) generative
-    -> ('w, 'd, 'l, 'p, 'e) gparams
+    -> ('w, 'd, 'l, 'p, 'e, 's) gparams
     -> ?u_init:('w, 's) value
     -> iters:int
     -> ?alphas:float list
     -> ?mu:float
     -> ?c1:float
+    -> ?rounds:int
     -> ('w, 's) value
     -> ('w, 's) value
+
+  (** [posterior_initial gen gp ?u_init ?iters ?rounds data] is the Laplace
+      posterior of the initial state — the mean and the precision of the
+      Gaussian the local quadratic model implies for it — when the model has
+      an initial-state prior, and [None] when it fixes [x_0 = 0].
+
+      The mean is the joint mode of the encoder's cost over [x_0] and the
+      inputs, i.e. the value the trajectory starts from once [rounds] rounds
+      (default 2) of solve-then-replace have converged; the precision is the
+      same cost's Hessian in [x_0], so its inverse is the covariance the
+      analogous linear model's posterior would have. [iters] selects the
+      adaptive solve (absent) or a fixed iteration count, as the means do.
+
+      This is the diagnostic entry point as much as a component: it answers
+      "what initial condition does the encoder want, given this trial", which
+      is what the [u_0] channel of the fixed-zero encoder stood in for. *)
+  val posterior_initial
+    :  ('w, 'd, 'l, 'p, 'e, 's) generative
+    -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+    -> ?u_init:('w, 's) value
+    -> ?iters:int
+    -> ?rounds:int
+    -> ('w, 's) value
+    -> (float, 'w, 's) Dilqr.Lqr.initial option
 
   (** [make ?space_sigma2 ?time_sigma2 ~n ~m ~n_steps ~n_output dtype] is the
       recognition, with covariance factors initialized as {!init} does. *)
   val make
     :  ?space_sigma2:float
     -> ?time_sigma2:float
+    -> ?infer_initial:bool
     -> n:int
     -> m:int
     -> n_steps:int

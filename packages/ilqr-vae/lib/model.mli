@@ -143,7 +143,7 @@ val generative
 (** [gparams params] is the matching view of the parameters. *)
 val gparams
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) params
-  -> ('w, 'd, 'l, 'p, 'e) Recognition.gparams
+  -> ('w, 'd, 'l, 'p, 'e, 's) Recognition.gparams
 
 (** [infer model params ~n_samples ~key data] draws [n_samples] latent
     trajectories per trial from the model's recognition distribution and

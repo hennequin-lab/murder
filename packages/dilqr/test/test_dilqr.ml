@@ -285,11 +285,11 @@ let test_a_failed_factorization_is_nan () =
   in
   let tape = { blocks; fx = zero [| 1 |]; fxx = zero [| 1; 1 |] } in
   let finite d1 d2 = Nx.item [] (all (isfinite d1)) && Nx.item [] (all (isfinite d2)) in
-  let _, d1, d2 = backward tape ~lin:(lin_of_tape tape) in
+  let _, d1, d2, _ = backward tape ~lin:(lin_of_tape tape) in
   require
     ~msg:"an indefinite Quu has NaN expected-decrease accumulators"
     (not (finite d1 d2));
-  let _, d1, d2 = backward ~mu:(scalar float64 2.0) tape ~lin:(lin_of_tape tape) in
+  let _, d1, d2, _ = backward ~mu:(scalar float64 2.0) tape ~lin:(lin_of_tape tape) in
   require ~msg:"regularization makes Quu positive definite" (finite d1 d2)
 
 (* The costate is the hand recursion: on a two-step tape with a closed form,
@@ -973,7 +973,7 @@ let test_local_model_is_a_fixed_point () =
   let sol = Dilqr.Solver.solve_fixed P.problem ~iters:12 theta x0 us0 in
   let tape = Dilqr.Solver.blocks P.problem theta sol.xs sol.us in
   let common = Dilqr.Lqr.backward_common tape in
-  let gains, d1, _ =
+  let gains, d1, _, _ =
     Dilqr.Lqr.backward_lin ~common ~tape ~lin:(Dilqr.Lqr.lin_of_tape tape)
   in
   let worst = item (max (abs gains.Dilqr.Lqr.feedforward)) in
@@ -989,6 +989,326 @@ let test_local_model_is_a_fixed_point () =
   require
     ~msg:"and the zero control"
     Float.(item (Nx.max (Nx.abs zerosol.Dilqr.Lqr.us)) < 1e-6)
+
+(* ──────────────────────────────────────────────────────────────────────────
+   The value function at the horizon's start, and the initial condition it
+   implies. The reference stacks the same quadratic program densely and solves
+   its KKT system: a different algorithm on the same data, so it shares no code
+   with the recursion it checks.
+   ────────────────────────────────────────────────────────────────────────── *)
+
+(* A dense host matrix, row-major. The reference's systems have the horizon
+   times the state and control dimensions as their size: small enough that
+   dense linear algebra is the simplest correct thing. *)
+module Dense = struct
+  type t =
+    { dim : int
+    ; data : float array
+    }
+
+  let make dim = { dim; data = Array.create ~len:(dim * dim) 0.0 }
+
+  (* [add t ~row ~col ~rows ~cols blk] adds a block at a (row, col) offset. *)
+  let add t ~row ~col ~rows ~cols (blk : float array) =
+    for i = 0 to rows - 1 do
+      for j = 0 to cols - 1 do
+        let at = ((row + i) * t.dim) + col + j in
+        t.data.(at) <- t.data.(at) +. blk.((i * cols) + j)
+      done
+    done
+
+  let tensor t = create float64 [| t.dim; t.dim |] t.data
+end
+
+(* [transpose ~rows ~cols a] is the [cols × rows] transpose of a row-major
+   [rows × cols] block. *)
+let transpose ~rows ~cols (a : float array) =
+  Array.init (rows * cols) ~f:(fun i ->
+    let out_row = i / rows
+    and out_col = Int.rem i rows in
+    a.((out_col * cols) + out_row))
+
+let identity_array k =
+  Array.init (k * k) ~f:(fun i -> if Int.equal (i / k) (Int.rem i k) then 1.0 else 0.0)
+
+(* A deterministic tape with every block populated: positive-definite
+   quadratic blocks, a small dynamics, and non-zero linear terms on both the
+   state and the control, so that the value gradient is not the costate. *)
+let random_tape ~n ~m ~t_steps =
+  let seed = ref 0.37 in
+  let draw shape =
+    seed := !seed +. 0.31;
+    pattern ~seed:!seed ~like:(zeros float64 shape)
+  in
+  let psd shape =
+    let dim = Array.get shape (Array.length shape - 1) in
+    let m = draw shape in
+    Infix.((m *@ matrix_transpose m /$ Float.of_int dim) + eye_at (beside m) float64 dim)
+  in
+  let blocks =
+    { Dilqr.Lqr.Rows.a = Infix.(draw [| t_steps; n; n |] *$ 0.8)
+    ; b = draw [| t_steps; n; m |]
+    ; lx = draw [| t_steps; n |]
+    ; lu = draw [| t_steps; m |]
+    ; lxx = psd [| t_steps; n; n |]
+    ; luu = psd [| t_steps; m; m |]
+    ; lux = Infix.(draw [| t_steps; m; n |] *$ 0.5)
+    }
+  in
+  ({ Dilqr.Lqr.blocks; fx = draw [| n |]; fxx = psd [| n; n |] }
+   : (float, Nx.float64_elt, Nx.host) Dilqr.Lqr.tape)
+
+(* The state at step 0 of the stacked program: free, or fixed to a deviation. *)
+type anchor =
+  | Free
+  | Fixed of float array
+
+(* The tape's program stacked densely. Variables are
+   [z = (x_0 … x_T, u_0 … u_{T−1})] in deviation coordinates; the dynamics
+   enter as the equalities [x_{k+1} − A_k x_k − B_k u_k = 0]. [prior] is the
+   mean and precision of a Gaussian on the absolute state [nominal + δ], in
+   deviation coordinates about [nominal]. Returns the minimizer and the
+   objective value. *)
+let stacked_program
+      ~n
+      ~m
+      ~(tape : (float, Nx.float64_elt, Nx.host) Dilqr.Lqr.tape)
+      ~prior
+      ~nominal
+      ~anchor
+      ()
+  =
+  let t_steps = (shape tape.Dilqr.Lqr.blocks.a).(0) in
+  let n_states = (t_steps + 1) * n in
+  let nz = n_states + (t_steps * m) in
+  let n_anchor =
+    match anchor with
+    | Free -> 0
+    | Fixed _ -> n
+  in
+  let n_cons = (t_steps * n) + n_anchor in
+  let dim = nz + n_cons in
+  let h_mat = Dense.make nz in
+  let h_vec = Array.create ~len:nz 0.0 in
+  let cons = Array.create ~len:(n_cons * nz) 0.0 in
+  let x k = k * n
+  and u k = n_states + (k * m) in
+  let step t k = to_array (slice [ I k ] t) in
+  let add_cons row col rows cols (blk : float array) =
+    for i = 0 to rows - 1 do
+      for j = 0 to cols - 1 do
+        let at = ((row + i) * nz) + col + j in
+        cons.(at) <- cons.(at) +. blk.((i * cols) + j)
+      done
+    done
+  in
+  for k = 0 to t_steps - 1 do
+    let lxx = step tape.Dilqr.Lqr.blocks.lxx k
+    and luu = step tape.Dilqr.Lqr.blocks.luu k
+    and lux = step tape.Dilqr.Lqr.blocks.lux k
+    and lx = step tape.Dilqr.Lqr.blocks.lx k
+    and lu = step tape.Dilqr.Lqr.blocks.lu k
+    and a = step tape.Dilqr.Lqr.blocks.a k
+    and b = step tape.Dilqr.Lqr.blocks.b k in
+    (* [½ xᵀ lxx x + ½ uᵀ luu u + uᵀ lux x], so the cross block is [luxᵀ] on
+       (x, u) and [lux] on (u, x). *)
+    Dense.add h_mat ~row:(x k) ~col:(x k) ~rows:n ~cols:n lxx;
+    Dense.add h_mat ~row:(u k) ~col:(u k) ~rows:m ~cols:m luu;
+    Dense.add h_mat ~row:(x k) ~col:(u k) ~rows:n ~cols:m (transpose ~rows:m ~cols:n lux);
+    Dense.add h_mat ~row:(u k) ~col:(x k) ~rows:m ~cols:n lux;
+    Array.blit ~src:lx ~src_pos:0 ~dst:h_vec ~dst_pos:(x k) ~len:n;
+    Array.blit ~src:lu ~src_pos:0 ~dst:h_vec ~dst_pos:(u k) ~len:m;
+    (* [x_{k+1} − A_k x_k − B_k u_k = 0] *)
+    let row = k * n in
+    add_cons row (x k) n n (Array.map a ~f:Float.neg);
+    add_cons row (x (k + 1)) n n (identity_array n);
+    add_cons row (u k) n m (Array.map b ~f:Float.neg)
+  done;
+  Dense.add
+    h_mat
+    ~row:(x t_steps)
+    ~col:(x t_steps)
+    ~rows:n
+    ~cols:n
+    (to_array tape.Dilqr.Lqr.fxx);
+  Array.blit
+    ~src:(to_array tape.Dilqr.Lqr.fx)
+    ~src_pos:0
+    ~dst:h_vec
+    ~dst_pos:(x t_steps)
+    ~len:n;
+  (match prior with
+   | None -> ()
+   | Some (prior_mean, prior_precision) ->
+     (* The prior is on the absolute state, so its Hessian is its precision
+        and its gradient at [δ = 0] is [Λ (nominal − μ)]. *)
+     Dense.add h_mat ~row:0 ~col:0 ~rows:n ~cols:n prior_precision;
+     for i = 0 to n - 1 do
+       for j = 0 to n - 1 do
+         h_vec.(i)
+         <- h_vec.(i) +. (prior_precision.((i * n) + j) *. (nominal.(j) -. prior_mean.(j)))
+       done
+     done);
+  (match anchor with
+   | Free -> ()
+   | Fixed _ -> add_cons (t_steps * n) 0 n n (identity_array n));
+  (* The KKT system of [min ½ zᵀ H z + hᵀ z s.t. C z + d = 0] is
+     [[H Cᵀ; C 0]] [z; λ] = [−h; −d]. *)
+  let rhs = Array.create ~len:dim 0.0 in
+  for i = 0 to nz - 1 do
+    rhs.(i) <- -.h_vec.(i)
+  done;
+  (match anchor with
+   | Free -> ()
+   | Fixed delta ->
+     for i = 0 to n - 1 do
+       rhs.(nz + (t_steps * n) + i) <- delta.(i)
+     done);
+  let kkt = { Dense.dim; data = Array.create ~len:(dim * dim) 0.0 } in
+  for i = 0 to nz - 1 do
+    for j = 0 to nz - 1 do
+      kkt.data.((i * dim) + j) <- h_mat.data.((i * nz) + j)
+    done
+  done;
+  for i = 0 to n_cons - 1 do
+    for j = 0 to nz - 1 do
+      let c = cons.((i * nz) + j) in
+      kkt.data.((j * dim) + nz + i) <- c;
+      kkt.data.(((nz + i) * dim) + j) <- c
+    done
+  done;
+  let zlam = to_array (Nx.solve (Dense.tensor kkt) (create float64 [| dim |] rhs)) in
+  let z = Array.sub zlam ~pos:0 ~len:nz in
+  let cost = ref 0.0 in
+  for i = 0 to nz - 1 do
+    for j = 0 to nz - 1 do
+      cost := !cost +. (0.5 *. z.(i) *. h_mat.data.((i * nz) + j) *. z.(j))
+    done;
+    cost := !cost +. (h_vec.(i) *. z.(i))
+  done;
+  z, !cost
+
+(* The value function of the local model at the horizon's start: the gradient
+   and the Hessian of [J (δ)], the optimal cost of the program with the state
+   at step 0 fixed to the deviation [δ], from central differences of the dense
+   reference. [δ] is a deviation, so the nominal cancels. *)
+let dense_value_function ~n ~m ~(tape : (float, Nx.float64_elt, Nx.host) Dilqr.Lqr.tape) =
+  let value delta =
+    let _, cost =
+      stacked_program
+        ~n
+        ~m
+        ~tape
+        ~prior:None
+        ~nominal:(Array.create ~len:n 0.0)
+        ~anchor:(Fixed delta)
+        ()
+    in
+    cost
+  in
+  (* [J] is exactly quadratic, so any step is exact and the step only trades
+     roundoff against the [1 / h²] amplification. *)
+  let h = 1e-2 in
+  let shift i j si sj =
+    Array.init n ~f:(fun k ->
+      (if Int.equal k i then si else 0.0) +. if Int.equal k j then sj else 0.0)
+  in
+  let vx =
+    Array.init n ~f:(fun i ->
+      (value (shift i i h 0.0) -. value (shift i i (-.h) 0.0)) /. (2.0 *. h))
+  in
+  let vxx =
+    Array.init (n * n) ~f:(fun idx ->
+      let i = idx / n
+      and j = Int.rem idx n in
+      (value (shift i j h h)
+       -. value (shift i j h (-.h))
+       -. (value (shift i j (-.h) h) -. value (shift i j (-.h) (-.h))))
+      /. (4.0 *. h *. h))
+  in
+  vx, vxx
+
+(* [common.value_hessian] and [backward_lin]'s value gradient are the Hessian
+   and the gradient of the local model's optimal value. The tape's control
+   gradients do not vanish, so a value gradient taken for a costate — which
+   differs by [K_0ᵀ Q_u,0] — would not pass. *)
+let test_value_function_matches_dense () =
+  let n = 3
+  and m = 2
+  and t_steps = 4 in
+  let tape = random_tape ~n ~m ~t_steps in
+  let common = Dilqr.Lqr.backward_common tape in
+  let _, _, _, value_grad =
+    Dilqr.Lqr.backward_lin ~common ~tape ~lin:(Dilqr.Lqr.lin_of_tape tape)
+  in
+  let vx, vxx = dense_value_function ~n ~m ~tape in
+  check_close ~msg:"value gradient" ~tol:1e-7 (create float64 [| n |] vx) value_grad;
+  check_close
+    ~msg:"value Hessian"
+    ~tol:1e-6
+    (create float64 [| n * n |] vxx)
+    (reshape [| n * n |] common.Dilqr.Lqr.value_hessian)
+
+(* [Lqr.initial_condition] minimizes the local model's value plus a Gaussian
+   prior over the state at step 0: the same program with [x_0] free, solved
+   densely, for the mean, and the value Hessian the reference above measures
+   plus the prior's precision for the precision.
+
+   For a linear dynamics with Gaussian losses the program is the negative log
+   joint of the Gaussian model up to a constant, so its minimizer is that
+   model's exact posterior mean and [Λ + V] its exact marginal precision of
+   [x_0] — what the information-form (Rauch-Tung-Striebel) smoother's backward
+   pass computes. *)
+let test_initial_condition_matches_dense () =
+  let n = 3
+  and m = 2
+  and t_steps = 4 in
+  let tape = random_tape ~n ~m ~t_steps in
+  let prior_mean = pattern ~seed:2.3 ~like:(zeros float64 [| n |]) in
+  let spread = pattern ~seed:3.7 ~like:(zeros float64 [| n; n |]) in
+  let prior_precision =
+    Infix.(
+      (spread *@ matrix_transpose spread /$ Float.of_int n)
+      + (eye float64 n *$ Float.of_int n))
+  in
+  let nominal = pattern ~seed:5.1 ~like:(zeros float64 [| n |]) in
+  let nominal_array = to_array nominal in
+  let mean_of_prior, precision_of_prior = to_array prior_mean, to_array prior_precision in
+  (* the program with [x_0] free: its minimizer's first block is the mean *)
+  let z, _ =
+    stacked_program
+      ~n
+      ~m
+      ~tape
+      ~prior:(Some (mean_of_prior, precision_of_prior))
+      ~nominal:nominal_array
+      ~anchor:Free
+      ()
+  in
+  let reference_mean =
+    create float64 [| n |] (Array.init n ~f:(fun i -> nominal_array.(i) +. z.(i)))
+  in
+  let _, vxx = dense_value_function ~n ~m ~tape in
+  let reference_precision =
+    create float64 [| n; n |] (Array.mapi vxx ~f:(fun i v -> v +. precision_of_prior.(i)))
+  in
+  let common = Dilqr.Lqr.backward_common tape in
+  let _, _, _, value_grad =
+    Dilqr.Lqr.backward_lin ~common ~tape ~lin:(Dilqr.Lqr.lin_of_tape tape)
+  in
+  let initial =
+    Dilqr.Lqr.initial_condition
+      ~common
+      ~value_grad
+      ~nominal
+      ~prior:(Some (prior_mean, prior_precision))
+  in
+  check_close ~msg:"initial mean" ~tol:1e-9 initial.Dilqr.Lqr.mean reference_mean;
+  check_close
+    ~msg:"initial precision"
+    ~tol:1e-9
+    initial.Dilqr.Lqr.precision
+    reference_precision
 
 (* [Dilqr.inputs] is a hand-written walk over the problem's parameter
    structure: its visits are the parameters under [theta], the initial state,
@@ -1059,5 +1379,7 @@ let () =
            test_streaming_jvp_matches_tape_jvp
        ; test "batched forward mode" test_batched_forward_mode
        ; test "the local model is a fixed point" test_local_model_is_a_fixed_point
+       ; test "value function matches dense" test_value_function_matches_dense
+       ; test "initial condition matches dense" test_initial_condition_matches_dense
        ; test "inputs structure" test_inputs_structure
        ])

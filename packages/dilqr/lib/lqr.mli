@@ -110,28 +110,39 @@ val matvec : (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.
 val sym : (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t
 
 (** The per-step factors that the primal and every tangent of one LQR solve
-    share. Build one with {!backward_common}.
+    share, and the value function the pass leaves at the horizon's start.
+    Build one with {!backward_common}.
 
-    It holds the upper Cholesky factor of the regularized [Q_uu] and the
-    feedback gain [K = -Q_uu⁻¹ Q_ux], both with the horizon leading. That is
-    all a tangent needs: the factor to solve for its feedforward gain, and [K]
-    to roll a tangent state into a tangent control. Nothing here depends on the
-    linear terms of the problem, so one copy serves a whole batch of
-    directions, at [horizon · (m² + m·n)] — against the
-    [O (horizon · n²)] tape it is built from. {!costate}, the only other
-    quantity a tangent batch shares, is computed separately and just as
-    cheaply. *)
+    It holds the upper Cholesky factor of the regularized [Q_uu], the feedback
+    gain [K = -Q_uu⁻¹ Q_ux], both with the horizon leading, and the value
+    Hessian at step 0. The first two are all a tangent needs: the factor to
+    solve for its feedforward gain, and [K] to roll a tangent state into a
+    tangent control. Nothing here depends on the linear terms of the problem,
+    so one copy serves a whole batch of directions, at
+    [horizon · (m² + m·n) + n²] — against the [O (horizon · n²)] tape it is
+    built from. {!costate}, the only other quantity a tangent batch shares, is
+    computed separately and just as cheaply. *)
 type ('a, 'b, 'd) common =
   { quu_chol : ('a, 'b, 'd) Nx.t
     (** the upper Cholesky factor of [Q_uu^μ], [horizon; m; m] *)
   ; feedback : ('a, 'b, 'd) Nx.t (** K_k = -Q_uu⁻¹ Q_ux, [horizon; m; n] *)
+  ; value_hessian : ('a, 'b, 'd) Nx.t
+    (** [V_0 = ∂²/∂x_0²] of the cost-to-go from step 0, [n; n] with any batch
+        axes: the last carry of the Hessian recursion, after step 0's own cost
+        has entered it. Together with the value gradient {!backward_lin}
+        returns it is the value function
+        [V (δ) = ½ δᵀ V_0 δ + Vx_0ᵀ δ + cst] of the linearized model on a
+        state deviation [δ] from the point it was linearized at. With [mu]
+        damping it is the damped model's Hessian, as the gains are. *)
   }
 
 (** [backward_common ?mu tape] runs the Hessian recursion of the Riccati
     backward pass: per step, [Q_xx], [Q_ux], [Q_uu], the feedback gain
     [K = -Q_uu⁻¹ Q_ux], and the value Hessian [V = sym (Q_xx + Q_uxᵀ K)] the
-    next step is built from, from the last step to the first. Only the factor
-    and the gain are retained: [V] is internal to the recursion.
+    next step is built from, from the last step to the first. The factors and
+    the gain are retained, and so is the value Hessian at step 0 — the last
+    carry of the recursion, which is [∂²/∂x_0²] of the optimal cost-to-go from
+    the initial state.
 
     [mu] is Levenberg-Marquardt damping, a scalar tensor: [Q_uu + μ BᵀB] and
     [Q_ux + μ BᵀA] are factorized instead, which is what makes the pass stable
@@ -170,6 +181,12 @@ val costate : (float, 'b, 'd) tape -> (float, 'b, 'd) Nx.t
     returned for the line search's model [α d1 + ½ α² d2] rather than
     recomputed.
 
+    The fourth result is the value gradient at step 0, [Vx_0 = ∂/∂x_0] of the
+    optimal cost-to-go, [n] with any batch axes: the last carry of the same
+    recursion, after step 0's own linear terms have entered it. It is the
+    gradient of the value function, not the costate: the two differ by
+    [K_0ᵀ Q_u,0] whenever the model's own control gradient does not vanish.
+
     Cheap: two products with the value gradient and one triangular solve per
     step. Called once for the primal linear terms, and once per tangent batch
     by {!solve_jvp}. *)
@@ -177,7 +194,10 @@ val backward_lin
   :  common:(float, 'b, 'd) common
   -> tape:(float, 'b, 'd) tape
   -> lin:(float, 'b, 'd) lin
-  -> (float, 'b, 'd) gains * (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) gains
+     * (float, 'b, 'd) Nx.t
+     * (float, 'b, 'd) Nx.t
+     * (float, 'b, 'd) Nx.t
 
 (** [backward ?mu ~tape ~lin] is {!backward_common} followed by
     {!backward_lin}: the whole Riccati pass over the horizon as one scan. *)
@@ -185,7 +205,63 @@ val backward
   :  ?mu:(float, 'b, 'd) Nx.t
   -> (float, 'b, 'd) tape
   -> lin:(float, 'b, 'd) lin
-  -> (float, 'b, 'd) gains * (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) gains
+     * (float, 'b, 'd) Nx.t
+     * (float, 'b, 'd) Nx.t
+     * (float, 'b, 'd) Nx.t
+
+(** The Gaussian the local model puts on the initial state: the value function
+    the backward pass leaves at step 0, fused with a prior. *)
+type ('a, 'b, 'd) initial =
+  { mean : ('a, 'b, 'd) Nx.t (** [n], with any batch axes *)
+  ; precision : ('a, 'b, 'd) Nx.t (** [n; n], with the same axes *)
+  }
+
+(** [initial_condition ~common ~value_grad ~nominal ~prior] is the Gaussian
+    the local quadratic model implies for the initial state.
+
+    The recursion leaves the value function
+    [V (δ) = ½ δᵀ V_0 δ + Vx_0ᵀ δ + cst] on a deviation [δ] from [nominal]
+    ({!backward_common}'s [value_hessian] and {!backward_lin}'s fourth
+    result). With [prior] as [N (μ, Λ⁻¹)] on the absolute state, its cost in
+    deviation coordinates has gradient [Λ (nominal − μ)] and Hessian [Λ] at
+    [δ = 0], so the joint cost is quadratic with precision
+
+    {[
+    P = V_0 + Λ
+    ]}
+
+    and stationary point [δ* = −P⁻¹ (Vx_0 + Λ (nominal − μ))]. Omit [prior]
+    when the tape's own step-0 cost already holds it — which is how a solve
+    with a free initial state prices it, the prior being that solve's boundary
+    condition — and the answer is the stationary point of the value function
+    itself, [δ* = −V_0⁻¹ Vx_0], at [P = V_0].
+
+    The returned [mean] is [nominal + δ*] and the returned [precision] is
+    [P]; the covariance is [P⁻¹], one triangular solve against the Cholesky
+    factor of [P], [Nx.cholesky] on the returned precision.
+
+    This is the truncation point's message from the future, in the sense of
+    the information-form (backward) Kalman smoother: for a linear dynamics
+    with Gaussian losses, the model is exact and [mean], [precision] are the
+    marginal posterior mean and precision of [x_0] under the prior and every
+    observation. For a nonlinear problem they are the same Gauss-Newton
+    (Laplace) approximation the iLQR iteration itself uses, at whatever
+    trajectory the tape was linearized at.
+
+    [P] must be positive definite; otherwise the Cholesky factor is NaN and so
+    is the mean. The prior's precision — or, without one, the tape's step-0
+    cost — is the only regularizer of the block, so it must be proper: a free
+    initial state whose local model is not strictly convex in [x_0] has no
+    Gaussian here, and every quantity is NaN. Nothing is validated:
+    [nominal] and [value_grad] must be [[n]] with the same batch axes, and a
+    prior [[n]] and [[n; n]] with those too. *)
+val initial_condition
+  :  common:(float, 'b, 'd) common
+  -> value_grad:(float, 'b, 'd) Nx.t
+  -> nominal:(float, 'b, 'd) Nx.t
+  -> prior:((float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t) option
+  -> (float, 'b, 'd) initial
 
 (** A solution trajectory, as one tensor per trajectory. *)
 type ('a, 'b, 'd) solution =

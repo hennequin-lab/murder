@@ -541,7 +541,7 @@ let solve_fixed_unbatched
   let cost = ref (cost_of p theta !xs !us) in
   for _ = 1 to iters do
     let tape = blocks_t p theta !xs !us in
-    let gains, d1, d2 = Lqr.backward ?mu tape ~lin:(Lqr.lin_of_tape tape) in
+    let gains, d1, d2, _ = Lqr.backward ?mu tape ~lin:(Lqr.lin_of_tape tape) in
     let n_alpha = Array.length alphas in
     (* Placeholders, every element is written below. *)
     let us_trials = Array.create ~len:n_alpha x0 in
@@ -687,7 +687,8 @@ let eager_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) kernels =
   ; backward =
       (fun theta xs us mu ->
         let tape = blocks_t p theta xs us in
-        Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape))
+        let gains, d1, d2, _ = Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape) in
+        gains, d1, d2)
   ; trial =
       (fun theta x0 xs us gains alpha ->
         let xs_t, us_t =
@@ -721,7 +722,7 @@ let compiled_kernels ?beam ?parallel (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd)
         @-> returns (pair (pair tensor tensor) (pair tensor tensor)))
       (fun (theta, (xs, (us, mu))) ->
          let tape = blocks_t p theta xs us in
-         let gains, d1, d2 = Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape) in
+         let gains, d1, d2, _ = Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape) in
          (gains.Lqr.feedback, gains.feedforward), (d1, d2))
   in
   let trial =

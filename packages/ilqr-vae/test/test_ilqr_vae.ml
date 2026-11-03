@@ -123,6 +123,31 @@ let setup ?(key = Nx.Rng.key 0) ~n ~m ~t_steps ~n_output () : iilqr_model * iilq
   let model = M.make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition () in
   model, M.params model
 
+(* The same model with a free initial state: the encoder prices it with the
+   initial-state prior, and the recognition carries the covariance scale. *)
+let setup_initial ?(key = Nx.Rng.key 2) ~n ~m ~t_steps ~n_output ()
+  : iilqr_model * iilqr_params
+  =
+  let keys = Nx.Rng.split ~n:2 key in
+  let dynamics = D.Linear.make ~key:keys.(0) ~n ~m dtype in
+  let likelihood = L.Gaussian.make ~key:keys.(1) ~n ~n_output dtype in
+  let prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
+  let encoder_prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
+  let initial_prior = I.make ~mean:0.5 ~std:1.5 ~n dtype in
+  let recognition = Il.make ~infer_initial:true ~n ~m ~n_steps:t_steps ~n_output dtype in
+  let model =
+    M.make
+      dtype
+      ~dynamics
+      ~likelihood
+      ~prior
+      ~encoder_prior
+      ~recognition
+      ~initial_prior
+      ()
+  in
+  model, M.params model
+
 let setup_lfads
       ?(key = Nx.Rng.key 1)
       ?(n_ic = 4)
@@ -297,7 +322,8 @@ let test_recognition_sampling () =
   let params =
     { params with
       M.recognition =
-        ({ Il.space_cov; time_cov } : (Nx.host Nx.float64_t, Nx.host) Il.params)
+        ({ Il.space_cov; time_cov; initial_log_scale = None }
+         : (Nx.host Nx.float64_t, Nx.host) Il.params)
     }
   in
   let n_samples = 40_000 in
@@ -344,7 +370,8 @@ let test_recognition_log_prob () =
   let params =
     { params with
       M.recognition =
-        ({ Il.space_cov; time_cov } : (Nx.host Nx.float64_t, Nx.host) Il.params)
+        ({ Il.space_cov; time_cov; initial_log_scale = None }
+         : (Nx.host Nx.float64_t, Nx.host) Il.params)
     }
   in
   let data = create dtype [| t_steps; 2 |] [| 0.1; -0.2; 0.3; 0.0; -0.4; 0.2 |] in
@@ -1820,6 +1847,206 @@ let visits s v =
    components' structures by hand, so their visits name every part: each
    component under its field, the initial-state prior's presence, and every
    array of each component. *)
+(* ──────────────────────────────────────────────────────────────────────────
+   The free initial state
+   ────────────────────────────────────────────────────────────────────────── *)
+
+(* A model whose encoder infers the initial state requires the prior and gets
+   a genuine free value: the posterior has the documented shapes, its initial
+   state is not the fixed zero, and its scale parameter widens the draws. *)
+let test_initial_state_recognition () =
+  let n = 2
+  and m = 2
+  and t_steps = 5 in
+  let model, params = setup_initial ~n ~m ~t_steps ~n_output:2 () in
+  require
+    ~msg:"an inferred initial state without a prior is rejected"
+    (Result.is_error
+       (Result.try_with (fun () ->
+          M.make
+            dtype
+            ~dynamics:model.M.dynamics
+            ~likelihood:model.M.likelihood
+            ~prior:model.M.prior
+            ~encoder_prior:model.M.encoder_prior
+            ~recognition:model.M.recognition
+            ())));
+  let data =
+    let _, _, _, o = Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key 31) in
+    o
+  in
+  let gen = M.generative model
+  and gp = M.gparams params in
+  let initial = Option.value_exn (Il.posterior_initial gen gp ~iters:8 data) in
+  require ~msg:"initial mean shape" Poly.(shape initial.Dilqr.Lqr.mean = [| n |]);
+  require
+    ~msg:"initial precision shape"
+    Poly.(shape initial.Dilqr.Lqr.precision = [| n; n |]);
+  require
+    ~msg:"the initial state is not the fixed zero"
+    Float.(max_abs initial.Dilqr.Lqr.mean > 1e-3);
+  let posterior = M.infer model params ~iters:8 ~n_samples:4 ~key:(Nx.Rng.key 32) data in
+  require ~msg:"posterior x0 shape" Poly.(shape posterior.R.x0 = [| 4; n |]);
+  require ~msg:"posterior u shape" Poly.(shape posterior.R.u = [| t_steps; 4; m |]);
+  require ~msg:"posterior log_prob shape" Poly.(shape posterior.R.log_prob = [| 4 |]);
+  require ~msg:"posterior is finite" (item (all (isfinite posterior.R.log_prob)));
+  let mean = M.mean model params ~iters:8 data in
+  require ~msg:"mean x0 shape" Poly.(shape mean.R.x0 = [| 1; n |]);
+  require ~msg:"mean u shape" Poly.(shape mean.R.u = [| t_steps; 1; m |]);
+  require
+    ~msg:"the mean scores finitely under its own density"
+    (Float.is_finite (Nx.item [ 0 ] (M.log_prob model params ~iters:8 data mean)));
+  (* a mini-batch keeps the trial axes leading *)
+  let batch =
+    concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] data; unsqueeze ~axes:[ 0 ] data ]
+  in
+  let batched = M.infer model params ~iters:4 ~n_samples:2 ~key:(Nx.Rng.key 33) batch in
+  require ~msg:"batched x0 shape" Poly.(shape batched.R.x0 = [| 2; 2; n |]);
+  require ~msg:"batched u shape" Poly.(shape batched.R.u = [| 2; t_steps; 2; m |]);
+  (* the scale is what widens the draws *)
+  let spread scale =
+    let params =
+      { params with
+        M.recognition =
+          { params.M.recognition with Il.initial_log_scale = Some (scalar scale) }
+      }
+    in
+    let draws = M.infer model params ~iters:8 ~n_samples:400 ~key:(Nx.Rng.key 34) data in
+    let centered =
+      Infix.(draws.R.x0 - reshape [| 1; n |] (Nx.mean ~axes:[ 0 ] draws.R.x0))
+    in
+    item (Nx.mean Infix.(centered * centered))
+  in
+  check_close
+    ~msg:"the scale sets the spread"
+    ~tol:0.05
+    (scalar (spread (Float.log 2.0)))
+    (scalar (4.0 *. spread 0.0))
+
+(* The encoder's initial state is the mode of its own cost, not a by-product of
+   the first input: at the returned mean the value of the control problem is
+   stationary in [x_0], and its curvature there is the returned precision. The
+   input is low-rank ([m < n]) and cannot set the state alone. *)
+let test_initial_state_is_the_mode () =
+  let n = 3
+  and m = 1
+  and t_steps = 5 in
+  let model, params = setup_initial ~n ~m ~t_steps ~n_output:3 () in
+  let data =
+    let _, _, _, o = Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key 41) in
+    o
+  in
+  let gen = M.generative model
+  and gp = M.gparams params in
+  let iters = 40 in
+  let initial = Option.value_exn (Il.posterior_initial gen gp ~iters data) in
+  let problem = Il.problem gen gp data in
+  let us0 = Array.init t_steps ~f:(fun _ -> zeros dtype [| m |]) in
+  (* [value x0] is the encoder's own cost with the initial state held at [x0]:
+     the value the local model approximates. *)
+  let value x0 =
+    let inputs : (_, _) Dilqr.Inputs.t = { theta = gp; x0; us0 } in
+    Dilqr.loss_of_taus problem gp (Dilqr.solve_fixed problem ~iters inputs)
+  in
+  let structure = Dilqr.inputs problem in
+  let gradient x0 =
+    (Rune.grad
+       structure
+       (fun i -> value i.Dilqr.Inputs.x0)
+       { Dilqr.Inputs.theta = gp; x0; us0 })
+      .Dilqr.Inputs.x0
+  in
+  Stdio.printf
+    "stationarity: |grad| = %.6g, |mean| = %.6g\n%!"
+    (max_abs (gradient initial.Dilqr.Lqr.mean))
+    (max_abs initial.Dilqr.Lqr.mean);
+  (* The point of the free initial state, in one number: the part of it the
+     first input cannot produce. [m < n] and [b] is the input weight, so the
+     reachable set of [x_1] is the span of [bᵀ] and the projection below
+     removes it. *)
+  let b = Option.value_exn params.M.dynamics.D.Linear.b in
+  let mean = initial.Dilqr.Lqr.mean in
+  let reachable =
+    Infix.(matrix_transpose b *@ (b *@ mean) *$ (1.0 /. item (sum (b * b))))
+  in
+  let outside = Infix.(mean - reachable) in
+  Stdio.printf
+    "initial mean: [%s]\n\
+    \  reachable by the first input: %.4g\n\
+    \  outside its span: %.4g\n\
+     %!"
+    (String.concat
+       ~sep:"; "
+       (Array.to_list (Array.map (to_array mean) ~f:(Printf.sprintf "%.4g"))))
+    (max_abs reachable)
+    (max_abs outside);
+  require
+    ~msg:"the mean has a component the first input cannot produce"
+    Float.(max_abs outside > 1e-2);
+  require
+    ~msg:"the initial state is stationary"
+    Float.(max_abs (gradient initial.Dilqr.Lqr.mean) < 1e-5);
+  (* The value's gradient is affine in [x_0] with slope its curvature, so one
+     central difference of it gives the precision a column at a time — through
+     the implicit VJP rather than through the Riccati recursion the precision
+     came from. *)
+  let h = 1e-2 in
+  let scale i s =
+    create dtype [| n |] (Array.init n ~f:(fun k -> if Int.equal k i then s else 0.0))
+  in
+  for j = 0 to n - 1 do
+    let at s = gradient Infix.(initial.Dilqr.Lqr.mean + scale j s) in
+    let column = Infix.((at h - at (-.h)) /$ (2.0 *. h)) in
+    for i = 0 to n - 1 do
+      check_close
+        ~msg:(Printf.sprintf "curvature %d %d is the precision" i j)
+        ~tol:1e-6
+        (get [ i; j ] initial.Dilqr.Lqr.precision)
+        (get [ i ] column)
+    done
+  done
+
+(* The bound trains with a free initial state: the prior is a term of the ELBO
+   and of the encoder's cost, and the gradient reaches both through the solve. *)
+let test_initial_state_training_smoke () =
+  let n = 2
+  and m = 2
+  and t_steps = 5 in
+  let model, params = setup_initial ~n ~m ~t_steps ~n_output:2 () in
+  let trial_data =
+    Array.init 3 ~f:(fun i ->
+      let _, _, _, o =
+        Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key (300 + i))
+      in
+      o)
+  in
+  let trials = stack ~axis:0 (Array.to_list trial_data) in
+  let structure = M.structure model in
+  let key = Nx.Rng.key 21 in
+  let objective p = El.batch_loss_fixed model p ~key ~n_samples:3 ~iters:4 trials in
+  let initial = item (objective params) in
+  require ~msg:"the bound is finite" (Float.is_finite initial);
+  let lr = 0.01 in
+  let params = ref params in
+  for _ = 1 to 12 do
+    let _, grads = Rune.value_and_grad structure objective !params in
+    let step
+      :  'a 'b.
+         Nx.Ptree.Path.t
+      -> ('a, 'b, Nx.host) Nx.t
+      -> ('a, 'b, Nx.host) Nx.t
+      -> ('a, 'b, Nx.host) Nx.t
+      =
+      fun _ p g -> Infix.(p - (cast (Nx.dtype p) (Nx.scalar float64 lr) * g))
+    in
+    params := Nx.Ptree.map2 structure step !params grads
+  done;
+  let final = item (objective !params) in
+  Stdio.printf "initial-state smoke: %.6g -> %.6g\n%!" initial final;
+  require
+    ~msg:"training with a free initial state decreases the loss"
+    Float.(final < initial)
+
 let test_structures () =
   let model, params = setup ~n:2 ~m:1 ~t_steps:3 ~n_output:2 () in
   expect (visits (M.structure model) params)
@@ -1840,6 +2067,7 @@ let test_structures () =
     recognition.space_cov.t: a leaf
     recognition.time_cov.d: a leaf
     recognition.time_cov.t: a leaf
+    recognition.initial_log_scale: None
   |};
   expect (visits (R.gparams_structure (M.generative model)) (M.gparams params))
   @@ Stdlib.__POS_OF__
@@ -1854,6 +2082,7 @@ let test_structures () =
     prior.log_first_bin: a leaf
     encoder_prior.log_spatial_stds: a leaf
     encoder_prior.log_first_bin: a leaf
+    initial_prior: None
   |};
   let model, params = setup_lfads ~n:2 ~m:2 ~t_steps:3 ~n_output:2 () in
   expect (visits (M.structure model) params)
@@ -1918,6 +2147,9 @@ let () =
        "ilqr_vae"
        [ test "covariance factors" test_covariance
        ; test "initial-state prior" test_initial_prior
+       ; test "initial-state recognition" test_initial_state_recognition
+       ; test "initial state is the mode" test_initial_state_is_the_mode
+       ; test "initial-state training smoke" test_initial_state_training_smoke
        ; test "iLQR sampling covariance" test_recognition_sampling
        ; test "iLQR log density" test_recognition_log_prob
        ; test "prior densities" test_prior_densities

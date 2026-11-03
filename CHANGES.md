@@ -56,6 +56,16 @@ changes do not need an entry.
   `Lqr.tangent_roll_step`) instead of materializing a tangent tape, so a
   direction costs `O (horizon · (n + m))` rather than
   `O (horizon · (n² + n·m))`.
+- `Lqr.backward_common` retains the value Hessian at the horizon's start
+  (`common.value_hessian`), and `Lqr.backward_lin` and `Lqr.backward` return
+  the value gradient there as a fourth result. Both were already the last
+  carries of the two recursions and were discarded. The new
+  `Lqr.initial_condition` fuses that value function with a Gaussian prior on
+  the initial state, returning the mean and precision the local model implies
+  for `x_0` — the truncation-point message of the Riccati pass. Its prior is
+  `~prior:(mean * precision) option`: a solve whose free initial state is
+  priced by the tape's own step-0 cost passes `None`, and then the call is the
+  stationary point of the value function itself.
 - The reverse pass no longer unrolls the horizon (its costate recursions are
   scans), and `loss_of_taus` is one scan rather than one loss per step. The
   local model's expected-decrease coefficient `d2` is `-d1`, as it always was
@@ -85,6 +95,19 @@ changes do not need an entry.
   make host components, as nx's creations do.
 - `Model.structure` and `Recognition.gparams_structure` name their parts by
   field alone: a path that was `0.dynamics.w` is `dynamics.w`.
+- A recognition can infer the initial state. `Recognition.Iilqr.make` takes
+  `?infer_initial`, and `Recognition.gparams` (and so the encoder's
+  `Dilqr.Problem.t`) carries the model's `initial_prior`, which is then the
+  step-0 running loss of the encoder's control problem — the boundary
+  condition that makes `x_0` free. The recognition's posterior over `x_0` is
+  the local model's Laplace posterior: its mean is the joint mode, reached in
+  `?rounds` rounds of solve-then-replace, and its covariance is
+  `exp (2 initial_log_scale) · P⁻¹`. Both are values of the local model, taken
+  stopped in the draws and in the density the bound differentiates, so the
+  block's one free parameter — and its one gradient — is the log scale;
+  `Recognition.Iilqr.posterior_initial` reports the pair. A
+  model with such a recognition must pass `~initial_prior`; one with the
+  fixed-zero recognition must not, as before.
 - `Model.make` takes no dimensions. Every one of them is a field of a
   component — `n` and `m` of the dynamics, `n_output` of the likelihood,
   `n_steps` of the recognition — so the model reads them from there and only

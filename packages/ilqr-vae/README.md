@@ -71,9 +71,19 @@ let step =
 
 - `Recognition.Iilqr` — the iLQR-VAE recognition. The posterior mean is the
   solution of a finite-horizon optimal control problem solved with `dilqr`;
-  the covariance is a Kronecker product of a factor over time and a factor
-  over input dimensions; the initial state is fixed at zero. `dilqr`'s
-  implicit VJP differentiates the solve without unrolling it.
+  the input covariance is a Kronecker product of a factor over time and a
+  factor over input dimensions. `dilqr`'s implicit VJP differentiates the
+  solve without unrolling it.
+
+  `~infer_initial:true` makes the initial state a latent instead of fixing it
+  at zero, and the model must then pass `~initial_prior`: that prior is the
+  boundary condition of the encoder's control problem, so the encoder solves
+  for `x_0` jointly with the inputs. Its mean is the joint mode of that
+  problem's local quadratic model, and its covariance is that model's Hessian
+  in `x_0` up to one learned scale — [Σ = exp (2 log_scale) · P⁻¹] — so the
+  width is per trial and the scale is the block's only free parameter. Both
+  are taken stopped, in the draws and in the density, as the Kronecker factors
+  are; `Recognition.Iilqr.posterior_initial` reports them for diagnostics.
 - `Recognition.Lfads` — an LFADS-style recognition (Pandarinath et al.,
   2018). Bidirectional encoder RNNs infer a Gaussian posterior over the
   initial state and a second encoder–controller pair produces an

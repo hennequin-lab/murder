@@ -103,7 +103,7 @@ let bwd p (res : ('p, ('w, 'd) Problem.value) residual) (ybar : ('w, 'd) Problem
     ; rfx = yx horizon
     }
   in
-  let gains, _, _ = Lqr.backward tape ~lin in
+  let gains, _, _, _ = Lqr.backward tape ~lin in
   let dx, du = Lqr.rollout_linearized ~tape ~gains ~x0:zero_n in
   (* Perturbed costates: δλ_K = C_xx,K δx_K + ȳ_x,K;
      δλ_k = Aᵀδλ_{k+1} + C_xx δx_k + C_uxᵀ δu_k + ȳ_x,k. One scan over the

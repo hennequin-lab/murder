@@ -101,6 +101,12 @@ type ('a, 'b, 'd) common =
   { quu_chol : ('a, 'b, 'd) Nx.t
     (** the upper Cholesky factor of the regularized [Q_uu], [horizon; m; m] *)
   ; feedback : ('a, 'b, 'd) Nx.t (** K_k = -Q_uu⁻¹ Q_ux, [horizon; m; n] *)
+  ; value_hessian : ('a, 'b, 'd) Nx.t
+    (** V_0 = ∂²/∂x_0² of the cost-to-go from step 0, [n; n] with any batch
+        axes: the last carry of the Hessian recursion, after step 0's own cost
+        has entered it. The value function the recursion leaves is
+        [V (δ) = ½ δᵀ V_0 δ + Vx_0ᵀ δ + cst] on a deviation [δ] from the
+        linearization point, and {!backward_lin} returns [Vx_0]. *)
   }
 
 (* [regularize ~mu ...] adds Tassa's damping. All three terms are needed for the
@@ -137,7 +143,7 @@ let rows_structure () = Nx.Ptree.instantiate (module Rows)
    as one scan, from the last step to the first. *)
 let backward_common ?mu (tape : ('a, 'b, 'd) tape) : ('a, 'b, 'd) common =
   let rows = rows_structure () in
-  let _, (quu_chol, feedback) =
+  let value_hessian, (quu_chol, feedback) =
     Rune.scan
       Nx.Ptree.tensor
       rows
@@ -148,7 +154,7 @@ let backward_common ?mu (tape : ('a, 'b, 'd) tape) : ('a, 'b, 'd) common =
       ~init:tape.fxx
       (Nx.Ptree.map rows (fun _ x -> flip x) tape.blocks)
   in
-  { quu_chol = flip quu_chol; feedback = flip feedback }
+  { quu_chol = flip quu_chol; feedback = flip feedback; value_hessian }
 
 (* [costate tape] is the primal costate [λ_{k+1}] at every step, [horizon; n]:
    the value gradient of the local model with the tape's own linear terms. One
@@ -185,9 +191,9 @@ let backward_lin
       ~(common : ('a, 'b, 'd) common)
       ~(tape : ('a, 'b, 'd) tape)
       ~(lin : ('a, 'b, 'd) lin)
-  : ('a, 'b, 'd) gains * ('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t
+  : ('a, 'b, 'd) gains * ('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t
   =
-  let _, out =
+  let value_grad, out =
     Rune.scan
       Nx.Ptree.tensor
       Nx.Ptree.(
@@ -209,14 +215,57 @@ let backward_lin
   in
   ( { feedback = common.feedback; feedforward = flip out.Lin_rows.k }
   , sum ~axes:[ 0 ] out.Lin_rows.d1
-  , sum ~axes:[ 0 ] out.Lin_rows.d2 )
+  , sum ~axes:[ 0 ] out.Lin_rows.d2
+  , value_grad )
 
 (* [backward ?mu ~tape ~lin] runs the whole Riccati sweep over the horizon. *)
 let backward ?mu (tape : ('a, 'b, 'd) tape) ~(lin : ('a, 'b, 'd) lin)
-  : ('a, 'b, 'd) gains * ('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t
+  : ('a, 'b, 'd) gains * ('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t
   =
   let common = backward_common ?mu tape in
   backward_lin ~common ~tape ~lin
+
+(* The Gaussian the local model puts on the initial state, once a prior has
+   been fused with the value function the backward pass leaves at step 0. *)
+type ('a, 'b, 'd) initial =
+  { mean : ('a, 'b, 'd) Nx.t (** [n], with any batch axes *)
+  ; precision : ('a, 'b, 'd) Nx.t (** [n; n], with the same axes *)
+  }
+
+(* [initial_condition ~common ~value_grad ~nominal ~prior] is the Gaussian the
+   local model implies for the initial state.
+
+   The recursion leaves [V (δ) = ½ δᵀ V δ + Vxᵀ δ] on a deviation [δ] from
+   [nominal]. With a prior [N (μ, Λ⁻¹)] on the absolute state [nominal + δ],
+   its cost in deviation coordinates has gradient [Λ (nominal − μ)] and
+   Hessian [Λ] at [δ = 0]: the joint cost is quadratic with precision
+   [P = V + Λ] and stationary point [δ* = −P⁻¹ (Vx + Λ (nominal − μ))], and
+   the answer is [nominal + δ*]. Omit [prior] when the tape's own step-0 cost
+   already holds it — the boundary condition of a solve with a free initial
+   state — and the answer is the stationary point of the value function
+   itself, [δ* = −V⁻¹ Vx], at [P = V].
+
+   [P] is the answer's precision, so its inverse — one [chol_solve] against
+   the factor computed here — is its covariance. A [P] that is not positive
+   definite gives NaNs: the prior's precision, or without one the tape's
+   step-0 cost, is the only thing that regularizes the block. *)
+let initial_condition
+      ~(common : ('a, 'b, 'd) common)
+      ~(value_grad : ('a, 'b, 'd) Nx.t)
+      ~(nominal : ('a, 'b, 'd) Nx.t)
+      ~(prior : (('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t) option)
+  : ('a, 'b, 'd) initial
+  =
+  let precision, rhs =
+    match prior with
+    | None -> common.value_hessian, value_grad
+    | Some (prior_mean, prior_precision) ->
+      ( Infix.(common.value_hessian + prior_precision)
+      , Infix.(value_grad + matvec prior_precision (nominal - prior_mean)) )
+  in
+  let upper = cholesky ~triangle:Upper precision in
+  let delta = chol_solve ~upper ~rhs in
+  { mean = Infix.(nominal - delta); precision }
 
 (* A solution trajectory, as one tensor per trajectory. *)
 type ('a, 'b, 'd) solution =
@@ -316,7 +365,7 @@ let rollout_linearized
 let solve ?mu (tape : ('a, 'b, 'd) tape) ~(x0 : ('a, 'b, 'd) Nx.t) : ('a, 'b, 'd) solution
   =
   let common = backward_common ?mu tape in
-  let gains, _, _ = backward_lin ~common ~tape ~lin:(lin_of_tape tape) in
+  let gains, _, _, _ = backward_lin ~common ~tape ~lin:(lin_of_tape tape) in
   let xs, us = rollout_linearized ~tape ~gains ~x0 in
   { xs; us }
 
