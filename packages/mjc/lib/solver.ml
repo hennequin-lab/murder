@@ -7,7 +7,34 @@ open Base
 
 let max_iterations = 8
 
-let forward (m : Model.host) (d : Data.host) : Data.host =
+type linear =
+  [ `Cholesky
+  | `Cg
+  ]
+
+(* Conjugate gradients on a symmetric positive definite system, with a fixed
+   number of iterations: exact in [n] steps, and a compiled program cannot
+   test for convergence anyway. [min_val] keeps a zero right-hand side from
+   dividing by zero. *)
+let cg ~iters a b =
+  let min_val = 1e-300 in
+  let x = ref (Nx.zeros_like b) in
+  let r = ref b in
+  let p = ref b in
+  let rs = ref (Nx.dot b b) in
+  for _ = 1 to iters do
+    let ap = Nx.matmul a !p in
+    let alpha = Nx.div !rs (Nx.maximum_s (Nx.dot !p ap) min_val) in
+    x := Nx.add !x (Nx.mul !p alpha);
+    r := Nx.sub !r (Nx.mul ap alpha);
+    let rs' = Nx.dot !r !r in
+    let beta = Nx.div rs' (Nx.maximum_s !rs min_val) in
+    p := Nx.add !r (Nx.mul !p beta);
+    rs := rs'
+  done;
+  !x
+
+let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
   let t = m.topo
   and p = m.params in
   let nb = t.nefcmax in
@@ -47,7 +74,11 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
     let frozen = Nx.diag (Nx.sub (Nx.ones_like ff) ff) in
     let am = Nx.add (Nx.mul a outer) frozen in
     let rhs = Nx.where free (Nx.neg grad) (Nx.zeros_like grad) in
-    let step = Mass.solve (Mass.factor am) rhs in
+    let step =
+      match linear with
+      | `Cholesky -> Mass.solve (Mass.factor am) rhs
+      | `Cg -> cg ~iters:nb am rhs
+    in
     lambda
     := Nx.where free (Nx.maximum_s (Nx.add !lambda step) 0.0) (Nx.zeros_like !lambda)
   done;

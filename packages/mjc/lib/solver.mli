@@ -26,8 +26,16 @@
 (** [max_iterations] is the largest budget a compiled step will unroll. *)
 val max_iterations : int
 
-(** [forward m d] is [d] with [efc_force], [qfrc_constraint] and the final
-    [qacc]. It reads [d.qacc] as the smooth acceleration, [d.efc_J],
+(** The type for how the free block is solved: by a Cholesky factor, or by
+    conjugate gradients, which needs no factor of the reduced system. *)
+type linear =
+  [ `Cholesky
+  | `Cg
+  ]
+
+(** [forward ?linear m d] is [d] with [efc_force], [qfrc_constraint] and the
+    final [qacc]. It reads [d.qacc] as the smooth acceleration, [d.efc_J],
     [d.efc_R], [d.efc_D], [d.efc_aref] and [d.nefc], and warmstarts from
-    [d.efc_force]. *)
-val forward : Model.host -> Data.host -> Data.host
+    [d.efc_force]. [`Cg] takes one conjugate-gradient iteration per row, which
+    is exact for the row counts v1 supports and needs no factorisation. *)
+val forward : ?linear:linear -> Model.host -> Data.host -> Data.host

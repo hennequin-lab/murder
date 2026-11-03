@@ -101,7 +101,7 @@ reader lands, drawing every geom at the identity pose.
 | M0 | Foundations, fixtures, linear-algebra gate | 2 wk | **G0** | load a model, print its arrays, replay C-engine fixtures |
 | M1 | Rigid-body math, forward kinematics | 2 wk | G1 | compute every pose in a model and draw it |
 | M2 | Inertia, bias, passive, integration | 2.5 wk | G2 | forward-simulate unconstrained bodies and chains |
-| M3 | Constraints without contacts, solvers | 3 wk | **G3** | step a model with limits and motors *(equality, friction loss, CG remain)* |
+| M3 | Constraints without contacts, solvers | 3 wk | **G3** | step a model with limits and motors *(equality and friction loss remain)* |
 | M4 | Contact | 4.5 wk | **G4** | step hopper, walker, ant, humanoid |
 | M5 | Actuators, transmissions, sensors, tendons | 2.5 wk | G5 | load the lab's actuated and tendon models |
 | M6 | Differentiability | 2.5 wk | **G6** | differentiate the step, run iLQR/MPC on it |

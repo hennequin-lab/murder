@@ -9,7 +9,8 @@ whole step with `Rune.grad`.
 
 **M3 in progress.** Joint limits are solved: the rows and the impedance match
 MuJoCo to 1e-12, the solved force to 1e-6, and a constrained trajectory to
-1e-6 over ten steps. Equality constraints, friction loss and the CG solver are
+1e-6 over ten steps. The solver runs as an active-set Newton, with CG behind
+the same loop agreeing to 1e-8. Equality constraints and friction loss are
 next.
 
 **M2 complete.** Forward kinematics, the mass matrix, the velocity stage, the

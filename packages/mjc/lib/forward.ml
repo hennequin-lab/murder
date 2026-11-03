@@ -3,7 +3,7 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-let forward (m : Model.host) (d : Data.host) : Data.host =
+let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
   let d = Kinematics.forward m d in
   let d = Mass.forward m d in
   let d = Passive.forward m d in
@@ -17,4 +17,4 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
   let d = { d with qfrc_smooth; qacc } in
   let d = Constraint.limits m d in
   let d = Constraint.impedance m d in
-  Solver.forward m d
+  Solver.forward ?linear m d

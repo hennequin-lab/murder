@@ -119,6 +119,25 @@ let test_constrained_trajectory () =
       (Nx.to_array !d.qvel)
   done
 
+(* The two linear solvers must agree: the reduced system is the same, only the
+   way it is inverted differs. *)
+let test_solvers_agree () =
+  let m = model "limited" in
+  let f = fixture "limited" in
+  let qpos = tensor f "qpos"
+  and qvel = tensor f "qvel" in
+  for s = 0 to f.nstates - 1 do
+    let d0 = { (data_with_qpos m (row qpos s)) with qvel = vec1 (row qvel s) } in
+    let d = Mjc.Forward.forward m d0 in
+    let nefc = Int.of_float (row (tensor f "nefc") s).(0) in
+    let by_cg = Mjc.Forward.forward ~linear:`Cg m d0 in
+    parity
+      ~tol:1e-8
+      ~name:(Printf.sprintf "state %d newton vs cg" s)
+      (take nefc (Nx.to_array d.efc_force))
+      (take nefc (Nx.to_array by_cg.efc_force))
+  done
+
 let () =
   Stdlib.exit
     (run
@@ -127,4 +146,5 @@ let () =
        ; test "row ordering" test_ordering
        ; test "impedance and solve" test_impedance
        ; test "constrained trajectory" test_constrained_trajectory
+       ; test "Newton and CG agree" test_solvers_agree
        ])

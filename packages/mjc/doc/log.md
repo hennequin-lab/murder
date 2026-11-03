@@ -183,8 +183,14 @@ step from 1.5–4.9 to 2.7–16.9 us per environment. The solver is why: a maske
 `nefcmax × nefcmax` factorisation per iteration does not vectorise like the
 rest of the pipeline. Still inside G2's 100 us threshold.
 
-**Remaining in M3:** equality rows (connect, weld, joint, tendon), friction
-loss, the matriz-free CG solver, and `implicitfast`. The `.mjcb` format is
+**CG agrees with Newton.** `Solver.forward ?linear` takes `\`Cholesky` or
+`\`Cg`; the second solves each active-set system by conjugate gradients (one
+iteration per row, exact at these sizes) and needs no factorisation. The two
+agree on every fixture state to 1e-8, which is M3's acceptance item for the
+solver pair.
+
+**Remaining in M3:** equality rows (connect, weld, joint, tendon) with their
+`Jdot·v` reference correction, friction loss rows, and `implicitfast`. The `.mjcb` format is
 version 4: it carries `dof_invweight0`, `iterations` and `tolerance`, and the
 converter now sizes `nefcmax` from the model's joints rather than a padding
 constant.

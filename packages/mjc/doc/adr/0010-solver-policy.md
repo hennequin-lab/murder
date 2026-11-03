@@ -53,7 +53,10 @@ iteration takes every row free so a cold start reaches the unconstrained
 optimum before anything is frozen.
 
 CG applies `A` as an operator built from `solveM` and `J`, which needs no
-factor of `A` but converges linearly; it is not implemented yet.
+factor of `A` but converges linearly. It is implemented behind the same
+active-set loop, one iteration per row, and agrees with the Cholesky path to
+1e-8 on the fixture states. It is not the default: the factor is cheap at
+these row counts and exact.
 
 Policy for v1:
 

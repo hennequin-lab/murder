@@ -26,5 +26,5 @@
     Then the joint-limit rows are assembled, their impedance computed, and
     {!Solver.forward} solves for the row forces and the final [qacc]. With no
     active row it returns the smooth acceleration unchanged, as the C engine
-    does. *)
-val forward : Model.host -> Data.host -> Data.host
+    does. [linear] picks how the solver inverts the reduced system. *)
+val forward : ?linear:Solver.linear -> Model.host -> Data.host -> Data.host
