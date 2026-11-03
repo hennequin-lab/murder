@@ -72,15 +72,17 @@ let objective params key =
 let sketch_step =
   Sofo.Optim.sketch_jit ~k:n_tangents placement Model.ptree Rng.ptree objective
 
+(* The parameter step is compiled too, and held: building it inside the loop
+   would compile it again on every iteration. *)
+let update_step = Sofo.Optim.update_jit placement Model.ptree
+
 let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
   then params
   else (
     let aux = Rng.place placement (Rng.fold_in state.key 0) in
     let out = sketch_step ~key:state.key ~aux params in
-    let params, state =
-      Sofo.Optim.update ~lr ~damping placement Model.ptree state params out
-    in
+    let params, state = update_step ~lr ~damping state params out in
     let loss = item [] out.loss in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
     loop ~i:(i + 1) params state)

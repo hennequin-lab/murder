@@ -123,6 +123,13 @@ changes do not need an entry.
   the call, a rune bug.
 - A sketch must be given the uncompiled loss: a `Rune.jit`ed loss first traced
   outside a sketch keeps no marks, and its sketch has a zero GGN.
+- `Optim.update_jit` is the parameter step with its compilation hoisted out of
+  the call: `Rune.jit` caches per closure, so the step `Optim.update` builds
+  was recompiled — kernel search included — on every iteration of a training
+  loop. `Optim.update` keeps its signature and builds one per call; `update`
+  and `update_jit` take `?beam ?parallel` and inherit the runtime's settings
+  (`BEAM`, `PARALLEL`) instead of forcing `~beam:2 ~parallel:8`, which made a
+  step cost a kernel search whose cost grows steeply with the lane count.
 - An observed curvature is a captured value of the mark's custom rule, and
   rune refuses a rule that uses one the differentiation tracks. `mse` and
   `sse` now detach their weight, and `Curv.hvp` states the requirement for its

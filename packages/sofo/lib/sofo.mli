@@ -522,11 +522,11 @@ module Optim : sig
     -> 'p
     -> ('p, 'd) step_info
 
-  (** [update ?lr ?damping ?preconditioner st params out] is one SOFO step on
-      a compiled sketch: [θ ← θ − η·Θ U (S + γ·I)⁻¹ Vᵀ C] from the output
-      [out] sketched at [params], together with [st]'s successor. [lr]
-      defaults to [1.0], which together with no damping is the exact Newton
-      step inside the sketched subspace.
+  (** [update ?beam ?parallel ?lr ?damping ?preconditioner st params out] is
+      one SOFO step on a compiled sketch: [θ ← θ − η·Θ U (S + γ·I)⁻¹ Vᵀ C]
+      from the output [out] sketched at [params], together with [st]'s
+      successor. [lr] defaults to [1.0], which together with no damping is the
+      exact Newton step inside the sketched subspace.
 
       [st] is the state whose key produced [out] — the one the compiled step
       consumed — so a call advances the parameters and the direction stream
@@ -542,13 +542,47 @@ module Optim : sig
       and [out.dirs] live, so parameters placed on a GPU stay there.
 
       {!update_sketch} is the same step for a sketch measured eagerly, which
-      threads no state. *)
+      threads no state. This one compiles the parameter step on every call, so
+      a loop should hold {!update_jit} instead.
+
+      [beam] and [parallel] are the kernel search's width and its thread
+      count, as {!sketch_jit} takes them; both are inherited from the runtime's
+      settings when omitted. *)
   val update
-    :  ?lr:float
+    :  ?beam:int
+    -> ?parallel:int
+    -> ?lr:float
     -> ?damping:damping
     -> ?preconditioner:preconditioner
     -> 'd Nx.Placement.t
     -> ('p, 'd) Nx.Ptree.t
+    -> state
+    -> 'p
+    -> ('p, 'd) step_info
+    -> 'p * state
+
+  (** [update_jit ?beam ?parallel placement structure] is {!update} with the
+      compiled parameter step built once, outside the call:
+
+      {[
+      let update = Sofo.Optim.update_jit Params.ptree in
+      let params, state = update ~lr ~damping state params out in
+      ]}
+
+      [Rune.jit] keeps its program per closure — each [Rune.jit] call builds a
+      fresh [Jit.create], and that is what caches the compiled program — so a
+      step built inside {!update} compiles again, kernel search included, on
+      every iteration of a training loop. Build this once and hold it: the
+      shapes of [params], [dirs] and [z] do not change across a run, so every
+      iteration replays one program. *)
+  val update_jit
+    :  ?beam:int
+    -> ?parallel:int
+    -> 'd Nx.Placement.t
+    -> ('p, 'd) Nx.Ptree.t
+    -> ?lr:float
+    -> ?damping:damping
+    -> ?preconditioner:preconditioner
     -> state
     -> 'p
     -> ('p, 'd) step_info

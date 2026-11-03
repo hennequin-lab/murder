@@ -496,38 +496,57 @@ let sketch_jit
     { loss = out.loss; c = out.c; ggn = out.ggn; gram = out.gram; dirs }
 
 (* [params - lr * Θ z], compiled, so it runs where the parameters and the
-   directions live. [z] and [lr] are host values that join them per call. *)
-let shift_by p =
+   directions live. [z] and [lr] are host values that join them per call.
+
+   [Rune.jit] keeps its program per closure, not per program text: each call
+   builds a fresh [Jit.create] and that is what holds the compiled program. A
+   shift built inside [update] would therefore recompile — and, under [beam],
+   re-run its kernel search — on every training iteration. Build it once per
+   structure, outside the loop: [update_jit] does. *)
+let shift_jit (type p d) ?beam ?parallel (p : (p, d) Nx.Ptree.t)
+  : p -> p -> d Nx.float64_t -> d Nx.float64_t -> p
+  =
   Rune.jit
-    ~beam:2
-    ~parallel:8
+    ?beam
+    ?parallel
     Nx.Ptree.(p @-> p @-> tensor @-> tensor @-> returns p)
-    (fun params dirs (z : 'd Nx.float64_t) lr ->
+    (fun params dirs (z : d Nx.float64_t) lr ->
        shift p ~lr params (apply p ~k:(shape z).(0) dirs z))
 
-(* The step, and the state that produced it, advanced together: the caller
+(* [update_jit ?beam ?parallel placement p] is {!update} with the compiled
+   shift hoisted out of the call. Build it once and every iteration replays
+   the program: [Rune.jit] caches per closure, so a per-call build would
+   compile the step again each time.
+
+   The step, and the state that produced it, advance together: the caller
    threads one state through the loop, so the key the sketch consumed and the
-   key the next sketch is drawn from cannot drift apart. The solve runs on
-   the host, which copies three k-sized tensors when the sketch ran on a
-   GPU. *)
-let update
-      ?(lr = 1.0)
-      ?damping
-      ?preconditioner
-      (placement : 'd Nx.Placement.t)
-      (p : ('p, 'd) Nx.Ptree.t)
-      (st : state)
-      params
-      (o : ('p, 'd) step_info)
+   key the next sketch is drawn from cannot drift apart. The solve runs on the
+   host, which copies three k-sized tensors when the sketch ran on a GPU. *)
+let update_jit
+      (type p d)
+      ?beam
+      ?parallel
+      (placement : d Nx.Placement.t)
+      (p : (p, d) Nx.Ptree.t)
   =
-  let host = place Nx.Host.on in
-  let z =
-    coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
-  in
-  ( shift_by
-      p
-      (place_all p placement params)
-      (place_all p placement o.dirs)
-      (place placement z)
-      (scalar_at placement float64 lr)
-  , next st )
+  let shift = shift_jit ?beam ?parallel p in
+  fun ?(lr = 1.0)
+    ?damping
+    ?preconditioner
+    (st : state)
+    (params : p)
+    (o : (p, d) step_info) ->
+    let host = place Nx.Host.on in
+    let z =
+      coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
+    in
+    ( shift
+        (place_all p placement params)
+        (place_all p placement o.dirs)
+        (place placement z)
+        (scalar_at placement float64 lr)
+    , next st )
+
+let update ?beam ?parallel ?lr ?damping ?preconditioner placement p st params o =
+  let step = update_jit ?beam ?parallel placement p in
+  step ?lr ?damping ?preconditioner st params o

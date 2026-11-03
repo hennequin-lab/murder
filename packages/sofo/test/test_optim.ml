@@ -735,11 +735,14 @@ let test_compiled_custom_matches_eager () =
   check_arr ~eps:1e-12 ~msg:"Θ" (to_array dirs.w) out.dirs.w
 
 let test_compiled_loop_trains () =
-  (* The deployment end to end: one jitted sketch, eager steps, a decreasing
-     loss, and a state that never needs to leave the host. *)
+  (* The deployment end to end: one jitted sketch, one compiled parameter step,
+     eager solves, a decreasing loss, and a state that never needs to leave the
+     host. Both compiled halves are built outside the loop, as a training run
+     does, so the loop replays programs instead of compiling them. *)
   let p = params () in
   let k = 8 in
   let step = Sofo.Optim.sketch_jit ~k Nx.Host.on params_ptree Nx.Ptree.unit loss_c in
+  let update_step = Sofo.Optim.update_jit Nx.Host.on params_ptree in
   let st = Sofo.Optim.init ~key () in
   let rec go p st i prev best first =
     if i = 0
@@ -750,16 +753,7 @@ let test_compiled_loop_trains () =
       is_true
         ~msg:(Printf.sprintf "step %d decreases the loss (%.8g < %.8g)" (9 - i) l prev)
         (l < prev);
-      let p, st =
-        Sofo.Optim.update
-          ~lr:1.0
-          ~damping:(`Absolute 0.0)
-          Nx.Host.on
-          params_ptree
-          st
-          p
-          out
-      in
+      let p, st = update_step ~lr:1.0 ~damping:(`Absolute 0.0) st p out in
       equal ~msg:"the update advances the state" int (9 - i) st.Sofo.Optim.step;
       let first = if i = 8 then l else first in
       go p st (i - 1) l (Float.min best l) first)

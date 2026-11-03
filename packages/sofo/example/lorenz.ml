@@ -161,6 +161,9 @@ let sketch_step =
     data_ptree
     objective
 
+(* The parameter step, compiled once for the run rather than per iteration. *)
+let update_step = Sofo.Optim.update_jit placement Model.ptree
+
 let rec loop_sofo ~i ~out ~losses (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
   then params
@@ -168,9 +171,7 @@ let rec loop_sofo ~i ~out ~losses (params : _ Model.P.t) (state : Sofo.Optim.sta
     let key_data = Rng.fold_in state.key 0 in
     let data = minibatch key_data bs in
     let sketch = sketch_step ~key:state.key ~aux:data params in
-    let params, state =
-      Sofo.Optim.update ~lr ~damping placement Model.ptree state params sketch
-    in
+    let params, state = update_step ~lr ~damping state params sketch in
     let loss = item [] sketch.loss in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
     (* A save replaces its file, so every tenth loss so far is saved as one
