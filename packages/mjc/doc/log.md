@@ -79,3 +79,35 @@ Deviations and findings:
 - **Constants come from the argument.** `forward` takes its working arrays
   from `zeros_like d.*` rather than allocating on the host, which is what lets
   the whole pass be `vmap`ped.
+
+## M2 — inertia, bias, passive forces, integration (in progress)
+
+**Landed: the position stage's inertia.** `Mass.forward` computes
+`subtree_com`, `com`, `cinert`, `cdof` and a dense `mass_matrix`, and
+`factor`/`solve` use a Cholesky factor. All five arrays match MuJoCo within
+1e-12 for the four corpus models at 32 states each, and the matrix is
+symmetric to 1e-12 with a solve residual below 1e-12 on the same states.
+
+Three bugs the fixtures caught, worth recording because they are the shape of
+this milestone's work:
+
+- **The inertial frame is not the body frame.** MuJoCo builds a free or ball
+  joint's rotation axes from `xmat`, the body frame, while I had used `ximat`.
+  The fixture disagreed on one component of one dof.
+- **`mju_inertCom`'s temporary matrix is column-major in its indexing.** The
+  product is `R D R^T`, but the intermediate `tmp.(3k+i)` takes the inertia
+  entry `k`, not `i`. Two wrong index mappings cancelled on the diagonal and
+  disagreed off it.
+- **The mass matrix's ancestor pattern is the wrong way round to guess.** The
+  fixture is dense and symmetric, so both triangles are filled from the same
+  dot product.
+
+**Remaining:** the velocity stage (`cvel`, `cdof_dot`), the RNE bias, springs
+and dampers, the Euler advance, and `Forward`/`Step`; then the trajectory
+fixture (`traj_qpos/qvel/qacc`, recorded and not yet read) and gate G2. The
+fixture files already carry the arrays for all of it.
+
+Additions to `Data`: `cinert` and `cdof_dot`. The fixture recorder now writes
+the stage arrays and a ten-step `mj_step` trajectory, and the `pendulum`
+fixture carries a spring and a damper so `qfrc_passive` is not identically
+zero.

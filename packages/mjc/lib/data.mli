@@ -35,6 +35,8 @@ type ('a, 'd) t =
   ; xaxis : 'a (** [[njnt;3]], joint axes, world. *)
   ; cvel : 'a (** [[nbody;6]], spatial velocities in the body frame. *)
   ; cdof : 'a (** [[nv;6]], motion subspace of each dof. *)
+  ; cdof_dot : 'a (** [[nv;6]], its time derivative. *)
+  ; cinert : 'a (** [[nbody;10]], inertia about the subtree centre of mass. *)
   ; com : 'a (** [[3]], centre of mass. *)
   ; subtree_com : 'a (** [[nbody;3]], centre of mass of each subtree. *)
   ; qfrc_bias : 'a (** [[nv]], Coriolis, centrifugal and gravity forces. *)

@@ -8,7 +8,7 @@ changes do not need an entry.
 ### mjc
 
 - New package: a differentiable physics engine on Nx and Rune, private until
-  its API settles. M1 is complete: forward kinematics matches MuJoCo 3.17 to
+  its API settles. Forward kinematics and the mass matrix match MuJoCo 3.17 to
   1e-12 on a recorded parity corpus, and the `.mjcb` interchange format loads
   compiled models without linking MuJoCo. See `packages/mjc/README.md`.
 

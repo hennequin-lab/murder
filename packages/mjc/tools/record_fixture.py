@@ -38,7 +38,7 @@ MODELS = {
   <option timestep="0.001" gravity="0 0 -9.81"/>
   <worldbody>
     <body name="arm" pos="0 0 0.5" quat="0.9238795 0.3826834 0 0">
-      <joint name="shoulder" type="hinge" axis="0 1 0" pos="0 0 0.1"/>
+      <joint name="shoulder" type="hinge" axis="0 1 0" pos="0 0 0.1" stiffness="2" damping="0.3"/>
       <geom name="arm" type="capsule" size="0.02 0.3" pos="0 0 -0.3"
             quat="0.7071068 0 0.7071068 0" rgba="0.8 0.2 0.2 1"/>
       <site name="tip" pos="0 0 -0.6"/>
@@ -138,7 +138,16 @@ POSE_FIELDS = [
     "geom_xpos", "geom_xmat", "site_xpos", "site_xmat",
 ]
 
-INTEGRATION_FIELDS = ["integ_qpos", "integ_qvel", "integ_qpos_next"]
+# Written by mj_forward after the pose: the position stage's centre of mass,
+# centre-of-mass inertia and motion subspaces, then the velocity stage's
+# spatial velocities and the forces it leaves behind.
+# MuJoCo has no separate global centre of mass in 3.17: subtree_com[0] is it.
+STAGE_FIELDS = [
+    "subtree_com", "cinert", "cdof", "cvel", "cdof_dot",
+    "qfrc_bias", "qfrc_passive",
+]
+
+TRAJ_STEPS = 10
 
 
 def record(name, xml, outdir, rng):
@@ -150,29 +159,59 @@ def record(name, xml, outdir, rng):
     mjcb.write_model(m, os.path.join(outdir, f"{name}.mjcb"), name=name)
 
     states = []
+    qvels = []
     for _ in range(NSTATES):
         qpos = random_qpos(m, rng)
+        qvel = rng.uniform(-2.0, 2.0, size=m.nv)
         d.qpos[:] = qpos
-        mujoco.mj_kinematics(m, d)
-        states.append((qpos, {f: np.array(getattr(d, f)) for f in POSE_FIELDS}))
+        d.qvel[:] = qvel
+        mujoco.mj_forward(m, d)
+        full = np.zeros((m.nv, m.nv))
+        mujoco.mj_fullM(m, d, full)
+        fields = {f: np.array(getattr(d, f)) for f in POSE_FIELDS + STAGE_FIELDS}
+        fields["mass_matrix"] = full
+        states.append((qpos, fields))
+        qvels.append(qvel)
 
     tensors = {"qpos": np.stack([s[0] for s in states])}
-    for f in POSE_FIELDS:
+    tensors["qvel"] = np.stack(qvels)
+    for f in POSE_FIELDS + STAGE_FIELDS + ["mass_matrix"]:
         tensors[f] = np.stack([s[1][f] for s in states])
 
-    # Position integration, from the same states.
-    qpos_all, qvel_all, qpos_next = [], [], []
-    for qpos, _ in states:
-        qvel = rng.uniform(-2.0, 2.0, size=m.nv)
+    # Position integration, from the same states and velocities.
+    qpos_next = []
+    for qpos, qvel in zip([s[0] for s in states], qvels):
         nxt = np.array(qpos)
         mujoco.mj_integratePos(m, nxt, qvel, DT)
-        qpos_all.append(qpos)
-        qvel_all.append(qvel)
         qpos_next.append(nxt)
-    # The pose fixture is keyed on qpos; integration reuses the same ones.
-    tensors["integ_qpos"] = np.stack(qpos_all)
-    tensors["integ_qvel"] = np.stack(qvel_all)
+    tensors["integ_qpos"] = tensors["qpos"]
+    tensors["integ_qvel"] = tensors["qvel"]
     tensors["integ_qpos_next"] = np.stack(qpos_next)
+
+    # A short trajectory through mj_step, from the first state, with no
+    # controls: this is the end-to-end test of forward plus the Euler
+    # integrator.
+    d.qpos[:] = states[0][0]
+    d.qvel[:] = qvels[0]
+    mujoco.mj_forward(m, d)
+    traj_qpos = [np.array(d.qpos)]
+    traj_qvel = [np.array(d.qvel)]
+    traj_qacc = []
+    for _ in range(TRAJ_STEPS):
+        traj_qacc.append(np.array(d.qacc))
+        mujoco.mj_step(m, d)
+        traj_qpos.append(np.array(d.qpos))
+        traj_qvel.append(np.array(d.qvel))
+    traj_qacc.append(np.array(d.qacc))
+    mjcb.write_fixture(
+        os.path.join(outdir, f"{name}.traj.mjbf"),
+        name,
+        {
+            "traj_qpos": np.stack(traj_qpos),
+            "traj_qvel": np.stack(traj_qvel),
+            "traj_qacc": np.stack(traj_qacc),
+        },
+    )
 
     mjcb.write_fixture(os.path.join(outdir, f"{name}.mjbf"), name, tensors)
     return {

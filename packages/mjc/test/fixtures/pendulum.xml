@@ -2,7 +2,7 @@
   <option timestep="0.001" gravity="0 0 -9.81"/>
   <worldbody>
     <body name="arm" pos="0 0 0.5" quat="0.9238795 0.3826834 0 0">
-      <joint name="shoulder" type="hinge" axis="0 1 0" pos="0 0 0.1"/>
+      <joint name="shoulder" type="hinge" axis="0 1 0" pos="0 0 0.1" stiffness="2" damping="0.3"/>
       <geom name="arm" type="capsule" size="0.02 0.3" pos="0 0 -0.3"
             quat="0.7071068 0 0.7071068 0" rgba="0.8 0.2 0.2 1"/>
       <site name="tip" pos="0 0 -0.6"/>

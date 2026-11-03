@@ -26,6 +26,8 @@ type ('a, 'd) t =
   ; xaxis : 'a
   ; cvel : 'a
   ; cdof : 'a
+  ; cdof_dot : 'a
+  ; cinert : 'a
   ; com : 'a
   ; subtree_com : 'a
   ; qfrc_bias : 'a
@@ -73,6 +75,8 @@ let create (m : Model.host) : host =
   ; xaxis = zeros [| t.njnt; 3 |]
   ; cvel = zeros [| t.nbody; 6 |]
   ; cdof = zeros [| t.nv; 6 |]
+  ; cdof_dot = zeros [| t.nv; 6 |]
+  ; cinert = zeros [| t.nbody; 10 |]
   ; com = zeros [| 3 |]
   ; subtree_com = zeros [| t.nbody; 3 |]
   ; qfrc_bias = zeros [| t.nv |]
@@ -117,6 +121,8 @@ let validate (m : Model.host) (d : host) : (unit, string) Result.t =
   want "xaxis" [| t.njnt; 3 |] d.xaxis;
   want "cvel" [| t.nbody; 6 |] d.cvel;
   want "cdof" [| t.nv; 6 |] d.cdof;
+  want "cdof_dot" [| t.nv; 6 |] d.cdof_dot;
+  want "cinert" [| t.nbody; 10 |] d.cinert;
   want "com" [| 3 |] d.com;
   want "subtree_com" [| t.nbody; 3 |] d.subtree_com;
   want "qfrc_bias" [| t.nv |] d.qfrc_bias;

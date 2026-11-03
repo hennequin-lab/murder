@@ -7,8 +7,11 @@ whole step with `Rune.grad`.
 
 ## Status
 
-**M1 complete.** Forward kinematics matches MuJoCo 3.17 to 1e-12 on a
-four-model parity corpus, and `mj_integratePos` matches to 1e-15. The library
+**M2 in progress.** Forward kinematics and the position stage's inertia
+quantities — subtree centre of mass, centre-of-mass inertia, motion subspaces
+and the mass matrix — match MuJoCo 3.17 to 1e-12 on a four-model parity
+corpus; `mj_integratePos` matches to 1e-15 and the mass matrix factors and
+solves. The library
 is private and has no `(package ...)` stanza yet, so it cannot be depended on
 from outside this repository. The G0 linear-algebra gate passes with margin:
 [`doc/spike-la.md`](doc/spike-la.md). What exists, and what each milestone
