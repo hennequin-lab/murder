@@ -139,6 +139,12 @@ keys at `Placement.uncut p` with `Nx.Rng.place`.
 
 `cast` casts only the parameter's positions; fixed arrays are kept.
 
+`Nx.Ptree.place` is how a whole model or optimizer state crosses to a device.
+Place it at the boundary of the jitted function that consumes it, not at
+initialisation: a GPU set has no eager kernels, so host code cannot use a
+placed structure. Once a jitted step returns the structure, a recursive loop
+keeps it on the device. See `raven-rig`.
+
 `Nx.Ptree.Payload.map/map2/fold` are for structures whose positions hold a
 payload (a mask, a learning rate per array, a plan), not arrays.
 

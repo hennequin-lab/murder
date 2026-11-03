@@ -38,16 +38,64 @@ let placement = D.on
 let () = Stdio.printf "device: %s\n%!" (Rig.name device)
 ```
 
-Then place parameters once, at startup:
+### Where values live
+
+A GPU set (AMD or NVIDIA) has no eager Nx kernels at this pin: creations are
+made on the host and placed, every other eager operation raises, and
+`Rune.jit` supplies the compiler. Host-only sets (`Rig.host`, or a set of host
+devices) compute eagerly through `nx.cpu`.
+
+So initialise models, optimizer state and data on the host, and move a value
+to the device only at the boundary of the jitted function that consumes it:
 
 ```ocaml
-let student = Model.init ~d_in ~d_out |> Nx.Ptree.place (module Model.P) placement
+let placement = D.on
+
+(* Host: build the model, the optimizer state, the data and the keys. *)
+let init_key = Nx.Rng.key 0 in
+let train_key = Nx.Rng.key 1 in
+let params = Model.init ~key:init_key ~d_in ~d_out in
+let state = Optim.init params in
+let x, y = load_data () in
+
+(* Cross to the device once, just before the first jitted call. *)
+let params = Nx.Ptree.place (module Model.P) placement params in
+let state = Nx.Ptree.place (module Optim.State) placement state in
+let x = Nx.place placement x in
+let y = Nx.place placement y in
+let train_key = Nx.Rng.place placement train_key in
+
+(* [step] is jitted. Its results lie on the device, so the recursive loop
+   keeps them there and never places them again. *)
+let rec train ~i (params, state) =
+  if i = 0 then params
+  else
+    let params, state, _loss = step train_key (params, state) x y in
+    train ~i:(i - 1) (params, state)
 ```
 
-and compile the numerical kernel with `Rune.jit`. A GPU set has no eager Nx
-kernels at this pin: creations are made on the host and placed, every other
-eager operation raises, and `Rune.jit` supplies the compiler. Host-only sets
-(`Rig.host`, or a set of host devices) compute eagerly through `nx.cpu`.
+`Model.P` and `Optim.State` are the structures' modules (`Nx.Ptree.S`).
+`Nx.place` moves one array; `Nx.Ptree.place` moves every array of a structure.
+
+The rule has three parts:
+
+- Keep a value on the host while host code builds or reads it. Do not place
+  at initialisation.
+- Place model parameters, optimizer state, inputs, targets and any auxiliary
+  structure with `Nx.place` or `Nx.Ptree.place` immediately before the first
+  jitted call that needs them.
+- Place a key with `Nx.Rng.place D.on k` at that same boundary, not when the
+  key is created. A host key draws on the host; a placed key draws where the
+  jitted program computes.
+
+Once the first jitted step returns the parameters and state, they are device
+values. The recursive training loop threads them and keeps them there; moving
+them back per iteration would force a copy and a wait. A host read of the loss
+(`Nx.item`) does force a wait, so read it at the reporting interval, not every
+step.
+
+Only values on the jitted path need the device. Logging, schedules, host
+control flow and anything read with `Nx.item` stay on the host.
 
 **Library code** opens a device, allocates buffers, prepares a submission and
 submits it. That is the rest of this skill.

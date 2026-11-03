@@ -115,11 +115,15 @@ where their operands lie and move nothing: a mismatch raises
 
 On a set without kernels, only host-only sets compute eagerly (through
 `nx.cpu`). A GPU set is computed by `Rune.jit` alone; eager operations on it
-raise and name the placement or compiler that would compute them. This is why
-the lab's GPU programs are compiled.
+raise and name the placement or compiler that would compute them. So build
+models, optimizer state and data on the host, and place them on `D.on` only at
+the boundary of the jitted function that consumes them. A key goes on the
+device with `Nx.Rng.place D.on k` at that boundary, not when it is created. A
+jitted step returns device values, so a recursive training loop keeps them
+there.
 
 Read `references/devices.md` for routing rules, multi-device placement, and
-the GPU boundary.
+the GPU lifecycle.
 
 ## Shape, movement, indexing
 
@@ -309,7 +313,8 @@ should not appear in hot paths.
 - Integer and boolean arrays have no derivative. Cast to a float dtype
   before differentiating.
 - Eager operations on a GPU set raise. Compile with `Rune.jit` or use the
-  host.
+  host. Do not place a model, state or key at initialisation: place it at the
+  jitted boundary instead, or host code can no longer touch it.
 - `Nx.donate` is not a free win: a view or a second value over the memory
   makes it shared, so the consumer allocates fresh memory instead of
   writing in place, and a dead value raises naming its consumer.

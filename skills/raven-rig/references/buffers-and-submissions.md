@@ -327,6 +327,11 @@ Application code should not need these. What matters:
 - `Rune.jit` compiles through tolk and runs on the device, so a GPU program
   is a jitted program. Its results lie where eager computation would place
   them.
+- Initialise on the host and place at the jitted boundary. A GPU set has no
+  eager kernels; a model, optimizer state or key placed at initialisation
+  cannot be used by host code. Place parameters, state, data and keys just
+  before the first jitted call. A jitted step returns device values, so a
+  recursive training loop keeps them there.
 - `Nx.place` moves a value. Across sets it changes the brand; onto the host
   it waits on the source set; elsewhere it returns as `Buffer.submit_copy`
   returns. Each device holds its window over the source's memory where the

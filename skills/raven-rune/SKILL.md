@@ -34,6 +34,9 @@ Read `references/entry-points.md` for signatures and contracts,
 - Test a derivative against a finite difference with `Rune.check_grads`, and
   a custom transpose with `Rune.check_transpose`. Use `float64` parameters for
   reliable differences.
+- A GPU set has no eager kernels. Initialise models, optimizer state, data and
+  keys on the host, and place them at the boundary of the jitted function that
+  consumes them; see `raven-rig`.
 
 ## The two families
 
@@ -151,6 +154,34 @@ let step =
   them off unless you are tuning a reused program.
 - A jitted call inside another `jit` compiles as the outer program does.
 - `RUNE_JIT_DEBUG=1` prints why a call retraced.
+
+### Where values live
+
+A compiled call's results lie where eager computation places them. A GPU set
+has no eager kernels, so initialise on the host and cross to the device at the
+jitted boundary: place model parameters and optimizer state just before the
+first call of a recursive training loop, and the loop's jitted step returns
+them on the device and keeps them there. Place a key with
+`Nx.Rng.place D.on k` at the same boundary, not when it is created. Reading a
+device value with `Nx.item` waits; do it at the reporting interval.
+
+```ocaml
+(* Host: build and initialise. *)
+let init_key = Nx.Rng.key 0 in
+let train_key = Nx.Rng.key 1 in
+let params = Model.init ~key:init_key ~d_in ~d_out in
+let state = Optim.init params in
+
+(* Device: cross once, then let the jitted loop keep them. *)
+let params = Nx.Ptree.place (module Model.P) D.on params in
+let state = Nx.Ptree.place (module Optim.State) D.on state in
+let train_key = Nx.Rng.place D.on train_key in
+let rec train ~i (params, state) =
+  if i = 0 then params
+  else
+    let params, state, _ = step train_key (params, state) in
+    train ~i:(i - 1) (params, state)
+```
 
 The classic mistakes:
 

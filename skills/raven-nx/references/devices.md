@@ -226,5 +226,45 @@ At this pin:
 - A value `f` captures on another device, which `f` places where the program
   computes, is copied there once per program; the program holds the copy.
 
-So: eager CPU for host logic, compiled for GPU. The lab's examples select the
-device at startup and compile the numerical kernel; see `raven-rig`.
+So: eager CPU for host logic, compiled for the GPU. Initialise on the host and
+cross to the device at the jitted boundary:
+
+```ocaml
+(* Host: model, optimizer state, data and keys. *)
+let init_key = Nx.Rng.key 0 in
+let train_key = Nx.Rng.key 1 in
+let params = Model.init ~key:init_key ~d_in ~d_out in
+let state = Optim.init params in
+let x, y = load_data () in
+
+(* Device: cross once, just before the first jitted call. *)
+let params = Nx.Ptree.place (module Model.P) D.on params in
+let state = Nx.Ptree.place (module Optim.State) D.on state in
+let x = Nx.place D.on x in
+let y = Nx.place D.on y in
+let train_key = Nx.Rng.place D.on train_key in
+
+(* The jitted step returns device values; the recursive loop keeps them. *)
+let rec train ~i (params, state) =
+  if i = 0 then params
+  else
+    let params, state, _ = step train_key (params, state) x y in
+    train ~i:(i - 1) (params, state)
+```
+
+Why this order:
+
+- A model initialised with `Nx.zeros`, `Nx.Rng.normal` and friends is a host
+  value. Placing it at initialisation would make every later host operation
+  on it raise.
+- `Nx.Rng.key seed` is a host key. Place it with `Nx.Rng.place D.on k` just
+  before the jitted function that draws from it. A host key draws on the host;
+  a placed key draws where the program computes.
+- A jitted call's results are at the placement eager computation gives them.
+  When the step returns the parameters and state, they stay on the device.
+  Moving them back per iteration copies and waits.
+- Host reads (`Nx.item`, `Nx.to_array`) wait on the set. Read the loss at the
+  reporting interval, not every step.
+
+Only values on the jitted path need the device. Host control flow, schedules
+and logging stay on the host. See `raven-rig` for the application idiom.

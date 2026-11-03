@@ -119,6 +119,32 @@ The result's values are the same either way, so donation is a memory and
 bandwidth decision, not a numerical one. `Nx.Ptree.donate` donates every
 array of a structure in walk order.
 
+## Placement under `jit`
+
+A compiled call's results are fresh, at the placement eager computation gives
+them, except a result that takes a donated argument's memory. A jitted
+training step therefore returns its parameters and state on the device, and a
+recursive loop that threads them keeps them there.
+
+Initialise on the host. A GPU set has no eager kernels, so a model or
+optimizer state placed at initialisation cannot be touched by host code.
+Place model parameters, optimizer state, inputs, targets and keys at the
+boundary of the first jitted call:
+
+```ocaml
+let params = Nx.Ptree.place (module Model.P) D.on params in
+let state = Nx.Ptree.place (module Optim.State) D.on state in
+let train_key = Nx.Rng.place D.on train_key in
+```
+
+A value `f` captures on another device is copied there once per program, and
+the program holds the copy. That makes a captured host constant work, but it
+also hides the copy; explicit placement at the boundary keeps the cost visible
+and leaves the host value usable.
+
+Host reads (`Nx.item`, `Nx.to_array`) wait on the set. Read the loss at the
+reporting interval, not every step.
+
 ## Checks under `jit`
 
 `Nx.check`, a sampler's parameter domain, an `iterate` past `max` and a
