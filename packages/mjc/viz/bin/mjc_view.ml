@@ -40,7 +40,6 @@ let () =
   and contacts = ref false
   and forces = ref false
   and quiet = ref false
-  and repeat = ref 1
   and cam = ref Mjc_viz.Render.default_camera in
   let args =
     Array.to_list Sys.argv
@@ -89,9 +88,6 @@ let () =
     | "--forces" :: rest ->
       forces := true;
       go rest
-    | "--repeat" :: v :: rest ->
-      repeat := Stdlib.int_of_string v;
-      go rest
     | "--quiet" :: rest ->
       quiet := true;
       go rest
@@ -130,22 +126,7 @@ let () =
       ncon
       nefc
       (List.length scene.Mjc_viz.Scene.geoms));
-  (* A monotonic clock, since this is an elapsed time and the wall clock can
-     step. *)
-  (let t0 = Unix.clock_gettime Unix.CLOCK_MONOTONIC in
-   for _ = 1 to !repeat do
-     Mjc_viz.Render.save_png ~camera:!cam !shot scene
-   done;
-   let ms =
-     1000. *. (Unix.clock_gettime Unix.CLOCK_MONOTONIC -. t0) /. Float.of_int !repeat
-   in
-   if not !quiet
-   then
-     Stdlib.Printf.printf
-       "%.1f ms per frame at %gx%g\n%!"
-       ms
-       !cam.Mjc_viz.Render.width
-       !cam.Mjc_viz.Render.height);
+  Mjc_viz.Render.save_png ~camera:!cam !shot scene;
   (match !svg with
    | None -> ()
    | Some p ->
