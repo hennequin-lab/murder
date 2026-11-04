@@ -1,3 +1,39 @@
+## M4 box-box: the kernel matches the engine, and the step does not use it yet
+
+MuJoCo 3.17's `mjc_BoxBox` is not the classic clip-based algorithm. It is a
+separating-axis search over fifteen axes (three face normals per box, nine
+edge crosses) with three rules that exist only so stacks sit still: a slack on
+the separation tests proportional to the box scale, an edge bias so a face wins
+near-ties (a face gives a multi-point manifold), and a *face substitution* that
+replaces a winning edge axis within eight degrees of the best face axis unless
+the edge is five percent better. Then two different generators: an edge axis
+gives one point from the closest approach of two segments, a face axis gives
+every surviving vertex of a Sutherland-Hodgman clip of one face against the
+other's side planes — up to twelve contacts, and MuJoCo's comment is explicit
+that cutting the patch to four costs two to three orders of magnitude in
+residual motion at rest.
+
+I ported it as host code (`lib/collision_box.ml`), statement for statement,
+rather than as traced tensor code, because the traced version would be a
+different program and so could not be checked against the C engine line by line.
+The port is checked as an oracle: `test/test_boxbox.ml` runs the new `boxes2`
+corpus — a slab, a squarely stacked box, a box turned 15°, a box tipped 45°, and
+a box overhanging the slab's edge and turned 30° (whose clip yields five
+vertices) — and reports **151 pairs matching the C engine at 1e-12 and 314 pairs
+correctly producing no contact**. That includes the other direction, which is
+where an over-eager kernel would show.
+
+It is not wired into the step. The narrow phase is tensor code over the whole
+candidate list, and box-box needs twelve slots per pair, a `where`-min over the
+fifteen axes, and a fixed-slot clip; `doc/adr/0011-box-box.md` records the rules
+and the three pieces of plumbing (slot budget, tensor clip, and the oracle
+property test that will keep a tensor port honest on poses the corpus does not
+contain). Until then the engine still refuses box-box by name rather than
+approximating it, and `VIZ.md`'s two-box acceptance stays unmet.
+
+The corpus is committed and reproducible from `tools/record_fixture.py`, so the
+next step starts from a recorded target rather than from MuJoCo on disk.
+
 ## "Diverged at step N" is a jump, and one test that only needed a file
 
 The viewer's stated purpose includes "did the run diverge, and when?". With the

@@ -248,6 +248,39 @@ MODELS = {
   </worldbody>
 </mujoco>""",    # A box on a plane: up to four contacts from one pair, kept in corner
     # order, which is what the per-pair cap has to reproduce.
+    # Box on box: a slab under two boxes, one stacked squarely (a face manifold
+    # whose clip keeps four corners), one turned 15 degrees (whose clip makes
+    # six or eight), and one dropped on to a corner so the trajectory passes
+    # through edge-edge contacts. Every contact here is box-box.
+    "boxes2": """
+<mujoco model="boxes2">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom name="ground" type="box" size="2 2 0.1" pos="0 0 -0.1" condim="3"/>
+    <body name="base" pos="0 0 0.25">
+      <freejoint/>
+      <geom name="base" type="box" size="0.25 0.25 0.15" condim="3"/>
+    </body>
+    <body name="stack" pos="0.02 0.01 0.5">
+      <freejoint/>
+      <geom name="stack" type="box" size="0.2 0.2 0.1" condim="3"/>
+    </body>
+    <body name="turned" pos="0.75 0 0.2" quat="0.9914449 0 0 0.1305262">
+      <freejoint/>
+      <geom name="turned" type="box" size="0.15 0.15 0.06" condim="3"/>
+    </body>
+    <body name="tipped" pos="-0.7 0.1 0.55" quat="0.9238795 0.3826834 0 0">
+      <freejoint/>
+      <geom name="tipped" type="box" size="0.12 0.12 0.12" condim="3"/>
+    </body>
+    <!-- overhangs the slab's edge and turned 30 degrees: the clip of its face
+         against the slab's side planes makes more than four vertices -->
+    <body name="overhang" pos="1.9 0 0.16" quat="0.9659258 0 0 0.258819">
+      <freejoint/>
+      <geom name="overhang" type="box" size="0.2 0.2 0.06" condim="3"/>
+    </body>
+  </worldbody>
+</mujoco>""",
     "boxes": """
 <mujoco model="boxes">
   <option timestep="0.002"/>
