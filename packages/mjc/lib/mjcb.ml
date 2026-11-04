@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 5
+let version = 6
 
 (* Layout, in writing order:
 
@@ -94,6 +94,8 @@ let fields =
   ; "dof_armature"
   ; "dof_damping"
   ; "dof_frictionloss"
+  ; "dof_solref"
+  ; "dof_solimp"
   ; "dof_invweight0"
   ; "qpos0"
   ; "qpos_spring"
@@ -295,6 +297,8 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.dof_armature
       ; p.dof_damping
       ; p.dof_frictionloss
+      ; p.dof_solref
+      ; p.dof_solimp
       ; p.dof_invweight0
       ; p.qpos0
       ; p.qpos_spring
@@ -430,6 +434,8 @@ let parse (c : cursor) : Model.host =
     Nx.create f64 shape data
   in
   let i name = field name ints in
+  let frictionloss = Nx.to_array (tensor "dof_frictionloss") in
+  let limited = Nx.to_array (tensor "jnt_limited") in
   let topo =
     { Topo.name
     ; mujoco_version
@@ -467,6 +473,8 @@ let parse (c : cursor) : Model.host =
     ; geom_conaffinity = i "geom_conaffinity"
     ; geom_priority = i "geom_priority"
     ; site_bodyid = i "site_bodyid"
+    ; jnt_limited = Array.map limited ~f:(fun x -> Stdlib.( > ) x 0.5)
+    ; dof_frictionloss = frictionloss
     ; eq_type = Array.map (i "eq_type") ~f:eq_type_of_code
     ; eq_objtype = Array.map (i "eq_objtype") ~f:eq_objtype_of_code
     ; body_names = field "body_names" names
@@ -495,6 +503,8 @@ let parse (c : cursor) : Model.host =
     ; dof_armature = tensor "dof_armature"
     ; dof_damping = tensor "dof_damping"
     ; dof_frictionloss = tensor "dof_frictionloss"
+    ; dof_solref = tensor "dof_solref"
+    ; dof_solimp = tensor "dof_solimp"
     ; dof_invweight0 = tensor "dof_invweight0"
     ; qpos0 = tensor "qpos0"
     ; qpos_spring = tensor "qpos_spring"

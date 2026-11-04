@@ -1,0 +1,9 @@
+<mujoco model="drag">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="blade" pos="0 0 0.5">
+      <joint name="spin" type="hinge" axis="0 1 0" frictionloss="50"/>
+      <geom name="blade" type="capsule" fromto="0 0 0 0 0 -0.3" size="0.02"/>
+    </body>
+  </worldbody>
+</mujoco>

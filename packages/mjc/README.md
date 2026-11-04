@@ -7,7 +7,9 @@ whole step with `Rune.grad`.
 
 ## Status
 
-**M3 in progress.** Equality rows (connect, weld, joint) are assembled and
+**M3 in progress.** Friction-loss rows are solved as box constraints, with
+both the saturated and the quadratic branch in the corpus. Equality rows
+(connect, weld, joint) are assembled and
 solved, and match MuJoCo to 1e-12 across rows, Jacobian, impedance, reference
 acceleration and force. Joint limits are solved: the rows and the impedance match
 MuJoCo to 1e-12, the solved force to 1e-6, and a constrained trajectory to

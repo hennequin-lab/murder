@@ -89,6 +89,13 @@ type t =
   ; geom_conaffinity : int array (** [[ngeom]], collision mask. *)
   ; geom_priority : int array (** [[ngeom]], contact override. *)
   ; site_bodyid : int array (** [[nsite]] *)
+  ; jnt_limited : bool array
+    (** [[njnt]], whether the joint's range is active. Host data, for the
+        same reason as the friction losses below. *)
+  ; dof_frictionloss : float array
+    (** [[nv]], the friction loss of each dof. Host data, because which
+        dofs get a friction row is decided when the program is built, not
+        when it runs. *)
   ; eq_type : eq_type array (** [[neq]] *)
   ; eq_objtype : eq_objtype array
     (** [[neq]], what [eq_obj1id] and [eq_obj2id] index in the model. *)

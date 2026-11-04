@@ -71,6 +71,8 @@ type t =
   ; geom_conaffinity : int array
   ; geom_priority : int array
   ; site_bodyid : int array
+  ; jnt_limited : bool array (** [[njnt]] *)
+  ; dof_frictionloss : float array (** [[nv]] *)
   ; eq_type : eq_type array (** [[neq]] *)
   ; eq_objtype : eq_objtype array (** [[neq]] *)
   ; body_names : string array
@@ -171,6 +173,8 @@ let validate (t : t) : (unit, string) Result.t =
   len "geom_bodyid" t.ngeom t.geom_bodyid;
   if Array.length t.geom_type <> t.ngeom
   then add "geom_type has length %d, expected %d" (Array.length t.geom_type) t.ngeom;
+  length_ok problems "jnt_limited" t.njnt (Array.map t.jnt_limited ~f:Bool.to_int);
+  length_ok problems "dof_frictionloss" t.nv t.dof_frictionloss;
   if Array.length t.eq_type <> t.neq
   then add "eq_type has length %d, expected %d" (Array.length t.eq_type) t.neq;
   if Array.length t.eq_objtype <> t.neq

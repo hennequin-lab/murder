@@ -27,6 +27,8 @@ module Params = struct
     ; dof_armature : 'a
     ; dof_damping : 'a
     ; dof_frictionloss : 'a
+    ; dof_solref : 'a
+    ; dof_solimp : 'a
     ; dof_invweight0 : 'a
     ; qpos0 : 'a
     ; qpos_spring : 'a
@@ -173,6 +175,8 @@ let validate (m : host) : (unit, string) Result.t =
   want "dof_armature" [| t.nv |] p.dof_armature;
   want "dof_damping" [| t.nv |] p.dof_damping;
   want "dof_frictionloss" [| t.nv |] p.dof_frictionloss;
+  want "dof_solref" [| t.nv; 2 |] p.dof_solref;
+  want "dof_solimp" [| t.nv; 5 |] p.dof_solimp;
   want "dof_invweight0" [| t.nv |] p.dof_invweight0;
   want "qpos0" [| t.nq |] p.qpos0;
   want "qpos_spring" [| t.nq |] p.qpos_spring;

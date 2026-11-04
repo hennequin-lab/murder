@@ -41,6 +41,11 @@ val equality : Model.host -> Data.host -> Data.host
     dropped silently. *)
 val limits : Model.host -> Data.host -> Data.host
 
+(** [friction m d] appends one row per dof whose friction loss is non-zero,
+    after the rows already in the buffer. The force on such a row is bounded
+    by the loss, so the solver treats it as linear outside the bound. *)
+val friction : Model.host -> Data.host -> Data.host
+
 (** {1:impedance Impedance} *)
 
 (** [impedance m d] is [d] with [efc_vel], [efc_R], [efc_D] and [efc_aref]

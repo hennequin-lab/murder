@@ -3,9 +3,9 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-(* Joint-limit rows against MuJoCo: which rows exist, their type and id, their
-   position and margin, and their Jacobian. The solver does not exist yet, so
-   the forces are not compared here. *)
+(* Constraint rows against MuJoCo: which rows exist for the limit and friction
+   corpus model, their type and id, their position and margin, and their
+   Jacobian. The solver is checked by the tests further down. *)
 
 open Base
 open Windtrap
@@ -23,7 +23,10 @@ let test_limits () =
   let qpos = tensor f "qpos" in
   let nv = m.topo.nv in
   for s = 0 to f.nstates - 1 do
-    let d = C.limits m (data_with_qpos m (row qpos s)) in
+    (* MuJoCo's row order: equality, friction, limit. The model has no
+       equalities, so the rows here are the friction rows and then the
+       limits. *)
+    let d = C.limits m (C.friction m (C.equality m (data_with_qpos m (row qpos s)))) in
     let nefc = int_of_t d.nefc in
     let expected = Int.of_float (row (tensor f "nefc") s).(0) in
     equal ~msg:(Printf.sprintf "state %d nefc" s) int expected nefc;
@@ -196,6 +199,31 @@ let test_equality_trajectory () =
       (Nx.to_array !d.qpos)
   done
 
+(* The quadratic branch of the friction solver: one dof, one row, a loss wide
+   enough that the force never saturates. *)
+let test_friction_quadratic () =
+  let m = model "drag" in
+  let f = fixture "drag" in
+  let qpos = tensor f "qpos"
+  and qvel = tensor f "qvel" in
+  let loss = 50.0 in
+  let saturated = ref 0 in
+  List.iteri
+    (List.init f.nstates ~f:(fun s ->
+       let d = { (data_with_qpos m (row qpos s)) with qvel = vec1 (row qvel s) } in
+       Mjc.Forward.forward m d, Int.of_float (row (tensor f "nefc") s).(0)))
+    ~f:(fun s (d, nefc) ->
+      equal ~msg:"one friction row" int 1 nefc;
+      let got = (Nx.to_array d.efc_force).(0) in
+      if Float.( >= ) (Float.abs got) (loss -. 1e-9) then Int.incr saturated;
+      parity
+        ~tol:1e-9
+        ~name:(Printf.sprintf "state %d efc_force" s)
+        [| (row (tensor f "efc_force") s).(0) |]
+        [| got |]);
+  (* The corpus is only worth its name if the row really stays quadratic. *)
+  equal ~msg:"no saturated row" int 0 !saturated
+
 let () =
   Stdlib.exit
     (run
@@ -207,4 +235,5 @@ let () =
        ; test "Newton and CG agree" test_solvers_agree
        ; test "equality rows" test_equality
        ; test "equality trajectory" test_equality_trajectory
+       ; test "friction, quadratic branch" test_friction_quadratic
        ])

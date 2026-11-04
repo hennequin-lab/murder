@@ -45,6 +45,16 @@
       "xml_sha256": "83163fecd62cb628"
     },
     {
+      "name": "drag",
+      "nbody": 2,
+      "ngeom": 1,
+      "njnt": 1,
+      "nq": 1,
+      "nv": 1,
+      "nstates": 32,
+      "xml_sha256": "e78c38b8c8ba92aa"
+    },
+    {
       "name": "limited",
       "nbody": 3,
       "ngeom": 2,
@@ -52,7 +62,7 @@
       "nq": 2,
       "nv": 2,
       "nstates": 32,
-      "xml_sha256": "5599c2d0c4ae6804"
+      "xml_sha256": "5dbeda1279949772"
     },
     {
       "name": "looped",
@@ -62,7 +72,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "f83f9d39f982f1ec"
+      "xml_sha256": "c2c2b5ba6a668e33"
     }
   ]
 }

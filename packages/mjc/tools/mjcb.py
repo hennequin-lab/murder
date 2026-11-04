@@ -17,7 +17,7 @@ MJCB_MAGIC = b"MJCB"
 MJCB_END = b"MJCE"
 MJBF_MAGIC = b"MJBF"
 MJBF_END = b"MJFE"
-VERSION = 5
+VERSION = 6
 
 # Topology arrays, in the order the format writes them.
 INT_ARRAYS = [
@@ -48,6 +48,7 @@ def fields(m):
         ("jnt_solimp", m.jnt_solimp),
         ("dof_armature", m.dof_armature), ("dof_damping", m.dof_damping),
         ("dof_frictionloss", m.dof_frictionloss),
+        ("dof_solref", m.dof_solref), ("dof_solimp", m.dof_solimp),
         ("dof_invweight0", m.dof_invweight0),
         ("qpos0", m.qpos0), ("qpos_spring", m.qpos_spring),
         ("geom_pos", m.geom_pos), ("geom_quat", m.geom_quat),

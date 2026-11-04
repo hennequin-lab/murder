@@ -54,6 +54,9 @@ type ('a, 'd) t =
     (** [[nefcmax]], the position the impedance is read at: the row's own
         violation, except for an equality, which reads the norm over its
         block of rows. *)
+  ; efc_frictionloss : 'a
+    (** [[nefcmax]], the friction loss of the row: zero for every kind but
+        a friction row, where it bounds the force. *)
   ; efc_diagA : 'a
     (** [[nefcmax]], the row's approximate inverse inertia [1/J M⁻¹ Jᵀ],
         which sets its regularisation. *)

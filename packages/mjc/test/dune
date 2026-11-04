@@ -19,8 +19,3 @@
  (deps
   (glob_files fixtures/*))
  (libraries base mjc nx rune windtrap))
-
-(executable
- (name timing)
- (modules timing)
- (libraries mjc base nx))

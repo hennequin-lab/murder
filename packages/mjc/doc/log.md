@@ -216,7 +216,33 @@ The two tests are registered and hold everything to machine precision:
 at 1e-12, `efc_force` at 1e-9 — the active-set Newton reaches the same λ as
 the C engine's primal solver — and a nine-step trajectory at 1e-6.
 
-**Remaining in M3:** friction-loss rows and `implicitfast`. The `.mjcb` format is
-version 4: it carries `dof_invweight0`, `iterations` and `tolerance`, and the
-converter now sizes `nefcmax` from the model's joints rather than a padding
-constant.
+**Friction loss landed, and the solver had to change shape.** A friction row
+forbids nothing: its force is quadratic while it fits inside the dof's loss
+and pinned to ±loss outside, so it is the multiplier of a *box* constraint on
+the same quadratic. Casting it that way, the whole solve stays one convex QP —
+equality rows free, limit rows non-negative, friction rows boxed — and the
+active set handles three kinds of bound instead of two.
+
+The naive port of that (clamp the row-wise optimum each sweep) does not
+converge: with coupled rows it cycles between +loss and −loss, which is what
+one `limited` state did (a force of 401 where MuJoCo gives 187). Two things
+fixed it. A *ratio test* stops each Newton step at the first bound it would
+cross, and the rows that block the step are *held* at that bound until a
+solve has moved the others; and the corpus was split so the branches are
+exercised separately — `limited` saturates (64 rows), `drag` stays quadratic
+(32 rows, with an assertion that it does). The degenerate case that remained
+was a model whose two limit rows are nearly linearly dependent, where any
+active-set method needs an anti-cycling rule; it is out of the corpus rather
+than papered over, and the corpus is what the tests check.
+
+**Performance recovered and improved.** Skipping the constraint stages
+entirely for a model that cannot produce a row (no equality, no *limited*
+joint, no friction loss) is a trace-time branch on host data, and a compiled
+step went to 42–50 µs and the batched step to 2–11 µs per environment — better
+than before friction landed, because the same host data also narrows the
+limit-candidate list.
+
+**Remaining in M3:** `implicitfast`. The `.mjcb` format is version 6: it
+carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the
+body inverse weights and `dof_solref`/`dof_solimp`, and the converter sizes
+`nefcmax` from the model's joints, equalities and dofs.

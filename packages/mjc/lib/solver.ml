@@ -53,22 +53,60 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
   let b = select (Nx.sub (Nx.matmul d.efc_J d.qacc) d.efc_aref) in
   (* Active-set Newton on the quadratic. A limit row can only push, so a row
      is in the free set while its force is positive or its reduced gradient is
-     negative; equality rows are always free, since they pull and push. The
+     negative; equality rows are always free, since they pull and push, and a
+     friction row is free while its force is inside the loss. The
      frozen rows are pinned to zero by an identity block, which keeps the
      system square and positive definite. The first iteration takes every row
      free, so a cold start reaches the unconstrained optimum before any row is
      frozen. *)
   (* Equality rows are two-sided: their force takes either sign, so they stay
      free and their step is never projected. *)
-  let bilateral =
-    Nx.equal
-      d.efc_type
-      (Nx.scalar Nx.int32 (Stdlib.Int32.of_int Constraint.type_equality))
+  let of_type k = Nx.equal d.efc_type (Nx.scalar Nx.int32 (Stdlib.Int32.of_int k)) in
+  let bilateral = of_type Constraint.type_equality in
+  let friction =
+    Nx.logical_or
+      (of_type Constraint.type_friction_dof)
+      (of_type Constraint.type_friction_tendon)
   in
+  let floss = d.efc_frictionloss in
+  (* The rows are the multipliers of a convex quadratic with bounds: equality
+     rows are free, limit rows are non-negative, friction rows sit in
+     [-loss, +loss]. A primal active-set method solves it: a Newton step over
+     the free block, a ratio test that stops the step at the first bound it
+     would cross, and the blocking rows held at their bound until a solve has
+     moved the others. Holding is what stops the cycling a plain
+     project-after-the-step falls into. *)
+  (* Only a friction row has an upper bound, so only it can block a step from
+     above; a model without one keeps the cheaper step. *)
+  let boxed = Array.exists t.dof_frictionloss ~f:(fun x -> Float.( > ) x 0.0) in
   let lambda = ref (select d.efc_force) in
+  let held = ref (Nx.zeros_like rows) in
+  let tiny = 1e-300 in
+  let big = 1e300 in
+  let hi = Nx.where friction floss (Nx.full_like rows big) in
+  let lo =
+    Nx.where
+      friction
+      (Nx.neg floss)
+      (Nx.where bilateral (Nx.full_like rows (-.big)) (Nx.zeros_like rows))
+  in
+  let slack x bound = Nx.mul_s (Nx.abs bound) (x *. 1e-12) in
   let iters = Int.min (Int.of_float (Nx.item [] p.iterations)) max_iterations in
   for i = 1 to iters do
     let grad = Nx.add (Nx.matmul a !lambda) b in
+    let at_hi = Nx.greater_equal !lambda (Nx.sub hi (slack 1.0 hi)) in
+    let at_lo = Nx.less_equal !lambda (Nx.add lo (slack 1.0 lo)) in
+    let at_bound =
+      Nx.logical_and (Nx.logical_not bilateral) (Nx.logical_or at_hi at_lo)
+    in
+    (* A row at a bound wants back in when its gradient points inward: the
+       gradient is the multiplier, and its sign is the KKT condition. *)
+    let wants_in =
+      Nx.logical_or
+        (Nx.logical_and at_hi (Nx.greater_s grad 0.0))
+        (Nx.logical_and at_lo (Nx.less_s grad 0.0))
+    in
+    let releasable = Nx.less_s !held 0.5 in
     let free =
       if i = 1
       then mask
@@ -77,7 +115,9 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
           mask
           (Nx.logical_or
              bilateral
-             (Nx.logical_or (Nx.greater_s !lambda 0.0) (Nx.less_s grad 0.0)))
+             (Nx.logical_and
+                releasable
+                (Nx.logical_or (Nx.logical_not at_bound) wants_in)))
     in
     let ff = Nx.where free (Nx.ones_like rows) (Nx.zeros_like rows) in
     let outer = Nx.matmul (Nx.reshape [| nb; 1 |] ff) (Nx.reshape [| 1; nb |] ff) in
@@ -89,12 +129,40 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
       | `Cholesky -> Mass.solve (Mass.factor am) rhs
       | `Cg -> cg ~iters:nb am rhs
     in
-    let stepped = Nx.add !lambda step in
-    lambda
-    := Nx.where
-         free
-         (Nx.where bilateral stepped (Nx.maximum_s stepped 0.0))
-         (Nx.zeros_like !lambda)
+    let headroom b = Nx.sub b !lambda in
+    let upward =
+      Nx.where
+        (Nx.logical_and (Nx.greater_s step 0.0) (Nx.greater_s (headroom hi) 0.0))
+        (Nx.div (headroom hi) (Nx.maximum_s step tiny))
+        (Nx.full_like rows big)
+    in
+    let downward =
+      Nx.where
+        (Nx.logical_and (Nx.less_s step 0.0) (Nx.less_s (headroom lo) 0.0))
+        (Nx.div (headroom lo) (Nx.minimum_s step (-.tiny)))
+        (Nx.full_like rows big)
+    in
+    let ratio = Nx.min (Nx.minimum upward downward) in
+    (* The first pass is the unconstrained optimum, clamped into the box: a
+       feasible start is what makes the ratio test meaningful afterwards. *)
+    let alpha =
+      if i = 1 || not boxed then Nx.scalar Nx.float64 1.0 else Nx.minimum_s ratio 1.0
+    in
+    let blocked =
+      if not boxed
+      then Nx.zeros_like rows
+      else
+        Nx.where
+          (Nx.logical_and
+             (Nx.less_s ratio 1.0)
+             (Nx.logical_or (Nx.less_equal upward ratio) (Nx.less_equal downward ratio)))
+          (Nx.ones_like rows)
+          (Nx.zeros_like rows)
+    in
+    let stepped = Nx.add !lambda (Nx.mul step alpha) in
+    let clamped = Nx.where bilateral stepped (Nx.minimum (Nx.maximum stepped lo) hi) in
+    lambda := Nx.where free clamped (Nx.minimum (Nx.maximum !lambda lo) hi);
+    held := blocked
   done;
   let qfrc_constraint = Nx.matmul jt !lambda in
   let qacc = Nx.add d.qacc (Mass.solve l qfrc_constraint) in

@@ -62,6 +62,7 @@ type row =
   ; solref : f (** [[2]] *)
   ; solimp : f (** [[5]] *)
   ; jdotv : f (** 0-d, the row's [Jdot qvel]. *)
+  ; frictionloss : f (** 0-d, zero but on a friction row. *)
   ; jac : f (** [[nv]] *)
   }
 
@@ -77,6 +78,7 @@ let keep_before (m : Model.host) (d : Data.host) at =
   ; efc_pos = keep_f d.efc_pos
   ; efc_margin = keep_f d.efc_margin
   ; efc_posnorm = keep_f d.efc_posnorm
+  ; efc_frictionloss = keep_f d.efc_frictionloss
   ; efc_diagA = keep_f d.efc_diagA
   ; efc_vel = keep_f d.efc_vel
   ; efc_R = keep_f d.efc_R
@@ -98,6 +100,7 @@ let set_row (d : Data.host) ~at (r : row) =
   ; efc_pos = Nx.set i r.pos d.efc_pos
   ; efc_margin = Nx.set i r.margin d.efc_margin
   ; efc_posnorm = Nx.set i r.posnorm d.efc_posnorm
+  ; efc_frictionloss = Nx.set i r.frictionloss d.efc_frictionloss
   ; efc_diagA = Nx.set i r.diagA d.efc_diagA
   ; efc_solref = Nx.set i r.solref d.efc_solref
   ; efc_solimp = Nx.set i r.solimp d.efc_solimp
@@ -175,6 +178,7 @@ let equality (m : Model.host) (d : Data.host) : Data.host =
              ; pos
              ; margin = Nx.scalar Nx.float64 0.0
              ; posnorm
+             ; frictionloss = Nx.scalar Nx.float64 0.0
              ; diagA
              ; solref
              ; solimp
@@ -366,12 +370,12 @@ let limit_candidates (t : Topo.t) : cand array =
   let cands = ref [] in
   for j = 0 to t.njnt - 1 do
     match t.jnt_type.(j) with
-    | Hinge | Slide ->
+    | (Hinge | Slide) when t.jnt_limited.(j) ->
       cands
       := { joint = j; dof = t.jnt_dofadr.(j); side = -1.0; range_index = 0 } :: !cands;
       cands
       := { joint = j; dof = t.jnt_dofadr.(j); side = 1.0; range_index = 1 } :: !cands
-    | Ball | Free -> ()
+    | Ball | Free | Hinge | Slide -> ()
   done;
   Array.of_list (List.rev !cands)
 
@@ -431,6 +435,7 @@ let limits (m : Model.host) (d : Data.host) : Data.host =
     ; efc_pos = put !dists d.efc_pos
     ; efc_margin = put !margins d.efc_margin
     ; efc_posnorm = put !dists d.efc_posnorm
+    ; efc_frictionloss = put (Nx.zeros Nx.float64 [| ncand |]) d.efc_frictionloss
     ; efc_diagA = put (take dof p.dof_invweight0) d.efc_diagA
     ; efc_solref = put_cols (take jnt p.jnt_solref) d.efc_solref
     ; efc_solimp = put_cols (take jnt p.jnt_solimp) d.efc_solimp
@@ -545,3 +550,67 @@ let impedance (m : Model.host) (d : Data.host) : Data.host =
   in
   let aref = Nx.where mask aref (Nx.zeros_like aref) in
   { d with efc_vel = vel; efc_R = r; efc_D = dcoef; efc_aref = aref }
+
+(* {1 Friction loss}
+
+   One row per dof with a non-zero friction loss, in dof order, appended after
+   the equalities. A friction row measures nothing: its position is zero and
+   its force is bounded by the loss, which is what turns it from a quadratic
+   row into a linear one once the row's velocity error is large enough. *)
+
+(* The rows an equality contributes, which is also where the friction stage
+   starts. It is a property of the model, so it is a host count: the equality
+   stage writes its rows at host indices. *)
+let equality_row_count (m : Model.host) =
+  let t = m.topo
+  and p = m.params in
+  let n = ref 0 in
+  for i = 0 to t.neq - 1 do
+    if Float.( > ) (Nx.item [ i ] p.eq_active0) 0.5
+    then
+      n
+      := !n
+         +
+         match t.eq_type.(i) with
+         | Connect -> 3
+         | Weld -> 6
+         | Joint -> 1
+  done;
+  !n
+
+let friction (m : Model.host) (d : Data.host) : Data.host =
+  let t = m.topo
+  and p = m.params in
+  let nv = t.nv in
+  let start = equality_row_count m in
+  let out = ref d in
+  let rows = ref start in
+  for dof = 0 to nv - 1 do
+    let loss = Nx.get [ dof ] p.dof_frictionloss in
+    if Float.( > ) t.dof_frictionloss.(dof) 0.0
+    then (
+      let solref = row dof p.dof_solref
+      and solimp = row dof p.dof_solimp in
+      let jac =
+        Nx.set [ I dof ] (Nx.scalar Nx.float64 1.0) (Nx.zeros Nx.float64 [| nv |])
+      in
+      out
+      := set_row
+           !out
+           ~at:!rows
+           { kind = type_friction_dof
+           ; id = dof
+           ; pos = Nx.scalar Nx.float64 0.0
+           ; margin = Nx.scalar Nx.float64 0.0
+           ; posnorm = Nx.scalar Nx.float64 0.0
+           ; frictionloss = loss
+           ; diagA = Nx.get [ dof ] p.dof_invweight0
+           ; solref
+           ; solimp
+           ; jdotv = Nx.scalar Nx.float64 0.0
+           ; jac
+           };
+      Int.incr rows)
+  done;
+  let d = keep_before m !out (Nx.scalar Nx.float64 (Float.of_int !rows)) in
+  { d with nefc = Nx.scalar Nx.int32 (Int32.of_int !rows) }

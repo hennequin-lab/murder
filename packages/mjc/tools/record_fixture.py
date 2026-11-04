@@ -110,19 +110,38 @@ MODELS = {
 </mujoco>""",
     # Joint limits, both sides, on a hinge and a slide; the sampled states
     # leave the ranges so that the limit rows are exercised.
+    # One dof, one friction row, and a loss large enough that the row stays in
+    # the quadratic branch: the complement of the saturated case above.
+    "drag": """
+<mujoco model="drag">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="blade" pos="0 0 0.5">
+      <joint name="spin" type="hinge" axis="0 1 0" frictionloss="50"/>
+      <geom name="blade" type="capsule" fromto="0 0 0 0 0 -0.3" size="0.02"/>
+    </body>
+  </worldbody>
+</mujoco>""",
     "limited": """
 <mujoco model="limited">
   <compiler angle="radian"/>
-  <option timestep="0.002"/>
+  <!-- Contacts are M4's corpus; disabling them keeps the row count a function
+       of the friction and limit rows this model measures. -->
+  <option timestep="0.002">
+    <flag contact="disable"/>
+  </option>
   <worldbody>
     <body name="arm" pos="0 0 1">
-      <joint name="shoulder" type="hinge" axis="0 1 0" range="-0.4 0.4"/>
+      <joint name="shoulder" type="hinge" axis="0 1 0" range="-0.4 0.4"
+             frictionloss="0.4"/>
       <geom name="arm" type="capsule" size="0.02 0.3" pos="0 0 -0.3"/>
       <body name="slider" pos="0 0 -0.6">
-        <joint name="extend" type="slide" axis="1 0 0" range="-0.1 0.15"/>
+        <joint name="extend" type="slide" axis="1 0 0" range="-0.1 0.15"
+               frictionloss="5"/>
         <geom name="hand" type="sphere" size="0.05"/>
       </body>
     </body>
+
   </worldbody>
 </mujoco>""",
     # Equality rows of all three shapes, each in its own subtree, plus one
