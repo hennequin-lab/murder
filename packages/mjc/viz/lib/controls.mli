@@ -19,8 +19,9 @@
 
 (** {1:joints Joints} *)
 
-(** The type for the kinds of joint, which is the model's [jnt_type]. *)
-type kind =
+(** The type for the kinds of joint: the scene's, which is the model's
+    [jnt_type] under a name a viewer can use without reading {!Mjc.Topo}. *)
+type kind = Scene.jnt =
   | Hinge
   | Slide
   | Ball

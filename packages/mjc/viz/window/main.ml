@@ -12,6 +12,7 @@ let usage =
   "mjc-window --model M.mjcb [--steps-per-frame N] [--frames N] [--shot out.png]\n\
   \  [--width W] [--height H] [--eye x,y,z] [--target x,y,z]\n\
   \  [--body-frames] [--contacts|--no-contacts] [--forces] [--no-grid] [--no-hud]\n\
+  \  [--inertia] [--com] [--joint-axes] [--velocity] [--energy]\n\
   \  [--bench N] [--check]"
 
 let die fmt =
@@ -44,7 +45,12 @@ let () =
   and body_frames = ref false
   and contacts = ref true
   and forces = ref false
-  and grid = ref true in
+  and grid = ref true
+  and inertia = ref false
+  and com = ref false
+  and joint_axes = ref false
+  and velocity = ref false
+  and energy = ref false in
   let rec go = function
     | [] -> ()
     | "--model" :: v :: r ->
@@ -90,6 +96,21 @@ let () =
     | "--forces" :: r ->
       forces := true;
       go r
+    | "--inertia" :: r ->
+      inertia := true;
+      go r
+    | "--com" :: r ->
+      com := true;
+      go r
+    | "--joint-axes" :: r ->
+      joint_axes := true;
+      go r
+    | "--velocity" :: r ->
+      velocity := true;
+      go r
+    | "--energy" :: r ->
+      energy := true;
+      go r
     | "--no-grid" :: r ->
       grid := false;
       go r
@@ -126,6 +147,11 @@ let () =
       ~contacts:!contacts
       ~forces:!forces
       ~grid:!grid
+      ~inertia:!inertia
+      ~com:!com
+      ~joint_axes:!joint_axes
+      ~velocity:!velocity
+      ~energy:!energy
       ?eye:!eye
       ?target:!target
       m

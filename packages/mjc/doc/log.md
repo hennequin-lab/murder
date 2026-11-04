@@ -1,3 +1,34 @@
+## V2: overlays as pure functions, and one wrong assumption
+
+The overlays are five pure functions in `Scene` and a flag each in `of_state`.
+What is worth recording is the two things that were wrong first.
+
+The velocity arrow started from `cvel`, whose linear part is com-based over a
+body's *subtree* — MuJoCo's own convention. Composing it down a chain needs the
+shift `w x (xipos - subtree_com)`, and I wrote that, and the test passed on the
+two-link model. Then the energy test failed by 25% on the same model, and the
+numbers showed the hand body's velocity as 0.158 where the physics says 0.14:
+the shift was being applied to a reference point `cvel` does not actually use
+that way. Rather than reverse-engineer the composition, both overlays now take
+the velocity of the point from `Jacobian.point` — `J qvel`, exact, tested, no
+subtlety — and the energy is a sum of `1/2 m |v|^2 + 1/2 w'Iw` over bodies.
+
+That sum exists to avoid building the mass matrix at display rate: the matrix
+route measured **2.6 ms per frame** on `bench64`, which is a HUD nobody would
+keep on. The sum measured nothing at all — the scene build stayed at 0.008 ms
+with every layer off and 0.234 ms with all of them on a 5-body model (0.648 ms
+on the 65-body `bench64`, where the cost is per-body Jacobian overhead). The
+test that keeps it honest is the equality with `1/2 qvel'M qvel` on four models
+at 1e-9, because otherwise the HUD would be a plausible-looking number.
+
+The inertia box is the formula from MuJoCo's viewer rather than something
+invented: `h_x^2 = 3/(2m)(I_y + I_z - I_x)`. Its test is that a box geom's
+inertia box comes back as itself — the crate's `0.2 x 0.2 x 0.1` to 1e-12 — and
+a sphere's as `r sqrt(3/5)`.
+
+The trail is not in. A trail is a function of history rather than of a state, so
+it belongs to whoever owns the loop; V3's log is where that history will exist.
+
 ## V1 finished: joint control, screenshots, and the frame budget
 
 The window was drawing nothing at the origin, and the still backend was right:

@@ -82,12 +82,41 @@ type arrow =
   ; vector : p3
   }
 
+type jnt =
+  | Hinge
+  | Slide
+  | Ball
+  | Free
+
+type inertia =
+  { centre : p3
+  ; axes : p3 * p3 * p3
+  ; half : float * float * float
+  }
+
+type joint =
+  { name : string
+  ; kind : jnt
+  ; anchor : p3
+  ; axis : p3
+  }
+
+type energy =
+  { kinetic : float
+  ; potential : float
+  }
+
 type t =
   { time : float
   ; bodies : body list
   ; geoms : geom list
   ; contacts : contact list
   ; forces : arrow list
+  ; inertia : inertia list
+  ; com : p3 list
+  ; joints : joint list
+  ; velocity : arrow list
+  ; energy : energy option
   }
 
 (* {1 Vector arithmetic} *)
@@ -152,10 +181,124 @@ let shape_of (t : Mjc.Topo.t) ~pos ~mat ~size i =
   | Mjc.Topo.Plane -> Plane { normal = z; offset = dot z centre; half = s 0, s 1 }
   | Mjc.Topo.Hfield | Mjc.Topo.Mesh -> Unsupported "height field or mesh"
 
+let as_jnt = function
+  | Mjc.Topo.Hinge -> Hinge
+  | Mjc.Topo.Slide -> Slide
+  | Mjc.Topo.Ball -> Ball
+  | Mjc.Topo.Free -> Free
+
+(* The box with the same diagonal inertia as the body, which is what MuJoCo's
+   own viewer draws: h_x^2 = 3/(2m) (I_y + I_z - I_x) and around. A body whose
+   inertia does not satisfy the triangle inequality has no such box; the
+   negative roots are clamped at a hair rather than drawn inside out. *)
+let half_extents ~mass ~inertia =
+  let h i =
+    let j = Int.rem (i + 1) 3
+    and k = Int.rem (i + 2) 3 in
+    let x = 3. /. (2. *. mass) *. (inertia.(j) +. inertia.(k) -. inertia.(i)) in
+    Float.sqrt (Float.max x 1e-12)
+  in
+  h 0, h 1, h 2
+
+let bodies_of ~mass (t : Mjc.Topo.t) =
+  List.filter (List.init t.nbody ~f:Fn.id) ~f:(fun b ->
+    Stdlib.( && ) (Int.( > ) b 0) (Float.( > ) mass.(b) 0.))
+
+let inertia_boxes (m : Mjc.Model.host) (d : Mjc.Data.host) =
+  let t = m.topo in
+  let mass = Nx.to_array m.params.Mjc.Model.Params.body_mass
+  and inert = Nx.to_array m.params.Mjc.Model.Params.body_inertia
+  and xipos = Nx.to_array d.Mjc.Data.xipos
+  and ximat = Nx.to_array d.Mjc.Data.ximat in
+  List.map (bodies_of ~mass t) ~f:(fun b ->
+    let i = Array.init 3 ~f:(fun k -> inert.((3 * b) + k)) in
+    { centre = point xipos b
+    ; axes = axis ximat b 0, axis ximat b 1, axis ximat b 2
+    ; half = half_extents ~mass:mass.(b) ~inertia:i
+    })
+
+let subtree_com (m : Mjc.Model.host) (d : Mjc.Data.host) =
+  let t = m.topo in
+  let sub = Nx.to_array m.params.Mjc.Model.Params.body_subtreemass
+  and com = Nx.to_array d.Mjc.Data.subtree_com in
+  List.filter (List.init t.nbody ~f:Fn.id) ~f:(fun b -> Float.( > ) sub.(b) 0.)
+  |> List.map ~f:(fun b -> point com b)
+
+let joint_axes (m : Mjc.Model.host) (d : Mjc.Data.host) =
+  let t = m.topo in
+  if t.njnt = 0
+  then []
+  else (
+    let an = Nx.to_array d.Mjc.Data.xanchor
+    and ax = Nx.to_array d.Mjc.Data.xaxis in
+    List.init t.njnt ~f:(fun j ->
+      { name = Mjc.Topo.jnt_name t j
+      ; kind = as_jnt t.jnt_type.(j)
+      ; anchor = point an j
+      ; axis = point ax j
+      }))
+
+(* The velocity of a body's own centre of mass, from the Jacobian of that
+   point: [J qvel], which is exact and costs [O(nv)] per body. The engine's
+   [cvel] is com-based over a body's *subtree*, and composing it down a chain
+   needs a shift this overlay does not want to get subtly wrong. *)
+let com_velocity (m : Mjc.Model.host) (d : Mjc.Data.host) b =
+  let pos = Nx.get [ b ] d.Mjc.Data.xipos in
+  let jacp, jacr = Mjc.Jacobian.point m d ~body:b ~pos in
+  (* the Jacobians are [nv;3], so the velocity is its transpose times qvel *)
+  let v = Nx.dot (Nx.transpose jacp) d.Mjc.Data.qvel
+  and w = Nx.dot (Nx.transpose jacr) d.Mjc.Data.qvel in
+  point (Nx.to_array v) 0, point (Nx.to_array w) 0
+
+let velocities ?(scale = 1.) (m : Mjc.Model.host) (d : Mjc.Data.host) =
+  let t = m.topo in
+  let mass = Nx.to_array m.params.Mjc.Model.Params.body_mass
+  and xipos = Nx.to_array d.Mjc.Data.xipos in
+  List.map (bodies_of ~mass t) ~f:(fun b ->
+    let v, _ = com_velocity m d b in
+    { from = point xipos b; vector = smul v scale })
+
+(* The kinetic energy is a sum over bodies rather than [1/2 qvel' M qvel]: it
+   is the same number — the mass matrix is the assembly of exactly these terms —
+   and it costs [O(nbody nv)] instead of building an [nv; nv] matrix at display
+   rate. Each body contributes [1/2 m |v|^2] for its centre of mass and
+   [1/2 w' I w] for its rotation, with [v] and [w] from the Jacobian of the com
+   and [I] the body's principal inertia read in the body's principal frame. *)
+let mechanical_energy (m : Mjc.Model.host) (d : Mjc.Data.host) =
+  let t = m.topo in
+  let mass = Nx.to_array m.params.Mjc.Model.Params.body_mass
+  and inert = Nx.to_array m.params.Mjc.Model.Params.body_inertia
+  and xipos = Nx.to_array d.Mjc.Data.xipos
+  and ximat = Nx.to_array d.Mjc.Data.ximat
+  and g = Nx.to_array m.params.Mjc.Model.Params.gravity in
+  let gravity = { x = g.(0); y = g.(1); z = g.(2) } in
+  let kinetic, potential =
+    List.fold (bodies_of ~mass t) ~init:(0., 0.) ~f:(fun (k, u) b ->
+      let v, w = com_velocity m d b in
+      (* omega in the body's principal frame: the columns of ximat *)
+      let wi k =
+        let a = axis ximat b k in
+        (w.x *. a.x) +. (w.y *. a.y) +. (w.z *. a.z)
+      in
+      let rot =
+        (inert.(3 * b) *. wi 0 *. wi 0)
+        +. (inert.((3 * b) + 1) *. wi 1 *. wi 1)
+        +. (inert.((3 * b) + 2) *. wi 2 *. wi 2)
+      in
+      ( k +. (0.5 *. mass.(b) *. dot v v) +. (0.5 *. rot)
+      , u -. (mass.(b) *. dot gravity (point xipos b)) ))
+  in
+  { kinetic; potential }
+
 let of_state
       ?(frames = false)
       ?(contacts = false)
       ?(forces = false)
+      ?(inertia = false)
+      ?(com = false)
+      ?(joints = false)
+      ?(velocity = false)
+      ?(energy = false)
       (m : Mjc.Model.host)
       (d : Mjc.Data.host)
   =
@@ -233,13 +376,24 @@ let of_state
         ; vector = smul (point cn i) (total *. 0.002)
         }))
   in
-  { time = Nx.item [] d.Mjc.Data.time; bodies; geoms; contacts; forces }
+  { time = Nx.item [] d.Mjc.Data.time
+  ; bodies
+  ; geoms
+  ; contacts
+  ; forces
+  ; inertia = (if inertia then inertia_boxes m d else [])
+  ; com = (if com then subtree_com m d else [])
+  ; joints = (if joints then joint_axes m d else [])
+  ; velocity = (if velocity then velocities m d else [])
+  ; energy = (if energy then Some (mechanical_energy m d) else None)
+  }
 
 let pp ppf (s : t) =
   Format.fprintf
     ppf
-    "@[<v>time %.3f@,geoms %d@,contacts %d@,forces %d@]"
+    "@[<v>time %.3f@,geoms %d@,contacts %d@,forces %d@,inertia %d@]"
     s.time
     (List.length s.geoms)
     (List.length s.contacts)
     (List.length s.forces)
+    (List.length s.inertia)

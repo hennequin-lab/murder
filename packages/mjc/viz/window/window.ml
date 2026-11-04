@@ -10,6 +10,7 @@ module S = Mjc_viz.Scene
    3D shape calls are models, and text is a third library. *)
 module RC = Raylib_core
 module RM = Raylib_models
+module RL = Raylib_rlgl
 module RT = Raylib_text
 
 type t =
@@ -21,6 +22,11 @@ type t =
   ; mutable forces : bool
   ; mutable grid : bool
   ; mutable hud : bool
+  ; mutable inertia : bool
+  ; mutable com : bool
+  ; mutable joint_axes : bool
+  ; mutable velocity : bool
+  ; mutable energy : bool
   ; joints : Mjc_viz.Controls.joint array
   ; mutable joint : int (** the selected joint index, [-1] for none. *)
   ; mutable scene_s : float (** seconds spent building scenes, for the bench. *)
@@ -48,6 +54,11 @@ let open_
       ?(contacts = true)
       ?(forces = false)
       ?(grid = true)
+      ?(inertia = false)
+      ?(com = false)
+      ?(joint_axes = false)
+      ?(velocity = false)
+      ?(energy = false)
       (model : Mjc.Model.host)
   =
   let data = fresh model in
@@ -59,6 +70,11 @@ let open_
   ; forces
   ; grid
   ; hud
+  ; inertia
+  ; com
+  ; joint_axes
+  ; velocity
+  ; energy
   ; joints = Mjc_viz.Controls.joints model
   ; joint = -1
   ; scene_s = 0.
@@ -200,29 +216,99 @@ let draw_patch ~normal ~offset ~half:(hx, hy) col =
     RM.draw_line_3d (v3 (at (-1.) t)) (v3 (at 1. t)) col
   done
 
+(* {1 Overlays}
+
+   Each layer is one of [Scene]'s pure functions, drawn in a colour that says
+   which layer it is: inertia boxes amber, centres of mass violet, joint axes
+   by kind, velocities blue. *)
+
+let amber = RC.Color.create 214 138 26 255
+let violet = RC.Color.create 140 70 190 255
+let hinge_col = RC.Color.create 214 138 26 255
+let slide_col = RC.Color.create 30 150 160 200
+
+let box_edges
+      ~(centre : S.p3)
+      ~(axes : S.p3 * S.p3 * S.p3)
+      ~(half : float * float * float)
+      col
+  =
+  let ux, uy, uz = axes in
+  let hx, hy, hz = half in
+  let corner sx sy sz =
+    S.
+      { x = centre.x +. (ux.x *. sx *. hx) +. (uy.x *. sy *. hy) +. (uz.x *. sz *. hz)
+      ; y = centre.y +. (ux.y *. sx *. hx) +. (uy.y *. sy *. hy) +. (uz.y *. sz *. hz)
+      ; z = centre.z +. (ux.z *. sx *. hx) +. (uy.z *. sy *. hy) +. (uz.z *. sz *. hz)
+      }
+  in
+  let v =
+    Array.init 8 ~f:(fun i ->
+      corner
+        (if i land 1 = 0 then -1. else 1.)
+        (if i land 2 = 0 then -1. else 1.)
+        (if i land 4 = 0 then -1. else 1.))
+  in
+  List.iter
+    [ 0, 1; 0, 2; 0, 4; 1, 3; 1, 5; 2, 3; 2, 6; 3, 7; 4, 5; 4, 6; 5, 7; 6, 7 ]
+    ~f:(fun (i, j) -> RM.draw_line_3d (v3 v.(i)) (v3 v.(j)) col)
+
+let at (a : S.p3) (d : S.p3) k =
+  S.{ x = a.x +. (d.x *. k); y = a.y +. (d.y *. k); z = a.z +. (d.z *. k) }
+
+let draw_overlays (t : t) (s : S.t) =
+  if t.inertia
+  then
+    List.iter s.S.inertia ~f:(fun (i : S.inertia) ->
+      box_edges ~centre:i.centre ~axes:i.axes ~half:i.half amber);
+  if t.com
+  then
+    List.iter s.S.com ~f:(fun (c : S.p3) ->
+      RM.draw_sphere (v3 c) 0.012 violet;
+      List.iter
+        [ S.{ x = 0.03; y = 0.; z = 0. }
+        ; { x = -0.03; y = 0.; z = 0. }
+        ; { x = 0.; y = 0.03; z = 0. }
+        ; { x = 0.; y = -0.03; z = 0. }
+        ; { x = 0.; y = 0.; z = 0.03 }
+        ; { x = 0.; y = 0.; z = -0.03 }
+        ]
+        ~f:(fun d -> RM.draw_line_3d (v3 c) (v3 (at c d 1.)) violet));
+  if t.joint_axes
+  then
+    List.iter s.S.joints ~f:(fun (j : S.joint) ->
+      match j.kind with
+      | S.Hinge | S.Slide ->
+        let col =
+          match j.kind with
+          | S.Hinge -> hinge_col
+          | _ -> slide_col
+        in
+        RM.draw_sphere (v3 j.anchor) 0.01 col;
+        RM.draw_line_3d
+          (v3 (at j.anchor j.axis (-0.12)))
+          (v3 (at j.anchor j.axis 0.12))
+          col
+      | S.Ball | S.Free -> ());
+  if t.velocity
+  then
+    List.iter s.S.velocity ~f:(fun (a : S.arrow) ->
+      RM.draw_line_3d
+        (v3 a.from)
+        (v3
+           S.
+             { x = a.from.x +. a.vector.x
+             ; y = a.from.y +. a.vector.y
+             ; z = a.from.z +. a.vector.z
+             })
+        (RC.Color.create 40 100 220 255))
+
 let draw_geom (g : S.geom) =
   let col = colour g.colour in
   match g.shape with
   | S.Sphere { centre; radius; _ } -> RM.draw_sphere (v3 centre) radius col
   | S.Capsule { a; b; radius; _ } -> RM.draw_capsule (v3 a) (v3 b) radius 8 8 col
-  | S.Box { centre; axes = ux, uy, uz; half = hx, hy, hz; _ } ->
-    let corner sx sy sz =
-      let open S in
-      { x = centre.x +. (ux.x *. sx *. hx) +. (uy.x *. sy *. hy) +. (uz.x *. sz *. hz)
-      ; y = centre.y +. (ux.y *. sx *. hx) +. (uy.y *. sy *. hy) +. (uz.y *. sz *. hz)
-      ; z = centre.z +. (ux.z *. sx *. hx) +. (uy.z *. sy *. hy) +. (uz.z *. sz *. hz)
-      }
-    in
-    let v =
-      Array.init 8 ~f:(fun i ->
-        corner
-          (if i land 1 = 0 then -1. else 1.)
-          (if i land 2 = 0 then -1. else 1.)
-          (if i land 4 = 0 then -1. else 1.))
-    in
-    List.iter
-      [ 0, 1; 0, 2; 0, 4; 1, 3; 1, 5; 2, 3; 2, 6; 3, 7; 4, 5; 4, 6; 5, 7; 6, 7 ]
-      ~f:(fun (i, j) -> RM.draw_line_3d (v3 v.(i)) (v3 v.(j)) col)
+  | S.Box { centre; axes; half; _ } -> box_edges ~centre ~axes ~half col
   | S.Cylinder { centre; axis; radius; half_height; _ } ->
     (* raylib's cylinder is vertical; a capsule over the same segment is the
        closest primitive it has, and rounds the rims by one radius. *)
@@ -240,10 +326,20 @@ let draw_geom (g : S.geom) =
     draw_patch ~normal ~offset ~half (RC.Color.create 206 206 212 255)
   | S.Unsupported _ -> ()
 
-let draw (t : t) =
+let draw ?(fps = true) (t : t) =
   let t0 = Unix.gettimeofday () in
   let scene =
-    S.of_state ~frames:t.frames ~contacts:t.contacts ~forces:t.forces t.model t.data
+    S.of_state
+      ~frames:t.frames
+      ~contacts:t.contacts
+      ~forces:t.forces
+      ~inertia:t.inertia
+      ~com:t.com
+      ~joints:t.joint_axes
+      ~velocity:t.velocity
+      ~energy:t.energy
+      t.model
+      t.data
   in
   t.scene_s <- t.scene_s +. (Unix.gettimeofday () -. t0);
   let open RC in
@@ -265,6 +361,7 @@ let draw (t : t) =
            ; z = c.point.z +. (c.normal.z *. 0.1)
            })
       red);
+  draw_overlays t scene;
   List.iter scene.S.forces ~f:(fun (f : S.arrow) ->
     let tip =
       S.
@@ -275,30 +372,39 @@ let draw (t : t) =
     in
     RM.draw_line_3d (v3 f.from) (v3 tip) (Color.create 40 100 220 255));
   end_mode_3d ();
+  (* DEBUG *)
   if t.hud
   then (
     let ncon = Stdlib.Int32.to_int (Nx.item [] t.data.Mjc.Data.ncon) in
     let nefc = Stdlib.Int32.to_int (Nx.item [] t.data.Mjc.Data.nefc) in
-    RT.draw_text
+    let line y size text = RT.draw_text text 10 y size black in
+    line
+      10
+      20
       (Stdlib.Printf.sprintf
          "t %.2f s   ncon %d   nefc %d   %s"
          (Nx.item [] t.data.Mjc.Data.time)
          ncon
          nefc
-         (if t.paused then "PAUSED" else "running"))
-      10
-      10
-      20
-      black;
-    RT.draw_text (joint_line t) 10 34 18 black;
-    RT.draw_text
-      "space pause | . step | r reset | g grid | f frames | n contacts | x forces | h \
-       hud | c camera | esc quit"
-      10
+         (if t.paused then "PAUSED" else "running"));
+    line 34 18 (joint_line t);
+    line
       56
       16
-      black;
-    RT.draw_fps 10 76)
+      "space pause | . step | r reset | c camera | g grid | f frames | n contacts";
+    line 74 16 "i inertia | m com | j joints | v velocity | e energy | h hud | esc quit";
+    (match scene.S.energy with
+     | Some e ->
+       line
+         94
+         16
+         (Stdlib.Printf.sprintf
+            "E %.3f J  (kinetic %.3f, potential %.3f)"
+            (e.kinetic +. e.potential)
+            e.kinetic
+            e.potential)
+     | None -> ());
+    if fps then RT.draw_fps 10 (if Option.is_some scene.S.energy then 114 else 96))
 
 (* [c] puts the camera back where a run starts. *)
 let camera_reset (t : t) = look t default_eye default_target
@@ -328,6 +434,11 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
     if RC.is_key_pressed RC.Key.N then t.contacts <- not t.contacts;
     if RC.is_key_pressed RC.Key.X then t.forces <- not t.forces;
     if RC.is_key_pressed RC.Key.H then t.hud <- not t.hud;
+    if RC.is_key_pressed RC.Key.I then t.inertia <- not t.inertia;
+    if RC.is_key_pressed RC.Key.M then t.com <- not t.com;
+    if RC.is_key_pressed RC.Key.J then t.joint_axes <- not t.joint_axes;
+    if RC.is_key_pressed RC.Key.V then t.velocity <- not t.velocity;
+    if RC.is_key_pressed RC.Key.E then t.energy <- not t.energy;
     if RC.is_key_pressed RC.Key.C then camera_reset t;
     if RC.is_key_pressed RC.Key.Left_bracket then nudge t (-1.);
     if RC.is_key_pressed RC.Key.Right_bracket then nudge t 1.;
@@ -355,11 +466,16 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
     (* Draw *)
     RC.begin_drawing ();
     RC.clear_background (RC.Color.create 247 247 250 255);
-    draw t;
+    (* A still has no frame rate to report. *)
+    draw ~fps:(Option.is_none shot) t;
     (* The screenshot reads the frame out of the buffer, so it has to happen
        between the draw calls and the swap. *)
     (match shot with
-     | Some path when !drawn = last - 1 -> RC.take_screenshot path
+     | Some path when !drawn = last - 1 ->
+       (* raylib batches the 2D pass until EndDrawing, so a screenshot taken
+          here would miss the HUD and every other 2D call. Flush first. *)
+       RL.draw_render_batch_active ();
+       RC.take_screenshot path
      | _ -> ());
     RC.end_drawing ();
     Int.incr drawn

@@ -246,7 +246,52 @@ let entities
            ; z = point b.frame.z
            }))
   in
-  List.concat_map s.geoms ~f:of_geom @ contacts @ forces @ frames
+  let inertia =
+    List.map s.inertia ~f:(fun (i : Scene.inertia) ->
+      List.map (box_edges i.centre i.axes i.half) ~f:(fun p ->
+        D.static ~layer:6 ~style:(edge { r = 0.84; g = 0.54; b = 0.1; a = 0.9 }) p))
+    |> List.concat
+  in
+  let com =
+    List.map s.com ~f:(fun (c : Scene.p3) ->
+      D.static
+        ~layer:7
+        ~style:(fill { r = 0.55; g = 0.27; b = 0.75; a = 0.9 })
+        (P.Sphere { center = point c; radius = 0.012 }))
+  in
+  let joint_axes =
+    List.filter_map s.joints ~f:(fun (j : Scene.joint) ->
+      match j.kind with
+      | Scene.Hinge | Scene.Slide ->
+        let col : Scene.colour =
+          match j.kind with
+          | Scene.Hinge -> { r = 0.84; g = 0.54; b = 0.1; a = 0.85 }
+          | _ -> { r = 0.12; g = 0.59; b = 0.63; a = 0.85 }
+        in
+        Some
+          (D.static
+             ~layer:8
+             ~style:(edge col)
+             (P.Segment
+                ( point (add j.anchor (smul j.axis (-0.12)))
+                , point (add j.anchor (smul j.axis 0.12)) )))
+      | Scene.Ball | Scene.Free -> None)
+  in
+  let velocity =
+    List.map s.velocity ~f:(fun (v : Scene.arrow) ->
+      D.static
+        ~layer:8
+        ~style:(edge { r = 0.16; g = 0.39; b = 0.86; a = 0.9 })
+        (P.Segment (point v.from, point (add v.from v.vector))))
+  in
+  List.concat_map s.geoms ~f:of_geom
+  @ contacts
+  @ forces
+  @ frames
+  @ inertia
+  @ com
+  @ joint_axes
+  @ velocity
 
 let scene ?(camera = default_camera) (s : Scene.t) =
   let cam = camera_for camera s in

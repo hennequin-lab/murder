@@ -11,8 +11,10 @@
 
     The key map is the one in VIZ.md §V1: [space] pauses, [.] single-steps, [r]
     resets the state, [c] the camera, [g] the grid, [f] body frames, [n]
-    contacts, [x] constraint forces, [h] the HUD; the digits [1]–[9] select a
-    joint, [[] and []] move it, [0] puts it back at its reference.
+    contacts, [x] constraint forces, [i] inertia boxes, [m] centres of mass,
+    [j] joint axes, [v] velocities, [e] the energy HUD, [h] the HUD; the digits
+    [1]–[9] select a joint, [[] and []] move it, [0] puts it back at its
+    reference.
     Right-drag orbits, left-drag pans, the wheel zooms. *)
 
 (** The type for a run: the model, its state, and how to step it. *)
@@ -34,6 +36,11 @@ val open_
   -> ?contacts:bool
   -> ?forces:bool
   -> ?grid:bool
+  -> ?inertia:bool
+  -> ?com:bool
+  -> ?joint_axes:bool
+  -> ?velocity:bool
+  -> ?energy:bool
   -> Mjc.Model.host
   -> t
 

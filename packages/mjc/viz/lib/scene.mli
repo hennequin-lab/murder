@@ -97,6 +97,36 @@ type arrow =
   ; vector : p3
   }
 
+(** The type for the kinds of joint, which is the model's [jnt_type] under a
+    name that does not make the viewer read {!Mjc.Topo}. *)
+type jnt =
+  | Hinge
+  | Slide
+  | Ball
+  | Free
+
+(** The type for an inertia box: the box about a body's principal axes whose
+    diagonal inertia is the body's. It is drawn, not simulated. *)
+type inertia =
+  { centre : p3
+  ; axes : p3 * p3 * p3 (** the principal axes, world. *)
+  ; half : float * float * float (** half-extents along them. *)
+  }
+
+(** The type for a joint's world placement: where it is and which way it acts. *)
+type joint =
+  { name : string
+  ; kind : jnt
+  ; anchor : p3 (** the joint anchor, world. *)
+  ; axis : p3 (** the axis, world; unit for a hinge or a slide. *)
+  }
+
+(** The type for a state's mechanical energy, in the model's units. *)
+type energy =
+  { kinetic : float (** [1/2 qvel' M qvel]. *)
+  ; potential : float (** [-sum m g . xipos], the world's gravity. *)
+  }
+
 (** The type for scenes. *)
 type t =
   { time : float
@@ -104,20 +134,72 @@ type t =
   ; geoms : geom list
   ; contacts : contact list
   ; forces : arrow list
+  ; inertia : inertia list
+  ; com : p3 list (** the subtree centre of mass of every body with mass. *)
+  ; joints : joint list
+  ; velocity : arrow list (** per-body velocity at the centre of mass. *)
+  ; energy : energy option
   }
 
 (** {1:build Building} *)
 
-(** [of_state ?bodies ?contacts ?forces m d] is the scene of [d]: every geom
-    of [m] at its world pose in [d], and, when asked for, the body frames, the
-    contact points and the constraint forces. *)
+(** [of_state ?frames ?contacts ?forces ?inertia ?com ?joints ?velocity ?energy m d] is the scene of [d]: every geom of [m] at its world pose in
+    [d], and, when asked for, the overlays. A layer that is not asked for is
+    the empty list, so a backend can draw the record without a case for
+    absent.
+
+    [energy] is the only option that costs a pass of its own — it builds the
+    mass matrix — and it is the only one that reads [qvel], so the others are
+    correct on a state whose kinematics were re-run without a step. *)
 val of_state
   :  ?frames:bool
   -> ?contacts:bool
   -> ?forces:bool
+  -> ?inertia:bool
+  -> ?com:bool
+  -> ?joints:bool
+  -> ?velocity:bool
+  -> ?energy:bool
   -> Mjc.Model.host
   -> Mjc.Data.host
   -> t
+
+(** {1:overlays Overlays}
+
+    The overlays are pure functions of a model and a state, which is what
+    makes them testable without a display. {!of_state} calls them; they are
+    exposed so a test can compare one number at a time. *)
+
+(** [inertia_boxes m d] is one box per body with mass, about the body's principal
+    axes at its centre of mass. The half-extents are those of the box with the
+    same diagonal inertia: [h_x^2 = 3/(2m) (I_y + I_z - I_x)] and its cyclic
+    permutations, which is what MuJoCo's own viewer draws. A non-physical
+    inertia — one where that expression is negative — is clamped at a hair
+    above zero rather than drawn inside out. *)
+val inertia_boxes : Mjc.Model.host -> Mjc.Data.host -> inertia list
+
+(** [subtree_com m d] is [subtree_com] of every body with mass: the centre of mass of
+    the bodies a body carries, itself included. *)
+val subtree_com : Mjc.Model.host -> Mjc.Data.host -> p3 list
+
+(** [joint_axes m d] is every joint's anchor and axis in world coordinates. *)
+val joint_axes : Mjc.Model.host -> Mjc.Data.host -> joint list
+
+(** [velocities ?scale m d] is one arrow per body with mass, at its own centre
+    of mass, along that point's velocity, which is the Jacobian of the point
+    times [qvel]. (The engine's [cvel] is com-based over a body's *subtree*, so
+    composing it down a chain needs a shift; the Jacobian has no such
+    subtlety.) [scale] multiplies the velocity and defaults to [1.]; a model in
+    metres per second needs a larger one to show at all. *)
+val velocities : ?scale:float -> Mjc.Model.host -> Mjc.Data.host -> arrow list
+
+(** [mechanical_energy m d] is the kinetic energy — summed over bodies as
+    [1/2 m |v|^2 + 1/2 w' I w], which is [1/2 qvel' M qvel] without building
+    the matrix — and the potential energy [-sum m g . xipos], both in the
+    model's units. It needs a state whose kinematics and velocities are
+    current, which is what a step or {!Mjc.Forward.forward} leaves; a bare
+    [Kinematics.forward] after a joint nudge has stale velocities. *)
+val mechanical_energy : Mjc.Model.host -> Mjc.Data.host -> energy
 
 (** [pp] formats a summary: the time, the geom and contact counts. *)
 val pp : Format.formatter -> t -> unit

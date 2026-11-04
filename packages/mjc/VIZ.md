@@ -1,8 +1,8 @@
 # mjc-viz — the live viewer
 
-Status: **V0 and V1 are in** — `viz/lib` (scene IR, still backend, joint
-control), `viz/bin/mjc-view` and `viz/window/mjc-window`. V2 (dynamics
-overlays) is next. Companion to [`MILESTONES.md`](MILESTONES.md)
+Status: **V0, V1 and V2 are in** — `viz/lib` (scene IR, still backend, joint
+control, overlays), `viz/bin/mjc-view` and `viz/window/mjc-window`. V3
+(contacts, forces, replay) is next. Companion to [`MILESTONES.md`](MILESTONES.md)
 (engine plan) and [`PLAN.md`](PLAN.md) (design note). Milestones here are
 `V0`–`V5`; engine milestones are `M0`–`M11`.
 
@@ -462,6 +462,47 @@ plane where the other draws a grid.
 - Acceptance: overlays are pure functions of `Model.t`/`Data.t` and tested as
   such; each can be toggled; the inertia box of a known box geom matches its
   `geom_size` and the mass matrix test's numbers.
+
+**V2 status: in, less the trail.** `Scene.inertia_boxes`, `Scene.subtree_com`,
+`Scene.joint_axes`, `Scene.velocities` and `Scene.mechanical_energy` are pure
+functions of a model and a state; `Scene.of_state` takes a flag per layer and
+leaves the others empty, so a backend draws the record without a case for
+absent. Both backends draw all five, and the window toggles them with `i`, `m`,
+`j`, `v` and `e`.
+
+The numbers the acceptance asks for are tests, not pictures:
+
+- **Inertia boxes.** A box geom's inertia box comes back as itself — the crate
+  in `blocks` is `0.2 x 0.2 x 0.1` and its box is too, to 1e-12 — and a sphere's
+  is `r sqrt(3/5)` on every axis, which is what the closed form gives. The
+  half-extents are `h_x^2 = 3/(2m)(I_y + I_z - I_x)`, MuJoCo's own viewer
+  formula; a non-physical inertia clamps at a hair instead of turning inside
+  out.
+- **Centre of mass.** The world body's `subtree_com` agrees with the
+  mass-weighted mean of the bodies', computed by hand in the test; a leaf's is
+  its own.
+- **Joint axes.** The `limited` model's hinge comes back at `(0,0,1)` along
+  `+y` and its slide at `(0,0,0.4)` along `+x`, as the model declares.
+- **Velocities.** With the shoulder at 1 rad/s, the arm's centre of mass 0.3
+  below the anchor moves at 0.3 m/s along `-x`. The velocity is the Jacobian of
+  the point times `qvel`, not `cvel`: the engine's `cvel` is com-based over a
+  body's *subtree*, so composing it down a chain needs a shift that is easy to
+  get subtly wrong — and the first version of this code did get it wrong.
+- **Energy.** The per-body sum `1/2 m |v|^2 + 1/2 w'Iw` equals `1/2 qvel'M qvel`
+  to 1e-9 on `floating`, `limited`, `chain6` and `looped`. That equality is the
+  test, because the sum exists only to avoid building the mass matrix at display
+  rate: the matrix route cost **2.6 ms per frame** on a 65-body model, and the
+  sum costs nothing measurable.
+
+![inertia boxes, centres of mass, joint axes and velocity arrows](doc/figures/viewer-v2-overlays.png)
+
+`mjc-view --model chain6.mjcb --steps 40 --inertia --com --joint-axes
+--velocity --frames` at step 40; the window draws the same layers from the same
+`Scene.t`.
+
+Not done: the **trail**. A trail is a function of *history*, not of a state, so
+it belongs to whoever owns the loop (the window) rather than to `Scene`; it will
+be cheaper to add with V3's log, where the history already exists.
 
 ### V3 — contacts, forces, and replay (1 week, at M4)
 

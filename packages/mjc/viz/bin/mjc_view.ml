@@ -14,7 +14,8 @@ let usage =
   "mjc-view --model M.mjcb [--steps N] [--shot out.png] [--svg out.svg]\n\
   \  [--width W] [--height H] [--density D]\n\
   \  [--eye x,y,z] [--target x,y,z]\n\
-  \  [--frames] [--contacts] [--forces] [--quiet]"
+  \  [--frames] [--contacts] [--forces] [--inertia] [--com] [--joint-axes]\n\
+  \  [--velocity] [--energy] [--quiet]"
 
 let die fmt =
   Stdlib.Printf.ksprintf
@@ -39,6 +40,11 @@ let () =
   and frames = ref false
   and contacts = ref false
   and forces = ref false
+  and inertia = ref false
+  and com = ref false
+  and joint_axes = ref false
+  and velocity = ref false
+  and energy = ref false
   and quiet = ref false
   and cam = ref Mjc_viz.Render.default_camera in
   let args =
@@ -88,6 +94,21 @@ let () =
     | "--forces" :: rest ->
       forces := true;
       go rest
+    | "--inertia" :: rest ->
+      inertia := true;
+      go rest
+    | "--com" :: rest ->
+      com := true;
+      go rest
+    | "--joint-axes" :: rest ->
+      joint_axes := true;
+      go rest
+    | "--velocity" :: rest ->
+      velocity := true;
+      go rest
+    | "--energy" :: rest ->
+      energy := true;
+      go rest
     | "--quiet" :: rest ->
       quiet := true;
       go rest
@@ -113,7 +134,17 @@ let () =
   done;
   let d = Forward.forward m !d in
   let scene =
-    Mjc_viz.Scene.of_state ~frames:!frames ~contacts:!contacts ~forces:!forces m d
+    Mjc_viz.Scene.of_state
+      ~frames:!frames
+      ~contacts:!contacts
+      ~forces:!forces
+      ~inertia:!inertia
+      ~com:!com
+      ~joints:!joint_axes
+      ~velocity:!velocity
+      ~energy:!energy
+      m
+      d
   in
   if not !quiet
   then (

@@ -13,3 +13,11 @@
  (deps
   (glob_files ../../test/fixtures/*.mjcb)
   (glob_files ../../test/fixtures/*.mjbf)))
+
+(test
+ (name test_overlays)
+ (modules test_overlays)
+ (libraries mjc mjc_viz nx base windtrap)
+ (deps
+  (glob_files ../../test/fixtures/*.mjcb)
+  (glob_files ../../test/fixtures/*.mjbf)))

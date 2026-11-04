@@ -6,7 +6,8 @@
 open Base
 open Nx
 
-type kind =
+(* The kind is the scene's, so the two cannot drift apart. *)
+type kind = Scene.jnt =
   | Hinge
   | Slide
   | Ball
