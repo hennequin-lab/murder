@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 6
+let version = 7
 
 (* Layout, in writing order:
 
@@ -120,6 +120,7 @@ let fields =
   ; "eq_active0"
   ; "gravity"
   ; "timestep"
+  ; "integrator"
   ; "iterations"
   ; "tolerance"
   ]
@@ -159,6 +160,11 @@ let geom_type_of_code c =
   | 6 -> Topo.Box
   | 7 -> Topo.Mesh
   | c -> raise (Invalid_argument (Printf.sprintf "unknown geom type %d" c))
+
+let integrator_of_code = function
+  | 0 -> Topo.Euler
+  | 3 -> Topo.Implicit_fast
+  | c -> raise (Invalid_argument (Printf.sprintf "unsupported integrator %d" c))
 
 let eq_type_code = function
   | Topo.Connect -> 0
@@ -323,6 +329,7 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.eq_active0
       ; p.gravity
       ; p.timestep
+      ; p.integrator
       ; p.iterations
       ; p.tolerance
       ]
@@ -435,6 +442,9 @@ let parse (c : cursor) : Model.host =
   in
   let i name = field name ints in
   let frictionloss = Nx.to_array (tensor "dof_frictionloss") in
+  let integrator =
+    integrator_of_code (Int.of_float (Nx.to_array (tensor "integrator")).(0))
+  in
   let limited = Nx.to_array (tensor "jnt_limited") in
   let topo =
     { Topo.name
@@ -473,6 +483,7 @@ let parse (c : cursor) : Model.host =
     ; geom_conaffinity = i "geom_conaffinity"
     ; geom_priority = i "geom_priority"
     ; site_bodyid = i "site_bodyid"
+    ; integrator
     ; jnt_limited = Array.map limited ~f:(fun x -> Stdlib.( > ) x 0.5)
     ; dof_frictionloss = frictionloss
     ; eq_type = Array.map (i "eq_type") ~f:eq_type_of_code
@@ -529,6 +540,7 @@ let parse (c : cursor) : Model.host =
     ; eq_active0 = tensor "eq_active0"
     ; gravity = tensor "gravity"
     ; timestep = tensor "timestep"
+    ; integrator = tensor "integrator"
     ; iterations = tensor "iterations"
     ; tolerance = tensor "tolerance"
     }

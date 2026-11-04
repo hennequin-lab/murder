@@ -45,6 +45,13 @@ type eq_type =
   | Weld (** Rigid attachment: relative position and orientation. *)
   | Joint (** A scalar coupling between two joints, through a cubic. *)
 
+(** The type for the integration scheme. v1 integrates with [Euler] and
+    [Implicit_fast]; the other MuJoCo schemes are rejected when a model
+    loads. *)
+type integrator =
+  | Euler (** Semi-implicit, damping integrated implicitly. *)
+  | Implicit_fast (** Semi-implicit, velocity solved in [M + h diag(B)]. *)
+
 (** The type for what an equality constrains. *)
 type eq_objtype =
   | Eq_body
@@ -96,6 +103,7 @@ type t =
     (** [[nv]], the friction loss of each dof. Host data, because which
         dofs get a friction row is decided when the program is built, not
         when it runs. *)
+  ; integrator : integrator
   ; eq_type : eq_type array (** [[neq]] *)
   ; eq_objtype : eq_objtype array
     (** [[neq]], what [eq_obj1id] and [eq_obj2id] index in the model. *)

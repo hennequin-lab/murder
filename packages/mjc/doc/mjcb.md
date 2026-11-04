@@ -1,6 +1,6 @@
 # The `.mjcb` model format
 
-Version 1. Little-endian throughout. Written by `tools/mjcb.py` from a MuJoCo
+Version 7. Little-endian throughout. Written by `tools/mjcb.py` from a MuJoCo
 `mjModel` that has been through `mj_setConst`, read by `Mjc.Mjcb`.
 
 The format exists so that the runtime never links MuJoCo: the compiler's

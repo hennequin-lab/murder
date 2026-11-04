@@ -53,6 +53,7 @@ module Params = struct
     ; eq_active0 : 'a
     ; gravity : 'a
     ; timestep : 'a
+    ; integrator : 'a
     ; iterations : 'a
     ; tolerance : 'a
     }
@@ -201,6 +202,7 @@ let validate (m : host) : (unit, string) Result.t =
   want "eq_active0" [| t.neq |] p.eq_active0;
   want "gravity" [| 3 |] p.gravity;
   want "timestep" [||] p.timestep;
+  want "integrator" [||] p.integrator;
   want "iterations" [||] p.iterations;
   want "tolerance" [||] p.tolerance;
   match Topo.validate t, List.rev !problems with

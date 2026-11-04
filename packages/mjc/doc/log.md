@@ -242,7 +242,39 @@ step went to 42–50 µs and the batched step to 2–11 µs per environment — 
 than before friction landed, because the same host data also narrows the
 limit-candidate list.
 
-**Remaining in M3:** `implicitfast`. The `.mjcb` format is version 6: it
+**implicitfast, and what it actually is.** Reading `mj_implicitSkip` settles
+a piece of folklore: in this MuJoCo the scheme factors `M - h qDeriv` where
+`qDeriv` is the velocity derivative of the *passive* forces (`mjd_smooth_vel`,
+bias derivative excluded), and that is `M + h diag(B)` for the models v1
+supports. Euler already solves that system when a dof is damped; the
+difference is that implicitfast always solves it, and that `implicit` (not
+implemented) adds the bias derivative and loses symmetry.
+
+So the port is a dispatch in `step.ml`: the model's integrator decides whether
+the velocity update goes through the damped matrix. The model carries
+`opt.integrator` (format version 7, rejected values named on load), a `fast`
+corpus model records a two-hinge pendulum under `implicitfast`, and its
+nine-step trajectory matches `mj_step` to 1e-10.
+
+**The solver changed shape again, and this time it stuck.** The ratio test and
+the row holding that landed with friction cycled on a near-degenerate row set:
+one corpus state (a different one after the corpus seed moved) stalled with a
+gradient of 400 out at an "optimal" force. The fix, and what makes the solver
+robust across the whole corpus at 1e-9, is monotone acceptance: a four-trial
+backtracking line search on the quadratic, plus eight Gauss-Seidel sweeps from
+the warmstart as a starting point. Coordinate descent cannot cycle and does
+not care about degeneracy; it only has to get the active set right, which the
+Newton loop then finishes exactly. ADR 0010 records the policy.
+
+**Cost, on the bench extended with the constrained models.** A compiled step:
+41-51 us unconstrained, 67 us for `limited` (limits and friction), 138 us for
+`looped` (ten equality rows) — the last one because its row budget is 14 and
+the factor is dense — and 2-6 us per environment batched except `looped` at
+44. The row budget now counts only the joints that *are* limited and only the
+dofs that *have* a friction loss, which cut `looped` from 29 rows to 14 and
+its step from 285 us to 138.
+
+**M3 is complete.** The `.mjcb` format is version 7: it
 carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the
 body inverse weights and `dof_solref`/`dof_solimp`, and the converter sizes
 `nefcmax` from the model's joints, equalities and dofs.

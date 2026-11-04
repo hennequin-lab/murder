@@ -55,23 +55,25 @@ let () =
     "| model | nv | nbody | eager | compiled | vmap %d, per env |\n\
      | --- | ---: | ---: | ---: | ---: | ---: |\n"
     lanes;
-  List.iter [ "pendulum"; "chain6"; "floating"; "ball" ] ~f:(fun name ->
-    let m = load name in
-    let d = Data.create m in
-    let eager = time ~steps:2000 (fun d -> Step.step m d) d in
-    let compiled = Step.compile m in
-    let one = Step.run compiled in
-    let _ = one d in
-    let compiled_time = time ~steps:2000 one d in
-    let batched = batch (List.init lanes ~f:(fun _ -> Data.create m)) in
-    let vec = Rune.vmap Nx.Ptree.(Data.ptree @-> returns Data.ptree) one in
-    let _ = vec batched in
-    let per_env = time ~steps:10 vec batched /. Float.of_int lanes in
-    Printf.printf
-      "| %s | %d | %d | %.1f us | %.1f us | %.1f us |\n"
-      name
-      m.topo.nv
-      m.topo.nbody
-      (us eager)
-      (us compiled_time)
-      (us per_env))
+  List.iter
+    [ "pendulum"; "chain6"; "floating"; "ball"; "limited"; "looped"; "fast" ]
+    ~f:(fun name ->
+      let m = load name in
+      let d = Data.create m in
+      let eager = time ~steps:2000 (fun d -> Step.step m d) d in
+      let compiled = Step.compile m in
+      let one = Step.run compiled in
+      let _ = one d in
+      let compiled_time = time ~steps:2000 one d in
+      let batched = batch (List.init lanes ~f:(fun _ -> Data.create m)) in
+      let vec = Rune.vmap Nx.Ptree.(Data.ptree @-> returns Data.ptree) one in
+      let _ = vec batched in
+      let per_env = time ~steps:10 vec batched /. Float.of_int lanes in
+      Printf.printf
+        "| %s | %d | %d | %.1f us | %.1f us | %.1f us |\n"
+        name
+        m.topo.nv
+        m.topo.nbody
+        (us eager)
+        (us compiled_time)
+        (us per_env))

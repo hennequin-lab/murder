@@ -1,6 +1,6 @@
 # mjc — milestones
 
-Status: **M0–M2 complete, M3 in progress (limits and the solver landed)**; the number sheet for each is in
+Status: **M0–M3 complete (M3 without tendons and motors)**; the number sheet for each is in
 [`doc/log.md`](doc/log.md). This document cuts the design note
 [`PLAN.md`](PLAN.md) into increments that can be built, tested and stopped one
 at a time. `PLAN.md` carries the measurements and the reasoning; this file
@@ -101,7 +101,7 @@ reader lands, drawing every geom at the identity pose.
 | M0 | Foundations, fixtures, linear-algebra gate | 2 wk | **G0** | load a model, print its arrays, replay C-engine fixtures |
 | M1 | Rigid-body math, forward kinematics | 2 wk | G1 | compute every pose in a model and draw it |
 | M2 | Inertia, bias, passive, integration | 2.5 wk | G2 | forward-simulate unconstrained bodies and chains |
-| M3 | Constraints without contacts, solvers | 3 wk | **G3** | step a model with limits and motors *(implicitfast remains)* |
+| M3 | Constraints without contacts, solvers | 3 wk | **G3** | step a model with limits and motors *(complete)* |
 | M4 | Contact | 4.5 wk | **G4** | step hopper, walker, ant, humanoid |
 | M5 | Actuators, transmissions, sensors, tendons | 2.5 wk | G5 | load the lab's actuated and tendon models |
 | M6 | Differentiability | 2.5 wk | **G6** | differentiate the step, run iLQR/MPC on it |

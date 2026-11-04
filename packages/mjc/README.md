@@ -7,7 +7,10 @@ whole step with `Rune.grad`.
 
 ## Status
 
-**M3 in progress.** Friction-loss rows are solved as box constraints, with
+**M3 complete, short of tendons and motors.** Limits, equality constraints and
+friction loss are solved and match MuJoCo to machine precision; both the Euler
+and the implicitfast integrators are in. Friction-loss rows are solved as box
+constraints, with
 both the saturated and the quadratic branch in the corpus. Equality rows
 (connect, weld, joint) are assembled and
 solved, and match MuJoCo to 1e-12 across rows, Jacobian, impedance, reference

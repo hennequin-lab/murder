@@ -76,12 +76,6 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
      would cross, and the blocking rows held at their bound until a solve has
      moved the others. Holding is what stops the cycling a plain
      project-after-the-step falls into. *)
-  (* Only a friction row has an upper bound, so only it can block a step from
-     above; a model without one keeps the cheaper step. *)
-  let boxed = Array.exists t.dof_frictionloss ~f:(fun x -> Float.( > ) x 0.0) in
-  let lambda = ref (select d.efc_force) in
-  let held = ref (Nx.zeros_like rows) in
-  let tiny = 1e-300 in
   let big = 1e300 in
   let hi = Nx.where friction floss (Nx.full_like rows big) in
   let lo =
@@ -91,6 +85,26 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
       (Nx.where bilateral (Nx.full_like rows (-.big)) (Nx.zeros_like rows))
   in
   let slack x bound = Nx.mul_s (Nx.abs bound) (x *. 1e-12) in
+  let lambda = ref (select d.efc_force) in
+  (* Gauss-Seidel warm start. The active set below is exact once it finds the
+     right one, but a near-degenerate problem can stall it. Coordinate descent
+     on the same quadratic with the same bounds is monotone and cannot cycle,
+     so its answer is used as the starting point: it gets the active set right
+     even when it has not converged, and Newton then finishes it exactly. Each
+     sweep walks the rows in order, so this is the sequential form. *)
+  let polish_sweeps = 8 in
+  for _ = 1 to polish_sweeps do
+    for r = 0 to nb - 1 do
+      let row = Nx.slice [ I r; A ] a in
+      let grad_r = Nx.add (Nx.dot row !lambda) (Nx.get [ r ] b) in
+      let curvature = Nx.get [ r; r ] a in
+      let fresh =
+        Nx.sub (Nx.get [ r ] !lambda) (Nx.div grad_r curvature)
+        |> fun x -> Nx.minimum (Nx.maximum x (Nx.get [ r ] lo)) (Nx.get [ r ] hi)
+      in
+      lambda := Nx.set [ I r ] fresh !lambda
+    done
+  done;
   let iters = Int.min (Int.of_float (Nx.item [] p.iterations)) max_iterations in
   for i = 1 to iters do
     let grad = Nx.add (Nx.matmul a !lambda) b in
@@ -106,18 +120,13 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
         (Nx.logical_and at_hi (Nx.greater_s grad 0.0))
         (Nx.logical_and at_lo (Nx.less_s grad 0.0))
     in
-    let releasable = Nx.less_s !held 0.5 in
     let free =
       if i = 1
       then mask
       else
         Nx.logical_and
           mask
-          (Nx.logical_or
-             bilateral
-             (Nx.logical_and
-                releasable
-                (Nx.logical_or (Nx.logical_not at_bound) wants_in)))
+          (Nx.logical_or bilateral (Nx.logical_or (Nx.logical_not at_bound) wants_in))
     in
     let ff = Nx.where free (Nx.ones_like rows) (Nx.zeros_like rows) in
     let outer = Nx.matmul (Nx.reshape [| nb; 1 |] ff) (Nx.reshape [| 1; nb |] ff) in
@@ -129,40 +138,28 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
       | `Cholesky -> Mass.solve (Mass.factor am) rhs
       | `Cg -> cg ~iters:nb am rhs
     in
-    let headroom b = Nx.sub b !lambda in
-    let upward =
-      Nx.where
-        (Nx.logical_and (Nx.greater_s step 0.0) (Nx.greater_s (headroom hi) 0.0))
-        (Nx.div (headroom hi) (Nx.maximum_s step tiny))
-        (Nx.full_like rows big)
+    (* Accept the step only if it lowers the objective. A full Newton step can
+       cross a bound or land on a wrong active set; the ratio test that would
+       stop it exactly can cycle on a near-degenerate problem, so instead the
+       step is tried at a few fractions and the largest one that improves is
+       taken. The objective is the quadratic the rows minimise, so every
+       iteration strictly decreases it and the iteration cannot cycle. *)
+    let cost v =
+      let av = Nx.matmul a v in
+      Nx.add (Nx.mul_s (Nx.dot v av) 0.5) (Nx.dot b v)
     in
-    let downward =
-      Nx.where
-        (Nx.logical_and (Nx.less_s step 0.0) (Nx.less_s (headroom lo) 0.0))
-        (Nx.div (headroom lo) (Nx.minimum_s step (-.tiny)))
-        (Nx.full_like rows big)
-    in
-    let ratio = Nx.min (Nx.minimum upward downward) in
-    (* The first pass is the unconstrained optimum, clamped into the box: a
-       feasible start is what makes the ratio test meaningful afterwards. *)
-    let alpha =
-      if i = 1 || not boxed then Nx.scalar Nx.float64 1.0 else Nx.minimum_s ratio 1.0
-    in
-    let blocked =
-      if not boxed
-      then Nx.zeros_like rows
-      else
-        Nx.where
-          (Nx.logical_and
-             (Nx.less_s ratio 1.0)
-             (Nx.logical_or (Nx.less_equal upward ratio) (Nx.less_equal downward ratio)))
-          (Nx.ones_like rows)
-          (Nx.zeros_like rows)
-    in
-    let stepped = Nx.add !lambda (Nx.mul step alpha) in
-    let clamped = Nx.where bilateral stepped (Nx.minimum (Nx.maximum stepped lo) hi) in
-    lambda := Nx.where free clamped (Nx.minimum (Nx.maximum !lambda lo) hi);
-    held := blocked
+    let into_bounds v = Nx.where bilateral v (Nx.minimum (Nx.maximum v lo) hi) in
+    let chosen = ref !lambda in
+    let best = ref (cost !lambda) in
+    let taken = ref (Nx.scalar Nx.float64 0.0) in
+    List.iter [ 1.0; 0.5; 0.25; 0.125 ] ~f:(fun frac ->
+      let candidate = into_bounds (Nx.add !lambda (Nx.mul_s step frac)) in
+      let value = cost candidate in
+      let take = Nx.logical_and (Nx.less_s !taken 0.5) (Nx.less value !best) in
+      chosen := Nx.where take candidate !chosen;
+      best := Nx.where take value !best;
+      taken := Nx.where take (Nx.scalar Nx.float64 1.0) !taken);
+    lambda := !chosen
   done;
   let qfrc_constraint = Nx.matmul jt !lambda in
   let qacc = Nx.add d.qacc (Mass.solve l qfrc_constraint) in

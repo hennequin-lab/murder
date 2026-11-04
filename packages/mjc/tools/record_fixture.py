@@ -110,6 +110,24 @@ MODELS = {
 </mujoco>""",
     # Joint limits, both sides, on a hinge and a slide; the sampled states
     # leave the ranges so that the limit rows are exercised.
+    # The same pendulum under implicitfast: damping is inside the velocity
+    # solve whether or not any dof is damped, so the trajectory is the
+    # integrator's, not Euler's, whenever passive forces depend on velocity.
+    "fast": """
+<mujoco model="fast">
+  <option timestep="0.001" integrator="implicitfast"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.5" quat="0.9238795 0.3826834 0 0">
+      <joint name="shoulder" type="hinge" axis="0 1 0" pos="0 0 0.1" stiffness="2"
+             damping="0.3"/>
+      <geom name="arm" type="capsule" size="0.02 0.3" pos="0 0 -0.3"/>
+    </body>
+    <body name="wheel" pos="0.4 0 0.3">
+      <joint name="spin" type="hinge" axis="0 1 0" damping="4"/>
+      <geom name="wheel" type="capsule" fromto="0.1 0 0 0.3 0 0" size="0.05"/>
+    </body>
+  </worldbody>
+</mujoco>""",
     # One dof, one friction row, and a loss large enough that the row stays in
     # the quadratic branch: the complement of the saturated case above.
     "drag": """

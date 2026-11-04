@@ -45,6 +45,16 @@
       "xml_sha256": "83163fecd62cb628"
     },
     {
+      "name": "fast",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "beaa1538a7afc7bb"
+    },
+    {
       "name": "drag",
       "nbody": 2,
       "ngeom": 1,
@@ -72,7 +82,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "c2c2b5ba6a668e33"
+      "xml_sha256": "309aa0b529597e7a"
     }
   ]
 }

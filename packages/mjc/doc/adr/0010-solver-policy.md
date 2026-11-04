@@ -48,9 +48,25 @@ active set is handled exactly.
 iteration has fixed points that are not KKT points: the first fixture run
 returned twice MuJoCo's force because a row that should have been frozen was
 carried in the solve. The free set is therefore explicit: a row is free while
-its force is positive or its reduced gradient is negative, and the first
-iteration takes every row free so a cold start reaches the unconstrained
-optimum before anything is frozen.
+its force is positive (or inside its friction box) or its reduced gradient
+points inward, and the first iteration takes every row free so a cold start
+reaches the unconstrained optimum before anything is frozen.
+
+**Monotone acceptance, not a ratio test.** The book answer for the step that
+crosses a bound is a ratio test that stops it exactly there, with the blocking
+rows held. On a near-degenerate row set that cycles, and holding a row makes
+it worse: a corpus state oscillated between `+loss` and `-loss`, and another
+stalled with a gradient 400 out at an "optimal" force. What works is a
+backtracking line search on the quadratic itself — try the full step and three
+halvings, take the largest that lowers the cost. Every iteration then strictly
+decreases the objective, so the iteration cannot cycle, and the Newton
+direction still converges quadratically near the solution.
+
+**A Gauss-Seidel warm start.** Eight coordinate-descent sweeps from the
+warmstart force, over the same bounds, before the Newton loop. Coordinate
+descent on a convex quadratic cannot cycle and does not care about degeneracy;
+eight sweeps only get the *active set* right, not the values, which is exactly
+what the Newton loop needs from a starting point.
 
 CG applies `A` as an operator built from `solveM` and `J`, which needs no
 factor of `A` but converges linearly. It is implemented behind the same
@@ -60,20 +76,21 @@ these row counts and exact.
 
 Policy for v1:
 
-- **Fixed iteration budget**, from the model's `iterations` option, and no
-  line search in the first cut. MuJoCo's Newton does a backtracking line
-  search on the cost; if the trajectory parity at M3 demands it, add it with a
-  fixed number of trials selected by `Nx.where`, which keeps the program
-  static. Gate G3's rule: keep the simpler policy only if the acceptance
-  tests pass with it.
+- **Fixed iteration budget** from the model's `iterations` option, capped at
+  eight, and a four-trial backtracking line search on the cost, selected by
+  `Nx.where` so the program stays static. Trajectory parity at M3 demanded the
+  line search; the corpus is what decided it.
 - **Newton by default**, CG behind the same interface for models where the
   factor is the bottleneck.
-- PGS is not implemented (D3's omission, `MILESTONES.md` §11).
+- Full PGS *is* implemented, as the warm start; what is not implemented is
+  PGS as the solver (D3's omission, `MILESTONES.md` §11), because it converges
+  too slowly to hold a force to 1e-9.
 
 ## What this costs
 
 The per-row quantities and the Jacobian are reproduced exactly, so `efc_pos`,
 `efc_J`, `efc_R`, `efc_D` and `efc_aref` are comparable array by array at
-1e-12. The solved `λ` is comparable only when the iteration policy matches, so
-the tests hold it to 1e-6 and hold a ten-step constrained trajectory to the
-same 1e-6, which is what the physics depends on.
+1e-12. The solved `λ` is comparable only when the iteration policy matches,
+and it turns out to: the active-set Newton with its line search reaches the
+same minimiser as the C engine's primal solver, so the corpus holds `λ` to
+1e-9 and a nine-step constrained trajectory to 1e-6.

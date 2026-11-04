@@ -88,6 +88,35 @@ let test_step () =
   equal ~msg:"time after one step" (float 1e-15) dt (Nx.item [] once.time);
   equal ~msg:"time after two steps" (float 1e-15) (2.0 *. dt) (Nx.item [] twice.time)
 
+(* implicitfast: the velocity update always goes through [M + h diag(B)], so
+   the trajectory is the integrator's even where Euler would have skipped the
+   solve. *)
+let test_implicitfast () =
+  let m = model "fast" in
+  let topo : Mjc.Topo.t = m.topo in
+  equal
+    ~msg:"integrator read"
+    bool
+    true
+    (Poly.( = ) topo.integrator Mjc.Topo.Implicit_fast);
+  let f = fixture_traj "fast" in
+  let qpos = tensor f "traj_qpos"
+  and qvel = tensor f "traj_qvel" in
+  let d = ref { (data_with_qpos m (row qpos 0)) with qvel = vec1 (row qvel 0) } in
+  for k = 0 to f.nstates - 2 do
+    d := S.step m !d;
+    parity
+      ~tol:1e-10
+      ~name:(Printf.sprintf "fast qpos %d" (k + 1))
+      (row qpos (k + 1))
+      (Nx.to_array !d.qpos);
+    parity
+      ~tol:1e-10
+      ~name:(Printf.sprintf "fast qvel %d" (k + 1))
+      (row qvel (k + 1))
+      (Nx.to_array !d.qvel)
+  done
+
 let () =
   Stdlib.exit
     (run
@@ -95,4 +124,5 @@ let () =
        [ test "velocity stage and bias" test_velocity
        ; test "ten steps against mj_step" test_trajectory
        ; test "step composes and counts time" test_step
+       ; test "implicitfast trajectory" test_implicitfast
        ])

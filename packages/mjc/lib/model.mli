@@ -67,6 +67,7 @@ module Params : sig
     ; eq_active0 : 'a (** [[neq]], [1] where the constraint is on. *)
     ; gravity : 'a (** [[3]] *)
     ; timestep : 'a (** [[]], a 0-d tensor. *)
+    ; integrator : 'a (** [[]], MuJoCo's code for the integration scheme. *)
     ; iterations : 'a (** [[]], the solver's iteration budget. *)
     ; tolerance : 'a (** [[]], and its tolerance. *)
     }

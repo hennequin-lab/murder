@@ -12,6 +12,10 @@ type jnt_type =
   | Ball
   | Free
 
+type integrator =
+  | Euler
+  | Implicit_fast
+
 (** The type for equality-constraint types. MuJoCo's codes are not
     contiguous; the converter maps the ones v1 supports and rejects the rest. *)
 type eq_type =
@@ -73,6 +77,7 @@ type t =
   ; site_bodyid : int array
   ; jnt_limited : bool array (** [[njnt]] *)
   ; dof_frictionloss : float array (** [[nv]] *)
+  ; integrator : integrator
   ; eq_type : eq_type array (** [[neq]] *)
   ; eq_objtype : eq_objtype array (** [[neq]] *)
   ; body_names : string array
