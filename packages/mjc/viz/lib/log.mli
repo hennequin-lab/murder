@@ -106,7 +106,7 @@ val length : t -> int
 (** [frame t i] is record [i], read with one positioned read: constant time
     whatever [i] is.
 
-    Raises [Invalid_argument] if [i] is outside [[0, length t)]. *)
+    Raises [Invalid_argument] if [i] is outside the log's range. *)
 val frame : t -> int -> frame
 
 (** [model_shape t] is [(ngeom, nconmax)] as the header recorded them, which a
