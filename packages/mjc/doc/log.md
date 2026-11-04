@@ -1,3 +1,28 @@
+## A demo found a sharp edge in the collision guard
+
+Assembling `viz/demo/demo.mjcb` — a swinging chain, three falling spheres and a
+box on the floor — failed on the second frame with
+`Invalid_argument("collision between geom types 3 and 6 is not implemented")`.
+Types 3 and 6 are capsule and box, and the pair was forty centimetres away from
+anything it could touch: `Collision.candidates` raises for every pair the
+geometry *could* collide with, before any distance test, because that is the
+only place a host-side decision is available (the narrow phase is traced, and a
+tensor value cannot raise).
+
+MuJoCo gates the same decision on the bounding-sphere test inside
+`mj_collideGeom`, so a capsule fifty metres from a box is simply not a contact.
+Ours is stricter than the engine it is meant to match, and it makes any model
+that contains both a capsule and a box unloadable — which is most arms with a
+gripper. Two ways to fix it when box collisions land in M4: a host copy of
+`geom_rbound` in `Topo` plus a distance test on the initial state (cheap,
+approximate, and honest only if it warns), or classify unsupported pairs as
+dropped candidates and report them once at build time, keeping the row budget
+and the parity tests out of it.
+
+For now the demo takes the chain out of collision with `contype="0"
+conaffinity="0"`, which is what those masks are for, and says so where it
+happens.
+
 ## V2: overlays as pure functions, and one wrong assumption
 
 The overlays are five pure functions in `Scene` and a flag each in `of_state`.
