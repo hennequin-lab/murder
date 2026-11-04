@@ -5,7 +5,7 @@
 
 open Base
 
-let max_iterations = 12
+let max_iterations = 8
 
 type linear =
   [ `Cholesky

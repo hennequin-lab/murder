@@ -166,6 +166,34 @@ let test_trajectory () =
       (Nx.to_array !d.qvel)
   done
 
+(* The contact stages must survive compilation: the parameter mixing is tensor
+   arithmetic for exactly this reason, and a contact model is the first corpus
+   model where the collision stage does real work inside a traced program. *)
+let test_compiled () =
+  let m = model "slide1" in
+  let f = fixture_traj "slide1" in
+  let qpos = tensor f "traj_qpos"
+  and qvel = tensor f "traj_qvel" in
+  let d = { (data_with_qpos m (row qpos 0)) with qvel = vec1 (row qvel 0) } in
+  let compiled = Mjc.Step.compile m in
+  let eager = ref d
+  and jitted = ref d in
+  for _ = 1 to 4 do
+    eager := Mjc.Step.step m !eager;
+    jitted := Mjc.Step.run compiled !jitted;
+    parity
+      ~tol:1e-12
+      ~name:"compiled qpos"
+      (Nx.to_array !eager.qpos)
+      (Nx.to_array !jitted.qpos);
+    parity
+      ~tol:1e-12
+      ~name:"compiled qvel"
+      (Nx.to_array !eager.qvel)
+      (Nx.to_array !jitted.qvel);
+    equal ~msg:"compiled ncon" int (int_of_t !eager.ncon) (int_of_t !jitted.ncon)
+  done
+
 let () =
   Stdlib.exit
     (run
@@ -174,4 +202,5 @@ let () =
        ; test "contact geometry" test_geometry
        ; test "frictionless contact rows" test_rows
        ; test "frictionless contact trajectory" test_trajectory
+       ; test "compiled equals eager" test_compiled
        ])

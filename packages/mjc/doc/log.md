@@ -324,6 +324,14 @@ for contacts only when a model can have them — contacts enabled and at least
 two geoms — because the dense factor is quadratic in `nefcmax` and the
 constraint-only models were paying for rows they could never produce.
 
+**Tracing cost is now visible.** A compiled step of a contact model takes tens
+of seconds to *trace* — the contact Jacobians are unrolled per candidate and
+the solver's iteration budget is unrolled too — which shows up as a slow test
+and a slow bench, not a slow step. The fix is a per-model iteration budget and
+a cheaper Jacobian construction (one batched gather over the dof chain instead
+of a mask per candidate), and it is the first thing to do before M4's stacks
+are compiled.
+
 **What is not in yet.** Contacts with friction (condim > 1) are refused by
 name, because a frictional contact is three coupled rows and the pyramidal
 cone is a group constraint the solver does not model: a friction row's bound
