@@ -1,7 +1,7 @@
 (library
  (name mjc_viz_window)
  (modules window)
- (libraries mjc mjc_viz nx raylib.core raylib.models raylib.text base))
+ (libraries mjc mjc_viz nx raylib.core raylib.models raylib.text base unix))
 
 (executable
  (name main)

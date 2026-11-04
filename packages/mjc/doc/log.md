@@ -1,3 +1,46 @@
+## V1 finished: joint control, screenshots, and the frame budget
+
+The window was drawing nothing at the origin, and the still backend was right:
+`Data.create` leaves `geom_xpos` and `geom_xmat` at zero, `mjc-view` runs
+`Forward.forward` before building its scene, and the window did not. Every
+primitive was therefore at the origin with a zero rotation matrix, which
+collapses a box's eight corners into one point — so a box drew twelve
+zero-length lines and a sphere drew one sphere in the middle of the frame. The
+fix is one line in `open_` and the same line in the reset key, and it is
+recorded here because "the picture is empty" reads like a renderer problem and
+was a state problem.
+
+Joint control moved out of the window into `Mjc_viz.Controls` before it was
+wired to keys. The reason is V2's rule applied one milestone early: anything
+that decides what the picture shows should be a pure function of a model and a
+state, and tested as such. Six tests now cover the model's ranges, the clamp at
+a limit, the links following a hinge (compared against a rotation done by
+hand), one keystroke, the reference position, and that a free joint is refused
+by kind — `describe` says "free joint, not driven", which is how a user learns
+it instead of watching a key do nothing.
+
+The screenshots are how the two backends are now compared rather than asserted
+to agree. `mjc-window --shot` writes the last frame from inside the frame, so
+the window and `mjc-view` can be asked for the same camera and the same state;
+the sphere's centroid agrees to **0.4 px** at 1280×720 and its radius to about
+a pixel. That is a real number standing where "looks the same" used to be, and
+`doc/figures/viewer-v0-vs-v1.png` is the pair.
+
+Two measurements worth keeping. The frame budget is missed: 65 primitives and
+195 lines at 960×540 take 14.6 ms on a Radeon 8060S, against §9's 10 ms
+llvmpipe line, and the scaling says it is per-primitive CPU cost — raylib
+re-tessellates spheres on every `DrawSphereEx` — not fill, since 960×540 →
+1280×720 costs 0.2 ms and 3 → 65 primitives costs 12 ms. The scene build is
+0.008 ms, so the IR is not implicated. The way out, when 64-geom models are
+normal, is a cached sphere and capsule mesh drawn with matrices, or instanced
+drawing per colour; `viz/window/bench64.{xml,mjcb}` is committed so the number
+can be re-taken rather than remembered.
+
+What V1 does not have, said plainly: the print says 69 fps at the budget shape
+and 68 fps at 1280×720, so the 30 fps requirement is met with room, but "no
+allocation per frame" is unmeasured, and the still-versus-window agreement is a
+centroid plus a picture, not a per-pixel diff.
+
 # mjc log
 
 One entry per milestone, appended, never rewritten. A number here is quoted

@@ -1,6 +1,15 @@
 (test
  (name test_scene)
+ (modules test_scene)
  (libraries mjc mjc_viz nx base windtrap geom_viz hugin.gg)
+ (deps
+  (glob_files ../../test/fixtures/*.mjcb)
+  (glob_files ../../test/fixtures/*.mjbf)))
+
+(test
+ (name test_controls)
+ (modules test_controls)
+ (libraries mjc mjc_viz nx base windtrap)
  (deps
   (glob_files ../../test/fixtures/*.mjcb)
   (glob_files ../../test/fixtures/*.mjbf)))
