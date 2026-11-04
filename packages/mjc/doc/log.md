@@ -332,6 +332,14 @@ a cheaper Jacobian construction (one batched gather over the dof chain instead
 of a mask per candidate), and it is the first thing to do before M4's stacks
 are compiled.
 
+**Plane-box is in, and not yet trusted.** The narrowphase is a port of
+`mjc_PlaneBox` with its corner order and its four-contact cap, and a `boxes`
+corpus model records it. Its parity is *not* asserted: one corpus state has
+MuJoCo reporting a contact this port does not, and I have not found which
+corner test differs. The code is in because it is the shape the stacks need;
+the test that would hold it is not, and that is the first thing to finish
+next.
+
 **What is not in yet.** Contacts with friction (condim > 1) are refused by
 name, because a frictional contact is three coupled rows and the pyramidal
 cone is a group constraint the solver does not model: a friction row's bound

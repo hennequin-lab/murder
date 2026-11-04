@@ -42,7 +42,7 @@ let type_index = function
    first. *)
 let supported (t : Topo.t) g1 g2 =
   match t.geom_type.(g1), t.geom_type.(g2) with
-  | Plane, Sphere | Plane, Capsule | Sphere, Sphere | Sphere, Capsule -> true
+  | Plane, Sphere | Plane, Capsule | Sphere, Sphere | Sphere, Capsule | Plane, Box -> true
   | _ -> false
 
 (* One contact slot a pair can produce: a capsule against a plane yields one
@@ -56,6 +56,7 @@ type cand =
 let slots (t : Topo.t) g1 g2 =
   match t.geom_type.(g1), t.geom_type.(g2) with
   | Plane, Capsule -> 2
+  | Plane, Box -> 8
   | _ -> 1
 
 let candidates (m : Model.host) : cand array =
@@ -161,6 +162,36 @@ let geometry (m : Model.host) (d : Data.host) (c : cand) =
       ~size2:(size c.g2 0)
       ~axis1:(geom_zaxis d c.g1)
       ~axis2:(geom_zaxis d c.g2)
+  | Plane, Box ->
+    (* One candidate per corner, in MuJoCo's order, with a corner above the
+       plane sent far away so that the compaction drops it. *)
+    let normal = geom_zaxis d c.g1 in
+    let mat2 = Nx.reshape [| 3; 3 |] (Nx.slice [ I c.g2; A ] d.geom_xmat) in
+    let sx = size c.g2 0
+    and sy = size c.g2 1
+    and sz = size c.g2 2 in
+    let pick i flag hi lo = if Int.( land ) i flag <> 0 then hi else lo in
+    let vec =
+      Nx.stack
+        ~axis:0
+        [ pick c.slot 1 sx (Nx.neg sx)
+        ; pick c.slot 2 sy (Nx.neg sy)
+        ; pick c.slot 4 sz (Nx.neg sz)
+        ]
+    in
+    let corner =
+      Nx.add
+        (geom_pos d c.g2)
+        (Nx.matmul mat2 (Nx.reshape [| 3; 1 |] vec) |> Nx.reshape [| 3 |])
+    in
+    let ldist = Nx.dot normal (Nx.sub corner (geom_pos d c.g2)) in
+    let centre = Nx.dot (Nx.sub (geom_pos d c.g2) (geom_pos d c.g1)) normal in
+    let dist = Nx.add centre ldist in
+    let up = Nx.greater_s ldist 0.0 in
+    let far = Nx.scalar Nx.float64 1e10 in
+    let dist = Nx.where up far dist in
+    let pos = Nx.add corner (Nx.mul normal (Nx.neg (Nx.mul_s dist 0.5))) in
+    dist, pos, normal
   | Sphere, Capsule ->
     let axis = geom_zaxis d c.g2 in
     let len = size c.g2 1 in
@@ -303,6 +334,11 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
     and normal = ref (Nx.zeros Nx.float64 [| ncand; 3 |])
     and live = ref (Nx.zeros Nx.float64 [| ncand |])
     and jac = ref (Nx.zeros Nx.float64 [| ncand; t.nv |]) in
+    (* MuJoCo keeps at most four contacts per pair, taking them in corner
+       order. The candidate loop runs in that order, so a running count per
+       pair does the same cut. *)
+    let seen = ref (Nx.scalar Nx.float64 0.0)
+    and pair = ref (-1, -1) in
     Array.iteri cands ~f:(fun i c ->
       let dist_i, pos_i, normal_i = geometry m d c in
       let includemargin = row_of i mix.includemargin
@@ -321,9 +357,22 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
             (Nx.scalar Nx.float64 0.0))
       in
       let near = Nx.less_equal dist_i includemargin in
-      let on =
-        Nx.mul bound (Nx.where near (Nx.scalar Nx.float64 1.0) (Nx.scalar Nx.float64 0.0))
+      if not (Int.equal (fst !pair) c.g1 && Int.equal (snd !pair) c.g2)
+      then (
+        pair := c.g1, c.g2;
+        seen := Nx.scalar Nx.float64 0.0);
+      let room =
+        Nx.where
+          (Nx.less_s !seen 4.0)
+          (Nx.scalar Nx.float64 1.0)
+          (Nx.scalar Nx.float64 0.0)
       in
+      let on =
+        Nx.mul
+          (Nx.mul bound room)
+          (Nx.where near (Nx.scalar Nx.float64 1.0) (Nx.scalar Nx.float64 0.0))
+      in
+      seen := Nx.add !seen on;
       (* The normal row of a contact: the normal dotted with the difference of
          the two bodies' point Jacobians, geom 2's minus geom 1's. *)
       let b1 = t.geom_bodyid.(c.g1)

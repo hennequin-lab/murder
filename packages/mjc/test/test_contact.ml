@@ -15,80 +15,84 @@ module Nxi32 = Stdlib.Int32
 let int_of_t x = Nxi32.to_int (Nx.item [] x)
 let take n a = Array.sub a ~pos:0 ~len:n
 
-let states () =
-  let m = model "bounce" in
-  let f = fixture "bounce" in
+let states name =
+  let m = model name in
+  let f = fixture name in
   let qpos = tensor f "qpos" in
   List.init f.nstates ~f:(fun s ->
     let d = Mjc.Kinematics.forward m (data_with_qpos m (row qpos s)) in
     Mjc.Collision.contacts m d, Int.of_float (row (tensor f "ncon") s).(0))
 
+(* [boxes] is recorded but not asserted yet: its plane-box candidates disagree
+   with MuJoCo on one state of the corpus, so the code is in and the parity is
+   not claimed. *)
 let test_count () =
-  let f = fixture "bounce" in
-  List.iteri (states ()) ~f:(fun s (d, ncon) ->
-    equal ~msg:(Printf.sprintf "state %d ncon" s) int ncon (int_of_t d.Mjc.Data.ncon);
-    (* The corpus is only worth its name if it exercises several contacts. *)
-    ignore f)
+  List.iter [ "bounce" ] ~f:(fun name ->
+    let f = fixture name in
+    List.iteri (states name) ~f:(fun s (d, ncon) ->
+      equal ~msg:(Printf.sprintf "state %d ncon" s) int ncon (int_of_t d.Mjc.Data.ncon);
+      ignore f))
 
 let test_geometry () =
-  let f = fixture "bounce" in
-  List.iteri (states ()) ~f:(fun s (d, ncon) ->
-    let name k = Printf.sprintf "state %d %s" s k in
-    let rows x = Nx.slice [ R (0, ncon); A ] x in
-    parity
-      ~tol:1e-12
-      ~name:(name "contact_dist")
-      (take ncon (row (tensor f "contact_dist") s))
-      (take ncon (Nx.to_array d.Mjc.Data.contact_dist));
-    parity
-      ~tol:1e-12
-      ~name:(name "contact_pos")
-      (take (ncon * 3) (row (tensor f "contact_pos") s))
-      (Nx.to_array (rows d.Mjc.Data.contact_pos));
-    parity
-      ~tol:1e-12
-      ~name:(name "contact_normal")
-      (take (ncon * 3) (row (tensor f "contact_normal") s))
-      (Nx.to_array (rows d.Mjc.Data.contact_normal));
-    parity
-      ~tol:1e-12
-      ~name:(name "contact_includemargin")
-      (take ncon (row (tensor f "contact_includemargin") s))
-      (take ncon (Nx.to_array d.Mjc.Data.contact_includemargin));
-    parity
-      ~tol:1e-12
-      ~name:(name "contact_friction")
-      (take (ncon * 5) (row (tensor f "contact_friction") s))
-      (Nx.to_array (rows d.Mjc.Data.contact_friction));
-    parity
-      ~tol:1e-12
-      ~name:(name "contact_solref")
-      (take (ncon * 2) (row (tensor f "contact_solref") s))
-      (Nx.to_array (rows d.Mjc.Data.contact_solref));
-    parity
-      ~tol:1e-12
-      ~name:(name "contact_solimp")
-      (take (ncon * 5) (row (tensor f "contact_solimp") s))
-      (Nx.to_array (rows d.Mjc.Data.contact_solimp));
-    parity
-      ~tol:0.0
-      ~name:(name "contact_geom")
-      (take (ncon * 2) (row (tensor f "contact_geom") s))
-      (Array.map
-         (take (ncon * 2) (Nx.to_array (rows d.Mjc.Data.contact_geom)))
-         ~f:Nxi32.to_float);
-    parity
-      ~tol:0.0
-      ~name:(name "contact_body")
-      (take (ncon * 2) (row (tensor f "contact_body") s))
-      (Array.map
-         (take (ncon * 2) (Nx.to_array (rows d.Mjc.Data.contact_body)))
-         ~f:Nxi32.to_float);
-    parity
-      ~tol:0.0
-      ~name:(name "contact_dim")
-      (take ncon (row (tensor f "contact_dim") s))
-      (Array.map (take ncon (Nx.to_array d.Mjc.Data.contact_dim)) ~f:Nxi32.to_float))
+  List.iter [ "bounce" ] ~f:(fun name ->
+    let f = fixture name in
+    List.iteri (states name) ~f:(fun s (d, ncon) ->
+      let name k = Printf.sprintf "state %d %s" s k in
+      let rows x = Nx.slice [ R (0, ncon); A ] x in
+      parity
+        ~tol:1e-12
+        ~name:(name "contact_dist")
+        (take ncon (row (tensor f "contact_dist") s))
+        (take ncon (Nx.to_array d.Mjc.Data.contact_dist));
+      parity
+        ~tol:1e-12
+        ~name:(name "contact_pos")
+        (take (ncon * 3) (row (tensor f "contact_pos") s))
+        (Nx.to_array (rows d.Mjc.Data.contact_pos));
+      parity
+        ~tol:1e-12
+        ~name:(name "contact_normal")
+        (take (ncon * 3) (row (tensor f "contact_normal") s))
+        (Nx.to_array (rows d.Mjc.Data.contact_normal));
+      parity
+        ~tol:1e-12
+        ~name:(name "contact_includemargin")
+        (take ncon (row (tensor f "contact_includemargin") s))
+        (take ncon (Nx.to_array d.Mjc.Data.contact_includemargin));
+      parity
+        ~tol:1e-12
+        ~name:(name "contact_friction")
+        (take (ncon * 5) (row (tensor f "contact_friction") s))
+        (Nx.to_array (rows d.Mjc.Data.contact_friction));
+      parity
+        ~tol:1e-12
+        ~name:(name "contact_solref")
+        (take (ncon * 2) (row (tensor f "contact_solref") s))
+        (Nx.to_array (rows d.Mjc.Data.contact_solref));
+      parity
+        ~tol:1e-12
+        ~name:(name "contact_solimp")
+        (take (ncon * 5) (row (tensor f "contact_solimp") s))
+        (Nx.to_array (rows d.Mjc.Data.contact_solimp));
+      parity
+        ~tol:0.0
+        ~name:(name "contact_geom")
+        (take (ncon * 2) (row (tensor f "contact_geom") s))
+        (Array.map
+           (take (ncon * 2) (Nx.to_array (rows d.Mjc.Data.contact_geom)))
+           ~f:Nxi32.to_float);
+      parity
+        ~tol:0.0
+        ~name:(name "contact_body")
+        (take (ncon * 2) (row (tensor f "contact_body") s))
+        (Array.map
+           (take (ncon * 2) (Nx.to_array (rows d.Mjc.Data.contact_body)))
+           ~f:Nxi32.to_float);
+      parity
+        ~tol:0.0
+        ~name:(name "contact_dim")
+        (take ncon (row (tensor f "contact_dim") s))
+        (Array.map (take ncon (Nx.to_array d.Mjc.Data.contact_dim)) ~f:Nxi32.to_float)))
 
 (* Frictionless contact rows: type, position, margin, Jacobian, the impedance
    data, the reference acceleration and the solved force, then the trajectory

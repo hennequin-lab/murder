@@ -1,0 +1,14 @@
+<mujoco model="boxes">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="1"/>
+    <body name="crate" pos="0 0 0.09" quat="0.9238795 0.3826834 0 0">
+      <freejoint/>
+      <geom name="crate" type="box" size="0.2 0.15 0.1" condim="1"/>
+    </body>
+    <body name="slab" pos="0.5 0.2 0.07">
+      <freejoint/>
+      <geom name="slab" type="box" size="0.12 0.3 0.08" condim="1"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -102,7 +102,17 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "7768b9cc9aad959c"
+      "xml_sha256": "b62c9aa051526f88"
+    },
+    {
+      "name": "boxes",
+      "nbody": 3,
+      "ngeom": 3,
+      "njnt": 2,
+      "nq": 14,
+      "nv": 12,
+      "nstates": 32,
+      "xml_sha256": "6dfca6f355c93a45"
     }
   ]
 }
