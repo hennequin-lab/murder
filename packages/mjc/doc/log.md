@@ -1,3 +1,20 @@
+## A `ref` angle does not bend a model at rest
+
+The demo's chain hung perfectly straight however much I tilted it, and the
+reason is the definition of the joint, not a bug: MuJoCo's kinematics rotates a
+hinge by `qpos - qpos0`, and a MJCF `ref` sets `qpos0`. So at the reference
+state — which is exactly what `mj_resetData` and our `Data.create` produce — a
+reference angle contributes nothing, and a model whose only "bend" is `ref`
+opens straight. Our `Kinematics.forward` matches MuJoCo here, statement for
+statement (`engine_core_smooth.c`: `axisAngle2Quat(qloc, axis, qpos[qadr] -
+qpos0[qadr])`), which is why the parity tests never saw it: every fixture has
+`qpos0 = 0` for its joints, so the two conventions are identical there.
+
+The demo now tilts the chain's root *body* instead, which is geometry and does
+bend the pose. Anything that needs a bent *initial joint configuration* needs a
+keyframe, and keyframes are not in the `.mjcb` format yet — that is the honest
+gap, not the demo.
+
 ## A demo found a sharp edge in the collision guard
 
 Assembling `viz/demo/demo.mjcb` — a swinging chain, three falling spheres and a

@@ -8,11 +8,14 @@ freedom, contacts on.
 
     cd /home/hennequi/code/modern/murder-wt/mjc
     dune exec packages/mjc/viz/window/main.exe -- \
-      --model packages/mjc/viz/demo/demo.mjcb --steps-per-frame 8
+      --model packages/mjc/viz/demo/demo.mjcb --steps-per-frame 8 \
+      --eye 2.0,-2.8,1.7 --target 0,0,1.0
 
 `--steps-per-frame 8` runs the simulation at about real time (8 × 2 ms per
 frame at 60 fps). Leave it off to watch in slow motion, which is the useful
-setting while debugging a contact.
+setting while debugging a contact. Without `--eye`/`--target` the window frames
+the whole model the way the still backend does, which for a 2.2 m chain leaves
+it small; the two above are a closer view.
 
 Keys: `space` pause, `.` single step, `r` reset, `c` camera, `g` grid,
 `f` body frames, `n` contacts, `x` constraint forces, `i` inertia boxes,
