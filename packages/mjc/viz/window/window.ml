@@ -13,6 +13,15 @@ module RM = Raylib_models
 module RL = Raylib_rlgl
 module RT = Raylib_text
 
+(** The type for a replay cursor. [playing] advances the index one frame per
+    drawn frame, which is the whole of "playback": the physics has already
+    happened, so a slow display drops frames rather than slowing the run. *)
+type follow =
+  { log : Mjc_viz.Log.t
+  ; mutable index : int
+  ; mutable playing : bool
+  }
+
 type t =
   { model : Mjc.Model.host
   ; mutable data : Mjc.Data.host
@@ -30,6 +39,8 @@ type t =
   ; joints : Mjc_viz.Controls.joint array
   ; mutable joint : int (** the selected joint index, [-1] for none. *)
   ; mutable scene_s : float (** seconds spent building scenes, for the bench. *)
+  ; log : Mjc_viz.Log.writer option (** where each frame is appended, when recording. *)
+  ; follow : follow option (** the recorded run being replayed, when following. *)
   ; width : int
   ; height : int
   ; camera : RC.Camera3D.t
@@ -59,10 +70,32 @@ let open_
       ?(joint_axes = false)
       ?(velocity = false)
       ?(energy = false)
+      ?log_path
+      ?follow_path
       (model : Mjc.Model.host)
   =
   let data = fresh model in
   let scene_eye, scene_target = S.framing (S.of_state model data) in
+  let follow =
+    Option.map follow_path ~f:(fun path ->
+      match Mjc_viz.Log.open_ path with
+      | Error e -> Stdlib.failwith e
+      | Ok log ->
+        let ngeom, nconmax = Mjc_viz.Log.model_shape log in
+        if ngeom <> model.topo.ngeom || nconmax <> model.topo.nconmax
+        then
+          Stdlib.failwith
+            (Stdlib.Printf.sprintf
+               "%s holds %d geoms and %d contact slots, %s has %d and %d"
+               path
+               ngeom
+               nconmax
+               model.topo.name
+               model.topo.ngeom
+               model.topo.nconmax);
+        { log; index = 0; playing = true })
+  in
+  let log = Option.map log_path ~f:(fun path -> Mjc_viz.Log.create ~path model) in
   let eye = Option.value eye ~default:scene_eye
   and target = Option.value target ~default:scene_target in
   { model
@@ -81,6 +114,8 @@ let open_
   ; joints = Mjc_viz.Controls.joints model
   ; joint = -1
   ; scene_s = 0.
+  ; log
+  ; follow
   ; width
   ; height
   ; eye
@@ -334,17 +369,20 @@ let draw_geom (g : S.geom) =
 let draw ?(fps = true) (t : t) =
   let t0 = Unix.gettimeofday () in
   let scene =
-    S.of_state
-      ~frames:t.frames
-      ~contacts:t.contacts
-      ~forces:t.forces
-      ~inertia:t.inertia
-      ~com:t.com
-      ~joints:t.joint_axes
-      ~velocity:t.velocity
-      ~energy:t.energy
-      t.model
-      t.data
+    match t.follow with
+    | Some f -> Mjc_viz.Log.scene t.model f.log f.index
+    | None ->
+      S.of_state
+        ~frames:t.frames
+        ~contacts:t.contacts
+        ~forces:t.forces
+        ~inertia:t.inertia
+        ~com:t.com
+        ~joints:t.joint_axes
+        ~velocity:t.velocity
+        ~energy:t.energy
+        t.model
+        t.data
   in
   t.scene_s <- t.scene_s +. (Unix.gettimeofday () -. t0);
   let open RC in
@@ -380,19 +418,35 @@ let draw ?(fps = true) (t : t) =
   (* DEBUG *)
   if t.hud
   then (
-    let ncon = Stdlib.Int32.to_int (Nx.item [] t.data.Mjc.Data.ncon) in
-    let nefc = Stdlib.Int32.to_int (Nx.item [] t.data.Mjc.Data.nefc) in
     let line y size text = RT.draw_text text 10 y size black in
+    (* A replayed frame's time and counts are the record's, not the idle
+       state's: the state has never been stepped in this process. *)
+    let time, ncon, nefc, state =
+      match t.follow with
+      | Some f ->
+        let fr = Mjc_viz.Log.frame f.log f.index in
+        fr.time, fr.ncon, fr.nefc, if f.playing then "playing" else "paused"
+      | None ->
+        ( Nx.item [] t.data.Mjc.Data.time
+        , Stdlib.Int32.to_int (Nx.item [] t.data.Mjc.Data.ncon)
+        , Stdlib.Int32.to_int (Nx.item [] t.data.Mjc.Data.nefc)
+        , if t.paused then "PAUSED" else "running" )
+    in
     line
       10
       20
-      (Stdlib.Printf.sprintf
-         "t %.2f s   ncon %d   nefc %d   %s"
-         (Nx.item [] t.data.Mjc.Data.time)
-         ncon
-         nefc
-         (if t.paused then "PAUSED" else "running"));
-    line 34 18 (joint_line t);
+      (Stdlib.Printf.sprintf "t %.2f s   ncon %d   nefc %d   %s" time ncon nefc state);
+    (match t.follow with
+     | Some f ->
+       line
+         34
+         18
+         (Stdlib.Printf.sprintf
+            "replay %d / %d  %s"
+            f.index
+            (Mjc_viz.Log.length f.log - 1)
+            (if f.playing then "playing" else "paused"))
+     | None -> line 34 18 (joint_line t));
     line
       56
       16
@@ -429,11 +483,20 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
   while (not !quit) && !drawn < last do
     (* Input *)
     if RC.is_key_pressed RC.Key.Escape || RC.window_should_close () then quit := true;
-    if RC.is_key_pressed RC.Key.Space then t.paused <- not t.paused;
+    if RC.is_key_pressed RC.Key.Space
+    then (
+      match t.follow with
+      | Some f -> f.playing <- not f.playing
+      | None -> t.paused <- not t.paused);
     if RC.is_key_pressed RC.Key.Period
     then (
-      t.paused <- true;
-      t.data <- Mjc.Step.step t.model t.data);
+      match t.follow with
+      | Some f ->
+        f.playing <- false;
+        f.index <- Int.min (f.index + 1) (Mjc_viz.Log.length f.log - 1)
+      | None ->
+        t.paused <- true;
+        t.data <- Mjc.Step.step t.model t.data);
     if RC.is_key_pressed RC.Key.R then t.data <- fresh t.model;
     if RC.is_key_pressed RC.Key.G then t.grid <- not t.grid;
     if RC.is_key_pressed RC.Key.F then t.frames <- not t.frames;
@@ -446,6 +509,19 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
     if RC.is_key_pressed RC.Key.V then t.velocity <- not t.velocity;
     if RC.is_key_pressed RC.Key.E then t.energy <- not t.energy;
     if RC.is_key_pressed RC.Key.C then camera_reset t;
+    (match t.follow with
+     | None -> ()
+     | Some f ->
+       if RC.is_key_pressed RC.Key.Left
+       then (
+         f.playing <- false;
+         f.index <- Int.max (f.index - 1) 0);
+       if RC.is_key_pressed RC.Key.Right
+       then (
+         f.playing <- false;
+         f.index <- Int.min (f.index + 1) (Mjc_viz.Log.length f.log - 1));
+       if RC.is_key_pressed RC.Key.Home then f.index <- 0;
+       if RC.is_key_pressed RC.Key.End then f.index <- Mjc_viz.Log.length f.log - 1);
     if RC.is_key_pressed RC.Key.Left_bracket then nudge t (-1.);
     if RC.is_key_pressed RC.Key.Right_bracket then nudge t 1.;
     if RC.is_key_pressed RC.Key.Zero then zero_joint t;
@@ -463,12 +539,19 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
         (vmake (tx -. (RC.Vector2.x d *. 0.005)) (ty +. (RC.Vector2.y d *. 0.005)) tz));
     let wheel = RC.get_mouse_wheel_move () in
     if Float.( <> ) wheel 0. then zoom t.camera (1. -. (wheel *. 0.1));
-    (* Physics *)
-    if not t.paused
-    then
-      for _ = 1 to steps_per_frame do
-        t.data <- Mjc.Step.step t.model t.data
-      done;
+    (* Physics, or the replay cursor. *)
+    (match t.follow with
+     | Some f ->
+       if f.playing then f.index <- Int.min (f.index + 1) (Mjc_viz.Log.length f.log - 1)
+     | None ->
+       if not t.paused
+       then
+         for _ = 1 to steps_per_frame do
+           t.data <- Mjc.Step.step t.model t.data;
+           match t.log with
+           | Some w -> Mjc_viz.Log.append w ~step:(Stdlib.Int64.of_int !drawn) t.data
+           | None -> ()
+         done);
     (* Draw *)
     RC.begin_drawing ();
     RC.clear_background (RC.Color.create 247 247 250 255);
@@ -488,6 +571,12 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
   done;
   let elapsed = Unix.gettimeofday () -. start in
   RC.close_window ();
+  (match t.log with
+   | Some w -> Mjc_viz.Log.close w
+   | None -> ());
+  (match t.follow with
+   | Some f -> Mjc_viz.Log.close_reader f.log
+   | None -> ());
   if bench
   then (
     let n = Float.of_int !drawn in

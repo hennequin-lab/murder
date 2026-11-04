@@ -164,6 +164,18 @@ val of_state
   -> Mjc.Data.host
   -> t
 
+(** [of_poses m ~time ~geom ~contacts] is a scene whose geom [i] occupies the
+    twelve floats at [12 * i] of [geom]: its world position, then its row-major
+    rotation matrix. That is exactly the layout a recorded frame stores, so a
+    replay can build a scene without running the engine. Colours come from
+    [m], as they do for every other scene. *)
+val of_poses
+  :  Mjc.Model.host
+  -> time:float
+  -> geom:float array
+  -> contacts:contact list
+  -> t
+
 (** {1:overlays Overlays}
 
     The overlays are pure functions of a model and a state, which is what

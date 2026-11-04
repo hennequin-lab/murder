@@ -15,6 +15,11 @@
     [j] joint axes, [v] velocities, [e] the energy HUD, [h] the HUD; the digits
     [1]–[9] select a joint, [[] and []] move it, [0] puts it back at its
     reference.
+
+    [log_path] records every drawn frame to a log; [follow_path] replays one
+    instead of stepping, with [space] to play or pause, the arrow keys to scrub
+    and [home]/[end] to jump. Recording and following are separate: a run that
+    does both is writing the frames it reads, which is not a mode anyone wants.
     Right-drag orbits, left-drag pans, the wheel zooms. *)
 
 (** The type for a run: the model, its state, and how to step it. *)
@@ -41,6 +46,8 @@ val open_
   -> ?joint_axes:bool
   -> ?velocity:bool
   -> ?energy:bool
+  -> ?log_path:string
+  -> ?follow_path:string
   -> Mjc.Model.host
   -> t
 

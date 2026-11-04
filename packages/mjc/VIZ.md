@@ -1,8 +1,9 @@
 # mjc-viz — the live viewer
 
-Status: **V0, V1 and V2 are in** — `viz/lib` (scene IR, still backend, joint
-control, overlays), `viz/bin/mjc-view` and `viz/window/mjc-window`. V3
-(contacts, forces, replay) is next. Companion to [`MILESTONES.md`](MILESTONES.md)
+Status: **V0–V2 are in, and V3's log** — `viz/lib` (scene IR, still backend,
+joint control, overlays, run log), `viz/bin/mjc-view` and
+`viz/window/mjc-window`, which records and replays runs. V3's contact detail
+and V4 (browser) are next. Companion to [`MILESTONES.md`](MILESTONES.md)
 (engine plan) and [`PLAN.md`](PLAN.md) (design note). Milestones here are
 `V0`–`V5`; engine milestones are `M0`–`M11`.
 
@@ -521,6 +522,42 @@ be cheaper to add with V3's log, where the history already exists.
   any index is O(1); a 100 000-step log replays at 60 fps; the contact overlay
   of a known two-box scene has the right count, position and normal sign
   (compared to the fixture, not to the picture).
+
+**V3 status: the log is in; the contact detail is not.** `viz/lib/log.ml`
+writes and reads a run, and the window records with `--log` and replays with
+`--follow` — `space` plays or pauses, the arrow keys scrub, `home`/`end` jump,
+`.` steps one frame. The HUD of a replay shows the record's time and counts,
+not the idle state's, which is a thing that was wrong first.
+
+The format is fixed-stride little-endian doubles: a 96-byte header (magic,
+version, `ngeom`, `nconmax`, stride, the model's name) and then one record per
+frame holding the world poses of every geom, the contact points, normals,
+distances and forces. Geom poses rather than joint positions, so a replay needs
+no kinematics and a reader cannot disagree with the writer about a model it
+does not have. A record is written whole or not at all, so a reader racing a
+writer sees the previous frame or the next one.
+
+What is measured, and by what:
+
+| Claim | How it is checked | Result |
+| --- | --- | --- |
+| a log round-trips | every recorded number compared to the state it came from, bit for bit | `test_log.ml`, 40 frames |
+| a replay frame is the live frame | `Log.scene` vs `Scene.of_state` at the same step: geom names, contact count, points, normals | `test_log.ml` |
+| seeking is O(1) | 500 pseudo-random reads out of an 800-frame log, in a different order than they were written | **< 0.5 s**, and the test fails if it becomes a scan |
+| writing is cheap | 300 frames with and without `--log` | **0.08 ms/frame** (budget 0.1) |
+| reading is cheap | the scene build of a replay frame | **0.002 ms** |
+| replay is draw-bound | `--bench` in `--follow` mode, `blocks` at 1280×720 | **0.15 ms/frame**, against 2.78 ms for the same model stepped live |
+
+The 100 000-step case is not recorded here because the number that would matter
+is the *draw*, which does not depend on the log: a replay frame costs the same
+as a live frame with the same geometry, and the §9 table already prices that
+(`blocks` 0.15 ms, the 65-geom budget model 14.6 ms). What the log adds is
+0.002 ms of read.
+
+Still missing from V3: the contact overlay's **detail** — per-row `λ` as bars,
+the friction cone as a fan in the contact frame, penetration depth as colour.
+The points, normals and force arrows have been drawn since V0, and the
+`two-box` acceptance cannot be met before box-box collision lands in M4.
 
 ### V4 — browser backend (1.5 weeks, at M7)
 

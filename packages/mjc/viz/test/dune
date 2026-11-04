@@ -21,3 +21,11 @@
  (deps
   (glob_files ../../test/fixtures/*.mjcb)
   (glob_files ../../test/fixtures/*.mjbf)))
+
+(test
+ (name test_log)
+ (modules test_log)
+ (libraries mjc mjc_viz nx base windtrap unix)
+ (deps
+  (glob_files ../../test/fixtures/*.mjcb)
+  (glob_files ../../test/fixtures/*.mjbf)))

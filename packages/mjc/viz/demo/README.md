@@ -26,6 +26,20 @@ Right-drag orbits, left-drag pans, the wheel zooms.
 Joint control is the forward-kinematics tool: press `1`, then `]` a few times
 and the first link of the chain turns while the rest follows.
 
+## Record a run, then replay it
+
+    # 200 frames of a 0.002 s step, recorded
+    dune exec packages/mjc/viz/window/main.exe -- \
+      --model packages/mjc/viz/demo/demo.mjcb --frames 200 --log /tmp/run.mjlog
+
+    # replay it: space plays or pauses, left/right scrub, home/end jump
+    dune exec packages/mjc/viz/window/main.exe -- \
+      --model packages/mjc/viz/demo/demo.mjcb --follow /tmp/run.mjlog
+
+A replay frame costs the draw and nothing else, so scrubbing a long run is
+instant; the log stores geom poses, so the replay does not need the engine's
+kinematics to agree with it.
+
 ## A still, no window
 
     dune exec packages/mjc/viz/bin/mjc_view.exe -- \

@@ -13,6 +13,7 @@ let usage =
   \  [--width W] [--height H] [--eye x,y,z] [--target x,y,z]\n\
   \  [--body-frames] [--contacts|--no-contacts] [--forces] [--no-grid] [--no-hud]\n\
   \  [--inertia] [--com] [--joint-axes] [--velocity] [--energy]\n\
+  \  [--log out.mjlog | --follow in.mjlog]\n\
   \  [--bench N] [--check]"
 
 let die fmt =
@@ -50,7 +51,9 @@ let () =
   and com = ref false
   and joint_axes = ref false
   and velocity = ref false
-  and energy = ref false in
+  and energy = ref false
+  and log_path = ref None
+  and follow_path = ref None in
   let rec go = function
     | [] -> ()
     | "--model" :: v :: r ->
@@ -111,6 +114,12 @@ let () =
     | "--energy" :: r ->
       energy := true;
       go r
+    | "--log" :: v :: r ->
+      log_path := Some v;
+      go r
+    | "--follow" :: v :: r ->
+      follow_path := Some v;
+      go r
     | "--no-grid" :: r ->
       grid := false;
       go r
@@ -152,6 +161,8 @@ let () =
       ~joint_axes:!joint_axes
       ~velocity:!velocity
       ~energy:!energy
+      ?log_path:!log_path
+      ?follow_path:!follow_path
       ?eye:!eye
       ?target:!target
       m

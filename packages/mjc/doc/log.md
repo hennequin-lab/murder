@@ -1,3 +1,32 @@
+## V3's log: fixed-stride, seekable, and one wrong assumption about List.init
+
+The log came before the replay UI because it is the half that can be tested
+without a display, and because M4 is where "it diverged at step 40 000" becomes
+a question someone asks. A record holds geom poses rather than joint positions:
+a replay then needs no kinematics, so a reader cannot disagree with the writer
+about a model it may not have — which is also why the header carries the shape
+(`ngeom`, `nconmax`) and the name, and why opening a log against the wrong
+model is an error rather than a picture that looks subtly wrong.
+
+The tests are the acceptance table: a round trip compares every recorded number
+with the state it came from, bit for bit; a replay frame is compared with the
+live state at the same step; 500 pseudo-random seeks out of an 800-frame log
+must fit in half a second, which a scanning reader cannot do. The write costs
+0.08 ms/frame and a replay frame's read 0.002 ms, so replay is draw-bound and
+the log is not the bottleneck at any size.
+
+Two things went wrong, both worth the ink. The reader checked the header's
+version at offset 4 instead of 8 and reported "log version 71" — the tail of
+the magic string. And the round-trip test wrote records whose `step` counted
+*backwards*: `List.init` in Base applies its function from `n - 1` down to `0`,
+so a run's side effects happened in reverse while the list it built was in
+order. The library was right and the test was wrong, but only because the
+symptom (record 0 holding step 39) looked like an offset bug in the reader.
+
+Still missing from V3: the contact overlay's detail — per-row λ bars, the
+friction-cone fan, depth as colour — and the two-box acceptance, which waits on
+box-box collision in M4.
+
 ## A `ref` angle does not bend a model at rest
 
 The demo's chain hung perfectly straight however much I tilted it, and the

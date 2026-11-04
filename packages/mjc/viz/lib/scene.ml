@@ -290,6 +290,46 @@ let mechanical_energy (m : Mjc.Model.host) (d : Mjc.Data.host) =
   in
   { kinetic; potential }
 
+(* The geom list, from the arrays a state or a recorded frame provides. *)
+let geoms_of (t : Mjc.Topo.t) ~pos ~mat ~size ~rgba =
+  List.init t.ngeom ~f:(fun i ->
+    let base = 4 * i in
+    { name = Mjc.Topo.geom_name t i
+    ; shape = shape_of t ~pos ~mat ~size i
+    ; colour =
+        { r = rgba.(base); g = rgba.(base + 1); b = rgba.(base + 2); a = rgba.(base + 3) }
+    })
+
+let empty_overlays time bodies geoms contacts forces =
+  { time
+  ; bodies
+  ; geoms
+  ; contacts
+  ; forces
+  ; inertia = []
+  ; com = []
+  ; joints = []
+  ; velocity = []
+  ; energy = None
+  }
+
+let of_poses (m : Mjc.Model.host) ~time ~(geom : float array) ~contacts =
+  let t = m.topo in
+  let pos =
+    Array.init (3 * t.ngeom) ~f:(fun k ->
+      let i = k / 3
+      and j = Int.rem k 3 in
+      geom.((12 * i) + j))
+  and mat =
+    Array.init (9 * t.ngeom) ~f:(fun k ->
+      let i = k / 9
+      and j = Int.rem k 9 in
+      geom.((12 * i) + 3 + j))
+  in
+  let size = Nx.to_array m.params.Mjc.Model.Params.geom_size
+  and rgba = Nx.to_array m.params.Mjc.Model.Params.geom_rgba in
+  empty_overlays time [] (geoms_of t ~pos ~mat ~size ~rgba) contacts []
+
 let of_state
       ?(frames = false)
       ?(contacts = false)
@@ -308,19 +348,7 @@ let of_state
   and mat = Nx.to_array d.Mjc.Data.geom_xmat
   and size = Nx.to_array p.Mjc.Model.Params.geom_size
   and rgba = Nx.to_array p.Mjc.Model.Params.geom_rgba in
-  let geoms =
-    List.init t.ngeom ~f:(fun i ->
-      let base = 4 * i in
-      { name = Mjc.Topo.geom_name t i
-      ; shape = shape_of t ~pos ~mat ~size i
-      ; colour =
-          { r = rgba.(base)
-          ; g = rgba.(base + 1)
-          ; b = rgba.(base + 2)
-          ; a = rgba.(base + 3)
-          }
-      })
-  in
+  let geoms = geoms_of t ~pos ~mat ~size ~rgba in
   let bpos = Nx.to_array d.Mjc.Data.xpos
   and bquat = Nx.to_array d.Mjc.Data.xquat in
   let bodies =
