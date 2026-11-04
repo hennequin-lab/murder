@@ -7,6 +7,11 @@ whole step with `Rune.grad`.
 
 ## Status
 
+![The viewer's first still](doc/figures/viewer-v0-blocks.png)
+
+*`mjc-view` on the `blocks` corpus: a box and a sphere on a plane, with
+contact points, body frames and the plane drawn through the scene IR.*
+
 **M4 in progress.** Contact detection (plane-sphere, plane-capsule,
 sphere-sphere, sphere-capsule) matches MuJoCo at 1e-12, and frictionless
 contact rows are solved. Frictional contacts and the compiled path for models

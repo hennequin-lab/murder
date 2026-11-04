@@ -1,0 +1,6 @@
+(test
+ (name test_scene)
+ (libraries mjc mjc_viz nx base windtrap geom_viz hugin.gg)
+ (deps
+  (glob_files ../../test/fixtures/*.mjcb)
+  (glob_files ../../test/fixtures/*.mjbf)))

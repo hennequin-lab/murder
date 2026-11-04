@@ -379,6 +379,22 @@ fix is a host mask matrix (`nbody × nv`) so that a point Jacobian is two
 `take`s instead of a walk, and it should land before anything else touches
 contacts.
 
+**The viewer starts, at V0.** `packages/mjc/viz` now has the scene IR and a
+still backend. The IR is host floats in world coordinates with the shapes
+resolved (`Capsule` of two endpoints, `Box` of centre/axes/half-extents), which
+is what makes it testable with no display and keeps the backend replaceable.
+The backend is `geom.viz`, whose painter's algorithm needs no window, no GPU and
+no dependency the lock does not already pin; `mjc-view` writes PNG or SVG with
+body-frame, contact and force overlays.
+
+Three things came out of drawing it. A plane's declared patch is infinite
+enough to cross the camera, so the patch is clipped to a few scene widths and
+centred under the target. A floor drawn opaque hides whatever stands on it
+under a painter's algorithm, so it is translucent. And a capsule drawn as an
+axis plus two end spheres looks like a wire, so it is sampled as a short chain
+of spheres. Measured cost: 105.8 ms per frame at 1280×720 with PNG encoding, so
+this backend is for stills and the window is V1's job.
+
 **M3 is complete.** The `.mjcb` format is version 9: it
 carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the
 body inverse weights and `dof_solref`/`dof_solimp`, and the converter sizes
