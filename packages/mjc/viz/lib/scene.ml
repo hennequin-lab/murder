@@ -73,8 +73,12 @@ type body =
 type contact =
   { point : p3
   ; normal : p3
+  ; tangents : p3 * p3
   ; depth : float
   ; dim : int
+  ; force : float
+  ; tangent_force : p3
+  ; friction : float
   }
 
 type arrow =
@@ -373,15 +377,70 @@ let of_state
   and cn = Nx.to_array d.Mjc.Data.contact_normal
   and cdist = Nx.to_array d.Mjc.Data.contact_dist
   and cdim = Nx.to_array d.Mjc.Data.contact_dim in
+  (* Which constraint rows belong to which contact, and with what force: the
+     rows are tagged, so this does not depend on the order they were written
+     in, only on the contact id. Within a contact the assembler writes the
+     normal row first (dim 1) or the pyramid's four edges in axis-major order. *)
+  let rows_of_contact =
+    if not contacts
+    then [||]
+    else (
+      let nefc = Stdlib.Int32.to_int (Nx.item [] d.Mjc.Data.nefc) in
+      let acc = Array.create ~len:ncon [] in
+      if nefc > 0
+      then (
+        let types = Nx.to_array d.Mjc.Data.efc_type
+        and ids = Nx.to_array d.Mjc.Data.efc_id
+        and force = Nx.to_array d.Mjc.Data.efc_force in
+        for r = nefc - 1 downto 0 do
+          let ty = Stdlib.Int32.to_int types.(r) in
+          if ty = 5 || ty = 6
+          then (
+            let c = Stdlib.Int32.to_int ids.(r) in
+            if c >= 0 && c < ncon then acc.(c) <- (r, force.(r)) :: acc.(c))
+        done);
+      Array.map acc ~f:Array.of_list)
+  in
+  let cframe = Nx.to_array d.Mjc.Data.contact_frame in
+  let cfriction = Nx.to_array d.Mjc.Data.contact_friction in
   let contacts =
     if not contacts
     then []
     else
       List.init ncon ~f:(fun i ->
+        let n = point cn i in
+        (* the frame is three rows: normal, tangent, tangent *)
+        let row k =
+          { x = cframe.((9 * i) + (3 * k))
+          ; y = cframe.((9 * i) + (3 * k) + 1)
+          ; z = cframe.((9 * i) + (3 * k) + 2)
+          }
+        in
+        let t1 = row 1
+        and t2 = row 2 in
+        let mu = cfriction.(5 * i) in
+        let rows = rows_of_contact.(i) in
+        let force = Array.fold rows ~init:0. ~f:(fun acc (_, f) -> acc +. f) in
+        (* The pyramid's edges are [n +/- mu t1] and [n +/- mu t2]: the sum
+           along the normal is the normal force, and what does not cancel along
+           the normal is the friction. *)
+        let tangent_force =
+          if Stdlib.Array.length rows < 4
+          then { x = 0.; y = 0.; z = 0. }
+          else (
+            let f k = rows.(k) |> snd in
+            let a = mu *. (f 0 -. f 1)
+            and b = mu *. (f 2 -. f 3) in
+            add (smul t1 a) (smul t2 b))
+        in
         { point = point cpos i
-        ; normal = point cn i
+        ; normal = n
+        ; tangents = t1, t2
         ; depth = cdist.(i)
         ; dim = Stdlib.Int32.to_int cdim.(i)
+        ; force
+        ; tangent_force
+        ; friction = mu
         })
   in
   let forces =
@@ -415,6 +474,14 @@ let of_state
   ; velocity = (if velocity then velocities m d else [])
   ; energy = (if energy then Some (mechanical_energy m d) else None)
   }
+
+let scale p k = smul p k
+
+(* Green at contact, red at a centimetre of penetration, amber in between: one
+   colour channel is enough to read, and the eye is good at that. *)
+let depth_colour depth =
+  let t = Float.max 0. (Float.min 1. (Float.neg depth /. 0.01)) in
+  { r = 0.15 +. (0.75 *. t); g = 0.65 -. (0.55 *. t); b = 0.2 -. (0.15 *. t); a = 0.95 }
 
 (* {1 Bounds and framing}
 

@@ -303,6 +303,7 @@ EFC_FIELDS = ["efc_type", "efc_id", "efc_pos", "efc_margin", "efc_J",
 # first three components of the contact frame.
 CONTACT_FIELDS = {
     "contact_dist": 1, "contact_pos": 3, "contact_normal": 3,
+    "contact_frame": 9,
     "contact_geom": 2, "contact_body": 2, "contact_dim": 1,
     "contact_includemargin": 1, "contact_friction": 5,
     "contact_solref": 2, "contact_solimp": 5,
@@ -328,6 +329,7 @@ def contact_state(m, d):
         "contact_dist": gather("dist", 1),
         "contact_pos": gather("pos", 3),
         "contact_normal": gather("frame", 3),
+        "contact_frame": gather("frame", 9),
         "contact_geom": geom,
         "contact_body": np.array(body, dtype=float).reshape(-1, 2),
         "contact_dim": gather("dim", 1),

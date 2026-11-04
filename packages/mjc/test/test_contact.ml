@@ -51,6 +51,13 @@ let test_geometry () =
         ~name:(label "contact_normal")
         (take (ncon * 3) (row (tensor f "contact_normal") s))
         (Nx.to_array (rows d.Mjc.Data.contact_normal));
+      (* The frame, not just its first row: the two tangents are what the
+         pyramid rows and the force decomposition are built from. *)
+      parity
+        ~tol:1e-12
+        ~name:(label "contact_frame")
+        (take (ncon * 9) (row (tensor f "contact_frame") s))
+        (Nx.to_array (rows d.Mjc.Data.contact_frame));
       parity
         ~tol:1e-12
         ~name:(label "contact_includemargin")

@@ -40,12 +40,13 @@
       geom_xpos       3 * ngeom
       geom_xmat       9 * ngeom
       contact_pos     3 * nconmax
+      contact_frame   9 * nconmax   the normal, then two tangents
       contact_normal  3 * nconmax
       contact_dist    1 * nconmax
       contact_force   1 * nconmax   the normal force of the contact
     v}
 
-    [stride = 4 + 12 ngeom + 8 nconmax]. A record is written whole or not at
+    [stride = 4 + 12 ngeom + 17 nconmax]. A record is written whole or not at
     all — a torn record is detected by a short read, not by a checksum — so a
     reader that races a writer sees the previous frame or the next one. *)
 
@@ -62,6 +63,7 @@ type frame =
     (** [[12 * ngeom]]: per geom its position and its row-major rotation,
         which is the layout {!Scene.of_poses} takes. *)
   ; contact_pos : float array (** [[3 * ncon]] *)
+  ; contact_frame : float array (** [[9 * ncon]]: the normal, then two tangents. *)
   ; contact_normal : float array (** [[3 * ncon]], unit, from geom 1 towards 2. *)
   ; contact_dist : float array (** [[ncon]], signed distance. *)
   ; contact_force : float array (** [[ncon]], the force summed over the rows. *)

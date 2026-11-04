@@ -554,10 +554,51 @@ as a live frame with the same geometry, and the §9 table already prices that
 (`blocks` 0.15 ms, the 65-geom budget model 14.6 ms). What the log adds is
 0.002 ms of read.
 
-Still missing from V3: the contact overlay's **detail** — per-row `λ` as bars,
-the friction cone as a fan in the contact frame, penetration depth as colour.
-The points, normals and force arrows have been drawn since V0, and the
-`two-box` acceptance cannot be met before box-box collision lands in M4.
+**The contact detail is in too.** A contact is now drawn as the solver sees it:
+the point coloured by penetration, the normal arrow scaled by the normal force,
+the friction force in red, and — for a contact with friction rows — the
+pyramid's four edges as the cone it is.
+
+That needed the contact's *frame*, which `mjData` has and our `Data` did not:
+`contact_frame`, three rows of normal then two orthonormal tangents, written by
+the collision pass from the same `mju_makeFrame` it already used for the
+pyramid rows. The fixture now records it, so the tangents are checked against
+the C engine at 1e-12 like every other contact array — the test lives in
+`test_contact.ml` beside `contact_pos` and `contact_normal`.
+
+The force decomposition follows the rows: the normal force is the sum of the
+contact's rows, and what the pyramid's edges leave after cancelling along the
+normal is the friction force, `mu [(f0 - f1) t1 + (f2 - f3) t2]`. It is the
+solver's own arithmetic, not a re-derivation from the state, which is why a test
+can hold it to invariants that would otherwise be approximate:
+
+| Claim | Check | Result |
+| --- | --- | --- |
+| the contacts carry the weight | `blocks` settled, sum of contact forces vs `(m_crate + m_ball) g` | **313.9 N**, to 1e-3 |
+| the frame is a frame | normal and both tangents unit, mutually orthogonal, on every contact | 1e-9 |
+| Coulomb holds | `|force_t| <= mu force_n + 1e-9` on every pyramidal contact | ✓ |
+| a frictionless contact has no friction | `dim = 1` contacts have zero `tangent_force` | ✓ |
+| depth reads as colour | green at contact, amber in between, red at a centimetre, monotone | `test_depth_colour` |
+
+![the crate's four contacts: green at 0.1 mm, with their normal forces](doc/figures/viewer-contacts.png)
+
+`mjc-view --model blocks.mjcb --steps 200 --contacts` at a close camera: four
+contacts, 78.48 N each, coloured green because 0.11 mm of penetration is
+nothing.
+
+The numbers underneath, read back out of a log: the four crate contacts carry
+**78.48 N** each against a 313.9 N weight, at **0.11 mm** of penetration, and
+the ball's one contact carries **29.96 N** at 0.37 mm — which is the crate's and
+the ball's weight to three figures, so the overlay is showing the solver's
+numbers and not a plausible-looking rescaling of them.
+
+Still not met: the `two-box` acceptance ("right count, position and normal
+sign"), which needs box-box collision from M4. Per-row `λ` *bars* are also not
+drawn: the arrows carry the same information in the normal and tangential
+directions, and a bar per row would be four lines per contact saying what one
+arrow already says. That is a judgement, not an oversight, and it changes when
+a row disagrees with its neighbours — which is exactly the bug the bars are for,
+so it may come back.
 
 ### V4 — browser backend (1.5 weeks, at M7)
 

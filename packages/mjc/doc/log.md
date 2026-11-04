@@ -1,3 +1,32 @@
+## V3's contact detail needed a field the engine did not have
+
+Drawing a contact the way the solver sees it — force along the normal, friction
+along the tangent, the pyramid as the cone it is — needs the contact's *frame*.
+MuJoCo keeps it in `mjData.contact_frame`; our `Data` did not have the field at
+all, so the viewer could only have guessed a tangent from the normal, and a
+guessed basis decomposes the pyramid's four edge forces differently than the
+engine did. The fix is the honest one: `contact_frame` is now part of `Data`,
+written by the collision pass from the same `mju_makeFrame` that builds the
+pyramid rows, and the fixture records it, so `test_contact.ml` holds the
+tangents to the C engine at 1e-12 next to `contact_pos` and `contact_normal`.
+
+With the frame, the decomposition is the solver's own arithmetic: the normal
+force is the sum of the contact's rows, and the friction is what the edges leave
+after cancelling along the normal. The test then bites: `blocks` settled has
+four contacts at 78.48 N each against a 313.9 N crate, the ball's one at
+29.96 N against 29.9 N, penetration 0.11 mm and 0.37 mm — and the sum of forces
+equals the total weight to 1e-3 N. The frame invariants (unit rows, mutually
+orthogonal) and Coulomb's bound are checked on every contact of the model, and
+depth-as-colour is a pure function with a monotonicity test.
+
+Two mistakes of mine on the way. The first version read the frame's *rows* off
+by one — taking row 0 as the first tangent — and the test caught it as
+"n·t1 = 1". The second was reading the depth colour off a two-step screenshot
+and concluding the colour mapping was broken, when the model starts with the
+crate one centimetre into the floor: red was right, and green arrived when the
+solver had pushed it out. A log frame settled it in one command — which is what
+the log is for.
+
 ## V3's log: fixed-stride, seekable, and one wrong assumption about List.init
 
 The log came before the replay UI because it is the half that can be tested

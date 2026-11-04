@@ -48,6 +48,10 @@ type ('a, 'd) t =
   ; ncon : 'd Nx.int32_t (** [[]], the number of contacts. *)
   ; contact_dist : 'a (** [[nconmax]], signed distance, negative when touching. *)
   ; contact_pos : 'a (** [[nconmax;3]], the contact point, world. *)
+  ; contact_frame : 'a
+    (** [[nconmax;9]], the contact frame's three rows: the normal, then two
+        orthonormal tangents. The pyramid's friction rows are built from it, so
+        a viewer that wants to decompose the contact force needs it too. *)
   ; contact_normal : 'a
     (** [[nconmax;3]], the normal, from geom 1's surface towards geom 2. *)
   ; contact_geom : 'd Nx.int32_t (** [[nconmax;2]], the geoms that made it. *)

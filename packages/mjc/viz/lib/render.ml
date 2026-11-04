@@ -148,6 +148,10 @@ let camera_for (c : camera) (s : Scene.t) =
 
 (* {1 The picture} *)
 
+(* The same metres-per-newton the window uses, so a still and a window frame
+   show forces at the same length. *)
+let force_scale_contact = 0.0006
+
 let entities
       ?(plane_extent = 5.)
       ?(plane_centre = { Scene.x = 0.; y = 0.; z = 0. })
@@ -178,16 +182,46 @@ let entities
   in
   let contacts =
     List.concat_map s.contacts ~f:(fun (c : Scene.contact) ->
-      let tip = add c.point (smul c.normal 0.12) in
+      let col = Scene.depth_colour c.depth in
+      let point_at (v : Scene.p3) = point (add c.point (smul v force_scale_contact)) in
+      let ( +@ ) (a : Scene.p3) (b : Scene.p3) = add a b in
+      let cone_edge (d : Scene.p3) sgn =
+        let mu = c.friction *. c.force *. sgn in
+        point c.point
+        |> fun from ->
+        D.static
+          ~layer:3
+          ~style:(edge ({ r = 0.84; g = 0.54; b = 0.1; a = 0.8 } : Scene.colour))
+          (P.Segment
+             ( from
+             , point
+                 (add
+                    c.point
+                    (smul
+                       (c.normal +@ { x = mu *. d.x; y = mu *. d.y; z = mu *. d.z })
+                       force_scale_contact)) ))
+      in
+      let cone =
+        if c.dim > 1
+        then (
+          let t1, t2 = c.tangents in
+          [ cone_edge t1 1.; cone_edge t1 (-1.); cone_edge t2 1.; cone_edge t2 (-1.) ])
+        else []
+      in
       [ D.static
           ~layer:3
-          ~style:(fill { r = 0.85; g = 0.1; b = 0.1; a = 0.9 })
+          ~style:(fill col)
           (P.Sphere { center = point c.point; radius = 0.02 })
       ; D.static
-          ~layer:3
-          ~style:(edge { r = 0.85; g = 0.1; b = 0.1; a = 0.9 })
-          (P.Segment (point c.point, point tip))
-      ])
+          ~layer:4
+          ~style:(edge ({ r = 0.12; g = 0.5; b = 0.24; a = 0.95 } : Scene.colour))
+          (P.Segment (point c.point, point_at (smul c.normal c.force)))
+      ; D.static
+          ~layer:4
+          ~style:(edge ({ r = 0.78; g = 0.24; b = 0.2; a = 0.95 } : Scene.colour))
+          (P.Segment (point c.point, point_at c.tangent_force))
+      ]
+      @ cone)
   in
   let forces =
     List.map s.forces ~f:(fun (f : Scene.arrow) ->

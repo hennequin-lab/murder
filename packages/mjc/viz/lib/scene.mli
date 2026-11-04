@@ -83,12 +83,22 @@ type body =
   ; frame : frame
   }
 
-(** The type for a contact, as the solver sees it. *)
+(** The type for a contact, as the solver sees it: where it is, which way it
+    pushes, and how hard.
+
+    The force is decomposed in the contact's own frame, which the engine uses to
+    build the friction rows: the normal part is the sum of the rows, and the
+    tangential part is what the pyramid's edges leave after cancelling — the
+    same numbers the solver acted on, not a re-derivation from the state. *)
 type contact =
   { point : p3
   ; normal : p3 (** unit, from geom 1 towards geom 2. *)
+  ; tangents : p3 * p3 (** unit, orthogonal to [normal] and to each other. *)
   ; depth : float (** signed distance; negative is penetration. *)
-  ; dim : int
+  ; dim : int (** the contact dimensionality; 1 means no friction rows. *)
+  ; force : float (** the normal force, summed over the contact's rows. *)
+  ; tangent_force : p3 (** the friction force, world. *)
+  ; friction : float (** the friction coefficient of the first axis. *)
   }
 
 (** The type for a force arrow: a point and a vector. *)
@@ -224,6 +234,16 @@ val extent : t -> p3 * p3
     of {!extent}, with the eye offset by [(2, -2.8, 1.6)] times the box's
     largest side, which is far enough out that a model of any size fits. *)
 val framing : t -> p3 * p3
+
+(** [scale p k] is [p] multiplied by [k], for a caller that wants to turn a
+    vector into a drawn endpoint without reimplementing the record. *)
+val scale : p3 -> float -> p3
+
+(** [depth_colour depth] is the colour a contact point is drawn in: green when
+    the surfaces are just touching, through amber, to red at a centimetre of
+    penetration. It is a function of the depth alone so that a test can say what
+    it is, and so that two backends cannot disagree about it. *)
+val depth_colour : float -> colour
 
 (** [pp] formats a summary: the time, the geom and contact counts. *)
 val pp : Format.formatter -> t -> unit

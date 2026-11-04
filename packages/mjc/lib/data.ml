@@ -39,6 +39,7 @@ type ('a, 'd) t =
   ; ncon : 'd Nx.int32_t
   ; contact_dist : 'a
   ; contact_pos : 'a
+  ; contact_frame : 'a
   ; contact_normal : 'a
   ; contact_geom : 'd Nx.int32_t
   ; contact_body : 'd Nx.int32_t
@@ -117,6 +118,7 @@ let create (m : Model.host) : host =
   ; ncon = Nx.scalar Nx.int32 0l
   ; contact_dist = zeros [| t.nconmax |]
   ; contact_pos = zeros [| t.nconmax; 3 |]
+  ; contact_frame = zeros [| t.nconmax; 9 |]
   ; contact_normal = zeros [| t.nconmax; 3 |]
   ; contact_geom = Nx.zeros Nx.int32 [| t.nconmax; 2 |]
   ; contact_body = Nx.zeros Nx.int32 [| t.nconmax; 2 |]

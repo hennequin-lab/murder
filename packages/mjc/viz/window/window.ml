@@ -139,7 +139,6 @@ let colour (c : S.colour) =
     255
 
 let black = RC.Color.create 20 20 20 255
-let red = RC.Color.create 210 40 40 255
 
 (* {1 Joint control}
 
@@ -393,17 +392,40 @@ let draw ?(fps = true) (t : t) =
     RM.draw_line_3d (v3 b.frame.origin) (v3 b.frame.x) (Color.create 200 60 60 255);
     RM.draw_line_3d (v3 b.frame.origin) (v3 b.frame.y) (Color.create 60 170 60 255);
     RM.draw_line_3d (v3 b.frame.origin) (v3 b.frame.z) (Color.create 60 90 200 255));
+  (* Contacts: the point coloured by penetration, the normal arrow by its
+     force, the friction force in red, and the pyramid's four edges as the cone
+     it is. *)
+  let force_scale = 0.0006 in
   List.iter scene.S.contacts ~f:(fun (c : S.contact) ->
-    RM.draw_sphere (v3 c.point) 0.02 red;
-    RM.draw_line_3d
-      (v3 c.point)
-      (v3
-         S.
-           { x = c.point.x +. (c.normal.x *. 0.1)
-           ; y = c.point.y +. (c.normal.y *. 0.1)
-           ; z = c.point.z +. (c.normal.z *. 0.1)
-           })
-      red);
+    RM.draw_sphere (v3 c.point) 0.02 (colour (S.depth_colour c.depth));
+    let arrow (v : S.p3) col =
+      let tip =
+        S.
+          { x = c.point.x +. (v.x *. force_scale)
+          ; y = c.point.y +. (v.y *. force_scale)
+          ; z = c.point.z +. (v.z *. force_scale)
+          }
+      in
+      RM.draw_line_3d (v3 c.point) (v3 tip) col
+    in
+    arrow (S.scale c.normal c.force) (Color.create 30 130 60 255);
+    arrow c.tangent_force (Color.create 200 60 50 255);
+    if c.dim > 1
+    then (
+      let t1, t2 = c.tangents in
+      let mu = c.friction *. c.force in
+      List.iter
+        [ t1, 1.; t1, -1.; t2, 1.; t2, -1. ]
+        ~f:(fun (d, sgn) ->
+          let s = sgn *. mu in
+          let edge =
+            S.
+              { x = c.normal.x +. (s *. d.x)
+              ; y = c.normal.y +. (s *. d.y)
+              ; z = c.normal.z +. (s *. d.z)
+              }
+          in
+          arrow edge (Color.create 214 138 26 200))));
   draw_overlays t scene;
   List.iter scene.S.forces ~f:(fun (f : S.arrow) ->
     let tip =
@@ -415,7 +437,6 @@ let draw ?(fps = true) (t : t) =
     in
     RM.draw_line_3d (v3 f.from) (v3 tip) (Color.create 40 100 220 255));
   end_mode_3d ();
-  (* DEBUG *)
   if t.hud
   then (
     let line y size text = RT.draw_text text 10 y size black in

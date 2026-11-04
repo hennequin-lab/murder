@@ -13,7 +13,7 @@ let name_bytes = 64
 
 (* {1 Layout} *)
 
-let stride_of ~ngeom ~nconmax = 4 + (12 * ngeom) + (8 * nconmax)
+let stride_of ~ngeom ~nconmax = 4 + (12 * ngeom) + (17 * nconmax)
 
 (* Offsets inside one record, in floats. *)
 let off_step = 0
@@ -22,7 +22,8 @@ let off_ncon = 2
 let off_nefc = 3
 let off_geom = 4
 let off_contact_pos ~ngeom = off_geom + (12 * ngeom)
-let off_contact_normal ~ngeom ~nconmax = off_contact_pos ~ngeom + (3 * nconmax)
+let off_contact_frame ~ngeom ~nconmax = off_contact_pos ~ngeom + (3 * nconmax)
+let off_contact_normal ~ngeom ~nconmax = off_contact_frame ~ngeom ~nconmax + (9 * nconmax)
 let off_contact_dist ~ngeom ~nconmax = off_contact_normal ~ngeom ~nconmax + (3 * nconmax)
 let off_contact_force ~ngeom ~nconmax = off_contact_dist ~ngeom ~nconmax + nconmax
 
@@ -33,6 +34,7 @@ type frame =
   ; nefc : int
   ; geom : float array
   ; contact_pos : float array
+  ; contact_frame : float array
   ; contact_normal : float array
   ; contact_dist : float array
   ; contact_force : float array
@@ -107,6 +109,7 @@ let append w ~step (d : Mjc.Data.host) =
   let geom_pos = Nx.to_array d.Mjc.Data.geom_xpos
   and geom_mat = Nx.to_array d.Mjc.Data.geom_xmat
   and cpos = Nx.to_array d.Mjc.Data.contact_pos
+  and cframe = Nx.to_array d.Mjc.Data.contact_frame
   and cnormal = Nx.to_array d.Mjc.Data.contact_normal
   and cdist = Nx.to_array d.Mjc.Data.contact_dist in
   put (Stdlib.Int64.to_float step) w.buf off_step;
@@ -122,6 +125,7 @@ let append w ~step (d : Mjc.Data.host) =
     done
   done;
   let pos0 = off_contact_pos ~ngeom
+  and frame0 = off_contact_frame ~ngeom ~nconmax
   and nrm0 = off_contact_normal ~ngeom ~nconmax
   and dist0 = off_contact_dist ~ngeom ~nconmax
   and force0 = off_contact_force ~ngeom ~nconmax in
@@ -130,6 +134,9 @@ let append w ~step (d : Mjc.Data.host) =
     for k = 0 to 2 do
       put cpos.((3 * c) + k) w.buf (pos0 + (3 * c) + k);
       put cnormal.((3 * c) + k) w.buf (nrm0 + (3 * c) + k)
+    done;
+    for k = 0 to 8 do
+      put cframe.((9 * c) + k) w.buf (frame0 + (9 * c) + k)
     done;
     put cdist.(c) w.buf (dist0 + c)
   done;
@@ -255,10 +262,12 @@ let frame t i =
   and nconmax = t.nconmax in
   let geom = Array.init (12 * ngeom) ~f:(fun k -> get buf (off_geom + k)) in
   let pos0 = off_contact_pos ~ngeom
+  and frame0 = off_contact_frame ~ngeom ~nconmax
   and nrm0 = off_contact_normal ~ngeom ~nconmax
   and dist0 = off_contact_dist ~ngeom ~nconmax
   and force0 = off_contact_force ~ngeom ~nconmax in
   let contact_pos = Array.init (3 * ncon) ~f:(fun k -> get buf (pos0 + k))
+  and contact_frame = Array.init (9 * ncon) ~f:(fun k -> get buf (frame0 + k))
   and contact_normal = Array.init (3 * ncon) ~f:(fun k -> get buf (nrm0 + k))
   and contact_dist = Array.init ncon ~f:(fun k -> get buf (dist0 + k))
   and contact_force = Array.init ncon ~f:(fun k -> get buf (force0 + k)) in
@@ -268,6 +277,7 @@ let frame t i =
   ; nefc
   ; geom
   ; contact_pos
+  ; contact_frame
   ; contact_normal
   ; contact_dist
   ; contact_force
@@ -300,8 +310,20 @@ let scene (m : Mjc.Model.host) t i =
             ; y = f.contact_normal.((3 * c) + 1)
             ; z = f.contact_normal.((3 * c) + 2)
             }
+        ; tangents =
+            ( { x = f.contact_frame.(9 * c)
+              ; y = f.contact_frame.((9 * c) + 1)
+              ; z = f.contact_frame.((9 * c) + 2)
+              }
+            , { x = f.contact_frame.((9 * c) + 3)
+              ; y = f.contact_frame.((9 * c) + 4)
+              ; z = f.contact_frame.((9 * c) + 5)
+              } )
         ; depth = f.contact_dist.(c)
         ; dim = 0
+        ; force = f.contact_force.(c)
+        ; tangent_force = { x = 0.; y = 0.; z = 0. }
+        ; friction = 0.
         })
   in
   Scene.of_poses m ~time:f.time ~geom:f.geom ~contacts
