@@ -78,6 +78,7 @@ type t =
   ; jnt_limited : bool array (** [[njnt]] *)
   ; dof_frictionloss : float array (** [[nv]] *)
   ; integrator : integrator
+  ; geom_condim : int array (** [[ngeom]] *)
   ; contacts_enabled : bool
   ; eq_type : eq_type array (** [[neq]] *)
   ; eq_objtype : eq_objtype array (** [[neq]] *)
@@ -179,6 +180,7 @@ let validate (t : t) : (unit, string) Result.t =
   len "geom_bodyid" t.ngeom t.geom_bodyid;
   if Array.length t.geom_type <> t.ngeom
   then add "geom_type has length %d, expected %d" (Array.length t.geom_type) t.ngeom;
+  length_ok problems "geom_condim" t.ngeom t.geom_condim;
   length_ok problems "jnt_limited" t.njnt (Array.map t.jnt_limited ~f:Bool.to_int);
   length_ok problems "dof_frictionloss" t.nv t.dof_frictionloss;
   if Array.length t.eq_type <> t.neq

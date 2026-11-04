@@ -630,11 +630,10 @@ let contact (m : Model.host) (d : Data.host) : Data.host =
   (* The port computes frictionless contacts only. A model that can collide
      with a frictional geom is refused here, where the row set would otherwise
      silently disagree with MuJoCo's. *)
-  let dims = Nx.to_array p.geom_condim in
   Collision.candidates m
   |> Array.iter ~f:(fun (c : Collision.cand) ->
-    let dim = Stdlib.Float.max dims.(c.g1) dims.(c.g2) in
-    if Stdlib.( > ) dim 1.5
+    let dim = Stdlib.max t.geom_condim.(c.g1) t.geom_condim.(c.g2) in
+    if Stdlib.( > ) dim 1
     then raise (Invalid_argument "contact friction (condim > 1) is not implemented yet"));
   (* One slot per possible contact, not per row: the contact arrays are
      [nconmax] long and the row index is the stage's offset plus the slot. *)

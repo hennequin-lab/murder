@@ -137,9 +137,13 @@ def budgets(m):
     eq = sum(EQ_ROWS.get(int(t), 0) for t in m.eq_type)
     friction = sum(1 for d in m.dof_frictionloss if d > 0)
     nconmax = max(8, 2 * ng)
+    # A model that disables contacts, or has nothing to collide with, pays no
+    # row budget for them: the dense factor is quadratic in this number.
+    disabled = bool(m.opt.disableflags & (1 << 4))
+    contact_rows = 0 if disabled or ng < 2 else nconmax
     return {
         "nconmax": max(8, 2 * ng),
-        "nefcmax": max(4, 2 * limited + eq + friction + nconmax),
+        "nefcmax": max(4, 2 * limited + eq + friction + contact_rows),
         "max_geom_pairs": max(16, 2 * ng),
     }
 

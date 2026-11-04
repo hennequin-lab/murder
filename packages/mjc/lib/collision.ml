@@ -182,79 +182,103 @@ let geometry (m : Model.host) (d : Data.host) (c : cand) =
    condim is the max, the friction the elementwise max, and the solver
    parameters are mixed with a weight that favours the geom with the larger
    [solmix]. Standard-format references mix; direct-format ones take the min.
-   Every input is a model constant, so this is host arithmetic. *)
 
-type params =
-  { dim : int
-  ; friction : float array (** [[5]], MuJoCo's slot layout *)
-  ; solref : float array (** [[2]] *)
-  ; solimp : float array (** [[5]] *)
-  ; includemargin : float
+   The C engine does this with scalars because it reads a model it owns. A
+   traced program may not: a captured parameter is a traced tensor, and only
+   tensor operations are allowed on one. So the same arithmetic is written as
+   gathers and [where]s, one row per candidate contact. *)
+
+type mixed =
+  { dim : Nx.host Nx.int32_t (** [[ncand]] *)
+  ; friction : Nx.host Nx.float64_t (** [[ncand;5]] *)
+  ; solref : Nx.host Nx.float64_t (** [[ncand;2]] *)
+  ; solimp : Nx.host Nx.float64_t (** [[ncand;5]] *)
+  ; includemargin : Nx.host Nx.float64_t (** [[ncand]] *)
+  ; reach : Nx.host Nx.float64_t
+    (** [[ncand]], the bounding radius: the margin plus the two bounds. *)
   }
 
-(* The contact's five friction slots from the three a geom carries: MuJoCo
-   duplicates the sliding value into the torsional slot and the rolling value
-   into the last two, so that every condim has an entry per tangential axis. *)
-let unpack (mu : float array) = [| mu.(0); mu.(0); mu.(1); mu.(2); mu.(2) |]
-
-let mix_weight s1 s2 =
-  let minval = 1e-15 in
-  if Float.(s1 >= minval && s2 >= minval)
-  then Float.(s1 / (s1 + s2))
-  else if Float.(s1 < minval && s2 < minval)
-  then 0.5
-  else if Float.(s1 < minval)
-  then 0.0
-  else 1.0
-
-let contact_params (m : Model.host) (c : cand) : params =
+let mixed_params (m : Model.host) (cands : cand array) : mixed =
   let p = m.params in
-  let host x = Nx.to_array x in
-  let margin = host p.geom_margin
-  and gap = host p.geom_gap
-  and condim = host p.geom_condim
-  and priority = Array.map m.topo.geom_priority ~f:Float.of_int in
-  ignore priority;
-  let friction = host p.geom_friction
-  and solref = host p.geom_solref
-  and solimp = host p.geom_solimp
-  and solmix = host p.geom_solmix in
-  let g1 = c.g1
-  and g2 = c.g2 in
-  let take n at = Array.init n ~f:(fun k -> at k) in
-  match Int.compare (Int.of_float priority.(g1)) (Int.of_float priority.(g2)) with
-  | 0 ->
-    let mix = mix_weight solmix.(g1) solmix.(g2) in
-    let width = 2 in
-    let standard =
-      Float.(solref.(Int.(width * g1)) > 0.0 && solref.(Int.(width * g2)) > 0.0)
-    in
-    let ref k =
-      let a = solref.(Int.((width * g1) + k))
-      and b = solref.(Int.((width * g2) + k)) in
-      if standard then Float.((mix * a) + ((1.0 - mix) * b)) else Float.min a b
-    in
-    let imp k =
-      let a = solimp.(Int.((5 * g1) + k))
-      and b = solimp.(Int.((5 * g2) + k)) in
-      Float.((mix * a) + ((1.0 - mix) * b))
-    in
-    let mu k = Float.max friction.(Int.((3 * g1) + k)) friction.(Int.((3 * g2) + k)) in
-    let mu = take 3 mu in
-    { dim = Int.max (Int.of_float condim.(g1)) (Int.of_float condim.(g2))
-    ; friction = unpack mu
-    ; solref = take width ref
-    ; solimp = take 5 imp
-    ; includemargin = Float.(margin.(g1) + margin.(g2) + gap.(g1) + gap.(g2))
-    }
-  | n ->
-    let g = if Int.( > ) n 0 then g1 else g2 in
-    { dim = Int.of_float condim.(g)
-    ; friction = unpack (take 3 (fun k -> friction.(Int.((3 * g) + k))))
-    ; solref = take 2 (fun k -> solref.(Int.((2 * g) + k)))
-    ; solimp = take 5 (fun k -> solimp.(Int.((5 * g) + k)))
-    ; includemargin = Float.(margin.(g1) + margin.(g2) + gap.(g1) + gap.(g2))
-    }
+  let n = Array.length cands in
+  let minval = 1e-15 in
+  let sc x = Nx.scalar Nx.float64 x in
+  let g side =
+    Nx.init Nx.int64 [| n |] (fun i ->
+      Int64.of_int (if Int.equal side 0 then cands.(i.(0)).g1 else cands.(i.(0)).g2))
+  in
+  let g1 = g 0
+  and g2 = g 1 in
+  let take g x = Nx.take ~axis:0 g x in
+  let prio side =
+    Nx.init Nx.float64 [| n |] (fun i ->
+      let c = cands.(i.(0)) in
+      Float.of_int m.topo.geom_priority.(if Int.equal side 0 then c.g1 else c.g2))
+  in
+  let prio1 = prio 0
+  and prio2 = prio 1 in
+  let as_row v = Nx.reshape [| n; 1 |] v in
+  (* Picking between two parameter rows: the condition is a column so that it
+     broadcasts over the parameter's own width. *)
+  let pick v1 v2 v12 =
+    Nx.where
+      (Nx.logical_not (as_row (Nx.less prio1 prio2)))
+      (Nx.where (as_row (Nx.greater prio1 prio2)) v1 v12)
+      v2
+  in
+  let margin1 = take g1 p.geom_margin
+  and margin2 = take g2 p.geom_margin
+  and gap1 = take g1 p.geom_gap
+  and gap2 = take g2 p.geom_gap
+  and rbound1 = take g1 p.geom_rbound
+  and rbound2 = take g2 p.geom_rbound in
+  let includemargin = Nx.add (Nx.add margin1 margin2) (Nx.add gap1 gap2) in
+  let reach = Nx.add (Nx.add includemargin rbound1) rbound2 in
+  (* The mix weight: s1/(s1+s2) when both are meaningful, 0.5 when neither is,
+     and the one that is when only one is. *)
+  let s1 = take g1 p.geom_solmix
+  and s2 = take g2 p.geom_solmix in
+  let both =
+    Nx.logical_and (Nx.greater_equal_s s1 minval) (Nx.greater_equal_s s2 minval)
+  in
+  let neither = Nx.logical_and (Nx.less_s s1 minval) (Nx.less_s s2 minval) in
+  let ratio = Nx.div s1 (Nx.maximum_s (Nx.add s1 s2) minval) in
+  let mix =
+    Nx.where
+      both
+      ratio
+      (Nx.where neither (sc 0.5) (Nx.where (Nx.less_s s1 minval) (sc 0.0) (sc 1.0)))
+  in
+  let one_minus = Nx.sub (sc 1.0) (as_row mix) in
+  let solimp =
+    pick
+      (take g1 p.geom_solimp)
+      (take g2 p.geom_solimp)
+      (Nx.add
+         (Nx.mul (as_row mix) (take g1 p.geom_solimp))
+         (Nx.mul one_minus (take g2 p.geom_solimp)))
+  in
+  let ref1 = take g1 p.geom_solref
+  and ref2 = take g2 p.geom_solref in
+  let standard =
+    Nx.logical_and
+      (Nx.greater_s (Nx.slice [ A; I 0 ] ref1) 0.0)
+      (Nx.greater_s (Nx.slice [ A; I 0 ] ref2) 0.0)
+  in
+  let solref_mixed = Nx.add (Nx.mul (as_row mix) ref1) (Nx.mul one_minus ref2) in
+  let solref =
+    pick ref1 ref2 (Nx.where (as_row standard) solref_mixed (Nx.minimum ref1 ref2))
+  in
+  let mu = Nx.maximum (take g1 p.geom_friction) (take g2 p.geom_friction) in
+  (* MuJoCo's five contact slots from the three a geom carries. *)
+  let col k x = Nx.reshape [| n; 1 |] (Nx.slice [ A; I k ] x) in
+  let friction =
+    Nx.concatenate ~axis:1 [ col 0 mu; col 0 mu; col 1 mu; col 2 mu; col 2 mu ]
+  in
+  let dim =
+    Nx.cast Nx.int32 (Nx.maximum (take g1 p.geom_condim) (take g2 p.geom_condim))
+  in
+  { dim; friction; solref; solimp; includemargin; reach }
 
 (* {1 Contacts}
 
@@ -264,8 +288,7 @@ let contact_params (m : Model.host) (c : cand) : params =
    scatter writes nothing. *)
 
 let contacts (m : Model.host) (d : Data.host) : Data.host =
-  let t = m.topo
-  and p = m.params in
+  let t = m.topo in
   let cands = candidates m in
   let ncand = Array.length cands in
   (* A model with no candidate pair touches no parameter at all, which is most
@@ -273,8 +296,8 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
   if Int.equal ncand 0
   then { d with ncon = Nx.zeros Nx.int32 [||] }
   else (
-    let rbound = Nx.to_array p.geom_rbound in
-    let params = Array.map cands ~f:(contact_params m) in
+    let mix = mixed_params m cands in
+    let row_of k x = Nx.slice [ I k ] x in
     let dist = ref (Nx.zeros Nx.float64 [| ncand |])
     and pos = ref (Nx.zeros Nx.float64 [| ncand; 3 |])
     and normal = ref (Nx.zeros Nx.float64 [| ncand; 3 |])
@@ -282,7 +305,8 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
     and jac = ref (Nx.zeros Nx.float64 [| ncand; t.nv |]) in
     Array.iteri cands ~f:(fun i c ->
       let dist_i, pos_i, normal_i = geometry m d c in
-      let prm = params.(i) in
+      let includemargin = row_of i mix.includemargin
+      and reach = row_of i mix.reach in
       let plane =
         Poly.( = ) t.geom_type.(c.g1) Plane || Poly.( = ) t.geom_type.(c.g2) Plane
       in
@@ -290,14 +314,13 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
         if plane
         then Nx.scalar Nx.float64 1.0
         else (
-          let reach = Float.(prm.includemargin + rbound.(c.g1) + rbound.(c.g2)) in
           let dif = Nx.sub (geom_pos d c.g1) (geom_pos d c.g2) in
           Nx.where
-            (Nx.less_equal (Nx.dot dif dif) (Nx.scalar Nx.float64 Float.(reach * reach)))
+            (Nx.less_equal (Nx.dot dif dif) (Nx.mul reach reach))
             (Nx.scalar Nx.float64 1.0)
             (Nx.scalar Nx.float64 0.0))
       in
-      let near = Nx.less_equal dist_i (Nx.scalar Nx.float64 prm.includemargin) in
+      let near = Nx.less_equal dist_i includemargin in
       let on =
         Nx.mul bound (Nx.where near (Nx.scalar Nx.float64 1.0) (Nx.scalar Nx.float64 0.0))
       in
@@ -334,19 +357,11 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
         Int32.of_int
           (if Int.equal i.(1) 0 then t.geom_bodyid.(c.g1) else t.geom_bodyid.(c.g2)))
     in
-    let dim = Nx.init Nx.int32 [| ncand |] (fun i -> Int32.of_int params.(i.(0)).dim) in
-    let friction =
-      Nx.init Nx.float64 [| ncand; 5 |] (fun i -> params.(i.(0)).friction.(i.(1)))
-    in
-    let solref =
-      Nx.init Nx.float64 [| ncand; 2 |] (fun i -> params.(i.(0)).solref.(i.(1)))
-    in
-    let solimp =
-      Nx.init Nx.float64 [| ncand; 5 |] (fun i -> params.(i.(0)).solimp.(i.(1)))
-    in
-    let includemargin =
-      Nx.init Nx.float64 [| ncand |] (fun i -> params.(i.(0)).includemargin)
-    in
+    let dim = mix.dim
+    and friction = mix.friction
+    and solref = mix.solref
+    and solimp = mix.solimp
+    and includemargin = mix.includemargin in
     { d with
       ncon = Nx.cast Nx.int32 (Nx.sum !live)
     ; contact_dist = put !dist d.contact_dist

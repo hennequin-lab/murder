@@ -453,6 +453,7 @@ let parse (c : cursor) : Model.host =
   in
   let limited = Nx.to_array (tensor "jnt_limited") in
   let disable = Int.of_float (Nx.to_array (tensor "disableflags")).(0) in
+  let condim = Nx.to_array (tensor "geom_condim") in
   let topo =
     { Topo.name
     ; mujoco_version
@@ -491,6 +492,7 @@ let parse (c : cursor) : Model.host =
     ; geom_priority = i "geom_priority"
     ; site_bodyid = i "site_bodyid"
     ; integrator
+    ; geom_condim = Array.map condim ~f:Int.of_float
     ; contacts_enabled = Int.( land ) disable (1 lsl 4) = 0
     ; jnt_limited = Array.map limited ~f:(fun x -> Stdlib.( > ) x 0.5)
     ; dof_frictionloss = frictionloss

@@ -305,15 +305,29 @@ position, margin, impedance and force match MuJoCo to 1e-12, 1e-12, 1e-12 and
 that a random pose buries thousands of newtons deep — and a nine-step
 trajectory matches at 1e-8.
 
+**Contact parameters are mixed as tensors, not read as host values.** The C
+engine mixes two geoms' parameters with scalars because it owns its model; a
+traced program may not, because a captured parameter is a traced tensor and
+only tensor operations are allowed on one. So `Collision` now gathers both
+geoms' rows and mixes them with `where`s — priority overriding, the solmix
+weight with its three degenerate cases, standard references mixing and direct
+ones taking the minimum, the five friction slots unpacked from three. The one
+host value the stage still needs is each geom's `condim`, for the refusal
+below, and that is a `Topo` copy like `jnt_limited`. With that, a compiled and
+batched step of a model that collides works, and the bench covers them again.
+
+Two consequences worth recording. The Gauss-Seidel warm start in the solver
+now runs only when the model has a friction row: the sweeps are unrolled, so
+they cost tracing time in every compiled step, and the corpus's equality and
+limit rows converge from the warmstart force alone. And the row budget charges
+for contacts only when a model can have them — contacts enabled and at least
+two geoms — because the dense factor is quadratic in `nefcmax` and the
+constraint-only models were paying for rows they could never produce.
+
 **What is not in yet.** Contacts with friction (condim > 1) are refused by
 name, because a frictional contact is three coupled rows and the pyramidal
-cone is a group constraint the solver does not model. And a *compiled* or
-batched step of a model that can collide is not supported yet: `Collision`
-reads its parameters as host values, which `Rune.jit` does not allow for a
-captured tensor, so the bench cannot compile those models. The eager path is
-what the corpus exercises; the fix is the host-copy pattern that `jnt_limited`
-and `dof_frictionloss` already use in `Topo`, applied to the contact
-parameters.
+cone is a group constraint the solver does not model: a friction row's bound
+is another row's force, not a constant.
 
 **M3 is complete.** The `.mjcb` format is version 9: it
 carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the

@@ -104,6 +104,10 @@ type t =
         dofs get a friction row is decided when the program is built, not
         when it runs. *)
   ; integrator : integrator
+  ; geom_condim : int array
+    (** [[ngeom]], the contact dimensionality each geom asks for. Host
+        data: which contact rows a model can produce is decided when the
+        program is built. *)
   ; contacts_enabled : bool
     (** Whether MuJoCo's contact-disable flag is set. A model that disables
         contacts produces no rows and no contact array. *)

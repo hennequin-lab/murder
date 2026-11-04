@@ -86,25 +86,32 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
   in
   let slack x bound = Nx.mul_s (Nx.abs bound) (x *. 1e-12) in
   let lambda = ref (select d.efc_force) in
-  (* Gauss-Seidel warm start. The active set below is exact once it finds the
-     right one, but a near-degenerate problem can stall it. Coordinate descent
-     on the same quadratic with the same bounds is monotone and cannot cycle,
-     so its answer is used as the starting point: it gets the active set right
-     even when it has not converged, and Newton then finishes it exactly. Each
-     sweep walks the rows in order, so this is the sequential form. *)
-  let polish_sweeps = 8 in
-  for _ = 1 to polish_sweeps do
-    for r = 0 to nb - 1 do
-      let row = Nx.slice [ I r; A ] a in
-      let grad_r = Nx.add (Nx.dot row !lambda) (Nx.get [ r ] b) in
-      let curvature = Nx.get [ r; r ] a in
-      let fresh =
-        Nx.sub (Nx.get [ r ] !lambda) (Nx.div grad_r curvature)
-        |> fun x -> Nx.minimum (Nx.maximum x (Nx.get [ r ] lo)) (Nx.get [ r ] hi)
-      in
-      lambda := Nx.set [ I r ] fresh !lambda
-    done
-  done;
+  (* Only a box-constrained row set stalls the active set badly enough to
+     need a warm start: the corpus's equality and limit rows converge from
+     the warmstart force alone, and these sweeps are unrolled, so they cost
+     tracing time in every compiled step. *)
+  let boxed = Array.exists t.dof_frictionloss ~f:(fun x -> Float.( > ) x 0.0) in
+  if boxed
+  then (
+    (* Gauss-Seidel warm start. The active set below is exact once it finds the
+       right one, but a near-degenerate problem can stall it. Coordinate descent
+       on the same quadratic with the same bounds is monotone and cannot cycle,
+       so its answer is used as the starting point: it gets the active set right
+       even when it has not converged, and Newton then finishes it exactly. Each
+       sweep walks the rows in order, so this is the sequential form. *)
+    let polish_sweeps = 8 in
+    for _ = 1 to polish_sweeps do
+      for r = 0 to nb - 1 do
+        let row = Nx.slice [ I r; A ] a in
+        let grad_r = Nx.add (Nx.dot row !lambda) (Nx.get [ r ] b) in
+        let curvature = Nx.get [ r; r ] a in
+        let fresh =
+          Nx.sub (Nx.get [ r ] !lambda) (Nx.div grad_r curvature)
+          |> fun x -> Nx.minimum (Nx.maximum x (Nx.get [ r ] lo)) (Nx.get [ r ] hi)
+        in
+        lambda := Nx.set [ I r ] fresh !lambda
+      done
+    done);
   let iters = Int.min (Int.of_float (Nx.item [] p.iterations)) max_iterations in
   for i = 1 to iters do
     let grad = Nx.add (Nx.matmul a !lambda) b in
