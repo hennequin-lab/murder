@@ -554,6 +554,13 @@ as a live frame with the same geometry, and the §9 table already prices that
 (`blocks` 0.15 ms, the 65-geom budget model 14.6 ms). What the log adds is
 0.002 ms of read.
 
+**And "did it diverge, and when?"** `Log.divergence` scans a finished log for
+the first frame whose geometry is not finite or is more than a kilometre out;
+the window computes it once when the log is opened, says `diverged at 100 (d)`
+in the HUD, and `d` jumps there. The test patches one record of a clean log to
+a thousand kilometres and expects the index back, which also checks that the
+record layout is the one the header advertises.
+
 **The contact detail is in too.** A contact is now drawn as the solver sees it:
 the point coloured by penetration, the normal arrow scaled by the normal force,
 the friction force in red, and — for a contact with friction rows — the

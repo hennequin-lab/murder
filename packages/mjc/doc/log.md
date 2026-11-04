@@ -1,3 +1,17 @@
+## "Diverged at step N" is a jump, and one test that only needed a file
+
+The viewer's stated purpose includes "did the run diverge, and when?". With the
+log that is a scan and a jump: `Log.divergence` returns the first frame whose
+geom poses are non-finite or more than a kilometre from the origin, the window
+computes it once when a log opens, and `d` moves the cursor there. The HUD says
+`diverged at 100 (d)` before you press anything.
+
+Testing it needed no simulation that actually blows up: the test writes a clean
+log, patches one record's first geom position to 1e6 *in the file*, and expects
+the index back. That is worth more than it looks — it can only work if the
+documented layout is the layout the writer wrote, so the test doubles as a check
+of the format description in `log.mli`.
+
 ## V3's contact detail needed a field the engine did not have
 
 Drawing a contact the way the solver sees it — force along the normal, friction

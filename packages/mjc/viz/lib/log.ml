@@ -285,6 +285,32 @@ let frame t i =
 
 let close_reader t = Unix.close t.fd
 
+let divergence ?(limit = 1e3) t =
+  let limit2 = limit *. limit in
+  let bad = ref None in
+  let i = ref 0 in
+  while Option.is_none !bad && !i < t.frames do
+    let f = frame t !i in
+    let n = Stdlib.Array.length f.geom in
+    let k = ref 0 in
+    while Option.is_none !bad && !k < n do
+      (* every fourth float starts a position: 12 per geom, position first *)
+      let x = f.geom.(!k)
+      and y = f.geom.(!k + 1)
+      and z = f.geom.(!k + 2) in
+      let outside =
+        (not (Float.is_finite x))
+        || (not (Float.is_finite y))
+        || (not (Float.is_finite z))
+        || Float.( > ) ((x *. x) +. (y *. y) +. (z *. z)) limit2
+      in
+      if outside then bad := Some !i;
+      k := !k + 12
+    done;
+    Int.incr i
+  done;
+  !bad
+
 let scene (m : Mjc.Model.host) t i =
   let t_model = m.topo in
   if not (Int.equal t.ngeom t_model.ngeom && Int.equal t.nconmax t_model.nconmax)

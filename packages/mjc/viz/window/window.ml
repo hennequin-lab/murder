@@ -20,6 +20,9 @@ type follow =
   { log : Mjc_viz.Log.t
   ; mutable index : int
   ; mutable playing : bool
+  ; divergence : int option
+    (** the first frame outside the model's reach, found once when the log
+        is opened, so that [d] can jump to it. *)
   }
 
 type t =
@@ -93,7 +96,7 @@ let open_
                model.topo.name
                model.topo.ngeom
                model.topo.nconmax);
-        { log; index = 0; playing = true })
+        { log; index = 0; playing = true; divergence = Mjc_viz.Log.divergence log })
   in
   let log = Option.map log_path ~f:(fun path -> Mjc_viz.Log.create ~path model) in
   let eye = Option.value eye ~default:scene_eye
@@ -463,10 +466,13 @@ let draw ?(fps = true) (t : t) =
          34
          18
          (Stdlib.Printf.sprintf
-            "replay %d / %d  %s"
+            "replay %d / %d  %s%s"
             f.index
             (Mjc_viz.Log.length f.log - 1)
-            (if f.playing then "playing" else "paused"))
+            (if f.playing then "playing" else "paused")
+            (match f.divergence with
+             | Some i -> Stdlib.Printf.sprintf "  diverged at %d (d)" i
+             | None -> ""))
      | None -> line 34 18 (joint_line t));
     line
       56
@@ -542,6 +548,12 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
          f.playing <- false;
          f.index <- Int.min (f.index + 1) (Mjc_viz.Log.length f.log - 1));
        if RC.is_key_pressed RC.Key.Home then f.index <- 0;
+       if RC.is_key_pressed RC.Key.D
+       then (
+         f.playing <- false;
+         match f.divergence with
+         | Some i -> f.index <- i
+         | None -> ());
        if RC.is_key_pressed RC.Key.End then f.index <- Mjc_viz.Log.length f.log - 1);
     if RC.is_key_pressed RC.Key.Left_bracket then nudge t (-1.);
     if RC.is_key_pressed RC.Key.Right_bracket then nudge t 1.;

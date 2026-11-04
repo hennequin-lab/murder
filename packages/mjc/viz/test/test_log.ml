@@ -171,6 +171,47 @@ let test_seek_is_constant_time () =
   L.close_reader t;
   Stdlib.Sys.remove path
 
+(* Divergence is found where it happened: a record with a geom thrown to a
+   thousand metres is the frame the viewer should jump to, and a clean run has
+   none. The record is patched in the file, which is also a check that the
+   layout is the one the header advertises. *)
+let test_divergence () =
+  let m = load "blocks" in
+  let path, _ = write_run m ~n:20 in
+  let t =
+    match L.open_ path with
+    | Ok t -> t
+    | Error e -> fail e
+  in
+  equal ~msg:"clean run" (option int) None (L.divergence t);
+  L.close_reader t;
+  (* one geom of record 7, moved far away: stride floats per record, the geom
+     block starts at float 4 *)
+  let header = 96
+  and record =
+    8 * (4 + (12 * m.Mjc.Model.topo.ngeom) + (17 * m.Mjc.Model.topo.nconmax))
+  in
+  let offset = header + (7 * record) + (4 * 8) in
+  let fd = Unix.openfile path [ Unix.O_WRONLY ] 0 in
+  ignore (Unix.LargeFile.lseek fd (Stdlib.Int64.of_int offset) Unix.SEEK_SET);
+  let patch = Stdlib.Bytes.create 8 in
+  Stdlib.Bytes.set_int64_le patch 0 (Stdlib.Int64.bits_of_float 1e6);
+  ignore (Unix.write fd patch 0 8);
+  Unix.close fd;
+  let t =
+    match L.open_ path with
+    | Ok t -> t
+    | Error e -> fail e
+  in
+  equal ~msg:"diverged at 7" (option int) (Some 7) (L.divergence t);
+  equal
+    ~msg:"a limit inside the run finds the first frame outside it"
+    (option int)
+    (Some 0)
+    (L.divergence ~limit:0.1 t);
+  L.close_reader t;
+  Stdlib.Sys.remove path
+
 (* A refused file says why: a text file, a torn record, and an index past the
    end are three different answers. *)
 let test_refusals () =
@@ -214,5 +255,6 @@ let () =
        [ test "round trip" test_round_trip
        ; test "replay scene" test_replay_scene
        ; test "seek is constant time" test_seek_is_constant_time
+       ; test "divergence" test_divergence
        ; test "refusals" test_refusals
        ])

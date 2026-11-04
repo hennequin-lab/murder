@@ -121,6 +121,17 @@ val name : t -> string
 (** [close t] closes the file. *)
 val close_reader : t -> unit
 
+(** [divergence ?limit t] is the first frame whose geometry has left [limit] —
+    a geom position that is not finite, or is further than [limit] from the
+    origin — or [None] if every frame is inside it. [limit] defaults to
+    [1e3].
+
+    It scans, so call it when a run has stopped rather than per drawn frame. On
+    a 4 000-frame log of a small model the scan is a few milliseconds, and it
+    answers the question the viewer exists for: did the run diverge, and at
+    which step. *)
+val divergence : ?limit:float -> t -> int option
+
 (** {1:scene Replay} *)
 
 (** [scene model t i] is frame [i] as a scene: the geoms at their recorded
