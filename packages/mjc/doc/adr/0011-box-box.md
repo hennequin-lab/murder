@@ -58,6 +58,30 @@ they are invisible until a stack creeps:
   motion at rest, because the support polygon shrinks and its vertex subset
   changes from step to step.
 
+## Where the second half stands
+
+The tensor port has its first two pieces, both checked against the host kernel
+on **400 random poses** (120 of them in contact) — poses the corpus does not
+contain, which is the only way to know a straight-line version of a branching
+algorithm is the same algorithm:
+
+| Piece | Status | Check |
+| --- | --- | --- |
+| stage 1, fifteen axes | matches | same winning code and the same separation on all 400 pairs, including the edge bias and the face substitution |
+| stage 2a, edge-edge | matches | 48 edge-code pairs: same distance, point and normal to 1e-12 |
+| stage 2b, face clip | **not written** | face-code pairs currently produce no live slot |
+
+The trick that made stage 1 expressible: every axis is a candidate *value* with
+a mask, so "first axis wins a tie" is `min` over the indices that achieve the
+maximum, and the face substitution is a `where` on the winning edge's angle to
+the best face normal. The edge generator needed one more idea — the supporting
+corner depends on a data-dependent axis component, so all four sign combinations
+are computed and the closest witness pair is chosen elementwise, which is what
+the C engine's ambiguity loop does.
+
+Nothing calls the tensor kernel yet: `Collision` still refuses box-box, so a
+model that needs it fails loudly rather than quietly losing contacts.
+
 ## What the second half has to do
 
 1. **Slots.** `Collision.slots` sizes each pair's row block; box-box needs 12.
@@ -65,11 +89,13 @@ they are invisible until a stack creeps:
    function in `tools/mjcb.py` and `Topo`'s row accounting have to agree — a
    model whose budget is computed by the converter and by the reader
    differently is a bug that shows up as a truncated contact list.
-2. **Tensor form.** Stage 1 vectorises cleanly: fifteen candidate separations,
-   a `where`-min over them, and the face-substitution rule as a masked update.
-   Stage 2's face path needs a fixed-size polygon: four clip passes over twelve
-   slots with masks, which is exact but wants care with the "untouched when all
-   inside" shortcut and with vertex counts.
+2. **Tensor form, the face path.** Stage 1 and the edge path are done (above).
+   The face path is the remainder: the incident face's four corners in the
+   reference frame, either a fixed-slot Sutherland-Hodgman (which also fixes the
+   contact *order* the C engine emits) or "corners plus edge-plane
+   intersections, kept where they are inside every side plane", which gives the
+   same vertex set in a different order. The second is simpler and loses only
+   row order, which matters for warm starts rather than for the geometry.
 3. **The oracle.** Step 2 is where the host kernel pays off: a property test
    that drops boxes at random poses, computes both the host kernel's manifold
    and the tensor path's, and requires them equal to 1e-12. Without that, a

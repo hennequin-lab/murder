@@ -1,3 +1,26 @@
+## The tensor box-box: stage 1 and the edge path match, the face clip is next
+
+Ported so far, and checked against the host kernel on 400 random poses rather
+than on the corpus (the corpus cannot show whether a straight-line version of a
+branching search is the same search): the fifteen-axis separating-axis stage,
+including the edge bias and the face substitution, agrees on the winning code
+and the separation for every pair; the edge-edge generator agrees on distance,
+point and normal to 1e-12 for all 48 pairs that take that branch.
+
+Two things made the tensor form tractable. Every candidate axis is a *value*
+with a mask, so "first axis wins a tie" is a minimum over the indices that
+achieve the maximum rather than a loop with an early `if`: that reproduces
+MuJoCo's tie rule exactly, which a tidier "argmax" would not. And the edge
+generator's supporting corner depends on a *data-dependent* axis component, so
+the four sign combinations are computed and the closest witness pair is chosen
+elementwise — the same enumeration the C engine does with its ambiguity loop.
+
+The face clip is not written. Face-code pairs currently produce no live slot,
+the interface says so in the type's documentation, and nothing calls the tensor
+kernel yet: `Collision` still refuses box-box by name. The remaining work is a
+fixed-slot clip and the assembly that gathers each pair's slot to the candidate
+list; ADR 0011 records both options and what each costs.
+
 ## M4 box-box: the kernel matches the engine, and the step does not use it yet
 
 MuJoCo 3.17's `mjc_BoxBox` is not the classic clip-based algorithm. It is a

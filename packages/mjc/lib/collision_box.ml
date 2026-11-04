@@ -22,6 +22,12 @@ type contact =
   ; normal : float array
   }
 
+type sat =
+  { code : int
+  ; sep : float
+  ; separated : bool
+  }
+
 let m3 i =
   let r = i - (3 * (i / 3)) in
   if r < 0 then r + 3 else r
@@ -91,6 +97,111 @@ let clip_half_plane (poly : float array array) coord sign limit =
         Stdlib.incr nout)
     done;
     Array.of_list (List.rev !out))
+
+let sat
+      ~(pos1 : float array)
+      ~(mat1 : float array)
+      ~(size1 : float array)
+      ~(pos2 : float array)
+      ~(mat2 : float array)
+      ~(size2 : float array)
+      ~margin
+  =
+  let rot = mul_mat_t_mat3 mat1 mat2 in
+  let rotabs = Array.map Float.abs rot in
+  let pos21 = mul_mat_t_vec3 mat1 (sub3 pos2 pos1)
+  and pos12 = mul_mat_t_vec3 mat2 (sub3 pos1 pos2) in
+  let septol =
+    margin
+    +. (sep_eps
+        *. (size1.(0) +. size1.(1) +. size1.(2) +. size2.(0) +. size2.(1) +. size2.(2)))
+  in
+  let sep_best = ref (-1e30)
+  and code = ref (-1) in
+  let separated = ref false in
+  for i = 0 to 2 do
+    let radius2 =
+      (rotabs.((3 * i) + 0) *. size2.(0))
+      +. (rotabs.((3 * i) + 1) *. size2.(1))
+      +. (rotabs.((3 * i) + 2) *. size2.(2))
+    in
+    let sep = Float.abs pos21.(i) -. size1.(i) -. radius2 in
+    if sep > septol then separated := true;
+    if sep > !sep_best
+    then (
+      sep_best := sep;
+      code := i)
+  done;
+  for j = 0 to 2 do
+    let radius1 =
+      (rotabs.(0 + j) *. size1.(0))
+      +. (rotabs.(3 + j) *. size1.(1))
+      +. (rotabs.(6 + j) *. size1.(2))
+    in
+    let sep = Float.abs pos12.(j) -. size2.(j) -. radius1 in
+    if sep > septol then separated := true;
+    if sep > !sep_best
+    then (
+      sep_best := sep;
+      code := 3 + j)
+  done;
+  let sep_face = !sep_best
+  and code_face = !code in
+  for i = 0 to 2 do
+    for j = 0 to 2 do
+      let i1 = m3 (i + 1)
+      and i2 = m3 (i + 2) in
+      let ax1 = 0. -. rot.((3 * i2) + j)
+      and ax2 = rot.((3 * i1) + j) in
+      let norm2 = (ax1 *. ax1) +. (ax2 *. ax2) in
+      if norm2 >= par_eps
+      then (
+        let inv = 1. /. Float.sqrt norm2 in
+        let ax1 = ax1 *. inv
+        and ax2 = ax2 *. inv in
+        let radius1 = (size1.(i1) *. Float.abs ax1) +. (size1.(i2) *. Float.abs ax2) in
+        let j1 = m3 (j + 1)
+        and j2 = m3 (j + 2) in
+        let a2_1 = (ax1 *. rot.((3 * i1) + j1)) +. (ax2 *. rot.((3 * i2) + j1))
+        and a2_2 = (ax1 *. rot.((3 * i1) + j2)) +. (ax2 *. rot.((3 * i2) + j2)) in
+        let radius2 = (size2.(j1) *. Float.abs a2_1) +. (size2.(j2) *. Float.abs a2_2) in
+        let sep =
+          Float.abs ((ax1 *. pos21.(i1)) +. (ax2 *. pos21.(i2))) -. radius1 -. radius2
+        in
+        if sep > septol then separated := true;
+        if sep -. (edge_bias *. Float.abs sep) > !sep_best && sep > sep_face
+        then (
+          sep_best := sep;
+          code := 6 + (3 * i) + j))
+    done
+  done;
+  (* Face substitution: an edge axis within eight degrees of the best face
+     axis duplicates it, and the face's manifold is better for the solver. *)
+  if !code >= 6
+  then (
+    let i = (!code - 6) / 3
+    and j = m3 (!code - 6) in
+    let i1 = m3 (i + 1)
+    and i2 = m3 (i + 2) in
+    let axis = Array.make 3 0. in
+    axis.(i1) <- 0. -. rot.((3 * i2) + j);
+    axis.(i2) <- rot.((3 * i1) + j);
+    let axis = norm3 axis in
+    let face_dot =
+      if code_face < 3
+      then Float.abs axis.(code_face)
+      else (
+        let f = code_face - 3 in
+        Float.abs
+          ((axis.(0) *. rot.(0 + f))
+           +. (axis.(1) *. rot.(3 + f))
+           +. (axis.(2) *. rot.(6 + f))))
+    in
+    if face_dot > 0.99 && !sep_best < sep_face +. (0.05 *. Float.abs sep_face) +. 1e-15
+    then (
+      code := code_face;
+      sep_best := sep_face));
+  { code = !code; sep = !sep_best; separated = !separated }
 
 let manifold
       ~(pos1 : float array)

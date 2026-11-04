@@ -56,6 +56,34 @@ val edge_bias : float
     make. *)
 val max_verts : int
 
+(** {1:sat Separating axes}
+
+    Stage 1 on its own, exposed so that a tensor version can be checked axis by
+    axis rather than only through the manifold it produces. *)
+
+(** The type for a separating-axis result: the winning code — [0..2] a face of
+    the first box, [3..5] a face of the second, [6 + 3i + j] the cross of edge
+    [i] with edge [j] — the separation along it, and whether any axis separated
+    the boxes by more than the margin. *)
+type sat =
+  { code : int
+  ; sep : float
+  ; separated : bool
+  }
+
+(** [sat ~pos1 ~mat1 ~size1 ~pos2 ~mat2 ~size2 ~margin] is the separating-axis
+    result the manifold is built from. When [separated] is true the other
+    fields are meaningless. *)
+val sat
+  :  pos1:float array
+  -> mat1:float array
+  -> size1:float array
+  -> pos2:float array
+  -> mat2:float array
+  -> size2:float array
+  -> margin:float
+  -> sat
+
 (** {1:manifold Manifold} *)
 
 (** The type for one contact: the signed distance along the normal (negative
