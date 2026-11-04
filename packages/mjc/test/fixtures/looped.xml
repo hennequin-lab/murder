@@ -3,7 +3,11 @@
        of one never hide a bug in another: a ball tether on a free body, a
        weld on a free body, and a joint coupling two hinges. One hinge has a
        range so limit rows share the buffer with equality rows. -->
-  <option timestep="0.002" integrator="Euler"/>
+  <!-- Contacts are M4's corpus: disabling them keeps [nefc] a function of the
+       equality and limit rows alone, which is what this model measures. -->
+  <option timestep="0.002" integrator="Euler">
+    <flag contact="disable"/>
+  </option>
   <worldbody>
     <body name="tether" pos="0.3 0 1">
       <freejoint name="tether_free"/>
@@ -33,6 +37,7 @@
     <joint name="couple" joint1="jl" joint2="jr" polycoef="0 -0.5 0 0 0"/>
   </equality>
 </mujoco>
+
 
 
 

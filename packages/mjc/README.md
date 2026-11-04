@@ -8,9 +8,8 @@ whole step with `Rune.grad`.
 ## Status
 
 **M3 in progress.** Equality rows (connect, weld, joint) are assembled and
-solved; their rows, anchors and Jacobians match MuJoCo to 1e-12, with two
-localised gaps left in the weld's rotational reference acceleration and one
-row count. Joint limits are solved: the rows and the impedance match
+solved, and match MuJoCo to 1e-12 across rows, Jacobian, impedance, reference
+acceleration and force. Joint limits are solved: the rows and the impedance match
 MuJoCo to 1e-12, the solved force to 1e-6, and a constrained trajectory to
 1e-6 over ten steps. The solver runs as an active-set Newton, with CG behind
 the same loop agreeing to 1e-8. Equality constraints and friction loss are

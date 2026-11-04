@@ -94,7 +94,7 @@ let test_impedance () =
           (take nefc (row (tensor f k) s))
           (take nefc (Nx.to_array got)));
     parity
-      ~tol:1e-6
+      ~tol:1e-9
       ~name:(name "efc_force")
       (take nefc (row (tensor f "efc_force") s))
       (take nefc (Nx.to_array d.efc_force)))
@@ -108,7 +108,7 @@ let test_constrained_trajectory () =
   for k = 0 to f.nstates - 2 do
     d := Mjc.Step.step m !d;
     parity
-      ~tol:1e-5
+      ~tol:1e-6
       ~name:(Printf.sprintf "qpos %d" (k + 1))
       (row qpos (k + 1))
       (Nx.to_array !d.qpos);
@@ -141,18 +141,8 @@ let test_solvers_agree () =
 (* Equality rows: type, id, position, Jacobian, the row's impedance data and
    the solved force, on the corpus model that carries one of each kind.
 
-   NOT REGISTERED YET. The rows, the Jacobians and the anchors match MuJoCo to
-   1e-12, and the impedance now reads the norm over an equality's block of
-   rows, as [getposdim] does. Two mismatches remain, both localised:
-
-   - the weld's three rotational rows: [Jdot qvel] carries a quaternion term
-     that is still off by about 1e-4 relative, which propagates to [efc_aref]
-     and to a stepped trajectory at 1e-5;
-   - at one corpus state MuJoCo instantiates one limit row more than this
-     port, so the row counts differ (10 equality + 3 limits against
-     10 + 2).
-
-   Register them in [run] below once those two are closed. *)
+   The corpus model disables contacts: [nefc] is then a function of the
+   equality and limit rows alone, which is what these tests measure. *)
 let looped_states () =
   let m = model "looped" in
   let f = fixture "looped" in
@@ -173,22 +163,12 @@ let test_equality () =
       [ "efc_pos", d.efc_pos, 1e-12
       ; "efc_margin", d.efc_margin, 1e-12
       ; "efc_vel", d.efc_vel, 1e-12
-      ; "efc_R", d.efc_R, 1e-10
-      ; "efc_D", d.efc_D, 1e-10
-      ; "efc_aref", d.efc_aref, 1e-3
+      ; "efc_R", d.efc_R, 1e-12
+      ; "efc_D", d.efc_D, 1e-12
+      ; "efc_aref", d.efc_aref, 1e-12
       ]
       ~f:(fun (k, x, tol) ->
         parity ~tol ~name:(name k) (take nefc (row (tensor f k) s)) (Nx.to_array (got x)));
-    (* The reference acceleration is exact for the rows whose [Jdot qvel] is
-       not a quaternion correction: translation, joint coupling, limits. The
-       weld's three rotational rows carry a quaternion term that this port
-       reproduces only to about 1e-4 relative, so the whole vector is checked
-       at 1e-3 and its first six rows again at 1e-9. *)
-    parity
-      ~tol:1e-9
-      ~name:(name "efc_aref (rows without a quaternion term)")
-      (take 6 (row (tensor f "efc_aref") s))
-      (take 6 (Nx.to_array d.efc_aref));
     (* The fixture stores a Jacobian row-major, flattened per state. *)
     parity
       ~tol:1e-12
@@ -196,14 +176,11 @@ let test_equality () =
       (take (nefc * m_nv ()) (row (tensor f "efc_J") s))
       (Nx.to_array (got_rows d.efc_J));
     parity
-      ~tol:1e-6
+      ~tol:1e-9
       ~name:(name "efc_force")
       (take nefc (row (tensor f "efc_force") s))
       (take nefc (Nx.to_array d.efc_force)))
 
-(* A step-level comparison needs the reference acceleration, so the tolerance
-   carries the weld's quaternion term: 1e-5, not the 1e-6 the limit corpus
-   holds. *)
 let test_equality_trajectory () =
   let m = model "looped" in
   let f = fixture_traj "looped" in
@@ -213,7 +190,7 @@ let test_equality_trajectory () =
   for k = 0 to f.nstates - 2 do
     d := Mjc.Step.step m !d;
     parity
-      ~tol:1e-5
+      ~tol:1e-6
       ~name:(Printf.sprintf "qpos %d" (k + 1))
       (row qpos (k + 1))
       (Nx.to_array !d.qpos)
@@ -228,4 +205,6 @@ let () =
        ; test "impedance and solve" test_impedance
        ; test "constrained trajectory" test_constrained_trajectory
        ; test "Newton and CG agree" test_solvers_agree
+       ; test "equality rows" test_equality
+       ; test "equality trajectory" test_equality_trajectory
        ])

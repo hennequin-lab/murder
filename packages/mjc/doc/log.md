@@ -199,19 +199,24 @@ version 5 (`neq`, `eq_type`, `eq_objtype`, `body_invweight0`, `eq_*`) and a
 the solver parameters and inverse inertia it was built with, instead of the
 impedance stage re-deriving them by row type.
 
-The rows, their anchors and their Jacobians match MuJoCo to 1e-12 on every
-corpus state. Two mismatches remain, both localised and both written up in
-`test/test_constraint.ml` where the two tests sit unregistered:
+**Both equality gaps are closed.** They were not where they looked.
 
-- the weld's rotational `Jdot·v`: the quaternion term is off by about 1e-4
-  relative. `mju_derivQuat` multiplies from the *left* (`0.5 (0,ω) q`), which
-  this port now does, but something else in the three-term product rule
-  still differs;
-- one corpus state where MuJoCo instantiates one limit row more than this
-  port, so the row counts differ (13 against 12).
+The weld's rotational `Jdot·v` was off because `mju_derivQuat` multiplies the
+pure quaternion on the *left*: `0.5 (0,ω) ⊗ q`, not `0.5 q ⊗ (0,ω)`. With that
+corrected, the three-term product rule reproduces MuJoCo to 1e-12, and the
+whole impedance path with it.
 
-**Remaining in M3:** close those two, then friction-loss rows and
-`implicitfast`. The `.mjcb` format is
+The row-count mismatch was contacts, not limits: at one corpus state the
+geoms touch and MuJoCo adds four pyramidal rows. The `looped` model now
+disables contact (`<flag contact="disable"/>`), since contacts are M4's
+corpus; `nefc` there is then a function of the equality and limit rows alone.
+
+The two tests are registered and hold everything to machine precision:
+`efc_pos`, `efc_margin`, `efc_vel`, `efc_J`, `efc_R`, `efc_D` and `efc_aref`
+at 1e-12, `efc_force` at 1e-9 — the active-set Newton reaches the same λ as
+the C engine's primal solver — and a nine-step trajectory at 1e-6.
+
+**Remaining in M3:** friction-loss rows and `implicitfast`. The `.mjcb` format is
 version 4: it carries `dof_invweight0`, `iterations` and `tolerance`, and the
 converter now sizes `nefcmax` from the model's joints rather than a padding
 constant.
