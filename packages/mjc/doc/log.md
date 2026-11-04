@@ -332,13 +332,14 @@ a cheaper Jacobian construction (one batched gather over the dof chain instead
 of a mask per candidate), and it is the first thing to do before M4's stacks
 are compiled.
 
-**Plane-box is in, and not yet trusted.** The narrowphase is a port of
-`mjc_PlaneBox` with its corner order and its four-contact cap, and a `boxes`
-corpus model records it. Its parity is *not* asserted: one corpus state has
-MuJoCo reporting a contact this port does not, and I have not found which
-corner test differs. The code is in because it is the shape the stacks need;
-the test that would hold it is not, and that is the first thing to finish
-next.
+**Plane-box is in and asserted.** The narrowphase is a port of `mjc_PlaneBox`
+with its corner order and its four-contact cap, and a `boxes` model records
+it. Its apparent disagreement was not in the corner test at all: the corpus
+had two boxes, and the contact MuJoCo reported that this port did not was a
+*box-box* pair — a type the port does not compute, dropped silently by the
+pair table. So the corpus is now one box on a plane, and, more importantly,
+a pair that may touch but whose distance the port cannot compute is now
+*refused by name* instead of disappearing.
 
 **The pyramidal cone is assembled, and its impulse is not trusted.** The
 pleasant discovery is that MuJoCo's cone needs no group constraint at all: for
@@ -348,12 +349,14 @@ cone. So `Constraint.contact` now emits `2*(dim-1)` rows per contact of type
 6, with the frame's tangent rows (from `mju_makeFrame`) and the per-axis
 `diagA = tran + mu^2 * weight`, and the solver handles them unchanged.
 
-What is not right is `diagA`'s `tran`: MuJoCo's per-side body weights make it
-twice the plain inverse-weight sum (measured against a corpus state: the
-contact's `efc_diagA` is `2*(1+mu^2)*tran` for a plane contact). Until that is
-reproduced, `friction3`'s rows and trajectory are *not* asserted, exactly as
-`boxes`' plane-box detection is not: the code is in, the parity is not
-claimed. Two half-claims, both recorded where their tests live.
+What did *not* come out of the source is the pyramid's diagonal. MuJoCo's
+`mj_diagApprox` reads `tran + mu^2 * weight`, but the C engine's own
+`efc_diagA` for a pyramid edge — recovered from `efc_R` and the impedance
+since the field is overwritten downstream — is `tran * 2 mu^2 (1 + mu^2)`
+over six friction coefficients from 0.1 to 2, where `(1+mu^2)` is the edge
+row's squared norm. The port reproduces the *result*, and says so where the
+formula sits. Both `friction3` tests are registered and pass: rows at 1e-12,
+trajectory at 1e-8.
 
 **M3 is complete.** The `.mjcb` format is version 9: it
 carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the

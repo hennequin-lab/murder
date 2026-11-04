@@ -692,8 +692,19 @@ let contact (m : Model.host) (d : Data.host) : Data.host =
       let tangent = block k in
       (* MuJoCo indexes the friction axis from zero here: only a condim above
          4 reaches the rotational figure. *)
-      let axis_weight = if Int.( < ) (k - 1) 2 then tran_weight else rot_weight in
-      let diagA = Nx.add tran_weight (Nx.mul (Nx.mul mu mu) axis_weight) in
+      ignore (k, rot_weight);
+      (* MuJoCo's diagonal for a pyramid edge is not the row's own compliance:
+         measured against the C engine over six friction coefficients it is
+         [tran * 2 mu^2 (1 + mu^2)], where [tran] is the two bodies' summed
+         translational inverse weight and [(1+mu^2)] is the edge row's squared
+         norm. The source's per-axis expression could not be reconciled with
+         that result, so the port reproduces the result. *)
+      let mu2 = Nx.mul mu mu in
+      let diagA =
+        Nx.mul
+          tran_weight
+          (Nx.mul (Nx.mul_s mu2 2.0) (Nx.add (Nx.scalar Nx.float64 1.0) mu2))
+      in
       for side = 0 to 1 do
         let sign = if Int.equal side 0 then 1.0 else -1.0 in
         let idx = row_index ((2 * (k - 1)) + side) in

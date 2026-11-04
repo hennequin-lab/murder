@@ -56,7 +56,7 @@ let () =
      | --- | ---: | ---: | ---: | ---: | ---: |\n"
     lanes;
   List.iter
-    [ "pendulum"; "chain6"; "floating"; "ball"; "limited"; "looped"; "fast" ]
+    [ "pendulum"; "chain6"; "floating"; "ball"; "limited"; "looped"; "fast"; "friction3" ]
     ~f:(fun name ->
       let m = load name in
       let d = Data.create m in

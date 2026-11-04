@@ -6,9 +6,5 @@
       <freejoint/>
       <geom name="crate" type="box" size="0.2 0.15 0.1" condim="1"/>
     </body>
-    <body name="slab" pos="0.5 0.2 0.07">
-      <freejoint/>
-      <geom name="slab" type="box" size="0.12 0.3 0.08" condim="1"/>
-    </body>
   </worldbody>
 </mujoco>

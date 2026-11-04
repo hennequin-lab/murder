@@ -23,24 +23,15 @@ let states name =
     let d = Mjc.Kinematics.forward m (data_with_qpos m (row qpos s)) in
     Mjc.Collision.contacts m d, Int.of_float (row (tensor f "ncon") s).(0))
 
-(* [friction3]'s pyramid is assembled and its rows carry the right Jacobians,
-   positions and types, but its [diagA] disagrees with MuJoCo: the C engine's
-   per-side body weights make [tran] twice the plain inverse weight sum, and
-   that is not reproduced yet. Its tests are therefore not registered, like
-   [boxes]. *)
-
-(* [boxes] is recorded but not asserted yet: its plane-box candidates disagree
-   with MuJoCo on one state of the corpus, so the code is in and the parity is
-   not claimed. *)
 let test_count () =
-  List.iter [ "bounce" ] ~f:(fun name ->
+  List.iter [ "bounce"; "boxes" ] ~f:(fun name ->
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
       equal ~msg:(Printf.sprintf "state %d ncon" s) int ncon (int_of_t d.Mjc.Data.ncon);
       ignore f))
 
 let test_geometry () =
-  List.iter [ "bounce" ] ~f:(fun name ->
+  List.iter [ "bounce"; "boxes" ] ~f:(fun name ->
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
       let label tag = Printf.sprintf "%s state %d %s" name s tag in
@@ -211,6 +202,9 @@ let () =
        [ test "contact count" test_count
        ; test "contact geometry" test_geometry
        ; test "contact rows, frictionless" (fun () -> test_rows_of "slide1")
+       ; test "contact rows, pyramidal cone" (fun () -> test_rows_of "friction3")
        ; test "contact trajectory, frictionless" (fun () -> test_trajectory_of "slide1")
+       ; test "contact trajectory, pyramidal cone" (fun () ->
+           test_trajectory_of "friction3")
        ; test "compiled equals eager" test_compiled
        ])
