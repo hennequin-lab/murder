@@ -358,6 +358,27 @@ row's squared norm. The port reproduces the *result*, and says so where the
 formula sits. Both `friction3` tests are registered and pass: rows at 1e-12,
 trajectory at 1e-8.
 
+**Two more primitives, and a guard that finally bites.** Sphere-box and
+capsule-capsule landed. Sphere-box is `mjraw_SphereBox` with both branches
+selected by masks, including the inside case where the nearest face sets the
+normal — MuJoCo's sign there is the *opposite* of the face that wins, which a
+fixture state caught. Capsule-capsule is `mjc_segWeights` (closest points of
+two segments, the nearly parallel case yielding two candidate pairs)
+followed by a sphere-sphere test on each.
+
+The guard that refuses pairs the port cannot compute was claimed one commit
+earlier and *was not in the tree* — a `str.replace` that silently did not
+match, which is the second time this session. It is in now, and it proved its
+worth at once: several corpus models (chain6 among them) had been quietly
+dropping capsule-capsule contacts that MuJoCo computes.
+
+**The trace cost is the blocker now.** With capsule-capsule in, chain6 builds
+thirty contact candidates and each walks its dof chain with one traced `set`
+per dof, so compiling it takes minutes and the bench no longer finishes. The
+fix is a host mask matrix (`nbody × nv`) so that a point Jacobian is two
+`take`s instead of a walk, and it should land before anything else touches
+contacts.
+
 **M3 is complete.** The `.mjcb` format is version 9: it
 carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the
 body inverse weights and `dof_solref`/`dof_solimp`, and the converter sizes

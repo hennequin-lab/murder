@@ -21,8 +21,3 @@
  (deps
   (glob_files fixtures/*))
  (libraries base mjc nx rune windtrap))
-
-(executable
- (name scratch)
- (modules scratch)
- (libraries mjc base nx))

@@ -42,7 +42,13 @@ let type_index = function
    first. *)
 let supported (t : Topo.t) g1 g2 =
   match t.geom_type.(g1), t.geom_type.(g2) with
-  | Plane, Sphere | Plane, Capsule | Sphere, Sphere | Sphere, Capsule | Plane, Box -> true
+  | Plane, Sphere
+  | Plane, Capsule
+  | Sphere, Sphere
+  | Sphere, Capsule
+  | Plane, Box
+  | Sphere, Box
+  | Capsule, Capsule -> true
   | _ -> false
 
 (* One contact slot a pair can produce: a capsule against a plane yields one
@@ -57,6 +63,7 @@ let slots (t : Topo.t) g1 g2 =
   match t.geom_type.(g1), t.geom_type.(g2) with
   | Plane, Capsule -> 2
   | Plane, Box -> 8
+  | Capsule, Capsule -> 2
   | _ -> 1
 
 let candidates (m : Model.host) : cand array =
@@ -83,6 +90,16 @@ let candidates (m : Model.host) : cand array =
               && (Int.equal weld1 (weldparent t t.geom_bodyid.(g2))
                   || Int.equal weld2 (weldparent t t.geom_bodyid.(g1))))
         in
+        (* A pair that may touch but whose distance v1 cannot compute is a hole
+           in the physics, not an omission to leave silent. *)
+        if (not filtered) && bitmask_ok t g1 g2 && not (supported t g1 g2)
+        then
+          raise
+            (Invalid_argument
+               (Printf.sprintf
+                  "collision between geom types %d and %d is not implemented"
+                  (type_index t.geom_type.(g1))
+                  (type_index t.geom_type.(g2))));
         if (not filtered) && bitmask_ok t g1 g2 && supported t g1 g2
         then
           for slot = 0 to slots t g1 g2 - 1 do
@@ -212,6 +229,128 @@ let geometry (m : Model.host) (d : Data.host) (c : cand) =
     let far = Nx.scalar Nx.float64 1e10 in
     let dist = Nx.where up far dist in
     let pos = Nx.add corner (Nx.mul normal (Nx.neg (Nx.mul_s dist 0.5))) in
+    dist, pos, normal
+  | Capsule, Capsule ->
+    (* [mjraw_CapsuleCapsule]: the closest pair of points on the two axial
+       segments, then a sphere-sphere test on them. Nearly parallel segments
+       have two candidate pairs and one slot carries each. *)
+    let sc x = Nx.scalar Nx.float64 x in
+    let axis1 = geom_zaxis d c.g1
+    and axis2 = geom_zaxis d c.g2 in
+    let r1 = size c.g1 0
+    and l1 = size c.g1 1
+    and r2 = size c.g2 0
+    and l2 = size c.g2 1 in
+    let p1 = Nx.sub (geom_pos d c.g1) (Nx.mul axis1 l1)
+    and p2 = Nx.add (geom_pos d c.g1) (Nx.mul axis1 l1)
+    and q1 = Nx.sub (geom_pos d c.g2) (Nx.mul axis2 l2)
+    and q2 = Nx.add (geom_pos d c.g2) (Nx.mul axis2 l2) in
+    let ab = Nx.sub p2 p1
+    and cd = Nx.sub q2 q1
+    and ca = Nx.sub p1 q1 in
+    let dot1 = Nx.dot ab ab
+    and dot2 = Nx.dot cd cd
+    and dot3 = Nx.dot cd ca
+    and dot4 = Nx.dot ab ca
+    and dot5 = Nx.dot ab cd in
+    let clip x = Nx.minimum (Nx.maximum x (sc 0.0)) (sc 1.0) in
+    let s0 = Nx.neg (Nx.div dot4 dot1)
+    and s1 = Nx.div (Nx.sub dot5 dot4) dot1 in
+    let cross = Nx.cross ab cd in
+    let det = Nx.dot cross cross in
+    let parallel = Nx.less_equal det (Nx.mul (Nx.mul dot1 dot2) (sc 1e-8)) in
+    let s = clip (Nx.div (Nx.dot cross (Nx.cross cd ca)) (Nx.maximum_s det 1e-300)) in
+    let t = Nx.div (Nx.add (Nx.mul dot5 s) dot3) dot2 in
+    (* [clampSeg]: slide to an endpoint when the projection leaves the segment. *)
+    let seg s_ t_ =
+      let a =
+        Nx.where
+          (Nx.less_s t_ 0.0)
+          (clip s0)
+          (Nx.where (Nx.greater_s t_ 1.0) (clip s1) s_)
+      in
+      let b =
+        Nx.where (Nx.less_s t_ 0.0) (sc 0.0) (Nx.where (Nx.greater_s t_ 1.0) (sc 1.0) t_)
+      in
+      a, b
+    in
+    let a0, b0 = seg s t in
+    let a1, b1 = seg (sc 0.0) (Nx.div dot3 dot2) in
+    let a2, b2 = seg (sc 1.0) (Nx.div (Nx.add dot5 dot3) dot2) in
+    let w_a, w_b =
+      if Int.equal c.slot 0
+      then Nx.where parallel a1 a0, Nx.where parallel b1 b0
+      else a2, b2
+    in
+    let point base w dir = Nx.add base (Nx.mul dir w) in
+    let dist, pos, normal =
+      sphere_sphere
+        ~pos1:(point p1 w_a ab)
+        ~size1:r1
+        ~pos2:(point q1 w_b cd)
+        ~size2:r2
+        ~axis1
+        ~axis2
+    in
+    let dist = if Int.equal c.slot 0 then dist else Nx.where parallel dist (sc 1e10) in
+    dist, pos, normal
+  | Sphere, Box ->
+    (* [mjraw_SphereBox]: the sphere centre in the box frame, clamped to the
+       half-sizes; inside the box the nearest face sets the normal. *)
+    let mat2 = Nx.reshape [| 3; 3 |] (Nx.slice [ I c.g2; A ] d.geom_xmat) in
+    let local v =
+      Nx.reshape [| 3 |] (Nx.matmul (Nx.matrix_transpose mat2) (Nx.reshape [| 3; 1 |] v))
+    in
+    let world v = Nx.reshape [| 3 |] (Nx.matmul mat2 (Nx.reshape [| 3; 1 |] v)) in
+    let radius = size c.g1 0 in
+    let half = Nx.stack ~axis:0 [ size c.g2 0; size c.g2 1; size c.g2 2 ] in
+    let centre = local (Nx.sub (geom_pos d c.g1) (geom_pos d c.g2)) in
+    let clamped = Nx.minimum (Nx.maximum centre (Nx.neg half)) half in
+    let towards = Nx.sub clamped centre in
+    let away = Nx.sqrt (Nx.dot towards towards) in
+    let touch = Nx.maximum_s away 1e-300 in
+    let direction = Nx.div towards touch in
+    (* Outside: the deepest point of the sphere and the midpoint to the box. *)
+    (* The point of the sphere in the direction of the box: the centre moved
+       by one radius, not the clamped point. *)
+    let deepest = Nx.add centre (Nx.mul direction radius) in
+    let outside_pos = Nx.mul_s (Nx.add clamped deepest) 0.5 in
+    let outside_normal = world direction in
+    let outside_dist = Nx.sub away radius in
+    (* Inside: the nearest face, and the sphere centre pushed halfway to it. *)
+    let gap_plus = Nx.sub half centre
+    and gap_minus = Nx.add half centre in
+    let gap = Nx.minimum gap_plus gap_minus in
+    (* MuJoCo enumerates the six faces as -x,+x,-y,... and sets the winning
+       direction to +1 on the *even* index, so the nearer -face means -1 for
+       the face itself and +1 for the axis it lies on. The sign is therefore
+       opposite to the face that wins. *)
+    let sign =
+      Nx.where (Nx.less gap_plus gap_minus) (Nx.neg (Nx.ones_like gap)) (Nx.ones_like gap)
+    in
+    let g0 = Nx.get [ 0 ] gap
+    and g1 = Nx.get [ 1 ] gap
+    and g2 = Nx.get [ 2 ] gap in
+    let axis i v = Nx.set [ I i ] v (Nx.zeros Nx.float64 [| 3 |]) in
+    let nearest =
+      Nx.where
+        (Nx.logical_and (Nx.less_equal g0 g1) (Nx.less_equal g0 g2))
+        (axis 0 (Nx.get [ 0 ] sign))
+        (Nx.where
+           (Nx.less_equal g1 g2)
+           (axis 1 (Nx.get [ 1 ] sign))
+           (axis 2 (Nx.get [ 2 ] sign)))
+    in
+    let closest = Nx.minimum g0 (Nx.minimum g1 g2) in
+    let inside_pos =
+      Nx.add centre (Nx.mul nearest (Nx.mul_s (Nx.sub radius closest) 0.5))
+    in
+    let inside_normal = world nearest in
+    let inside = Nx.less_equal away (Nx.scalar Nx.float64 1e-15) in
+    let pos_local = Nx.where inside inside_pos outside_pos in
+    let normal = Nx.where inside inside_normal outside_normal in
+    let dist = Nx.where inside (Nx.sub (Nx.neg closest) radius) outside_dist in
+    let pos = Nx.add (world pos_local) (geom_pos d c.g2) in
     dist, pos, normal
   | Sphere, Capsule ->
     let axis = geom_zaxis d c.g2 in

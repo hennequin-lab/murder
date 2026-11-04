@@ -24,14 +24,14 @@ let states name =
     Mjc.Collision.contacts m d, Int.of_float (row (tensor f "ncon") s).(0))
 
 let test_count () =
-  List.iter [ "bounce"; "boxes" ] ~f:(fun name ->
+  List.iter [ "bounce"; "boxes"; "blocks" ] ~f:(fun name ->
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
       equal ~msg:(Printf.sprintf "state %d ncon" s) int ncon (int_of_t d.Mjc.Data.ncon);
       ignore f))
 
 let test_geometry () =
-  List.iter [ "bounce"; "boxes" ] ~f:(fun name ->
+  List.iter [ "bounce"; "boxes"; "blocks" ] ~f:(fun name ->
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
       let label tag = Printf.sprintf "%s state %d %s" name s tag in

@@ -214,6 +214,23 @@ MODELS = {
     # The same corpus with a friction cone: every geom asks for condim 3, so
     # each contact becomes four one-sided rows, the two opposing edges of the
     # pyramid per friction axis.
+    # A sphere resting against a box's side: the sphere-box narrowphase,
+    # alongside plane-box and plane-sphere in the same pose.
+    "blocks": """
+<mujoco model="blocks">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="1"/>
+    <body name="crate" pos="0 0 0.09">
+      <freejoint/>
+      <geom name="crate" type="box" size="0.2 0.2 0.1" condim="1"/>
+    </body>
+    <body name="ball" pos="0.24 0 0.16">
+      <freejoint/>
+      <geom name="ball" type="sphere" size="0.09" condim="1"/>
+    </body>
+  </worldbody>
+</mujoco>""",
     "friction3": """
 <mujoco model="friction3">
   <option timestep="0.002"/>
