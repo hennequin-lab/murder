@@ -395,6 +395,28 @@ axis plus two end spheres looks like a wire, so it is sampled as a short chain
 of spheres. Measured cost: 105.8 ms per frame at 1280×720 with PNG encoding, so
 this backend is for stills and the window is V1's job.
 
+**V1 runs.** Getting there was a repository problem before it was a code
+problem: the workspace takes its libraries from `dune.lock`, and `dune pkg
+lock` resolves only what a package `depends` on, so raylib could not enter the
+lock while `mjc` was not a package at all. Declaring the package (the library
+stays private until M7) with `base`, `nx` and `raylib` fixed that; the relock
+moved 22 lock files by one line each — dune's build-rule encoding, no version
+changes — and added `raylib.2.4.0`. An earlier trial *without* the package
+declaration had modified six lock files and added nothing, which is why I had
+stopped; that was the wrong diagnosis of the same fact.
+
+The code then met the binding's shape: raylib splits into `raylib.core`
+(window, input, camera, colour), `raylib.models` (3D shapes) and `raylib.text`,
+and `Camera3D` is a Ctypes structure read through accessors, so orbit and pan
+write a fresh `Vector3` rather than assigning fields. Two primitives do not
+exist as such — an oriented cylinder and an ellipsoid — so a cylinder is drawn
+as a capsule over its axis and an ellipsoid as a sphere of its largest radius,
+both with a comment saying so.
+
+`--check` runs three frames headless and exits 0 on this machine, so the
+automatic acceptance is met. Frames per second with a human at the keyboard is
+the part no test can report.
+
 **V1 is written but not buildable, and that is a repository fact.** The window
 loop exists (`viz/window`): fixed step, orbit/pan/zoom from the mouse, the
 pause/step/reset keys, a HUD, and every primitive drawn from `Mjc_viz.Scene`,

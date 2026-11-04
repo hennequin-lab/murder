@@ -1,9 +1,9 @@
-; The interactive window (V1). Not built by the workspace yet: raylib is not in
-; dune.lock, and this workspace resolves its libraries from there. See
-; raylib.md for the one step that adds it, then delete the "not-yet" comment
-; below.
-;
-; (executable
-;  (name main)
-;  (public_name mjc-window)
-;  (libraries mjc mjc_viz nx raylib base))
+(library
+ (name mjc_viz_window)
+ (modules window)
+ (libraries mjc mjc_viz nx raylib.core raylib.models raylib.text base))
+
+(executable
+ (name main)
+ (modules main)
+ (libraries mjc_viz_window mjc mjc_viz nx raylib base))

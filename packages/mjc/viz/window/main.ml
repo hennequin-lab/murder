@@ -49,15 +49,15 @@ let () =
       Stdlib.Printf.eprintf "mjc-window: %s\n" e;
       Stdlib.exit 1
   in
-  let view = Mjc_viz.Window.open_ m in
+  let view = Mjc_viz_window.Window.open_ m in
   if !check
   then (
     (* The headless check: three frames, then out. A machine without a display
        cannot open a window, and raylib reports that rather than hanging, so
        this exits cleanly there too. *)
-    match Mjc_viz.Window.run ~steps_per_frame:!steps ~frames:3 view with
+    match Mjc_viz_window.Window.run ~steps_per_frame:!steps ~frames:3 view with
     | () -> Stdlib.Printf.printf "check: 3 frames ok\n"
     | exception e ->
       Stdlib.Printf.printf "check: skipped (%s)\n" (Stdlib.Printexc.to_string e);
       Stdlib.exit 0)
-  else Mjc_viz.Window.run ~steps_per_frame:!steps ?frames:!frames view
+  else Mjc_viz_window.Window.run ~steps_per_frame:!steps ?frames:!frames view

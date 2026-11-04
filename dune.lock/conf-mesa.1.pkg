@@ -1,0 +1,51 @@
+(version 1)
+
+(build
+ (choice
+  ((((arch x86_64)
+     (os linux))
+    ((arch arm64)
+     (os linux)))
+   ((action
+     (run pkg-config gl))))))
+
+(depends
+ (choice
+  ((((arch x86_64)
+     (os linux))
+    ((arch arm64)
+     (os linux)))
+   (conf-pkg-config))))
+
+(depexts
+ ((libgl1-mesa-dev)
+  (or_absorb_undefined_var
+   (= %{os_family} debian)
+   (= %{os_family} ubuntu)))
+ ((mesa-libGL-devel)
+  (or_absorb_undefined_var
+   (= %{os_family} fedora)
+   (= %{os_family} rhel)))
+ ((Mesa-libGL-devel)
+  (or_absorb_undefined_var
+   (= %{os_family} suse)
+   (= %{os_family} opensuse)))
+ ((mesa-dev)
+  (= %{os_distribution} alpine))
+ ((mesa)
+  (= %{os_distribution} arch))
+ ((mesa-libGL-devel)
+  (= %{os_distribution} ol))
+ ((mesa-libs libglvnd)
+  (= %{os_distribution} freebsd))
+ ((mesa)
+  (and_absorb_undefined_var
+   (= %{os} macos)
+   (= %{os_distribution} homebrew))))
+
+(enabled_on_platforms
+ (only
+  ((arch x86_64)
+   (os linux))
+  ((arch arm64)
+   (os linux))))
