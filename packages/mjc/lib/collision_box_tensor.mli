@@ -68,9 +68,9 @@ type manifold =
     slot dead, where the C engine would clip a polygon of up to twelve. That is
     a gap and not an approximation — a caller sees fewer contacts, never
     different ones — and nothing calls this yet: {!Mjc.Collision} still refuses
-    box-box. The face generator is the next step, and {"it is the part that
-    needs the fixed-slot clip"} rather than any more of the separating axes,
-    which this module already reproduces exactly. *)
+    box-box. The face generator is the next step, and it is the part that needs
+    the fixed-slot clip, not any more of the separating axes, which this module
+    already reproduces exactly. *)
 val manifold : batch -> manifold
 
 (** [debug b] is [(max face separation, max edge separation, tolerance)], for a
