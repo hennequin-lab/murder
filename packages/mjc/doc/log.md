@@ -395,6 +395,19 @@ axis plus two end spheres looks like a wire, so it is sampled as a short chain
 of spheres. Measured cost: 105.8 ms per frame at 1280×720 with PNG encoding, so
 this backend is for stills and the window is V1's job.
 
+**V1 is written but not buildable, and that is a repository fact.** The window
+loop exists (`viz/window`): fixed step, orbit/pan/zoom from the mouse, the
+pause/step/reset keys, a HUD, and every primitive drawn from `Mjc_viz.Scene`,
+so the window and the stills cannot drift. `--check` runs three frames headless.
+
+It cannot build, because the workspace resolves libraries from `dune.lock` and
+raylib is not in it. `dune pkg lock` resolves only what a package `depends` on,
+so the dependency has to be declared first; a trial run *without* declaring it
+modified `base`, `hugin`, `jera`, `lz`, `nx` and `lock.dune` and added nothing,
+and was reverted. The path forward is in `viz/window/raylib.md` with that
+warning attached, since a lock diff of that size deserves a review rather than
+a reflex.
+
 **M3 is complete.** The `.mjcb` format is version 9: it
 carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the
 body inverse weights and `dof_solref`/`dof_solimp`, and the converter sizes
