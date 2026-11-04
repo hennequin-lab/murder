@@ -23,6 +23,12 @@ let states name =
     let d = Mjc.Kinematics.forward m (data_with_qpos m (row qpos s)) in
     Mjc.Collision.contacts m d, Int.of_float (row (tensor f "ncon") s).(0))
 
+(* [friction3]'s pyramid is assembled and its rows carry the right Jacobians,
+   positions and types, but its [diagA] disagrees with MuJoCo: the C engine's
+   per-side body weights make [tran] twice the plain inverse weight sum, and
+   that is not reproduced yet. Its tests are therefore not registered, like
+   [boxes]. *)
+
 (* [boxes] is recorded but not asserted yet: its plane-box candidates disagree
    with MuJoCo on one state of the corpus, so the code is in and the parity is
    not claimed. *)
@@ -37,70 +43,70 @@ let test_geometry () =
   List.iter [ "bounce" ] ~f:(fun name ->
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
-      let name k = Printf.sprintf "state %d %s" s k in
+      let label tag = Printf.sprintf "%s state %d %s" name s tag in
       let rows x = Nx.slice [ R (0, ncon); A ] x in
       parity
         ~tol:1e-12
-        ~name:(name "contact_dist")
+        ~name:(label "contact_dist")
         (take ncon (row (tensor f "contact_dist") s))
         (take ncon (Nx.to_array d.Mjc.Data.contact_dist));
       parity
         ~tol:1e-12
-        ~name:(name "contact_pos")
+        ~name:(label "contact_pos")
         (take (ncon * 3) (row (tensor f "contact_pos") s))
         (Nx.to_array (rows d.Mjc.Data.contact_pos));
       parity
         ~tol:1e-12
-        ~name:(name "contact_normal")
+        ~name:(label "contact_normal")
         (take (ncon * 3) (row (tensor f "contact_normal") s))
         (Nx.to_array (rows d.Mjc.Data.contact_normal));
       parity
         ~tol:1e-12
-        ~name:(name "contact_includemargin")
+        ~name:(label "contact_includemargin")
         (take ncon (row (tensor f "contact_includemargin") s))
         (take ncon (Nx.to_array d.Mjc.Data.contact_includemargin));
       parity
         ~tol:1e-12
-        ~name:(name "contact_friction")
+        ~name:(label "contact_friction")
         (take (ncon * 5) (row (tensor f "contact_friction") s))
         (Nx.to_array (rows d.Mjc.Data.contact_friction));
       parity
         ~tol:1e-12
-        ~name:(name "contact_solref")
+        ~name:(label "contact_solref")
         (take (ncon * 2) (row (tensor f "contact_solref") s))
         (Nx.to_array (rows d.Mjc.Data.contact_solref));
       parity
         ~tol:1e-12
-        ~name:(name "contact_solimp")
+        ~name:(label "contact_solimp")
         (take (ncon * 5) (row (tensor f "contact_solimp") s))
         (Nx.to_array (rows d.Mjc.Data.contact_solimp));
       parity
         ~tol:0.0
-        ~name:(name "contact_geom")
+        ~name:(label "contact_geom")
         (take (ncon * 2) (row (tensor f "contact_geom") s))
         (Array.map
            (take (ncon * 2) (Nx.to_array (rows d.Mjc.Data.contact_geom)))
            ~f:Nxi32.to_float);
       parity
         ~tol:0.0
-        ~name:(name "contact_body")
+        ~name:(label "contact_body")
         (take (ncon * 2) (row (tensor f "contact_body") s))
         (Array.map
            (take (ncon * 2) (Nx.to_array (rows d.Mjc.Data.contact_body)))
            ~f:Nxi32.to_float);
       parity
         ~tol:0.0
-        ~name:(name "contact_dim")
+        ~name:(label "contact_dim")
         (take ncon (row (tensor f "contact_dim") s))
         (Array.map (take ncon (Nx.to_array d.Mjc.Data.contact_dim)) ~f:Nxi32.to_float)))
 
 (* Frictionless contact rows: type, position, margin, Jacobian, the impedance
    data, the reference acceleration and the solved force, then the trajectory
    the whole engine produces. *)
-let test_rows () =
-  let m = model "slide1" in
+let test_rows_of name =
+  let m = model name in
   let nv = m.Mjc.Model.topo.Mjc.Topo.nv in
-  let f = fixture "slide1" in
+  let f = fixture name in
   let qpos = tensor f "qpos"
   and qvel = tensor f "qvel" in
   List.iteri
@@ -108,8 +114,8 @@ let test_rows () =
        let d = { (data_with_qpos m (row qpos s)) with qvel = vec1 (row qvel s) } in
        Mjc.Forward.forward m d, Int.of_float (row (tensor f "nefc") s).(0)))
     ~f:(fun s (d, nefc) ->
-      let name k = Printf.sprintf "state %d %s" s k in
-      equal ~msg:(name "nefc") int nefc (int_of_t d.Mjc.Data.nefc);
+      let label tag = Printf.sprintf "%s state %d %s" name s tag in
+      equal ~msg:(label "nefc") int nefc (int_of_t d.Mjc.Data.nefc);
       let rows x = Nx.slice [ R (0, nefc); A ] x in
       List.iter
         [ "efc_pos", d.Mjc.Data.efc_pos, 1e-12
@@ -122,22 +128,22 @@ let test_rows () =
         ~f:(fun (k, x, tol) ->
           parity
             ~tol
-            ~name:(name k)
+            ~name:(label k)
             (take nefc (row (tensor f k) s))
             (Nx.to_array (Nx.slice [ R (0, nefc) ] x)));
       parity
         ~tol:0.0
-        ~name:(name "efc_type")
+        ~name:(label "efc_type")
         (take nefc (row (tensor f "efc_type") s))
         (Array.map (take nefc (Nx.to_array d.Mjc.Data.efc_type)) ~f:Nxi32.to_float);
       parity
         ~tol:0.0
-        ~name:(name "efc_id")
+        ~name:(label "efc_id")
         (take nefc (row (tensor f "efc_id") s))
         (Array.map (take nefc (Nx.to_array d.Mjc.Data.efc_id)) ~f:Nxi32.to_float);
       parity
         ~tol:1e-12
-        ~name:(name "efc_J")
+        ~name:(label "efc_J")
         (take (nefc * nv) (row (tensor f "efc_J") s))
         (Nx.to_array (rows d.Mjc.Data.efc_J));
       (* A random pose can bury a body in the floor, and the contact force then
@@ -146,13 +152,13 @@ let test_rows () =
          its stopping error: 1e-7 relative on a force of that size. *)
       parity
         ~tol:1e-7
-        ~name:(name "efc_force")
+        ~name:(label "efc_force")
         (take nefc (row (tensor f "efc_force") s))
         (take nefc (Nx.to_array d.Mjc.Data.efc_force)))
 
-let test_trajectory () =
-  let m = model "slide1" in
-  let f = fixture_traj "slide1" in
+let test_trajectory_of name =
+  let m = model name in
+  let f = fixture_traj name in
   let qpos = tensor f "traj_qpos"
   and qvel = tensor f "traj_qvel" in
   let d = ref { (data_with_qpos m (row qpos 0)) with qvel = vec1 (row qvel 0) } in
@@ -160,12 +166,12 @@ let test_trajectory () =
     d := Mjc.Step.step m !d;
     parity
       ~tol:1e-8
-      ~name:(Printf.sprintf "qpos %d" (k + 1))
+      ~name:(Printf.sprintf "%s qpos %d" name (k + 1))
       (row qpos (k + 1))
       (Nx.to_array !d.qpos);
     parity
       ~tol:1e-8
-      ~name:(Printf.sprintf "qvel %d" (k + 1))
+      ~name:(Printf.sprintf "%s qvel %d" name (k + 1))
       (row qvel (k + 1))
       (Nx.to_array !d.qvel)
   done
@@ -204,7 +210,7 @@ let () =
        "mjc contact"
        [ test "contact count" test_count
        ; test "contact geometry" test_geometry
-       ; test "frictionless contact rows" test_rows
-       ; test "frictionless contact trajectory" test_trajectory
+       ; test "contact rows, frictionless" (fun () -> test_rows_of "slide1")
+       ; test "contact trajectory, frictionless" (fun () -> test_trajectory_of "slide1")
        ; test "compiled equals eager" test_compiled
        ])

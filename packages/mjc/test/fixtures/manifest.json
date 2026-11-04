@@ -102,7 +102,17 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "b62c9aa051526f88"
+      "xml_sha256": "22fdb1462fdbb1f2"
+    },
+    {
+      "name": "friction3",
+      "nbody": 3,
+      "ngeom": 3,
+      "njnt": 2,
+      "nq": 14,
+      "nv": 12,
+      "nstates": 32,
+      "xml_sha256": "9f2dc98398de4c4c"
     },
     {
       "name": "boxes",

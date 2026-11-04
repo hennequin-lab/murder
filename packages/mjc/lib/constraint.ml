@@ -622,55 +622,86 @@ let friction (m : Model.host) (d : Data.host) : Data.host =
    A model whose geoms ask for a frictional contact is refused here rather than
    solved with rows that do not match MuJoCo's. *)
 
-let type_contact_frictionless_v1 = type_contact_frictionless
-
 let contact (m : Model.host) (d : Data.host) : Data.host =
   let t = m.topo
   and p = m.params in
-  (* The port computes frictionless contacts only. A model that can collide
-     with a frictional geom is refused here, where the row set would otherwise
-     silently disagree with MuJoCo's. *)
-  Collision.candidates m
-  |> Array.iter ~f:(fun (c : Collision.cand) ->
-    let dim = Stdlib.max t.geom_condim.(c.g1) t.geom_condim.(c.g2) in
-    if Stdlib.( > ) dim 1
-    then raise (Invalid_argument "contact friction (condim > 1) is not implemented yet"));
-  (* One slot per possible contact, not per row: the contact arrays are
-     [nconmax] long and the row index is the stage's offset plus the slot. *)
+  (* A contact contributes one row when it is frictionless and 2*(dim-1) rows
+     as a pyramidal cone, one pair of opposing edges per friction axis. Every
+     geom of a model must ask for the same dimensionality: mixing them would
+     make the row count data-dependent, and a row index has to be a host
+     value. Requiring both edges of a pair to carry a non-negative force is
+     what produces the cone, so the solver needs nothing new. *)
+  let dim = Array.fold t.geom_condim ~init:1 ~f:Int.max in
+  let size = if dim <= 1 then 1 else 2 * (dim - 1) in
+  if size > 4
+  then raise (Invalid_argument "contact friction (condim > 3) is not implemented yet");
   let nb = t.nconmax in
   let start = Nx.cast Nx.float64 d.nefc in
   let slots = Nx.arange_f Nx.float64 0.0 (Float.of_int nb) 1.0 in
   let live = Nx.less slots (Nx.cast Nx.float64 d.ncon) in
   let far = Nx.full_like slots (Float.of_int t.nefcmax) in
-  let idx = Nx.cast Nx.int64 (Nx.where live (Nx.add start slots) far) in
-  let put v x = Nx.scatter ~combine:Set ~axis:0 idx v x in
-  let put_cols v x =
+  let row_index k =
+    let stride = Nx.mul slots (Nx.scalar Nx.float64 (Float.of_int size)) in
+    Nx.cast
+      Nx.int64
+      (Nx.where
+         live
+         (Nx.add start (Nx.add stride (Nx.scalar Nx.float64 (Float.of_int k))))
+         far)
+  in
+  let put idx v x = Nx.scatter ~combine:Set ~axis:0 idx v x in
+  let put_cols idx v x =
     let cols = (Nx.shape v).(1) in
     let idx_rows = Nx.broadcast_to [| nb; cols |] (Nx.reshape [| nb; 1 |] idx) in
     Nx.scatter ~combine:Set ~axis:0 idx_rows v x
   in
-  (* The approximate inverse inertia of a contact row is the sum of the two
-     bodies' translational figures, as for a connect equality. *)
-  let weight side =
+  let block k = Nx.slice [ A; R (k * t.nv, (k + 1) * t.nv) ] d.contact_jac in
+  let normal_jac = block 0 in
+  let mu = Nx.slice [ A; I 0 ] d.contact_friction in
+  let weight side column =
     let ids = Nx.cast Nx.int64 (Nx.slice [ A; I side ] d.contact_body) in
-    Nx.slice [ A; I 0 ] (Nx.take ~axis:0 ids p.body_invweight0)
+    Nx.slice [ A; I column ] (Nx.take ~axis:0 ids p.body_invweight0)
   in
-  let diagA = Nx.add (weight 0) (weight 1) in
+  let tran_weight = Nx.add (weight 0 0) (weight 1 0) in
+  let rot_weight = Nx.add (weight 0 1) (weight 1 1) in
+  let ids = Nx.init Nx.int32 [| nb |] (fun i -> Int32.of_int i.(0)) in
+  let zero = Nx.zeros Nx.float64 [| nb |] in
+  let spin = Nx.zeros Nx.float64 [| nb |] in
+  ignore spin;
   let base = keep_before m d start in
-  { base with
-    efc_type =
-      put
-        (Nx.full Nx.int32 [| nb |] (Int32.of_int type_contact_frictionless_v1))
-        base.efc_type
-  ; efc_id = put (Nx.init Nx.int32 [| nb |] (fun i -> Int32.of_int i.(0))) base.efc_id
-  ; efc_pos = put d.contact_dist base.efc_pos
-  ; efc_margin = put d.contact_includemargin base.efc_margin
-  ; efc_posnorm = put d.contact_dist base.efc_posnorm
-  ; efc_frictionloss = put (Nx.zeros Nx.float64 [| nb |]) base.efc_frictionloss
-  ; efc_diagA = put diagA base.efc_diagA
-  ; efc_solref = put_cols d.contact_solref base.efc_solref
-  ; efc_solimp = put_cols d.contact_solimp base.efc_solimp
-  ; efc_jdotv = put (Nx.zeros Nx.float64 [| nb |]) base.efc_jdotv
-  ; efc_J = put_cols d.contact_jac base.efc_J
-  ; nefc = Nx.add d.nefc d.ncon
+  let write (out : Data.host ref) idx kind diagA jac =
+    { !out with
+      efc_type = put idx (Nx.full Nx.int32 [| nb |] (Int32.of_int kind)) !out.efc_type
+    ; efc_id = put idx ids !out.efc_id
+    ; efc_pos = put idx d.contact_dist !out.efc_pos
+    ; efc_margin = put idx d.contact_includemargin !out.efc_margin
+    ; efc_posnorm = put idx d.contact_dist !out.efc_posnorm
+    ; efc_frictionloss = put idx zero !out.efc_frictionloss
+    ; efc_diagA = put idx diagA !out.efc_diagA
+    ; efc_solref = put_cols idx d.contact_solref !out.efc_solref
+    ; efc_solimp = put_cols idx d.contact_solimp !out.efc_solimp
+    ; efc_jdotv = put idx zero !out.efc_jdotv
+    ; efc_J = put_cols idx jac !out.efc_J
+    }
+  in
+  let out = ref base in
+  if Int.equal size 1
+  then out := write out (row_index 0) type_contact_frictionless tran_weight normal_jac
+  else
+    for k = 1 to dim - 1 do
+      let tangent = block k in
+      (* MuJoCo indexes the friction axis from zero here: only a condim above
+         4 reaches the rotational figure. *)
+      let axis_weight = if Int.( < ) (k - 1) 2 then tran_weight else rot_weight in
+      let diagA = Nx.add tran_weight (Nx.mul (Nx.mul mu mu) axis_weight) in
+      for side = 0 to 1 do
+        let sign = if Int.equal side 0 then 1.0 else -1.0 in
+        let idx = row_index ((2 * (k - 1)) + side) in
+        let scale = Nx.reshape [| nb; 1 |] (Nx.mul_s mu sign) in
+        let jac = Nx.add normal_jac (Nx.mul tangent scale) in
+        out := write out idx type_contact_pyramidal diagA jac
+      done
+    done;
+  { !out with
+    nefc = Nx.add d.nefc (Nx.mul d.ncon (Nx.scalar Nx.int32 (Int32.of_int size)))
   }

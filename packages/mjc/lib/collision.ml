@@ -134,6 +134,27 @@ let plane_sphere ~pos1 ~normal ~pos2 ~size =
   let pos = Nx.add pos2 (Nx.mul normal (Nx.neg (Nx.add (Nx.mul_s dist 0.5) size))) in
   dist, pos, normal
 
+(* [mju_makeFrame]: the contact's third row from its normal and whatever
+   tangent the pair supplied, orthonormalised. *)
+let make_frame ~normal ~tangent =
+  let sc = Nx.scalar Nx.float64 in
+  let norm v = Nx.maximum_s (Nx.sqrt (Nx.dot v v)) 1e-300 in
+  let n = Nx.div normal (norm normal) in
+  let degenerate = Nx.less_s (Nx.dot tangent tangent) 0.25 in
+  let fallback =
+    Nx.where
+      (Nx.logical_and
+         (Nx.less_s (Nx.get [ 1 ] n) 0.5)
+         (Nx.greater_s (Nx.get [ 1 ] n) (-0.5)))
+      (Nx.stack ~axis:0 [ sc 0.0; sc 1.0; sc 0.0 ])
+      (Nx.stack ~axis:0 [ sc 0.0; sc 0.0; sc 1.0 ])
+  in
+  let y0 = Nx.where degenerate fallback tangent in
+  let y = Nx.sub y0 (Nx.mul n (Nx.dot n y0)) in
+  let y = Nx.div y (norm y) in
+  let z = Nx.cross n y in
+  Nx.stack ~axis:0 [ n; y; z ]
+
 let geometry (m : Model.host) (d : Data.host) (c : cand) =
   let p = m.params in
   let t = m.topo in
@@ -329,11 +350,16 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
   else (
     let mix = mixed_params m cands in
     let row_of k x = Nx.slice [ I k ] x in
+    let tangent (t : Topo.t) d (c : cand) =
+      match t.geom_type.(c.g1), t.geom_type.(c.g2) with
+      | Plane, Capsule -> geom_zaxis d c.g2
+      | _ -> Nx.zeros Nx.float64 [| 3 |]
+    in
     let dist = ref (Nx.zeros Nx.float64 [| ncand |])
     and pos = ref (Nx.zeros Nx.float64 [| ncand; 3 |])
     and normal = ref (Nx.zeros Nx.float64 [| ncand; 3 |])
     and live = ref (Nx.zeros Nx.float64 [| ncand |])
-    and jac = ref (Nx.zeros Nx.float64 [| ncand; t.nv |]) in
+    and jac = ref (Nx.zeros Nx.float64 [| ncand; 3 * t.nv |]) in
     (* MuJoCo keeps at most four contacts per pair, taking them in corner
        order. The candidate loop runs in that order, so a running count per
        pair does the same cut. *)
@@ -373,15 +399,20 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
           (Nx.where near (Nx.scalar Nx.float64 1.0) (Nx.scalar Nx.float64 0.0))
       in
       seen := Nx.add !seen on;
-      (* The normal row of a contact: the normal dotted with the difference of
-         the two bodies' point Jacobians, geom 2's minus geom 1's. *)
+      (* The frame's three rows, each dotted with the Jacobian difference:
+         geom 2's point Jacobian minus geom 1's. The normal row leads; a
+         pyramidal friction pair is built from it and one tangent. *)
       let b1 = t.geom_bodyid.(c.g1)
       and b2 = t.geom_bodyid.(c.g2) in
-      let row_of body =
-        let jacp, _ = Jacobian.point m d ~body ~pos:pos_i in
-        Nx.reshape [| t.nv |] (Nx.matmul jacp (Nx.reshape [| 3; 1 |] normal_i))
+      let frame = make_frame ~normal:normal_i ~tangent:(tangent t d c) in
+      let jacp1, _ = Jacobian.point m d ~body:b1 ~pos:pos_i
+      and jacp2, _ = Jacobian.point m d ~body:b2 ~pos:pos_i in
+      let rows =
+        Nx.matmul (Nx.sub jacp2 jacp1) (Nx.matrix_transpose frame)
+        |> Nx.matrix_transpose
+        |> fun x -> Nx.reshape [| 3 * t.nv |] x
       in
-      jac := Nx.set [ I i ] (Nx.sub (row_of b2) (row_of b1)) !jac;
+      jac := Nx.set [ I i ] rows !jac;
       dist := Nx.set [ I i ] dist_i !dist;
       pos := Nx.set [ I i ] pos_i !pos;
       normal := Nx.set [ I i ] normal_i !normal;

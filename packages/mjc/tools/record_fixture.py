@@ -210,7 +210,26 @@ MODELS = {
     # hinge whose spring drives it past its range so limit rows share the
     # buffer. See the model's own comment.
     "looped": open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "test", "fixtures", "looped.xml")).read(),    # A box on a plane: up to four contacts from one pair, kept in corner
+                                "..", "test", "fixtures", "looped.xml")).read(),
+    # The same corpus with a friction cone: every geom asks for condim 3, so
+    # each contact becomes four one-sided rows, the two opposing edges of the
+    # pyramid per friction axis.
+    "friction3": """
+<mujoco model="friction3">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="3"/>
+    <body name="ball" pos="0 0 0.1">
+      <freejoint/>
+      <geom name="ball" type="sphere" size="0.12" condim="3" friction="0.7 0.005 0.0001"/>
+    </body>
+    <body name="rod" pos="-0.5 0.1 0.16" quat="0.9238795 0.3826834 0 0">
+      <freejoint/>
+      <geom name="rod" type="capsule" fromto="0 0 -0.18 0 0 0.18" size="0.05"
+            condim="3" friction="0.4 0.005 0.0001"/>
+    </body>
+  </worldbody>
+</mujoco>""",    # A box on a plane: up to four contacts from one pair, kept in corner
     # order, which is what the per-pair cap has to reproduce.
     "boxes": """
 <mujoco model="boxes">

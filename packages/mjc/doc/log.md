@@ -340,10 +340,20 @@ corner test differs. The code is in because it is the shape the stacks need;
 the test that would hold it is not, and that is the first thing to finish
 next.
 
-**What is not in yet.** Contacts with friction (condim > 1) are refused by
-name, because a frictional contact is three coupled rows and the pyramidal
-cone is a group constraint the solver does not model: a friction row's bound
-is another row's force, not a constant.
+**The pyramidal cone is assembled, and its impulse is not trusted.** The
+pleasant discovery is that MuJoCo's cone needs no group constraint at all: for
+each friction axis it adds two *one-sided* rows with Jacobians `n + mu t` and
+`n - mu t`, and requiring both forces to be non-negative is what makes the
+cone. So `Constraint.contact` now emits `2*(dim-1)` rows per contact of type
+6, with the frame's tangent rows (from `mju_makeFrame`) and the per-axis
+`diagA = tran + mu^2 * weight`, and the solver handles them unchanged.
+
+What is not right is `diagA`'s `tran`: MuJoCo's per-side body weights make it
+twice the plain inverse-weight sum (measured against a corpus state: the
+contact's `efc_diagA` is `2*(1+mu^2)*tran` for a plane contact). Until that is
+reproduced, `friction3`'s rows and trajectory are *not* asserted, exactly as
+`boxes`' plane-box detection is not: the code is in, the parity is not
+claimed. Two half-claims, both recorded where their tests live.
 
 **M3 is complete.** The `.mjcb` format is version 9: it
 carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the

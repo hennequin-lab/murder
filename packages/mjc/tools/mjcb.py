@@ -140,7 +140,9 @@ def budgets(m):
     # A model that disables contacts, or has nothing to collide with, pays no
     # row budget for them: the dense factor is quadratic in this number.
     disabled = bool(m.opt.disableflags & (1 << 4))
-    contact_rows = 0 if disabled or ng < 2 else nconmax
+    condim = int(max(m.geom_condim)) if m.ngeom else 1
+    rows_per_contact = 1 if condim <= 1 else 2 * (condim - 1)
+    contact_rows = 0 if disabled or ng < 2 else nconmax * rows_per_contact
     return {
         "nconmax": max(8, 2 * ng),
         "nefcmax": max(4, 2 * limited + eq + friction + contact_rows),
