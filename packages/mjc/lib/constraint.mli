@@ -46,6 +46,12 @@ val limits : Model.host -> Data.host -> Data.host
     by the loss, so the solver treats it as linear outside the bound. *)
 val friction : Model.host -> Data.host -> Data.host
 
+(** [contact m d] appends one row per contact, after the rows already in the
+    buffer. v1 computes frictionless contacts only, so a model whose geoms ask
+    for one with friction is refused here rather than solved with rows that do
+    not match MuJoCo's. *)
+val contact : Model.host -> Data.host -> Data.host
+
 (** {1:impedance Impedance} *)
 
 (** [impedance m d] is [d] with [efc_vel], [efc_R], [efc_D] and [efc_aref]

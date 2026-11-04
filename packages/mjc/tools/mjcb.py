@@ -17,7 +17,7 @@ MJCB_MAGIC = b"MJCB"
 MJCB_END = b"MJCE"
 MJBF_MAGIC = b"MJBF"
 MJBF_END = b"MJFE"
-VERSION = 7
+VERSION = 9
 
 # Topology arrays, in the order the format writes them.
 INT_ARRAYS = [
@@ -52,7 +52,9 @@ def fields(m):
         ("dof_invweight0", m.dof_invweight0),
         ("qpos0", m.qpos0), ("qpos_spring", m.qpos_spring),
         ("geom_pos", m.geom_pos), ("geom_quat", m.geom_quat),
-        ("geom_size", m.geom_size), ("geom_rgba", m.geom_rgba),
+        ("geom_size", m.geom_size),
+        ("geom_condim", m.geom_condim), ("geom_rbound", m.geom_rbound),
+        ("geom_rgba", m.geom_rgba),
         ("geom_friction", m.geom_friction), ("geom_margin", m.geom_margin),
         ("geom_gap", m.geom_gap), ("geom_solmix", m.geom_solmix),
         ("geom_solref", m.geom_solref), ("geom_solimp", m.geom_solimp),
@@ -64,6 +66,7 @@ def fields(m):
         ("eq_active0", np.asarray(m.eq_active0, dtype=np.float64)),
         ("gravity", m.opt.gravity), ("timestep", np.asarray(m.opt.timestep)),
         ("integrator", np.asarray(m.opt.integrator, dtype=np.float64)),
+        ("disableflags", np.asarray(m.opt.disableflags, dtype=np.float64)),
         ("iterations", np.asarray(m.opt.iterations)),
         ("tolerance", np.asarray(m.opt.tolerance)),
     ]
@@ -133,9 +136,10 @@ def budgets(m):
                   if int(t) in (2, 3) and on)
     eq = sum(EQ_ROWS.get(int(t), 0) for t in m.eq_type)
     friction = sum(1 for d in m.dof_frictionloss if d > 0)
+    nconmax = max(8, 2 * ng)
     return {
-        "nconmax": max(16, 2 * ng),
-        "nefcmax": max(4, 2 * limited + eq + friction),
+        "nconmax": max(8, 2 * ng),
+        "nefcmax": max(4, 2 * limited + eq + friction + nconmax),
         "max_geom_pairs": max(16, 2 * ng),
     }
 

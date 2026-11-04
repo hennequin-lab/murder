@@ -274,7 +274,48 @@ the factor is dense — and 2-6 us per environment batched except `looped` at
 dofs that *have* a friction loss, which cut `looped` from 29 rows to 14 and
 its step from 285 us to 138.
 
-**M3 is complete.** The `.mjcb` format is version 7: it
+### M4, first half: contact detection and frictionless rows
+
+M4 could not be done in one pass, and the split was the right call: detection
+is a different kind of work from the row assembly, and detection had to be
+right before any force could be checked.
+
+**Detection.** A new `Collision` module builds the candidate pair list from
+host data — MuJoCo's `contype`/`conaffinity` bitmask, its body filter (same
+welded body, two static bodies, parent-child unless the world body is
+involved), the bounding-sphere rejection and the table of supported pairs —
+and computes the distances of plane-sphere, plane-capsule, sphere-sphere and
+sphere-capsule from `engine_collision_primitive`. Contacts are compacted with
+the same scatter the limit rows use. The contact parameters are mixed where
+MuJoCo mixes them: higher priority wins outright, otherwise condim is the max,
+friction the elementwise max, `solref`/`solimp` mixed by `solmix`, and the
+five friction slots are unpacked from the geom's three.
+
+Against a corpus model that carries every supported pair, `ncon`, `dist`,
+`pos`, `normal`, `geom`, `body`, `dim`, `includemargin`, `friction`, `solref`
+and `solimp` all match at 1e-12 over 32 states.
+
+**Frictionless rows.** `Constraint.contact` adds one non-negative row per
+contact — the same shape as a limit row, so the solver needed no change at
+all. The row's Jacobian is the normal dotted with the difference of the two
+bodies' point Jacobians, computed in `Collision` because a Jacobian is a walk
+up a dof chain and the bodies are host values there rather than data. Row
+position, margin, impedance and force match MuJoCo to 1e-12, 1e-12, 1e-12 and
+1e-7 — the force tolerance is the C engine's own stopping error on a contact
+that a random pose buries thousands of newtons deep — and a nine-step
+trajectory matches at 1e-8.
+
+**What is not in yet.** Contacts with friction (condim > 1) are refused by
+name, because a frictional contact is three coupled rows and the pyramidal
+cone is a group constraint the solver does not model. And a *compiled* or
+batched step of a model that can collide is not supported yet: `Collision`
+reads its parameters as host values, which `Rune.jit` does not allow for a
+captured tensor, so the bench cannot compile those models. The eager path is
+what the corpus exercises; the fix is the host-copy pattern that `jnt_limited`
+and `dof_frictionloss` already use in `Topo`, applied to the contact
+parameters.
+
+**M3 is complete.** The `.mjcb` format is version 9: it
 carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the
 body inverse weights and `dof_solref`/`dof_solimp`, and the converter sizes
 `nefcmax` from the model's joints, equalities and dofs.

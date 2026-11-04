@@ -36,6 +36,18 @@ type ('a, 'd) t =
   ; qfrc_constraint : 'a
   ; qfrc_smooth : 'a
   ; mass_matrix : 'a
+  ; ncon : 'd Nx.int32_t
+  ; contact_dist : 'a
+  ; contact_pos : 'a
+  ; contact_normal : 'a
+  ; contact_geom : 'd Nx.int32_t
+  ; contact_body : 'd Nx.int32_t
+  ; contact_dim : 'd Nx.int32_t
+  ; contact_includemargin : 'a
+  ; contact_friction : 'a
+  ; contact_solref : 'a
+  ; contact_jac : 'a
+  ; contact_solimp : 'a
   ; nefc : 'd Nx.int32_t
   ; efc_type : 'd Nx.int32_t
   ; efc_id : 'd Nx.int32_t
@@ -102,6 +114,18 @@ let create (m : Model.host) : host =
   ; qfrc_constraint = zeros [| t.nv |]
   ; qfrc_smooth = zeros [| t.nv |]
   ; mass_matrix = zeros [| t.nv; t.nv |]
+  ; ncon = Nx.scalar Nx.int32 0l
+  ; contact_dist = zeros [| t.nconmax |]
+  ; contact_pos = zeros [| t.nconmax; 3 |]
+  ; contact_normal = zeros [| t.nconmax; 3 |]
+  ; contact_geom = Nx.zeros Nx.int32 [| t.nconmax; 2 |]
+  ; contact_body = Nx.zeros Nx.int32 [| t.nconmax; 2 |]
+  ; contact_dim = Nx.zeros Nx.int32 [| t.nconmax |]
+  ; contact_includemargin = zeros [| t.nconmax |]
+  ; contact_friction = zeros [| t.nconmax; 5 |]
+  ; contact_solref = zeros [| t.nconmax; 2 |]
+  ; contact_jac = zeros [| t.nconmax; t.nv |]
+  ; contact_solimp = zeros [| t.nconmax; 5 |]
   ; nefc = Nx.scalar Nx.int32 0l
   ; efc_type = Nx.zeros Nx.int32 [| t.nefcmax |]
   ; efc_id = Nx.zeros Nx.int32 [| t.nefcmax |]

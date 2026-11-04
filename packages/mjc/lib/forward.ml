@@ -6,6 +6,9 @@
 let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
   let d = Kinematics.forward m d in
   let d = Mass.forward m d in
+  (* The contact row's Jacobian is a dof-chain walk, so contact detection needs
+     the motion subspaces the mass stage computes. *)
+  let d = Collision.contacts m d in
   let d = Passive.forward m d in
   let d = Bias.forward m d in
   let qfrc_smooth =
@@ -15,9 +18,9 @@ let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
      no constraints the solver leaves qacc and qfrc_constraint as they are. *)
   let qacc = Mass.solve (Mass.factor d.mass_matrix) qfrc_smooth in
   let d = { d with qfrc_smooth; qacc } in
-  (* A model with no equality, no limit and no friction loss can never produce
-     a row: skipping the constraint stages keeps its step on the smooth path
-     alone, which is most of the corpus. *)
+  (* A model with no equality, no limit, no friction loss and no pair of geoms
+     can never produce a row: skipping the constraint stages keeps its step on
+     the smooth path alone, which is most of the corpus. *)
   let t = m.topo in
   let limits_possible = ref false in
   Array.iteri
@@ -30,12 +33,18 @@ let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
   Array.iter (fun x -> if x > 0.0 then friction_possible := true) t.dof_frictionloss;
   let limits_possible = !limits_possible
   and friction_possible = !friction_possible in
-  let constrained = t.neq > 0 || limits_possible || friction_possible in
+  let constrained =
+    t.neq > 0
+    || limits_possible
+    || friction_possible
+    || (t.contacts_enabled && t.ngeom > 1)
+  in
   if not constrained
   then d
   else (
     let d = Constraint.equality m d in
     let d = Constraint.friction m d in
     let d = Constraint.limits m d in
+    let d = Constraint.contact m d in
     let d = Constraint.impedance m d in
     Solver.forward ?linear m d)

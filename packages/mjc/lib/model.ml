@@ -35,6 +35,8 @@ module Params = struct
     ; geom_pos : 'a
     ; geom_quat : 'a
     ; geom_size : 'a
+    ; geom_condim : 'a
+    ; geom_rbound : 'a
     ; geom_rgba : 'a
     ; geom_friction : 'a
     ; geom_margin : 'a
@@ -54,6 +56,7 @@ module Params = struct
     ; gravity : 'a
     ; timestep : 'a
     ; integrator : 'a
+    ; disableflags : 'a
     ; iterations : 'a
     ; tolerance : 'a
     }
@@ -184,6 +187,8 @@ let validate (m : host) : (unit, string) Result.t =
   want "geom_pos" [| t.ngeom; 3 |] p.geom_pos;
   want "geom_quat" [| t.ngeom; 4 |] p.geom_quat;
   want "geom_size" [| t.ngeom; 3 |] p.geom_size;
+  want "geom_condim" [| t.ngeom |] p.geom_condim;
+  want "geom_rbound" [| t.ngeom |] p.geom_rbound;
   want "geom_rgba" [| t.ngeom; 4 |] p.geom_rgba;
   want "geom_friction" [| t.ngeom; 3 |] p.geom_friction;
   want "geom_margin" [| t.ngeom |] p.geom_margin;
@@ -203,6 +208,7 @@ let validate (m : host) : (unit, string) Result.t =
   want "gravity" [| 3 |] p.gravity;
   want "timestep" [||] p.timestep;
   want "integrator" [||] p.integrator;
+  want "disableflags" [||] p.disableflags;
   want "iterations" [||] p.iterations;
   want "tolerance" [||] p.tolerance;
   match Topo.validate t, List.rev !problems with

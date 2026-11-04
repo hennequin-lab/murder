@@ -49,6 +49,8 @@ module Params : sig
     ; geom_pos : 'a (** [[ngeom;3]], geom frame in the body frame. *)
     ; geom_quat : 'a (** [[ngeom;4]], geom frame in the body frame. *)
     ; geom_size : 'a (** [[ngeom;3]], size parameters, by geom type. *)
+    ; geom_condim : 'a (** [[ngeom]], contact dimensionality. *)
+    ; geom_rbound : 'a (** [[ngeom]], bound radius about the geom frame. *)
     ; geom_rgba : 'a (** [[ngeom;4]], colour, for the viewer. *)
     ; geom_friction : 'a (** [[ngeom;3]], sliding, torsional, rolling. *)
     ; geom_margin : 'a (** [[ngeom]], contact detection distance. *)
@@ -68,6 +70,7 @@ module Params : sig
     ; gravity : 'a (** [[3]] *)
     ; timestep : 'a (** [[]], a 0-d tensor. *)
     ; integrator : 'a (** [[]], MuJoCo's code for the integration scheme. *)
+    ; disableflags : 'a (** [[]], MuJoCo's [mjtDisableBit] mask. *)
     ; iterations : 'a (** [[]], the solver's iteration budget. *)
     ; tolerance : 'a (** [[]], and its tolerance. *)
     }

@@ -7,6 +7,11 @@ whole step with `Rune.grad`.
 
 ## Status
 
+**M4 in progress.** Contact detection (plane-sphere, plane-capsule,
+sphere-sphere, sphere-capsule) matches MuJoCo at 1e-12, and frictionless
+contact rows are solved. Frictional contacts and the compiled path for models
+that collide are not in yet.
+
 **M3 complete, short of tendons and motors.** Limits, equality constraints and
 friction loss are solved and match MuJoCo to machine precision; both the Euler
 and the implicitfast integrators are in. Friction-loss rows are solved as box

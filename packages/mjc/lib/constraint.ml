@@ -614,3 +614,64 @@ let friction (m : Model.host) (d : Data.host) : Data.host =
   done;
   let d = keep_before m !out (Nx.scalar Nx.float64 (Float.of_int !rows)) in
   { d with nefc = Nx.scalar Nx.int32 (Int32.of_int !rows) }
+
+(* {1 Contacts}
+
+   One row per contact while v1 computes frictionless contacts only: the normal
+   row, whose position is the penetration depth and whose force may only push.
+   A model whose geoms ask for a frictional contact is refused here rather than
+   solved with rows that do not match MuJoCo's. *)
+
+let type_contact_frictionless_v1 = type_contact_frictionless
+
+let contact (m : Model.host) (d : Data.host) : Data.host =
+  let t = m.topo
+  and p = m.params in
+  (* The port computes frictionless contacts only. A model that can collide
+     with a frictional geom is refused here, where the row set would otherwise
+     silently disagree with MuJoCo's. *)
+  let dims = Nx.to_array p.geom_condim in
+  Collision.candidates m
+  |> Array.iter ~f:(fun (c : Collision.cand) ->
+    let dim = Stdlib.Float.max dims.(c.g1) dims.(c.g2) in
+    if Stdlib.( > ) dim 1.5
+    then raise (Invalid_argument "contact friction (condim > 1) is not implemented yet"));
+  (* One slot per possible contact, not per row: the contact arrays are
+     [nconmax] long and the row index is the stage's offset plus the slot. *)
+  let nb = t.nconmax in
+  let start = Nx.cast Nx.float64 d.nefc in
+  let slots = Nx.arange_f Nx.float64 0.0 (Float.of_int nb) 1.0 in
+  let live = Nx.less slots (Nx.cast Nx.float64 d.ncon) in
+  let far = Nx.full_like slots (Float.of_int t.nefcmax) in
+  let idx = Nx.cast Nx.int64 (Nx.where live (Nx.add start slots) far) in
+  let put v x = Nx.scatter ~combine:Set ~axis:0 idx v x in
+  let put_cols v x =
+    let cols = (Nx.shape v).(1) in
+    let idx_rows = Nx.broadcast_to [| nb; cols |] (Nx.reshape [| nb; 1 |] idx) in
+    Nx.scatter ~combine:Set ~axis:0 idx_rows v x
+  in
+  (* The approximate inverse inertia of a contact row is the sum of the two
+     bodies' translational figures, as for a connect equality. *)
+  let weight side =
+    let ids = Nx.cast Nx.int64 (Nx.slice [ A; I side ] d.contact_body) in
+    Nx.slice [ A; I 0 ] (Nx.take ~axis:0 ids p.body_invweight0)
+  in
+  let diagA = Nx.add (weight 0) (weight 1) in
+  let base = keep_before m d start in
+  { base with
+    efc_type =
+      put
+        (Nx.full Nx.int32 [| nb |] (Int32.of_int type_contact_frictionless_v1))
+        base.efc_type
+  ; efc_id = put (Nx.init Nx.int32 [| nb |] (fun i -> Int32.of_int i.(0))) base.efc_id
+  ; efc_pos = put d.contact_dist base.efc_pos
+  ; efc_margin = put d.contact_includemargin base.efc_margin
+  ; efc_posnorm = put d.contact_dist base.efc_posnorm
+  ; efc_frictionloss = put (Nx.zeros Nx.float64 [| nb |]) base.efc_frictionloss
+  ; efc_diagA = put diagA base.efc_diagA
+  ; efc_solref = put_cols d.contact_solref base.efc_solref
+  ; efc_solimp = put_cols d.contact_solimp base.efc_solimp
+  ; efc_jdotv = put (Nx.zeros Nx.float64 [| nb |]) base.efc_jdotv
+  ; efc_J = put_cols d.contact_jac base.efc_J
+  ; nefc = Nx.add d.nefc d.ncon
+  }

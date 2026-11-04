@@ -78,6 +78,7 @@ type t =
   ; jnt_limited : bool array (** [[njnt]] *)
   ; dof_frictionloss : float array (** [[nv]] *)
   ; integrator : integrator
+  ; contacts_enabled : bool
   ; eq_type : eq_type array (** [[neq]] *)
   ; eq_objtype : eq_objtype array (** [[neq]] *)
   ; body_names : string array

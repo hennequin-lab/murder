@@ -104,6 +104,9 @@ type t =
         dofs get a friction row is decided when the program is built, not
         when it runs. *)
   ; integrator : integrator
+  ; contacts_enabled : bool
+    (** Whether MuJoCo's contact-disable flag is set. A model that disables
+        contacts produces no rows and no contact array. *)
   ; eq_type : eq_type array (** [[neq]] *)
   ; eq_objtype : eq_objtype array
     (** [[neq]], what [eq_obj1id] and [eq_obj2id] index in the model. *)

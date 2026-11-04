@@ -128,6 +128,50 @@ MODELS = {
     </body>
   </worldbody>
 </mujoco>""",
+    # Frictionless contacts: one row each, which is what the solver handles
+    # until the friction cone is in.
+    "slide1": """
+<mujoco model="slide1">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="1"/>
+    <body name="ball" pos="0 0 0.1">
+      <freejoint/>
+      <geom name="ball" type="sphere" size="0.12" condim="1"/>
+    </body>
+    <body name="pebble" pos="0.3 0.1 0.07">
+      <freejoint/>
+      <geom name="pebble" type="sphere" size="0.09" condim="1"/>
+    </body>
+    <body name="rod" pos="-0.35 0 0.16" quat="0.9238795 0.3826834 0 0">
+      <freejoint/>
+      <geom name="rod" type="capsule" fromto="0 0 -0.18 0 0 0.18" size="0.05"
+            condim="1"/>
+    </body>
+  </worldbody>
+</mujoco>""",
+    # Contacts of every pair v1 computes: two spheres against a plane, a
+    # capsule against a plane (two endpoint contacts) and the spheres against
+    # each other and against the capsule.
+    "bounce": """
+<mujoco model="bounce">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+    <body name="ball" pos="0 0 0.5">
+      <freejoint/>
+      <geom name="ball" type="sphere" size="0.1"/>
+    </body>
+    <body name="tip" pos="0.4 0 0.5">
+      <freejoint/>
+      <geom name="tip" type="sphere" size="0.08"/>
+    </body>
+    <body name="rod" pos="-0.4 0 0.5" quat="0.9238795 0.3826834 0 0">
+      <freejoint/>
+      <geom name="rod" type="capsule" fromto="0 0 -0.2 0 0 0.2" size="0.05"/>
+    </body>
+  </worldbody>
+</mujoco>""",
     # One dof, one friction row, and a loss large enough that the row stays in
     # the quadratic branch: the complement of the saturated case above.
     "drag": """
@@ -207,6 +251,45 @@ POSE_FIELDS = [
 EFC_FIELDS = ["efc_type", "efc_id", "efc_pos", "efc_margin", "efc_J",
               "efc_vel", "efc_R", "efc_D", "efc_aref", "efc_b", "efc_force"]
 
+# Contacts, padded to the widest state like the rows are. The normal is the
+# first three components of the contact frame.
+CONTACT_FIELDS = {
+    "contact_dist": 1, "contact_pos": 3, "contact_normal": 3,
+    "contact_geom": 2, "contact_body": 2, "contact_dim": 1,
+    "contact_includemargin": 1, "contact_friction": 5,
+    "contact_solref": 2, "contact_solimp": 5,
+}
+
+
+def contact_state(m, d):
+    """The contact arrays of one state, as a dict of rows.
+
+    The binding hands back one MjContact object per contact, so the fields are
+    gathered one at a time.
+    """
+    cs = [d.contact[i] for i in range(d.ncon)]
+    def gather(field, width):
+        if not cs:
+            return np.zeros((0, width))
+        rows = [np.asarray(getattr(c, field), dtype=float).reshape(-1) for c in cs]
+        return np.array([r[:width] for r in rows])
+
+    geom = gather("geom", 2)
+    body = m.geom_bodyid[geom.astype(int)] if len(cs) else np.zeros((0, 2))
+    return {
+        "contact_dist": gather("dist", 1),
+        "contact_pos": gather("pos", 3),
+        "contact_normal": gather("frame", 3),
+        "contact_geom": geom,
+        "contact_body": np.array(body, dtype=float).reshape(-1, 2),
+        "contact_dim": gather("dim", 1),
+        "contact_includemargin": gather("includemargin", 1),
+        "contact_friction": gather("friction", 5),
+        "contact_solref": gather("solref", 2),
+        "contact_solimp": gather("solimp", 5),
+    }
+
+
 # Written by mj_forward after the pose: the position stage's centre of mass,
 # centre-of-mass inertia and motion subspaces, then the velocity stage's
 # spatial velocities and the forces it leaves behind.
@@ -232,6 +315,7 @@ def record(name, xml, outdir, rng):
 
     states = []
     qvels = []
+    cons = []
     for _ in range(NSTATES):
         qpos = random_qpos(m, rng)
         qvel = rng.uniform(-2.0, 2.0, size=m.nv)
@@ -251,6 +335,7 @@ def record(name, xml, outdir, rng):
                 v = np.array(getattr(d, f))[:nefc]
             efc[f] = v
         states.append((qpos, fields, efc))
+        cons.append(contact_state(m, d))
         qvels.append(qvel)
 
     tensors = {"qpos": np.stack([s[0] for s in states])}
@@ -269,6 +354,16 @@ def record(name, xml, outdir, rng):
             else:
                 padded[i, : r.shape[0]] = r
         tensors[f] = padded
+
+    ncon_width = max(1, max(len(c["contact_dist"]) for c in cons))
+    tensors["ncon"] = np.array([len(c["contact_dist"]) for c in cons], dtype=float)
+    for field, width in CONTACT_FIELDS.items():
+        padded = np.zeros((len(cons), ncon_width, width))
+        for i, c in enumerate(cons):
+            r = np.asarray(c[field], dtype=float).reshape(-1, width)
+            padded[i, : r.shape[0], :] = r
+        # A one-column field is a vector of rows, not a matrix of one column.
+        tensors[field] = padded[:, :, 0] if width == 1 else padded
 
     # Position integration, from the same states and velocities.
     qpos_next = []

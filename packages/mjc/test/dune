@@ -6,7 +6,8 @@
   test_fk
   test_mass
   test_dyn
-  test_constraint)
+  test_constraint
+  test_contact)
  (modules
   support
   test_mjcb
@@ -15,7 +16,8 @@
   test_fk
   test_mass
   test_dyn
-  test_constraint)
+  test_constraint
+  test_contact)
  (deps
   (glob_files fixtures/*))
  (libraries base mjc nx rune windtrap))

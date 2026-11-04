@@ -86,7 +86,7 @@ viewer   V0 ---> V1 ---> V2 ---> V3 ---> V4 ---> V5
 | V0 stills | M0 | the model reader | with M0 |
 | V1 window | M1 | body poses | once `Model.t` exists, drawing identity poses |
 | V2 overlays | M2 | inertia, COM, velocities | with M2 |
-| V3 contacts and log | M4 | contact rows and forces | with M4 |
+| V3 contacts and log | M4 (first half done) | contact rows and forces | with M4 |
 | V4 browser | V3 | the log format | after M7 |
 | V5 batch | M7 | a vmapped `Data` | after M7 |
 
@@ -102,7 +102,7 @@ reader lands, drawing every geom at the identity pose.
 | M1 | Rigid-body math, forward kinematics | 2 wk | G1 | compute every pose in a model and draw it |
 | M2 | Inertia, bias, passive, integration | 2.5 wk | G2 | forward-simulate unconstrained bodies and chains |
 | M3 | Constraints without contacts, solvers | 3 wk | **G3** | step a model with limits and motors *(complete)* |
-| M4 | Contact | 4.5 wk | **G4** | step hopper, walker, ant, humanoid |
+| M4 (first half done) | Contact | 4.5 wk | **G4** | step hopper, walker, ant, humanoid |
 | M5 | Actuators, transmissions, sensors, tendons | 2.5 wk | G5 | load the lab's actuated and tendon models |
 | M6 | Differentiability | 2.5 wk | **G6** | differentiate the step, run iLQR/MPC on it |
 | M7 | Parity, performance, dtype consolidation | 2 wk | **G7** | quote throughput numbers and ship the package |
@@ -701,7 +701,7 @@ Full design and options in [`VIZ.md`](VIZ.md). The schedule, for reference:
 | V0 | Still frames and movies through `geom.viz` | 0.5 wk | M0 | model reader |
 | V1 | Native window (`raylib`), orbit camera, joint sliders | 1 wk | M2 | FK |
 | V2 | Dynamics overlays: COM, inertia boxes, velocity, trail | 0.5 wk | M2 | dynamics |
-| V3 | Contacts, forces, replay log, pause/step | 1 wk | M4 | contact |
+| V3 | Contacts, forces, replay log, pause/step | 1 wk | M4 (first half done) | contact |
 | V4 | Browser backend over WebSocket (optional) | 1.5 wk | M7 | nothing new |
 | V5 | Batch grid, ghost trajectories, screenshots in docs | 0.5 wk | M7 | batch |
 
@@ -750,7 +750,7 @@ one interface (`Model.t`, `Data.t`, `mjcb`) and nothing else.
 | G1 | M1 | Do conventions match the C engine? | parity report | fix conventions; do not proceed |
 | G2 | M2 | Is the composed step within budget? | `doc/perf.md` | return to the factorization; do not build constraints |
 | G3 | M3 | Solver policy: line search or not? | `doc/adr/0010` | implement line search before contact |
-| G4 | M4 | Do the standard benchmarks track? | `doc/contact-report.md` | ship without the failing primitive pairs, or stop |
+| G4 | M4 (first half done) | Do the standard benchmarks track? | `doc/contact-report.md` | ship without the failing primitive pairs, or stop |
 | G5 | M5 | Is MJCF on the critical path? | `doc/log.md` | promote M10 before M6 |
 | G6 | M6 | Is the gradient usable and affordable? | `doc/grad-report.md` | document the limit; the engine is an analysis tool |
 | G7 | M7 | Continue into M8–M11? | `doc/log.md` | stop at a finished v1 |
@@ -794,9 +794,9 @@ horizon; quoting a 1000-step tolerance instead would be quoting luck.
 | `ball` | one ball joint | 3 | M1 | quaternion `qpos` |
 | `welded` | two bodies, weld + connect | 6 | M3 | constraint rows, `λ` |
 | `stiff` | spring-damper chain | 12 | M3 | implicit integrator |
-| `hopper` | MuJoCo benchmark | 6 | M4 | contact, simple |
-| `walker2d` | MuJoCo benchmark | 6 | M4 | contact, feet |
-| `ant` | MuJoCo benchmark | 8 | M4 | contact, many pairs |
+| `hopper` | MuJoCo benchmark | 6 | M4 (first half done) | contact, simple |
+| `walker2d` | MuJoCo benchmark | 6 | M4 (first half done) | contact, feet |
+| `ant` | MuJoCo benchmark | 8 | M4 (first half done) | contact, many pairs |
 | `humanoid` | MuJoCo benchmark | 27 | M4, M5 | the size and cost target |
 | `finger` | tendon-driven | 3 | M5 | fixed tendon, sensor |
 | `arm` | actuated 6-DOF | 6 | M5 | actuator and sensor parity |

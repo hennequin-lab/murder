@@ -45,6 +45,23 @@ type ('a, 'd) t =
   ; qfrc_constraint : 'a (** [[nv]], constraint forces. *)
   ; qfrc_smooth : 'a (** [[nv]], the total force before constraints. *)
   ; mass_matrix : 'a (** [[nv;nv]], the mass matrix. *)
+  ; ncon : 'd Nx.int32_t (** [[]], the number of contacts. *)
+  ; contact_dist : 'a (** [[nconmax]], signed distance, negative when touching. *)
+  ; contact_pos : 'a (** [[nconmax;3]], the contact point, world. *)
+  ; contact_normal : 'a
+    (** [[nconmax;3]], the normal, from geom 1's surface towards geom 2. *)
+  ; contact_geom : 'd Nx.int32_t (** [[nconmax;2]], the geoms that made it. *)
+  ; contact_body : 'd Nx.int32_t (** [[nconmax;2]], their bodies. *)
+  ; contact_dim : 'd Nx.int32_t (** [[nconmax]], the contact dimensionality. *)
+  ; contact_includemargin : 'a
+    (** [[nconmax]], the distance inside which the contact is real. *)
+  ; contact_friction : 'a (** [[nconmax;5]], in MuJoCo's slot layout. *)
+  ; contact_solref : 'a (** [[nconmax;2]], mixed from the two geoms. *)
+  ; contact_jac : 'a
+    (** [[nconmax;nv]], the normal row's Jacobian. It is computed where the
+        contact geometry is, with the bodies as host values, because a
+        Jacobian is a walk up a body's dof chain. *)
+  ; contact_solimp : 'a (** [[nconmax;5]] *)
   ; nefc : 'd Nx.int32_t (** [[]], the number of constraint rows. *)
   ; efc_type : 'd Nx.int32_t (** [[nefcmax]], row type. *)
   ; efc_id : 'd Nx.int32_t (** [[nefcmax]], the joint or other object. *)

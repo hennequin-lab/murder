@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 7
+let version = 9
 
 (* Layout, in writing order:
 
@@ -102,6 +102,8 @@ let fields =
   ; "geom_pos"
   ; "geom_quat"
   ; "geom_size"
+  ; "geom_condim"
+  ; "geom_rbound"
   ; "geom_rgba"
   ; "geom_friction"
   ; "geom_margin"
@@ -121,6 +123,7 @@ let fields =
   ; "gravity"
   ; "timestep"
   ; "integrator"
+  ; "disableflags"
   ; "iterations"
   ; "tolerance"
   ]
@@ -311,6 +314,8 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.geom_pos
       ; p.geom_quat
       ; p.geom_size
+      ; p.geom_condim
+      ; p.geom_rbound
       ; p.geom_rgba
       ; p.geom_friction
       ; p.geom_margin
@@ -330,6 +335,7 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.gravity
       ; p.timestep
       ; p.integrator
+      ; p.disableflags
       ; p.iterations
       ; p.tolerance
       ]
@@ -446,6 +452,7 @@ let parse (c : cursor) : Model.host =
     integrator_of_code (Int.of_float (Nx.to_array (tensor "integrator")).(0))
   in
   let limited = Nx.to_array (tensor "jnt_limited") in
+  let disable = Int.of_float (Nx.to_array (tensor "disableflags")).(0) in
   let topo =
     { Topo.name
     ; mujoco_version
@@ -484,6 +491,7 @@ let parse (c : cursor) : Model.host =
     ; geom_priority = i "geom_priority"
     ; site_bodyid = i "site_bodyid"
     ; integrator
+    ; contacts_enabled = Int.( land ) disable (1 lsl 4) = 0
     ; jnt_limited = Array.map limited ~f:(fun x -> Stdlib.( > ) x 0.5)
     ; dof_frictionloss = frictionloss
     ; eq_type = Array.map (i "eq_type") ~f:eq_type_of_code
@@ -522,6 +530,8 @@ let parse (c : cursor) : Model.host =
     ; geom_pos = tensor "geom_pos"
     ; geom_quat = tensor "geom_quat"
     ; geom_size = tensor "geom_size"
+    ; geom_condim = tensor "geom_condim"
+    ; geom_rbound = tensor "geom_rbound"
     ; geom_rgba = tensor "geom_rgba"
     ; geom_friction = tensor "geom_friction"
     ; geom_margin = tensor "geom_margin"
@@ -541,6 +551,7 @@ let parse (c : cursor) : Model.host =
     ; gravity = tensor "gravity"
     ; timestep = tensor "timestep"
     ; integrator = tensor "integrator"
+    ; disableflags = tensor "disableflags"
     ; iterations = tensor "iterations"
     ; tolerance = tensor "tolerance"
     }

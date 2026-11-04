@@ -55,6 +55,26 @@
       "xml_sha256": "beaa1538a7afc7bb"
     },
     {
+      "name": "slide1",
+      "nbody": 4,
+      "ngeom": 4,
+      "njnt": 3,
+      "nq": 21,
+      "nv": 18,
+      "nstates": 32,
+      "xml_sha256": "b5f6311c35c0ac8b"
+    },
+    {
+      "name": "bounce",
+      "nbody": 4,
+      "ngeom": 4,
+      "njnt": 3,
+      "nq": 21,
+      "nv": 18,
+      "nstates": 32,
+      "xml_sha256": "d96e1afc0824485a"
+    },
+    {
       "name": "drag",
       "nbody": 2,
       "ngeom": 1,
@@ -82,7 +102,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "309aa0b529597e7a"
+      "xml_sha256": "0ace506f1726fb9a"
     }
   ]
 }
