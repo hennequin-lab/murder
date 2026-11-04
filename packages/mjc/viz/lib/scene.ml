@@ -388,6 +388,48 @@ let of_state
   ; energy = (if energy then Some (mechanical_energy m d) else None)
   }
 
+(* {1 Bounds and framing}
+
+   Both backends open on the same view, so this lives here rather than once per
+   backend: a window that framed differently would look like a disagreement
+   about where the model is. Planes are left out of the box — they are the
+   ground, and including a 10-metre floor makes the subject a speck — and so is
+   anything v1 cannot draw. *)
+let extent (s : t) =
+  let lo = ref { x = Float.infinity; y = Float.infinity; z = Float.infinity }
+  and hi =
+    ref { x = Float.neg_infinity; y = Float.neg_infinity; z = Float.neg_infinity }
+  in
+  let seen = ref false in
+  let eat (p : p3) =
+    seen := true;
+    lo := { x = Float.min p.x !lo.x; y = Float.min p.y !lo.y; z = Float.min p.z !lo.z };
+    hi := { x = Float.max p.x !hi.x; y = Float.max p.y !hi.y; z = Float.max p.z !hi.z }
+  in
+  List.iter s.geoms ~f:(fun g ->
+    match g.shape with
+    | Sphere { centre; radius; _ } ->
+      eat { centre with x = centre.x +. radius };
+      eat { centre with x = centre.x -. radius }
+    | Capsule { a; b; _ } ->
+      eat a;
+      eat b
+    | Box { centre; _ } | Cylinder { centre; _ } | Ellipsoid { centre; _ } -> eat centre
+    | Plane _ | Unsupported _ -> ());
+  if not !seen
+  then { x = -1.; y = -1.; z = -1. }, { x = 1.; y = 1.; z = 1. }
+  else !lo, !hi
+
+let framing (s : t) =
+  let lo, hi = extent s in
+  let centre =
+    { x = (lo.x +. hi.x) /. 2.; y = (lo.y +. hi.y) /. 2.; z = (lo.z +. hi.z) /. 2. }
+  in
+  let size = Float.max (hi.x -. lo.x) (Float.max (hi.y -. lo.y) (hi.z -. lo.z)) in
+  let d = Float.max size 0.5 in
+  ( { x = centre.x +. (2.0 *. d); y = centre.y -. (2.8 *. d); z = centre.z +. (1.6 *. d) }
+  , centre )
+
 let pp ppf (s : t) =
   Format.fprintf
     ppf

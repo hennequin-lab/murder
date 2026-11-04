@@ -33,22 +33,22 @@ type t =
   ; width : int
   ; height : int
   ; camera : RC.Camera3D.t
+  ; eye : S.p3
+  ; target : S.p3
   }
 
-let default_eye = { S.x = 1.6; y = -2.2; z = 1.3 }
-let default_target = { S.x = 0.; y = 0.; z = 0.5 }
+(* The opening view is the still backend's: {!Scene.framing}, which ignores
+   planes and offsets the eye by the box's largest side. Two backends that
+   framed differently would look like a disagreement about where the model
+   is. *)
 
-(* [Data.create] is the reference state, but it leaves the derived arrays at
-   zero: the frames are what kinematics computes. A viewer that never steps
-   would draw every geom at the origin, so the state it starts from is the
-   reference state after one forward pass, and so is a reset. *)
 let fresh (model : Mjc.Model.host) = Mjc.Kinematics.forward model (Mjc.Data.create model)
 
 let open_
       ?(width = 1280)
       ?(height = 720)
-      ?(eye = default_eye)
-      ?(target = default_target)
+      ?eye
+      ?target
       ?(hud = true)
       ?(frames = false)
       ?(contacts = true)
@@ -62,6 +62,9 @@ let open_
       (model : Mjc.Model.host)
   =
   let data = fresh model in
+  let scene_eye, scene_target = S.framing (S.of_state model data) in
+  let eye = Option.value eye ~default:scene_eye
+  and target = Option.value target ~default:scene_target in
   { model
   ; data
   ; paused = false
@@ -80,6 +83,8 @@ let open_
   ; scene_s = 0.
   ; width
   ; height
+  ; eye
+  ; target
   ; camera =
       RC.Camera3D.create
         (RC.Vector3.create eye.x eye.y eye.z)
@@ -406,8 +411,9 @@ let draw ?(fps = true) (t : t) =
      | None -> ());
     if fps then RT.draw_fps 10 (if Option.is_some scene.S.energy then 114 else 96))
 
-(* [c] puts the camera back where a run starts. *)
-let camera_reset (t : t) = look t default_eye default_target
+(* [c] puts the camera back where the run started: the framed view, which is
+   in [t] because the model may have moved since. *)
+let camera_reset (t : t) = look t t.eye t.target
 
 (* {1 The loop} *)
 

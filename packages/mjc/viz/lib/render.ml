@@ -128,51 +128,18 @@ let shapes
     [ P.Plane { normal = point n; offset; patch } ]
   | Scene.Unsupported _ -> []
 
-(* {1 Camera from the scene} *)
+(* {1 Camera from the scene}
 
-let bounds (s : Scene.t) =
-  let lo = ref { Scene.x = Float.infinity; y = Float.infinity; z = Float.infinity }
-  and hi =
-    ref { Scene.x = Float.neg_infinity; y = Float.neg_infinity; z = Float.neg_infinity }
-  in
-  let seen = ref false in
-  let eat (p : Scene.p3) =
-    seen := true;
-    lo
-    := { Scene.x = Float.min p.x !lo.x; y = Float.min p.y !lo.y; z = Float.min p.z !lo.z };
-    hi
-    := { Scene.x = Float.max p.x !hi.x; y = Float.max p.y !hi.y; z = Float.max p.z !hi.z }
-  in
-  List.iter s.geoms ~f:(fun g ->
-    match g.shape with
-    | Scene.Sphere { centre; radius } ->
-      eat (add centre (smul { Scene.x = 1.; y = 0.; z = 0. } radius));
-      eat (add centre (smul { Scene.x = -1.; y = 0.; z = 0. } radius))
-    | Scene.Capsule { a; b; _ } ->
-      eat a;
-      eat b
-    | Scene.Box { centre; _ }
-    | Scene.Cylinder { centre; _ }
-    | Scene.Ellipsoid { centre; _ } -> eat centre
-    | Scene.Plane _ | Scene.Unsupported _ -> ());
-  if not !seen
-  then { Scene.x = -1.; y = -1.; z = -1. }, { Scene.x = 1.; y = 1.; z = 1. }
-  else !lo, !hi
+   The box and the default view come from {!Scene}, so the window opens on the
+   same picture as a still. *)
+
+let bounds (s : Scene.t) = Scene.extent s
 
 let camera_for (c : camera) (s : Scene.t) =
-  let lo, hi = bounds s in
-  let centre = smul (add lo hi) 0.5 in
-  let size = Float.max (hi.Scene.x -. lo.x) (Float.max (hi.y -. lo.y) (hi.z -. lo.z)) in
-  let d = Float.max size 0.5 in
-  let eye =
-    Option.value
-      c.eye
-      ~default:(add centre { Scene.x = 2.0 *. d; y = -2.8 *. d; z = 1.6 *. d })
-  in
-  let target = Option.value c.target ~default:centre in
+  let default_eye, default_target = Scene.framing s in
   Geom_viz.Camera.create
-    ~eye:(point eye)
-    ~target:(point target)
+    ~eye:(point (Option.value c.eye ~default:default_eye))
+    ~target:(point (Option.value c.target ~default:default_target))
     ~up:(point c.up)
     ~fov_y:c.fov_y
     ~width:c.width

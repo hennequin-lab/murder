@@ -412,7 +412,12 @@ following a hinge (the capsule's midpoint lands where a rotation by hand puts
 it), one keystroke, the reference position, and that a free joint is refused by
 kind rather than moved by a guess.
 
-**The camera is the still backend's.** The first window shot showed the whole
+**The camera is the still backend's.** `Scene.framing` is the one definition of
+the opening view — the centre of the drawn geometry, excluding planes, with the
+eye offset by the box's largest side — and both backends call it. With no
+arguments at all, the window and `mjc-view` now frame a model the same way.
+
+**The camera is the still backend's, part two.** The first window shot showed the whole
 scene collapsed at the origin, because `Data.create` leaves every derived
 array at zero and the window never ran the forward pass the stills tool runs.
 The state it opens on — and the one `r` resets to — is now

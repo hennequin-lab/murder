@@ -201,5 +201,17 @@ val velocities : ?scale:float -> Mjc.Model.host -> Mjc.Data.host -> arrow list
     [Kinematics.forward] after a joint nudge has stale velocities. *)
 val mechanical_energy : Mjc.Model.host -> Mjc.Data.host -> energy
 
+(** {1:bounds Bounds} *)
+
+(** [extent s] is the box [(lo, hi)] of what a backend would draw, leaving out
+    planes — the ground, not the subject — and anything v1 cannot draw. A scene
+    with nothing to frame gives a unit box. *)
+val extent : t -> p3 * p3
+
+(** [framing s] is [(eye, target)], the view both backends open on: the centre
+    of {!extent}, with the eye offset by [(2, -2.8, 1.6)] times the box's
+    largest side, which is far enough out that a model of any size fits. *)
+val framing : t -> p3 * p3
+
 (** [pp] formats a summary: the time, the geom and contact counts. *)
 val pp : Format.formatter -> t -> unit
