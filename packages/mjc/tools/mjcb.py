@@ -58,19 +58,19 @@ WRAP_CODES = {1: 0, 3: 1}
 # Sensor kinds v1 has, by MuJoCo's name so the table cannot drift with the
 # release. A kind that is not here is written as 99 and refused by the reader.
 SENSOR_KINDS = [
-    "mjSENS_JOINTPOS", "mjSENS_JOINTVEL", "mjSENS_FRAMEPOS",
-    "mjSENS_ACTUATORFRC",
+    "mjSENS_JOINTPOS", "mjSENS_JOINTVEL", "mjSENS_FRAMEPOS", "mjSENS_FRAMEQUAT",
+    "mjSENS_FRAMELINVEL", "mjSENS_FRAMEANGVEL", "mjSENS_ACTUATORFRC",
     "mjSENS_TENDONPOS", "mjSENS_TENDONVEL", "mjSENS_SUBTREECOM",
     "mjSENS_SUBTREELINVEL", "mjSENS_SUBTREEANGMOM",
 ]
 # The object a sensor measures, by MuJoCo's name.
 OBJ_CODES = {
-    int(mujoco.mjtObj.mjOBJ_BODY): 0,
-    int(mujoco.mjtObj.mjOBJ_XBODY): 0,
-    int(mujoco.mjtObj.mjOBJ_SITE): 1,
-    int(mujoco.mjtObj.mjOBJ_JOINT): 2,
-    int(mujoco.mjtObj.mjOBJ_ACTUATOR): 3,
-    int(mujoco.mjtObj.mjOBJ_TENDON): 4,
+    int(mujoco.mjtObj.mjOBJ_BODY): 0,      # the inertial frame: xipos, ximat
+    int(mujoco.mjtObj.mjOBJ_XBODY): 1,     # the body frame: xpos, xquat
+    int(mujoco.mjtObj.mjOBJ_SITE): 2,
+    int(mujoco.mjtObj.mjOBJ_JOINT): 3,
+    int(mujoco.mjtObj.mjOBJ_ACTUATOR): 4,
+    int(mujoco.mjtObj.mjOBJ_TENDON): 5,
 }
 SENSOR_CODES = {int(getattr(mujoco.mjtSensor, k)): i for i, k in enumerate(SENSOR_KINDS)}
 

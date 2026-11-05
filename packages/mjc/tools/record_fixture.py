@@ -495,7 +495,11 @@ MODELS = {
     <jointpos joint="j1"/>
     <jointvel joint="j2"/>
     <framepos objtype="site" objname="s3"/>
+    <framequat objtype="site" objname="s4"/>
     <framepos objtype="body" objname="b5"/>
+    <framequat objtype="body" objname="b6"/>
+    <framelinvel objtype="body" objname="b7"/>
+    <frameangvel objtype="body" objname="b8"/>
     <actuatorfrc actuator="a1"/>
     <tendonpos tendon="t1"/>
     <tendonvel tendon="t1"/>
@@ -526,7 +530,11 @@ MODELS = {
     <jointpos joint="j1"/>
     <jointvel joint="j2"/>
     <framepos objtype="site" objname="s3"/>
+    <framequat objtype="site" objname="s4"/>
     <framepos objtype="body" objname="b5"/>
+    <framequat objtype="body" objname="b6"/>
+    <framelinvel objtype="body" objname="b7"/>
+    <frameangvel objtype="body" objname="b8"/>
     <actuatorfrc actuator="a1"/>
     <tendonpos tendon="t1"/>
     <tendonvel tendon="t1"/>

@@ -102,7 +102,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "0f1c6924b50c48d9"
+      "xml_sha256": "1fb1ceebc8f2f6cc"
     },
     {
       "name": "blocks",
@@ -172,7 +172,7 @@
       "nq": 17,
       "nv": 17,
       "nstates": 32,
-      "xml_sha256": "f683678a2e1d9c1e"
+      "xml_sha256": "2d1b7fb790990904"
     }
   ]
 }

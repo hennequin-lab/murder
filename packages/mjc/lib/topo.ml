@@ -32,6 +32,9 @@ type sensor_type =
   | Sens_jointpos
   | Sens_jointvel
   | Sens_framepos
+  | Sens_framequat
+  | Sens_framelinvel
+  | Sens_frameangvel
   | Sens_actuatorfrc
   | Sens_tendonpos
   | Sens_tendonvel
@@ -41,6 +44,7 @@ type sensor_type =
 
 type obj_type =
   | Obj_body
+  | Obj_xbody
   | Obj_site
   | Obj_joint
   | Obj_actuator

@@ -89,6 +89,73 @@ let quat_to_mat q =
     ; q00 - q11 - q22 + q33
     ]
 
+(* [quat_of_mat m] is [m]'s quaternion, MuJoCo's [mju_mat2Quat]: the branch is
+   the one whose component is largest, written as four candidates and a select
+   rather than as control flow, so a compiled step can trace it. A candidate
+   whose own component is zero divides by zero, hence the guard: it is never
+   the selected one. [m] is [[n;9]] row-major, the layout of [Data.ximat]. *)
+let quat_of_mat (mat : ('s, 'd) f) =
+  let at i j = comp ((3 * i) + j) mat in
+  let zero = Nx.zeros_like (at 0 0) in
+  let safe_div numerator denominator =
+    Nx.where
+      (Nx.greater_s denominator 0.)
+      (Nx.div (Nx.mul_s numerator 0.25) denominator)
+      zero
+  in
+  let trace = Nx.add (Nx.add (at 0 0) (at 1 1)) (at 2 2) in
+  let b0 = Nx.greater_s trace 0. in
+  let s0 = Nx.mul_s (Nx.sqrt (Nx.maximum_s (Nx.add_s trace 1.) 0.)) 0.5 in
+  let q0 =
+    [| s0
+     ; safe_div (Nx.sub (at 2 1) (at 1 2)) s0
+     ; safe_div (Nx.sub (at 0 2) (at 2 0)) s0
+     ; safe_div (Nx.sub (at 1 0) (at 0 1)) s0
+    |]
+  in
+  let branch i =
+    let j = i + 1 - (3 * ((i + 1) / 3))
+    and k = i + 2 - (3 * ((i + 2) / 3)) in
+    let s =
+      Nx.mul_s
+        (Nx.sqrt
+           (Nx.maximum_s (Nx.sub (Nx.sub (Nx.add_s (at i i) 1.) (at j j)) (at k k)) 0.))
+        0.5
+    in
+    let q = Array.init 4 ~f:(fun _ -> s) in
+    q.(0) <- safe_div (Nx.sub (at k j) (at j k)) s;
+    q.(i + 1) <- s;
+    q.(j + 1) <- safe_div (Nx.add (at j i) (at i j)) s;
+    q.(k + 1) <- safe_div (Nx.add (at k i) (at i k)) s;
+    q
+  in
+  let q1 = branch 0
+  and q2 = branch 1
+  and q3 = branch 2 in
+  (* the engine's chain: q0 if the trace is positive, then the largest of the
+     three diagonals *)
+  let not_b0 = Nx.logical_not b0 in
+  let d0_bigger = Nx.greater (at 0 0) (at 1 1) in
+  let sel1 = Nx.logical_and not_b0 d0_bigger in
+  let sel2 =
+    Nx.logical_and
+      (Nx.logical_and not_b0 (Nx.logical_not d0_bigger))
+      (Nx.greater (at 1 1) (at 2 2))
+  in
+  (* the fourth case is the fall-through of the chain *)
+  let sel3 =
+    Nx.logical_and
+      (Nx.logical_and not_b0 (Nx.logical_not d0_bigger))
+      (Nx.logical_not (Nx.greater (at 1 1) (at 2 2)))
+  in
+  Nx.stack
+    ~axis:1
+    (Array.to_list
+       (Array.init 4 ~f:(fun n ->
+          let pick sel a b = Nx.where sel a b in
+          let rest = pick sel2 q2.(n) (Nx.where sel3 q3.(n) q3.(n)) in
+          pick b0 q0.(n) (pick sel1 q1.(n) rest))))
+
 let quat_of_axis_angle ~axis ~angle =
   let half = Nx.mul_s angle 0.5 in
   let s = Nx.sin half in

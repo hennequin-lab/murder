@@ -134,6 +134,24 @@ let test_properties =
         parity ~tol:1e-13 ~name:"rot_vec = R v" (to_array by_mat) (to_array by_quat))
     ]
 
+(* [quat_of_mat] must invert [quat_to_mat], including on the rotations that
+   fall outside the trace branch: the branch is a representative choice, and the
+   matrix must come back whatever the representative. *)
+let test_mat_roundtrip () =
+  let n = 64 in
+  let q =
+    Nx.init Nx.float64 [| n; 4 |] (fun i ->
+      let k = i.(0)
+      and j = i.(1) in
+      let v = Float.of_int ((k * 4) + j + 1) in
+      Float.sin (v *. 0.7))
+  in
+  let q = R.quat_normalize q in
+  let m = R.quat_to_mat q in
+  let q' = R.quat_of_mat m in
+  let m' = R.quat_to_mat q' in
+  parity ~tol:1e-12 ~name:"quat_of_mat round trip" (Nx.to_array m) (Nx.to_array m')
+
 let () =
   Stdlib.exit
     (run
@@ -143,5 +161,6 @@ let () =
        ; test "rotation matrix" test_rotation_matrix
        ; test "small rotations" test_small_rotvec
        ; test "integration" test_integrate
+       ; test "matrix to quaternion" test_mat_roundtrip
        ; test_properties
        ])

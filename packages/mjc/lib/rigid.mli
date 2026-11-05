@@ -53,6 +53,11 @@ val quat_rot_vec : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f
     takes a vector in the rotated frame to the parent frame. *)
 val quat_to_mat : ('s, 'd) f -> ('s, 'd) f
 
+(** [quat_of_mat m] is the quaternion of the rotation matrix [m] ([[n;9]]), in
+    MuJoCo's [mju_mat2Quat] convention: the same branch, chosen by which
+    component is largest, so the representative matches the engine's. *)
+val quat_of_mat : ('s, 'd) f -> ('s, 'd) f
+
 (** [quat_of_axis_angle ~axis ~angle] is the rotation of [angle] radians about
     [axis], a unit 3-vector: [[n;3]] and [[n]] give [[n;4]]. *)
 val quat_of_axis_angle : axis:('s, 'd) f -> angle:('s, 'd) f -> ('s, 'd) f

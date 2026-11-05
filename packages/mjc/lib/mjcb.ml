@@ -202,40 +202,48 @@ let integrator_of_code = function
 
 let obj_type_code = function
   | Topo.Obj_body -> 0
-  | Topo.Obj_site -> 1
-  | Topo.Obj_joint -> 2
-  | Topo.Obj_actuator -> 3
-  | Topo.Obj_tendon -> 4
+  | Topo.Obj_xbody -> 1
+  | Topo.Obj_site -> 2
+  | Topo.Obj_joint -> 3
+  | Topo.Obj_actuator -> 4
+  | Topo.Obj_tendon -> 5
 
 let obj_type_of_code = function
   | 0 -> Topo.Obj_body
-  | 1 -> Topo.Obj_site
-  | 2 -> Topo.Obj_joint
-  | 3 -> Topo.Obj_actuator
-  | 4 -> Topo.Obj_tendon
+  | 1 -> Topo.Obj_xbody
+  | 2 -> Topo.Obj_site
+  | 3 -> Topo.Obj_joint
+  | 4 -> Topo.Obj_actuator
+  | 5 -> Topo.Obj_tendon
   | c -> raise (Invalid_argument (Printf.sprintf "unsupported sensor object type %d" c))
 
 let sensor_type_code = function
   | Topo.Sens_jointpos -> 0
   | Topo.Sens_jointvel -> 1
   | Topo.Sens_framepos -> 2
-  | Topo.Sens_actuatorfrc -> 5
-  | Topo.Sens_tendonpos -> 6
-  | Topo.Sens_tendonvel -> 7
-  | Topo.Sens_subtreecom -> 8
-  | Topo.Sens_subtreelinvel -> 9
-  | Topo.Sens_subtreeangmom -> 10
+  | Topo.Sens_framequat -> 3
+  | Topo.Sens_framelinvel -> 4
+  | Topo.Sens_frameangvel -> 5
+  | Topo.Sens_actuatorfrc -> 6
+  | Topo.Sens_tendonpos -> 7
+  | Topo.Sens_tendonvel -> 8
+  | Topo.Sens_subtreecom -> 9
+  | Topo.Sens_subtreelinvel -> 10
+  | Topo.Sens_subtreeangmom -> 11
 
 let sensor_type_of_code = function
   | 0 -> Topo.Sens_jointpos
   | 1 -> Topo.Sens_jointvel
   | 2 -> Topo.Sens_framepos
-  | 5 -> Topo.Sens_actuatorfrc
-  | 6 -> Topo.Sens_tendonpos
-  | 7 -> Topo.Sens_tendonvel
-  | 8 -> Topo.Sens_subtreecom
-  | 9 -> Topo.Sens_subtreelinvel
-  | 10 -> Topo.Sens_subtreeangmom
+  | 3 -> Topo.Sens_framequat
+  | 4 -> Topo.Sens_framelinvel
+  | 5 -> Topo.Sens_frameangvel
+  | 6 -> Topo.Sens_actuatorfrc
+  | 7 -> Topo.Sens_tendonpos
+  | 8 -> Topo.Sens_tendonvel
+  | 9 -> Topo.Sens_subtreecom
+  | 10 -> Topo.Sens_subtreelinvel
+  | 11 -> Topo.Sens_subtreeangmom
   | c -> raise (Invalid_argument (Printf.sprintf "unsupported sensor type %d" c))
 
 let wrap_type_code = function
