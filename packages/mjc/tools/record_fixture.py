@@ -31,20 +31,6 @@ SEED = 20261103
 NSTATES = 32
 DT = 1e-3
 
-def _chain(depth):
-    """A chain of [depth] hinge bodies, nested the way MuJoCo wants them."""
-    inner = ""
-    for k in range(depth, 0, -1):
-        inner = (
-            f'<body name="b{k}" pos="0 0 {"-0.08" if k == 1 else "-0.06"}">'
-            f'<joint name="j{k}" type="hinge" axis="0 1 0" damping="0.004"/>'
-            f'<geom name="g{k}" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>'
-            f'<site name="s{k}" pos="0 0 -0.06"/>'
-            f"{inner}</body>"
-        )
-    return inner
-
-
 MODELS = {
     # One hinge about y, an offset body, a rotated geom and a site.
     "pendulum": """
@@ -385,158 +371,6 @@ MODELS = {
 </mujoco>
 """,
 
-    # Sensors on a seventeen-body chain: the state-projection family, the
-    # subtree reductions (which is what needs a body deep enough to have a
-    # subtree), and a tendon over two joints for the tendon sensors.
-    "sensors": """
-<mujoco model="sensors">
-  <option timestep="0.001" integrator="implicitfast" gravity="0 0 -9.81"/>
-  <worldbody>
-    <body name="b0" pos="0 0 1.0">
-      <body name="b1" pos="0 0 -0.08">
-        <joint name="j1" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g1" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s1" pos="0 0 -0.06"/>
-      <body name="b2" pos="0 0 -0.06">
-        <joint name="j2" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g2" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s2" pos="0 0 -0.06"/>
-      <body name="b3" pos="0 0 -0.06">
-        <joint name="j3" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g3" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s3" pos="0 0 -0.06"/>
-      <body name="b4" pos="0 0 -0.06">
-        <joint name="j4" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g4" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s4" pos="0 0 -0.06"/>
-      <body name="b5" pos="0 0 -0.06">
-        <joint name="j5" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g5" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s5" pos="0 0 -0.06"/>
-      <body name="b6" pos="0 0 -0.06">
-        <joint name="j6" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g6" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s6" pos="0 0 -0.06"/>
-      <body name="b7" pos="0 0 -0.06">
-        <joint name="j7" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g7" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s7" pos="0 0 -0.06"/>
-      <body name="b8" pos="0 0 -0.06">
-        <joint name="j8" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g8" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s8" pos="0 0 -0.06"/>
-      <body name="b9" pos="0 0 -0.06">
-        <joint name="j9" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g9" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s9" pos="0 0 -0.06"/>
-      <body name="b10" pos="0 0 -0.06">
-        <joint name="j10" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g10" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s10" pos="0 0 -0.06"/>
-      <body name="b11" pos="0 0 -0.06">
-        <joint name="j11" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g11" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s11" pos="0 0 -0.06"/>
-      <body name="b12" pos="0 0 -0.06">
-        <joint name="j12" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g12" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s12" pos="0 0 -0.06"/>
-      <body name="b13" pos="0 0 -0.06">
-        <joint name="j13" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g13" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s13" pos="0 0 -0.06"/>
-      <body name="b14" pos="0 0 -0.06">
-        <joint name="j14" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g14" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s14" pos="0 0 -0.06"/>
-      <body name="b15" pos="0 0 -0.06">
-        <joint name="j15" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g15" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s15" pos="0 0 -0.06"/>
-      <body name="b16" pos="0 0 -0.06">
-        <joint name="j16" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g16" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s16" pos="0 0 -0.06"/>
-      <body name="b17" pos="0 0 -0.06">
-        <joint name="j17" type="hinge" axis="0 1 0" damping="0.004"/>
-        <geom name="g17" type="capsule" size="0.01 0.03" pos="0 0 -0.03"/>
-        <site name="s17" pos="0 0 -0.06"/>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-      </body>
-    </body>
-  </worldbody>
-  <tendon>
-    <fixed name="t1">
-      <joint joint="j1" coef="1"/>
-      <joint joint="j2" coef="0.5"/>
-    </fixed>
-  </tendon>
-  <actuator>
-    <motor name="a1" joint="j1" gear="1"/>
-    <motor name="a2" tendon="t1" gear="1.5"/>
-  </actuator>
-  <sensor>
-    <jointpos joint="j1"/>
-    <jointvel joint="j2"/>
-    <framepos objtype="site" objname="s3"/>
-    <framepos objtype="body" objname="b5"/>
-    <actuatorfrc actuator="a1"/>
-    <tendonpos tendon="t1"/>
-    <tendonvel tendon="t1"/>
-    <subtreecom body="b3"/>
-    <subtreelinvel body="b9"/>
-    <subtreeangmom body="b11"/>
-  </sensor>
-</mujoco>
-""",
-
-    "sensors": f"""
-<mujoco model="sensors">
-  <option timestep="0.001" integrator="implicitfast" gravity="0 0 -9.81"/>
-  <worldbody>
-    <body name="b0" pos="0 0 1.0">{_chain(17)}</body>
-  </worldbody>
-  <tendon>
-    <fixed name="t1">
-      <joint joint="j1" coef="1"/>
-      <joint joint="j2" coef="0.5"/>
-    </fixed>
-  </tendon>
-  <actuator>
-    <motor name="a1" joint="j1" gear="1"/>
-    <motor name="a2" tendon="t1" gear="1.5"/>
-  </actuator>
-  <sensor>
-    <jointpos joint="j1"/>
-    <jointvel joint="j2"/>
-    <framepos objtype="site" objname="s3"/>
-    <framepos objtype="body" objname="b5"/>
-    <actuatorfrc actuator="a1"/>
-    <tendonpos tendon="t1"/>
-    <tendonvel tendon="t1"/>
-    <subtreecom body="b3"/>
-    <subtreelinvel body="b9"/>
-    <subtreeangmom body="b11"/>
-  </sensor>
-</mujoco>
-""",
-
 }
 
 
@@ -643,7 +477,7 @@ STAGE_FIELDS = [
     # the actuator surface: what the transmissions measure and what the
     # actuators make of it
     "qfrc_actuator", "actuator_length", "actuator_velocity", "actuator_force",
-    "act_dot", "ten_length", "ten_velocity", "sensordata",
+    "act_dot", "ten_length", "ten_velocity",
 ]
 
 TRAJ_STEPS = 10

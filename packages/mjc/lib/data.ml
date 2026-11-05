@@ -13,9 +13,6 @@ type ('a, 'd) t =
   ; qacc : 'a
   ; act : 'a
   ; act_dot : 'a
-  ; sensordata : 'a
-  ; ten_length : 'a
-  ; ten_velocity : 'a
   ; ctrl : 'a
   ; qfrc_applied : 'a
   ; xpos : 'a
@@ -101,9 +98,6 @@ let create (m : Model.host) : host =
   ; qacc = zeros [| t.nv |]
   ; act = zeros [| t.na |]
   ; act_dot = zeros [| t.na |]
-  ; sensordata = zeros [| t.nsensordata |]
-  ; ten_length = zeros [| t.ntendon |]
-  ; ten_velocity = zeros [| t.ntendon |]
   ; ctrl = zeros [| t.nu |]
   ; qfrc_applied = zeros [| t.nv |]
   ; xpos = zeros [| t.nbody; 3 |]
@@ -186,9 +180,6 @@ let validate (m : Model.host) (d : host) : (unit, string) Result.t =
   want "qacc" [| t.nv |] d.qacc;
   want "act" [| t.na |] d.act;
   want "act_dot" [| t.na |] d.act_dot;
-  want "sensordata" [| t.nsensordata |] d.sensordata;
-  want "ten_length" [| t.ntendon |] d.ten_length;
-  want "ten_velocity" [| t.ntendon |] d.ten_velocity;
   want "ctrl" [| t.nu |] d.ctrl;
   want "qfrc_applied" [| t.nv |] d.qfrc_applied;
   want "xpos" [| t.nbody; 3 |] d.xpos;

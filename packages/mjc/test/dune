@@ -10,7 +10,6 @@
   test_contact
   test_actuator
   test_tendon
-  test_sensor
   test_boxbox
   test_boxbox_tensor)
  (modules
@@ -25,7 +24,6 @@
   test_contact
   test_actuator
   test_tendon
-  test_sensor
   test_boxbox
   test_boxbox_tensor)
  (deps
