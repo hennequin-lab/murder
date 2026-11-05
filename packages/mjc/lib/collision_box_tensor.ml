@@ -10,7 +10,7 @@ open Nx
    which of two nearly-equal axes wins, and a stack notices. *)
 let sep_eps = Collision_box.sep_eps
 let par_eps = Collision_box.par_eps
-let _dupe_eps = Collision_box.dupe_eps
+let dupe_eps = Collision_box.dupe_eps
 let sgn_eps = Collision_box.sgn_eps
 let edge_bias = Collision_box.edge_bias
 let max_contacts = Collision_box.max_verts
@@ -458,45 +458,382 @@ let edges (b : batch) (fr : frame) (axes : _ Nx.t) =
   ; normal = Nx.stack ~axis:1 (List.map results ~f:(fun (_, _, n) -> n))
   }
 
+(* {1 Stage 2b: the face contact}
+
+   The intersection of the reference face and the incident face is a convex
+   polygon, so its vertices are exactly: the incident corners that lie inside
+   the reference rectangle, the reference corners that lie inside the incident
+   rectangle, and the crossings of an incident edge with a reference side plane.
+   Those twenty-four candidates are generated here and the survivors are the
+   contact points.
+
+   The C engine instead runs a Sutherland-Hodgman clip, which emits the same
+   vertices in clip order; taking the set directly costs the order, which is why
+   a pair's rows can come out in a different order from the engine's. Row order
+   reaches the solver only through the warm start, never through the geometry.
+
+   The face code is a host loop over the six faces and each iteration computes
+   that face's manifold for every pair, merged where the pair's code matches.
+   Six times the arithmetic buys constant indices: inside an iteration the
+   reference axis is a host number, and only the incident axis is data. *)
+
+type cand =
+  { p : Nx.host Nx.float64_t array
+    (** the three coordinates in the reference face's rearranged frame:
+        [(ax, ay, a)], the last one the signed height above the face. *)
+  ; ok : Nx.host Nx.float64_t (** [[n]], 1. where this candidate is a vertex. *)
+  }
+
+(* [one_case b fr margin ref1 a] is the manifold of the face [a] of box [ref1]'s
+   box, for every pair. *)
+let one_case (b : batch) (fr : frame) (margin : _ Nx.t) ref1 a =
+  let n = n_of b in
+  let matref = if ref1 then mat3 b.mat1 else mat3 b.mat2
+  and posref = if ref1 then b.pos1 else b.pos2
+  and sizeref = if ref1 then b.size1 else b.size2
+  and sizeinc = if ref1 then b.size2 else b.size1
+  and posoi = if ref1 then fr.pos21 else fr.pos12
+  and rinc = if ref1 then fr.rot else Nx.matrix_transpose fr.rot in
+  let ax = m3 (a + 1)
+  and ay = m3 (a + 2) in
+  let axis_of = [| ax; ay; a |] in
+  let zero = Nx.zeros f64 [| n |] in
+  let one = Nx.add_s zero 1.
+  and two = Nx.add_s zero 2. in
+  let sgn =
+    let pa = comp posoi a in
+    Nx.where (Nx.greater_equal_s pa 0.) (Nx.ones_like pa) (Nx.full_like pa (-1.))
+  in
+  (* the incident face: the incident axis most opposed to the reference
+     normal, chosen the way the host chooses it — strictly greater wins *)
+  let ra = row rinc a in
+  let absra k = Nx.abs (comp ra k) in
+  let binc =
+    Nx.where
+      (Nx.greater (absra 1) (absra 0))
+      (Nx.where (Nx.greater (absra 2) (absra 1)) two one)
+      (Nx.where (Nx.greater (absra 2) (absra 0)) two zero)
+  in
+  let binc_i = Nx.cast Nx.int64 binc in
+  let tinc =
+    Nx.where
+      (Nx.greater_s (Nx.mul sgn (take_comp ra binc_i)) 0.)
+      (Nx.full_like zero (-1.))
+      (Nx.ones_like zero)
+  in
+  let bu = Nx.where (Nx.equal binc two) zero (Nx.add_s binc 1.)
+  and bv = Nx.where (Nx.equal binc two) one (Nx.where (Nx.equal binc one) zero two) in
+  let elem c k = take_comp (row rinc c) (Nx.cast Nx.int64 k) in
+  let s_binc = take_comp sizeinc binc_i
+  and s_bu = take_comp sizeinc (Nx.cast Nx.int64 bu)
+  and s_bv = take_comp sizeinc (Nx.cast Nx.int64 bv) in
+  (* the incident face's centre, in the reference box's frame and on its
+     plane, then the two half-edge vectors along the incident face *)
+  let centre =
+    Array.init 3 ~f:(fun r ->
+      let c = axis_of.(r) in
+      Nx.add (comp posoi c) (Nx.mul (Nx.mul tinc s_binc) (elem c binc)))
+  and du0 =
+    Array.init 3 ~f:(fun r ->
+      let c = axis_of.(r) in
+      Nx.mul s_bu (elem c bu))
+  and dv0 =
+    Array.init 3 ~f:(fun r ->
+      let c = axis_of.(r) in
+      Nx.mul s_bv (elem c bv))
+  in
+  (* the height above the reference face, so the last coordinate is a signed
+     depth: negative inside the reference box *)
+  let cx = Array.init 3 ~f:(fun r -> centre.(r)) in
+  cx.(2) <- Nx.sub (Nx.mul sgn centre.(2)) (comp sizeref a);
+  let du =
+    Array.init 3 ~f:(fun r -> if Int.equal r 2 then Nx.mul du0.(r) sgn else du0.(r))
+  and dv =
+    Array.init 3 ~f:(fun r -> if Int.equal r 2 then Nx.mul dv0.(r) sgn else dv0.(r))
+  in
+  let signs = [| 1., 1.; -1., 1.; -1., -1.; 1., -1. |] in
+  let corner (su, sv) =
+    { p =
+        Array.init 3 ~f:(fun r ->
+          Nx.add cx.(r) (Nx.add (Nx.mul_s du.(r) su) (Nx.mul_s dv.(r) sv)))
+    ; ok = one
+    }
+  in
+  let corners = Array.map signs ~f:corner in
+  let lim_ax = comp sizeref ax
+  and lim_ay = comp sizeref ay
+  and lim_a = comp sizeref a in
+  let planes = [| 0, 1., lim_ax; 0, -1., lim_ax; 1, 1., lim_ay; 1, -1., lim_ay |] in
+  let nxt k = if Int.equal k 3 then 0 else k + 1 in
+  let intersect k (coord, s, lim) =
+    let p = corners.(k).p
+    and q = corners.(nxt k).p in
+    let dp = Nx.sub (Nx.mul_s p.(coord) s) lim
+    and dq = Nx.sub (Nx.mul_s q.(coord) s) lim in
+    let denom = Nx.sub dp dq in
+    let t =
+      Nx.where (Nx.less_s (Nx.abs denom) 1e-300) (Nx.zeros_like denom) (Nx.div dp denom)
+    in
+    let cross =
+      Nx.where
+        (Nx.logical_or
+           (Nx.logical_and (Nx.less_s dp 0.) (Nx.greater_s dq 0.))
+           (Nx.logical_and (Nx.greater_s dp 0.) (Nx.less_s dq 0.)))
+        one
+        (Nx.zeros_like one)
+    in
+    { p = Array.init 3 ~f:(fun r -> Nx.add p.(r) (Nx.mul (Nx.sub q.(r) p.(r)) t))
+    ; ok = cross
+    }
+  in
+  (* the reference corners, lifted onto the incident face's plane, kept when
+     the incident face covers them *)
+  let u =
+    Array.init 3 ~f:(fun r ->
+      let c = axis_of.(r) in
+      elem c bu)
+  and v =
+    Array.init 3 ~f:(fun r ->
+      let c = axis_of.(r) in
+      elem c bv)
+  in
+  let ref_corner (cu, cv) =
+    let x = Nx.mul_s lim_ax cu
+    and y = Nx.mul_s lim_ay cv in
+    let dz0x = Nx.sub x centre.(0)
+    and dz0y = Nx.sub y centre.(1) in
+    let z =
+      Nx.sub
+        centre.(2)
+        (Nx.div
+           (Nx.add (Nx.mul (elem ax binc) dz0x) (Nx.mul (elem ay binc) dz0y))
+           (elem a binc))
+    in
+    let dz = Nx.sub z centre.(2) in
+    let pu = Nx.add (Nx.add (Nx.mul u.(0) dz0x) (Nx.mul u.(1) dz0y)) (Nx.mul u.(2) dz)
+    and pv = Nx.add (Nx.add (Nx.mul v.(0) dz0x) (Nx.mul v.(1) dz0y)) (Nx.mul v.(2) dz) in
+    let slack = 1e-12 in
+    let covered =
+      Nx.logical_and
+        (Nx.less_equal (Nx.abs pu) (Nx.add s_bu (Nx.mul_s (Nx.abs s_bu) slack)))
+        (Nx.less_equal (Nx.abs pv) (Nx.add s_bv (Nx.mul_s (Nx.abs s_bv) slack)))
+    in
+    { p = [| x; y; Nx.sub (Nx.mul sgn z) lim_a |]
+    ; ok = Nx.where covered one (Nx.zeros_like one)
+    }
+  in
+  let refs = Array.map signs ~f:ref_corner in
+  let cands =
+    Array.to_list corners
+    @ List.concat_map (List.range 0 4) ~f:(fun k ->
+      List.map (Array.to_list planes) ~f:(intersect k))
+    @ Array.to_list refs
+  in
+  let ncand = List.length cands in
+  let px = Nx.stack ~axis:1 (List.map cands ~f:(fun c -> c.p.(0)))
+  and py = Nx.stack ~axis:1 (List.map cands ~f:(fun c -> c.p.(1)))
+  and pz = Nx.stack ~axis:1 (List.map cands ~f:(fun c -> c.p.(2)))
+  and ok = Nx.stack ~axis:1 (List.map cands ~f:(fun c -> c.ok)) in
+  (* a crossing lies *on* its own side plane, and rounding can put it a few
+     ulps outside, which the C never notices because it does not re-test a
+     vertex against the plane that made it: guard the boundary *)
+  let slack = Nx.mul_s (Nx.add lim_ax lim_ay) 1e-12 in
+  let lim_ax2 = Nx.reshape [| n; 1 |] (Nx.add lim_ax slack)
+  and lim_ay2 = Nx.reshape [| n; 1 |] (Nx.add lim_ay slack)
+  and margin2 = Nx.reshape [| n; 1 |] margin in
+  let within v lim =
+    Nx.where (Nx.less_equal (Nx.abs v) lim) (Nx.ones_like v) (Nx.zeros_like v)
+  in
+  let in_x = within px lim_ax2
+  and in_y = within py lim_ay2
+  (* the depth test is one-sided: a contact is *below* the margin, and the abs
+     that the side planes want would drop every penetration *)
+  and in_z = Nx.where (Nx.less_equal pz margin2) (Nx.ones_like pz) (Nx.zeros_like pz) in
+  let base = Nx.mul ok (Nx.mul in_x (Nx.mul in_y in_z)) in
+  (* drop near-duplicates in the plane, keeping the earliest — the host's rule,
+     and the reference corners can coincide with a crossing exactly *)
+  let dupe2 = Nx.mul_s (Nx.add (Nx.mul lim_ax lim_ax) (Nx.mul lim_ay lim_ay)) dupe_eps in
+  let dx = Nx.sub (Nx.reshape [| n; 1; ncand |] px) (Nx.reshape [| n; ncand; 1 |] px)
+  and dy = Nx.sub (Nx.reshape [| n; 1; ncand |] py) (Nx.reshape [| n; ncand; 1 |] py) in
+  let d2 = Nx.add (Nx.mul dx dx) (Nx.mul dy dy) in
+  let earlier =
+    Nx.broadcast_to
+      [| n; ncand; ncand |]
+      (Nx.reshape
+         [| 1; ncand; ncand |]
+         (Nx.init f64 [| ncand; ncand |] (fun i -> if i.(1) < i.(0) then 1. else 0.)))
+  in
+  let close =
+    Nx.mul
+      (Nx.mul earlier (Nx.reshape [| n; ncand; 1 |] base))
+      (Nx.where
+         (Nx.less d2 (Nx.reshape [| n; 1; 1 |] dupe2))
+         (Nx.ones_like d2)
+         (Nx.zeros_like d2))
+  in
+  let dup = Nx.max ~axes:[ 2 ] close in
+  let keep =
+    Nx.mul
+      base
+      (Nx.where
+         (Nx.greater dup (Nx.zeros_like dup))
+         (Nx.zeros_like dup)
+         (Nx.ones_like dup))
+  in
+  let slot = Nx.sub (Nx.cumsum ~axis:1 keep) (Nx.ones_like keep) in
+  let count = Nx.sum ~axes:[ 1 ] keep in
+  let idx =
+    Nx.where
+      (Nx.greater keep (Nx.zeros_like keep))
+      slot
+      (Nx.full_like slot (Float.of_int max_contacts))
+  in
+  let idx3 =
+    Nx.broadcast_to
+      [| n; ncand; 3 |]
+      (Nx.reshape [| n; ncand; 1 |] (Nx.cast Nx.int64 idx))
+  in
+  let all = Nx.stack ~axis:2 [ px; py; pz ] in
+  let scattered =
+    Nx.scatter ~combine:Set ~axis:1 idx3 all (Nx.zeros f64 [| n; max_contacts + 1; 3 |])
+  in
+  let posc = Nx.slice [ A; R (0, max_contacts); A ] scattered in
+  let vx = Nx.slice [ A; A; I 0 ] posc
+  and vy = Nx.slice [ A; A; I 1 ] posc
+  and vz = Nx.slice [ A; A; I 2 ] posc in
+  (* the candidate coordinates are in the rearranged frame [(ax, ay, a)], so
+     they go back into the parent box's slots here — for a face axis other
+     than 2 the two frames are a cycle apart *)
+  let z_face =
+    Nx.mul
+      (Nx.ones_like vz)
+      (Nx.mul
+         (Nx.reshape [| n; 1 |] sgn)
+         (Nx.add (Nx.reshape [| n; 1 |] lim_a) (Nx.mul_s vz 0.5)))
+  in
+  let in_parent p = if Int.equal p a then z_face else if Int.equal p ax then vx else vy in
+  let pos_face = Nx.stack ~axis:2 [ in_parent 0; in_parent 1; in_parent 2 ] in
+  let nsign = if ref1 then sgn else Nx.neg sgn in
+  let out_col r = comp (row matref r) a in
+  let normal =
+    Nx.stack
+      ~axis:2
+      (List.map (List.range 0 3) ~f:(fun r ->
+         Nx.mul
+           (Nx.ones_like vz)
+           (Nx.mul (Nx.reshape [| n; 1 |] nsign) (Nx.reshape [| n; 1 |] (out_col r)))))
+  in
+  let pos =
+    Nx.add
+      (Nx.reshape
+         [| n; max_contacts; 3 |]
+         (Nx.matmul
+            (Nx.reshape [| n; 1; 3; 3 |] matref)
+            (Nx.reshape [| n; max_contacts; 3; 1 |] pos_face)))
+      (Nx.reshape [| n; 1; 3 |] posref)
+  in
+  let index =
+    Nx.broadcast_to
+      [| n; max_contacts |]
+      (Nx.reshape
+         [| 1; max_contacts |]
+         (Nx.init f64 [| max_contacts |] (fun i -> Float.of_int i.(0))))
+  in
+  let live =
+    Nx.where
+      (Nx.less index (Nx.reshape [| n; 1 |] count))
+      (Nx.ones_like vz)
+      (Nx.zeros_like vz)
+  in
+  { dist = vz; pos; normal; live }
+
+let faces (b : batch) (fr : frame) (code : _ Nx.t) (margin : _ Nx.t) =
+  let n = n_of b in
+  let zeros =
+    { dist = Nx.zeros f64 [| n; max_contacts |]
+    ; pos = Nx.zeros f64 [| n; max_contacts; 3 |]
+    ; normal = Nx.zeros f64 [| n; max_contacts; 3 |]
+    ; live = Nx.zeros f64 [| n; max_contacts |]
+    }
+  in
+  let merged =
+    List.fold (List.range 0 6) ~init:zeros ~f:(fun acc c ->
+      let ref1 = c < 3 in
+      let m = one_case b fr margin ref1 (if ref1 then c else c - 3) in
+      let sel =
+        Nx.where
+          (Nx.equal_s code (Float.of_int c))
+          (Nx.ones_like code)
+          (Nx.zeros_like code)
+      in
+      let sel1 = Nx.reshape [| n; 1 |] sel
+      and sel3 = Nx.reshape [| n; 1; 1 |] sel in
+      { dist = Nx.add acc.dist (Nx.mul m.dist sel1)
+      ; pos = Nx.add acc.pos (Nx.mul m.pos sel3)
+      ; normal = Nx.add acc.normal (Nx.mul m.normal sel3)
+      ; live = Nx.add acc.live (Nx.mul m.live sel1)
+      })
+  in
+  merged
+
+(* [slot0 v rank d] puts [v] — [n] for rank 1, [n;3] for rank 3 — in slot 0 and
+   fills the rest of the twelve slots with [d]. *)
+let slot0 (v : _ Nx.t) rank d =
+  let n = (Nx.shape v).(0) in
+  if Int.equal rank 1
+  then (
+    let v = Nx.reshape [| n; 1 |] v in
+    Nx.concatenate ~axis:1 [ v; Nx.full f64 [| n; max_contacts - 1 |] d ])
+  else (
+    let v = Nx.reshape [| n; 1; 3 |] v in
+    Nx.concatenate ~axis:1 [ v; Nx.full f64 [| n; max_contacts - 1; 3 |] d ])
+
 (* {1 Manifold}
 
-   The winning code decides which generator's contact a pair takes. Edge codes
-   take the single edge contact, gathered from the nine the edge pass computed;
-   face codes would take the clipped polygon, which is not written yet, so their
-   slots are dead. A caller therefore sees fewer contacts than the C engine for
-   face pairs, never different ones, and nothing calls this yet. *)
-
+   A pair takes one generator or the other: edge codes take the single contact
+   of the winning edge cross, face codes take the clipped polygon. The two are
+   disjoint, so the edge contact is written into slot 0 and the face manifold
+   over all twelve. *)
 let manifold (b : batch) =
   let fr = frame b in
   let s = sat b in
   let _, _, _, axes = separations b fr in
   let e = edges b fr axes in
+  let f = faces b fr s.code b.margin in
   let n = n_of b in
   let edge_index =
     Nx.reshape [| n; 1 |] (Nx.cast Nx.int64 (Nx.maximum_s (Nx.sub_s s.code 6.) 0.))
   in
   let wide = Nx.reshape [| n; 1; 1 |] edge_index in
-  let dist = Nx.reshape [| n |] (Nx.take_along_axis ~axis:1 edge_index e.dist)
-  and pos =
+  let edge_dist = Nx.reshape [| n |] (Nx.take_along_axis ~axis:1 edge_index e.dist)
+  and edge_pos =
     Nx.reshape
       [| n; 3 |]
       (Nx.take_along_axis ~axis:1 (Nx.broadcast_to [| n; 1; 3 |] wide) e.pos)
-  and normal =
+  and edge_normal =
     Nx.reshape
       [| n; 3 |]
       (Nx.take_along_axis ~axis:1 (Nx.broadcast_to [| n; 1; 3 |] wide) e.normal)
   in
-  let is_edge = Nx.greater_equal_s s.code 6. in
-  let alive = Nx.logical_and is_edge (Nx.less_s s.separated 0.5) in
-  (* slot 0 is the edge contact; the rest are dead until the face generator
-     fills them *)
-  let rest k = Nx.zeros f64 [| n; max_contacts - 1; k |] in
-  (* scalar slots carry a trailing axis of one, so both shapes concatenate *)
-  let pad (v : _ Nx.t) k d =
-    let v = Nx.reshape [| n; 1; k |] v in
-    Nx.concatenate ~axis:1 [ v; Nx.full_like (rest k) d ]
-  in
-  let live0 = Nx.where alive (Nx.ones_like dist) (Nx.zeros_like dist) in
-  let live = Nx.reshape [| n; max_contacts |] (pad live0 1 0.)
-  and dist = Nx.reshape [| n; max_contacts |] (pad dist 1 (-.big)) in
-  { dist; pos = pad pos 3 0.; normal = pad normal 3 0.; live }
+  let mask of_ t = Nx.where t (Nx.ones_like of_) (Nx.zeros_like of_) in
+  let is_edge = mask s.code (Nx.greater_equal_s s.code 6.)
+  and is_face = mask s.code (Nx.less_s s.code 6.)
+  and touching = mask s.code (Nx.less_s s.separated 0.5) in
+  let edge = Nx.mul is_edge touching in
+  let face = Nx.mul is_face touching in
+  (* the dead-slot filler must not survive into a face pair's slots, so the whole
+     edge branch — filler included — is masked by the branch, not just its value *)
+  { dist =
+      Nx.add
+        (Nx.mul (Nx.reshape [| n; 1 |] edge) (slot0 edge_dist 1 (-.big)))
+        (Nx.mul (Nx.reshape [| n; 1 |] face) f.dist)
+  ; pos =
+      Nx.add
+        (slot0 (Nx.mul (Nx.reshape [| n; 1 |] edge) edge_pos) 3 0.)
+        (Nx.mul (Nx.reshape [| n; 1; 1 |] face) f.pos)
+  ; normal =
+      Nx.add
+        (slot0 (Nx.mul (Nx.reshape [| n; 1 |] edge) edge_normal) 3 0.)
+        (Nx.mul (Nx.reshape [| n; 1; 1 |] face) f.normal)
+  ; live = Nx.add (slot0 edge 1 0.) (Nx.mul (Nx.reshape [| n; 1 |] face) f.live)
+  }

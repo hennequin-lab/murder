@@ -63,14 +63,11 @@ type manifold =
 
 (** [manifold b] is the contacts of each pair in [b].
 
-    {b Only the edge branch is written.} A pair whose winning axis is an edge
-    makes its one contact in slot 0; a pair whose winner is a face has every
-    slot dead, where the C engine would clip a polygon of up to twelve. That is
-    a gap and not an approximation — a caller sees fewer contacts, never
-    different ones — and nothing calls this yet: {!Mjc.Collision} still refuses
-    box-box. The face generator is the next step, and it is the part that needs
-    the fixed-slot clip, not any more of the separating axes, which this module
-    already reproduces exactly. *)
+    A pair whose winning axis is an edge cross makes one contact, in slot 0. A
+    pair whose winner is a face takes the vertices of the clipped polygon, in
+    the order the candidates are generated rather than the engine's clip order:
+    the geometry is the engine's, the row order is not, which reaches the solver
+    only through the warm start. *)
 val manifold : batch -> manifold
 
 (** [debug b] is [(max face separation, max edge separation, tolerance)], for a

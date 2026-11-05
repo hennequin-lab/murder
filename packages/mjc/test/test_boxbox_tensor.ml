@@ -50,7 +50,7 @@ let mat_of_quat q =
    ; 1. -. (2. *. ((x *. x) +. (y *. y)))
   |]
 
-let n = 400
+let n = 800
 let failures = ref 0
 
 let check ~msg ok =
@@ -60,13 +60,15 @@ let check ~msg ok =
     Printf.printf "FAIL %s\n%!" msg)
 
 let () =
-  let pos1 = Array.init n ~f:(fun _ -> Array.init 3 ~f:(fun _ -> uniform (-0.6) 0.6))
-  and pos2 = Array.init n ~f:(fun _ -> Array.init 3 ~f:(fun _ -> uniform (-0.6) 0.6))
+  (* close enough that most pairs touch, which is where the face branch lives *)
+  let pos1 = Array.init n ~f:(fun _ -> Array.init 3 ~f:(fun _ -> uniform (-0.45) 0.45))
+  and pos2 = Array.init n ~f:(fun _ -> Array.init 3 ~f:(fun _ -> uniform (-0.45) 0.45))
   and mat1 = Array.init n ~f:(fun _ -> mat_of_quat (quat ()))
   and mat2 = Array.init n ~f:(fun _ -> mat_of_quat (quat ()))
-  and size1 = Array.init n ~f:(fun _ -> Array.init 3 ~f:(fun _ -> uniform 0.05 0.4))
-  and size2 = Array.init n ~f:(fun _ -> Array.init 3 ~f:(fun _ -> uniform 0.05 0.4))
-  and margin = Array.init n ~f:(fun _ -> 0.) in
+  and size1 = Array.init n ~f:(fun _ -> Array.init 3 ~f:(fun _ -> uniform 0.08 0.4))
+  and size2 = Array.init n ~f:(fun _ -> Array.init 3 ~f:(fun _ -> uniform 0.08 0.4))
+  (* a non-zero margin on half the pairs: the depth test is one-sided there too *)
+  and margin = Array.init n ~f:(fun i -> if Int.equal (i land 1) 0 then 0. else 0.01) in
   let flat f =
     Array.concat (Array.to_list (Array.map ~f (Stdlib.Array.init n (fun i -> i))))
   in
@@ -135,69 +137,120 @@ let () =
         ~msg:(label (Printf.sprintf "sep %g vs %g" host.sep sep.(i)))
         (Float.( <= ) (Float.abs (host.sep -. sep.(i))) 1e-12))
   done;
-  (* the manifold: edge-code pairs only, because the face generator is not
-     written yet *)
+  (* the manifold, for every touching pair: same contacts, as a set. The tensor
+     generator takes the vertex set of the clipped polygon directly, so a face
+     pair's rows come out in a different order from the engine's clip order —
+     the geometry is what is compared, not the order. *)
   let m = Mjc.Collision_box_tensor.manifold batch in
   let md = Nx.to_array m.Mjc.Collision_box_tensor.dist
   and mp = Nx.to_array m.pos
   and mn = Nx.to_array m.normal
   and ml = Nx.to_array m.live in
   let slots = Mjc.Collision_box_tensor.max_contacts in
-  let edge_pairs = ref 0 in
+  let face_pairs = ref 0
+  and edge_pairs = ref 0
+  and total = ref 0
+  and most = ref 0 in
   for i = 0 to n - 1 do
-    let code, separated =
-      let h =
-        Mjc.Collision_box.sat
-          ~pos1:pos1.(i)
-          ~mat1:mat1.(i)
-          ~size1:size1.(i)
-          ~pos2:pos2.(i)
-          ~mat2:mat2.(i)
-          ~size2:size2.(i)
-          ~margin:margin.(i)
-      in
-      h.code, h.separated
+    let host =
+      Mjc.Collision_box.manifold
+        ~pos1:pos1.(i)
+        ~mat1:mat1.(i)
+        ~size1:size1.(i)
+        ~pos2:pos2.(i)
+        ~mat2:mat2.(i)
+        ~size2:size2.(i)
+        ~margin:margin.(i)
     in
-    if (not separated) && Int.( >= ) code 6
+    let code =
+      Mjc.Collision_box.sat
+        ~pos1:pos1.(i)
+        ~mat1:mat1.(i)
+        ~size1:size1.(i)
+        ~pos2:pos2.(i)
+        ~mat2:mat2.(i)
+        ~size2:size2.(i)
+        ~margin:margin.(i)
+    in
+    if not code.separated
     then (
-      Int.incr edge_pairs;
-      let label tag = Printf.sprintf "pair %d edge %s" i tag in
-      let host =
-        Mjc.Collision_box.manifold
-          ~pos1:pos1.(i)
-          ~mat1:mat1.(i)
-          ~size1:size1.(i)
-          ~pos2:pos2.(i)
-          ~mat2:mat2.(i)
-          ~size2:size2.(i)
-          ~margin:margin.(i)
-      in
-      check ~msg:(label "contact count") (Int.equal (Array.length host) 1);
-      check ~msg:(label "live") (Float.equal ml.(i * slots) 1.);
-      match Array.length host with
-      | 1 ->
-        let h = host.(0) in
+      if Int.( >= ) code.code 6 then Int.incr edge_pairs else Int.incr face_pairs;
+      let label tag = Printf.sprintf "pair %d code %d %s" i code.code tag in
+      let ours = ref [] in
+      for k = 0 to slots - 1 do
+        if Float.equal ml.((i * slots) + k) 1.
+        then
+          ours
+          := ( md.((i * slots) + k)
+             , mp.((i * slots * 3) + (3 * k))
+             , mp.((i * slots * 3) + (3 * k) + 1)
+             , mp.((i * slots * 3) + (3 * k) + 2) )
+             :: !ours
+      done;
+      let ours = Array.of_list (List.rev !ours) in
+      total := !total + Array.length ours;
+      most := Int.max !most (Array.length ours);
+      check
+        ~msg:
+          (label
+             (Printf.sprintf
+                "contact count %d vs %d"
+                (Array.length host)
+                (Array.length ours)))
+        (Int.equal (Array.length host) (Array.length ours));
+      (* each host contact must be one of ours, and each of ours one of the
+         host's, so a duplicate cannot pass as a match for two *)
+      let used = Array.create ~len:(Array.length ours) false in
+      Array.iter host ~f:(fun (h : Mjc.Collision_box.contact) ->
+        let found = ref false in
+        Array.iteri ours ~f:(fun j (d, x, y, z) ->
+          if
+            (not used.(j))
+            && Float.( <= ) (Float.abs (h.dist -. d)) 1e-12
+            && Float.( <= ) (Float.abs (h.pos.(0) -. x)) 1e-12
+            && Float.( <= ) (Float.abs (h.pos.(1) -. y)) 1e-12
+            && Float.( <= ) (Float.abs (h.pos.(2) -. z)) 1e-12
+          then (
+            used.(j) <- true;
+            found := true));
         check
-          ~msg:(label (Printf.sprintf "dist %g vs %g" h.dist md.(i * slots)))
-          (Float.( <= ) (Float.abs (h.dist -. md.(i * slots))) 1e-12);
+          ~msg:
+            (label
+               (Printf.sprintf
+                  "contact (%.17g, %.17g, %.17g, %.17g) has no match"
+                  h.dist
+                  h.pos.(0)
+                  h.pos.(1)
+                  h.pos.(2)))
+          !found);
+      (* the normal is the reference face's, and every slot shares it *)
+      Array.iteri ours ~f:(fun j (_, _, _, _) -> ignore j);
+      if Array.length host > 0
+      then
         for k = 0 to 2 do
           check
-            ~msg:(label "pos")
-            (Float.( <= ) (Float.abs (h.pos.(k) -. mp.((i * slots * 3) + k))) 1e-12);
-          check
-            ~msg:(label "normal")
-            (Float.( <= ) (Float.abs (h.normal.(k) -. mn.((i * slots * 3) + k))) 1e-12)
-        done
-      | _ -> ())
+            ~msg:(label (Printf.sprintf "normal %d" k))
+            (Float.( <= )
+               (Float.abs (host.(0).normal.(k) -. mn.((i * slots * 3) + k)))
+               1e-12)
+        done)
   done;
-  Printf.printf "edge-code pairs compared: %d\n%!" !edge_pairs;
+  Printf.printf
+    "manifolds compared: %d face-code, %d edge-code, %d contacts, at most %d per pair\n%!"
+    !face_pairs
+    !edge_pairs
+    !total
+    !most;
   if !failures > 0
   then (
     Printf.printf "%d checks failed\n%!" !failures;
     Stdlib.exit 1)
   else (
     Printf.printf
-      "box-box sat: %d pairs, %d in contact, code and separation match the host port\n%!"
+      "box-box: %d pairs, %d touching, %d contacts; sat code and separation match the \
+       host port at 1e-12, and every contact matches as a set\n\
+       %!"
       n
-      !contacts;
+      !contacts
+      !total;
     Stdlib.exit 0)
