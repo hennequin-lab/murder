@@ -33,9 +33,9 @@ type linear =
   | `Cg
   ]
 
-(** [forward ?linear m d] is [d] with [efc_force], [qfrc_constraint] and the
+(** [forward ?linear ?iters m d] is [d] with [efc_force], [qfrc_constraint] and the
     final [qacc]. It reads [d.qacc] as the smooth acceleration, [d.efc_J],
     [d.efc_R], [d.efc_D], [d.efc_aref] and [d.nefc], and warmstarts from
     [d.efc_force]. [`Cg] takes one conjugate-gradient iteration per row, which
     is exact for the row counts v1 supports and needs no factorisation. *)
-val forward : ?linear:linear -> Model.host -> Data.host -> Data.host
+val forward : ?linear:linear -> ?iters:int -> Model.host -> Data.host -> Data.host

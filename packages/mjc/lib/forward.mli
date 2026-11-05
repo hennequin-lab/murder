@@ -27,4 +27,10 @@
     {!Solver.forward} solves for the row forces and the final [qacc]. With no
     active row it returns the smooth acceleration unchanged, as the C engine
     does. [linear] picks how the solver inverts the reduced system. *)
-val forward : ?linear:Solver.linear -> Model.host -> Data.host -> Data.host
+val forward
+  :  ?linear:Solver.linear
+  -> ?iters:int
+  -> ?dt:float
+  -> Model.host
+  -> Data.host
+  -> Data.host

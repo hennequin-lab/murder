@@ -492,7 +492,10 @@ let getimpedance ~solimp ~pos ~margin =
   in
   imp, impP
 
-let impedance (m : Model.host) (d : Data.host) : Data.host =
+(* [dt] is the model's timestep. It is read from the model when the caller does
+   not say; the differentiable entry point passes it, for the reason
+   {!Solver.forward}'s budget is passed. *)
+let impedance ?dt (m : Model.host) (d : Data.host) : Data.host =
   let t = m.topo
   and p = m.params in
   let nb = t.nefcmax in
@@ -512,7 +515,11 @@ let impedance (m : Model.host) (d : Data.host) : Data.host =
   in
   let solref = d.efc_solref in
   (* solref: one default for the mixed format, and the refsafe clamp. *)
-  let dt = Nx.item [] p.timestep in
+  let dt =
+    match dt with
+    | Some x -> x
+    | None -> Nx.item [] p.timestep
+  in
   let r0 = col 0 solref
   and r1 = col 1 solref in
   let mixed = Nx.logical_xor (Nx.greater_s r0 0.0) (Nx.greater_s r1 0.0) in

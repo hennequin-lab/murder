@@ -3,7 +3,7 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
+let forward ?linear ?iters ?dt (m : Model.host) (d : Data.host) : Data.host =
   let d = Kinematics.forward m d in
   let d = Mass.forward m d in
   (* The contact row's Jacobian is a dof-chain walk, so contact detection needs
@@ -55,8 +55,8 @@ let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
       let d = Constraint.friction m d in
       let d = Constraint.limits m d in
       let d = Constraint.contact m d in
-      let d = Constraint.impedance m d in
-      Solver.forward ?linear m d)
+      let d = Constraint.impedance ?dt m d in
+      Solver.forward ?linear ?iters m d)
   in
   (* The sensor block reads the solved state, as MuJoCo's does. *)
   Sensor.forward m d

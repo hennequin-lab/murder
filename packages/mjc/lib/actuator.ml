@@ -179,7 +179,11 @@ let act_dot (m : Model.host) (d : Data.host) (s : parts) =
    kinds v1 has. A fixed gain contributes only the bias term, which is what
    makes a velocity servo's [kv] an implicit damping term rather than a force
    the integrator has to chase. *)
-let damping (m : Model.host) (d : Data.host) =
+(* [force_limited] says whether any actuator has a forcerange. The model is the
+   only place that knows, and asking the model means reading a parameter
+   tensor, which the differentiable entry point cannot do inside its program;
+   so it is an argument, defaulting to the read. *)
+let damping ?force_limited (m : Model.host) (d : Data.host) =
   let tr = Transmission.forward m d in
   let s = parts m d tr in
   let p = m.params in
@@ -227,8 +231,16 @@ let damping (m : Model.host) (d : Data.host) =
      least not to first order, so it puts nothing in the matrix: MuJoCo skips
      exactly the actuators whose force sits on a forcerange bound. *)
   let lim = flag p.actuator_forcelimited in
-  if
-    Stdlib.Array.for_all (fun x -> Float.equal x 0.) (Nx.to_array p.actuator_forcelimited)
+  let force_limited =
+    match force_limited with
+    | Some b -> b
+    | None ->
+      not
+        (Stdlib.Array.for_all
+           (fun x -> Float.equal x 0.)
+           (Nx.to_array p.actuator_forcelimited))
+  in
+  if not force_limited
   then k
   else (
     let f = force m s in

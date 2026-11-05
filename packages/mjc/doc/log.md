@@ -834,3 +834,45 @@ through the solver as an implicit function — the unrolled answer happens to
 agree on these models, which is why the budget test passes, but that agreement
 is a property of the models, not of the implementation, and the implicit rule is
 the next increment.
+
+**Structure is not a number: the second half of the gradient story.** With the
+NaNs gone, the step differentiated with respect to the *state* and not with
+respect to a *model parameter*, and the error said so plainly:
+`Nx.to_array: the value is traced by Rune.vjp`. The reads at fault were not
+numerical — they were the step deciding things about the model: `Nx.item [] p.timestep`,
+`Nx.item [] p.iterations`, `Nx.to_array p.dof_damping` to answer "is any dof
+damped?", `Nx.to_array p.actuator_forcelimited` to answer "is any actuator force
+limited?", and `Nx.to_array (Actuator.damping …)` to answer "does any actuator
+put a velocity term in the matrix?". Each is a *decision*, each depends on
+parameter tensors, and a differentiated parameter tensor cannot be read.
+
+The fix is a split, and it is the M6 design rather than a workaround.
+`Step.config` is the structure of a model — timestep, iteration budget,
+integration scheme, whether any dof is damped, whether any actuator is force
+limited or has a velocity term — read from a host model, once, as OCaml values.
+`Step.step_with c m d` takes that structure *and the model*, whose parameters it
+reads only as tensors, and it contains no host read at all. `lib/dynamics.ml` is
+the entry point built on it: `Dynamics.compile host_m` fixes the structure,
+`Dynamics.run t m d` takes the model whose parameters are meant to be
+differentiated. A loss is then `fun params -> Dynamics.horizon dyn { m with
+params } d0 n`, and the parameters arrive as tensor leaves.
+
+Two consequences worth writing down. The timestep and the iteration budget are
+now explicitly **not differentiable** — that is stated in `Dynamics`'s interface,
+because silently returning a zero derivative for a value a caller believes it is
+differentiating is the kind of approximation this codebase refuses. And the
+structural duck test for the actuator term is deliberately conservative: a
+rank-one update with a zero coefficient costs a little and changes nothing,
+while a term that is needed and skipped is a velocity servo that rings.
+
+Equality rows still read `eq_obj1id`/`eq_obj2id` with `Nx.item`, so a parameter
+gradient through a model with an *equality constraint* still raises. Those are
+identifiers rather than numbers and belong in `Topo`; that move is the next
+increment, and until it lands the limitation is named rather than papered over.
+
+The parameter test compares the reverse mode against **Richardson-extrapolated**
+central differences, not plain ones: on a coordinate whose derivative is `2e-5`
+next to a loss of order one, a `1e-6` step resolves the difference only to
+`8e-6` relative, and a test that blamed that on the gradient would be lying in
+the other direction. The reference is `O(h^4)`, so a disagreement is the reverse
+mode's.

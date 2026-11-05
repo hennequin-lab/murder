@@ -548,9 +548,11 @@ on every recorded state of the thirteen corpus models, matches central
 differences on the smooth ones, and is invariant to the solver's iteration
 budget. The traps this found were all the same shape — a `sqrt` at zero handed
 an infinite cotangent to a masked-out branch, and `0 * inf` is a NaN — and they
-are fixed without moving a single value (`doc/log.md`). Still open: the
-implicit rule for the solver, gradients with respect to model parameters, the
-`dynamics` closure, `remat`, the cost sheet and the demo.
+are fixed without moving a single value (`doc/log.md`). Gradients with respect
+to model parameters work through `Dynamics`, where structure is compiled once
+and parameters flow as tensors; that also settled the design, so the remaining
+work is the implicit rule for the solver, `remat`, the cost sheet and the
+demo.
 
 **Goal.** A gradient of the step, of the answer rather than of the last
 iterate, at a cost independent of the solver iteration count.

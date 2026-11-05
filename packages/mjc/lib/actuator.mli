@@ -38,7 +38,7 @@ val forward : Model.host -> Data.host -> Data.host
     The implicit integrator needs it because a velocity servo's [kv] is a
     damping term by another name, and integrating it explicitly is the
     difference between a servo that tracks and one that rings. *)
-val damping : Model.host -> Data.host -> Nx.host Nx.float64_t
+val damping : ?force_limited:bool -> Model.host -> Data.host -> Nx.host Nx.float64_t
 
 (** [qfrc m d] is the generalized actuator force alone, without touching [d].
     It is what a test compares against the engine's [qfrc_actuator]. *)

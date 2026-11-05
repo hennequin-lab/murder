@@ -17,6 +17,22 @@
     whole pipeline as one program. *)
 type t
 
+(** The type for the structural decisions a step makes about a model. They are
+    host values — a timestep, a budget, a scheme — because a program that a
+    differentiation traces may not read them from a parameter tensor. *)
+type config
+
+(** [config m] reads them from [m]. *)
+val config : Model.host -> config
+
+(** [config_dt c] is the timestep [c] holds. *)
+val config_dt : config -> float
+
+(** [step_with c m d] is one step with [c]'s structure and [m]'s *parameters*,
+    read as tensors: it is the function a gradient with respect to a model
+    parameter goes through, and it never reads one. *)
+val step_with : config -> Model.host -> Data.host -> Data.host
+
 (** [compile m] is [m]'s step, ready to run. The time step and the damping
     test are read here, not per call, because a traced program may not read a
     value from the data it is tracing. *)
@@ -29,9 +45,9 @@ val run : t -> Data.host -> Data.host
 (** [dt t] is the model's time step, which the compiled program holds. *)
 val dt : t -> float
 
-(** [advance m d] is [d] one time step forward in time: [qvel] gains
-    [dt * qacc], [qpos] then gains [dt] times the new [qvel] through
-    {!Pose.integrate_pos}, and [time] gains [dt]. *)
+(** [advance m d] is [d] one time step forward from a forward pass that has
+    already run: [qvel] gains [dt * qacc], [qpos] then gains [dt] times the new
+    [qvel] through {!Pose.integrate_pos}, and [time] gains [dt]. *)
 val advance : Model.host -> Data.host -> Data.host
 
 (** [step m d] is [advance m (Forward.forward m d)]. *)

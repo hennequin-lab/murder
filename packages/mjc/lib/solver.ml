@@ -34,7 +34,12 @@ let cg ~iters a b =
   done;
   !x
 
-let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
+(* [iters] is the iteration budget the model's option asks for, capped at
+   [max_iterations]. It is read from the model when the caller does not say,
+   which is what a host caller wants; the differentiable entry point passes it
+   explicitly, because reading a parameter tensor is a host read and a traced
+   parameter cannot be read. *)
+let forward ?(linear = `Cholesky) ?iters (m : Model.host) (d : Data.host) : Data.host =
   let t = m.topo
   and p = m.params in
   let nb = t.nefcmax in
@@ -112,7 +117,12 @@ let forward ?(linear = `Cholesky) (m : Model.host) (d : Data.host) : Data.host =
         lambda := Nx.set [ I r ] fresh !lambda
       done
     done);
-  let iters = Int.min (Int.of_float (Nx.item [] p.iterations)) max_iterations in
+  let iters =
+    match iters with
+    | Some n -> n
+    | None -> Int.min (Int.of_float (Nx.item [] p.iterations)) max_iterations
+  in
+  ignore p;
   for i = 1 to iters do
     let grad = Nx.add (Nx.matmul a !lambda) b in
     let at_hi = Nx.greater_equal !lambda (Nx.sub hi (slack 1.0 hi)) in
