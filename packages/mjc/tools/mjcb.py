@@ -40,6 +40,9 @@ INT_ARRAYS = [
     # MuJoCo keeps the tendon limit flag as a byte; ours goes in the same
     # integer block as the other flags.
     "ten_limited",
+    # `<exclude>` pairs. MuJoCo stores only a packed signature, so the two ids
+    # are written out separately: (hi << 16) + lo.
+    "exclude_body1", "exclude_body2",
 ]
 
 # MuJoCo joint codes to ours: free 0, ball 1, slide 2, hinge 3 becomes
@@ -234,8 +237,16 @@ def model_bytes(m, nconmax=None, nefcmax=None, max_geom_pairs=None, name=None):
     _put_i32(buf, len(INT_ARRAYS))
     # The names this format uses for MuJoCo's tables, where they differ.
     SOURCE = {"ten_limited": "tendon_limited"}
+    # The exclusion pairs unpack from one signature each.
+    exclude1 = [int(sig) >> 16 for sig in m.exclude_signature]
+    exclude2 = [int(sig) & 0xFFFF for sig in m.exclude_signature]
     for name in INT_ARRAYS:
-        xs = np.asarray(getattr(m, SOURCE.get(name, name)))
+        if name == "exclude_body1":
+            xs = np.asarray(exclude1, dtype=np.int32)
+        elif name == "exclude_body2":
+            xs = np.asarray(exclude2, dtype=np.int32)
+        else:
+            xs = np.asarray(getattr(m, SOURCE.get(name, name)))
         if name == "jnt_type":
             xs = np.array([JNT_CODES[int(c)] for c in xs], dtype=np.int32)
         elif name == "actuator_trntype":

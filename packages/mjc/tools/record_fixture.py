@@ -628,6 +628,38 @@ MODELS = {
 </mujoco>
 """,
 
+    # Two limbs that overlap and are told not to touch. Without the `<exclude>`
+    # their spheres collide at every state; with it, the third body's sphere —
+    # which is not excluded — is the only contact. The model exists so that a
+    # filter cannot pass by filtering everything.
+    "exclude": """
+<mujoco model="exclude">
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="torso" pos="0 0 0.6">
+      <freejoint/>
+      <geom name="g_torso" type="sphere" size="0.05" mass="1"/>
+      <body name="left" pos="0.04 0 0">
+        <joint name="jl" type="hinge" axis="0 1 0"/>
+        <geom name="g_left" type="sphere" size="0.06" mass="0.2"/>
+      </body>
+      <body name="right" pos="-0.04 0 0">
+        <joint name="jr" type="hinge" axis="0 1 0"/>
+        <geom name="g_right" type="sphere" size="0.06" mass="0.2"/>
+      </body>
+    </body>
+    <body name="pebble" pos="0 0 0.62">
+      <freejoint/>
+      <geom name="g_pebble" type="sphere" size="0.03" mass="0.1"/>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="left" body2="right"/>
+  </contact>
+</mujoco>
+""",
+
 }
 
 

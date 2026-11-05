@@ -96,6 +96,52 @@ let test_count () =
              m.Mjc.Model.topo.Mjc.Topo.nconmax);
       ignore f))
 
+(* A model can say two bodies never touch. The test has to be able to tell that
+   from "nothing touches": the fixture has three contacts, between the torso and
+   a pebble and between that pebble and each limb, and the one pair the model
+   excludes — the two limbs, which overlap by 4 cm — must not be among them. *)
+let test_exclusions () =
+  let m = model "exclude" in
+  let f = fixture "exclude" in
+  let t = m.Mjc.Model.topo in
+  List.iteri (states "exclude") ~f:(fun s (d, ncon) ->
+    equal ~msg:(Printf.sprintf "state %d ncon" s) int ncon (int_of_t d.Mjc.Data.ncon);
+    let recorded = Array.sub (row (tensor f "contact_geom") s) ~pos:0 ~len:(2 * ncon) in
+    let ours =
+      Base.Array.map
+        (Nx.to_array
+           (Nx.reshape
+              [| 2 * ncon |]
+              (Nx.slice [ R (0, ncon); A ] d.Mjc.Data.contact_geom)))
+        ~f:(fun x -> Stdlib.Int32.to_float x)
+    in
+    let pairs a =
+      List.init ncon ~f:(fun k ->
+        Stdlib.Int.of_float a.(2 * k), Stdlib.Int.of_float a.((2 * k) + 1))
+    in
+    let left = t.geom_bodyid.(1)
+    and right = t.geom_bodyid.(2) in
+    let names = pairs ours in
+    List.iter (pairs recorded) ~f:(fun (g1, g2) ->
+      if
+        not
+          (List.mem names (g1, g2) ~equal:(fun (a, b) (c, e) ->
+             Int.equal a c && Int.equal b e))
+      then
+        fail
+          (Printf.sprintf "state %d: the fixture has contact (%d,%d), we do not" s g1 g2));
+    (* The excluded limbs are bodies 2 and 3, geoms 1 and 2, and they overlap. *)
+    ignore (left, right);
+    if List.mem names (1, 2) ~equal:(fun (a, b) (c, e) -> Int.equal a c && Int.equal b e)
+    then fail (Printf.sprintf "state %d: the excluded pair (1,2) made contact" s);
+    if Array.length ours <> Array.length recorded
+    then fail (Printf.sprintf "state %d: contact count differs from the fixture" s));
+  (* The recorded poses are random and mostly do not touch, which would make
+     the check vacuous. The reference pose does: three contacts, and the two
+     limbs overlapping by 4 cm are the pair the model excludes. *)
+  let d = Mjc.Forward.forward m (Mjc.Data.create m) in
+  equal ~msg:"reference pose ncon" int 3 (int_of_t d.Mjc.Data.ncon)
+
 let test_geometry () =
   (* [boxes2] is compared as a set below: its box pairs have their own order *)
   List.iter [ "bounce"; "boxes"; "blocks" ] ~f:(fun name ->
@@ -276,6 +322,7 @@ let () =
        [ test "contact count" test_count
        ; test "contact geometry" test_geometry
        ; test "box-box contacts, as a set" test_geometry_set
+       ; test "an excluded pair never touches" test_exclusions
        ; test "contact rows, frictionless" (fun () -> test_rows_of "slide1")
        ; test "contact rows, pyramidal cone" (fun () -> test_rows_of "friction3")
        ; test "contact trajectory, frictionless" (fun () -> test_trajectory_of "slide1")

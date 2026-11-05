@@ -184,6 +184,9 @@ type t =
   ; tendon_num : int array (** [[ntendon]], how many wraps it has. *)
   ; wrap_type : wrap_type array (** [[nwrap]] *)
   ; wrap_objid : int array (** [[nwrap]], the joint or site wrapped. *)
+  ; exclude_pairs : (int * int) array
+    (** [[ [nexclude] ]] body pairs whose geoms never touch, sorted with the
+        smaller id first. *)
   ; ten_limited : bool array (** [[ntendon]], whether its range is a row. *)
   ; actuator_trntype : trn_type array (** [[nu]], what each actuator drives. *)
   ; actuator_trnid : int array

@@ -14,7 +14,16 @@ module F = Mjc.Forward
 module S = Mjc.Step
 
 let models =
-  [ "pendulum"; "chain6"; "floating"; "ball"; "actuators"; "stiff"; "arm2"; "tendonlim" ]
+  [ "pendulum"
+  ; "chain6"
+  ; "floating"
+  ; "ball"
+  ; "actuators"
+  ; "stiff"
+  ; "arm2"
+  ; "tendonlim"
+  ; "exclude"
+  ]
 
 (* A fixture carries a tensor only for the stages its model has: a model with
    no actuators has no control to compare. The reader's only failure is a

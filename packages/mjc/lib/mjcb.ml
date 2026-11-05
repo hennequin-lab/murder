@@ -89,6 +89,8 @@ let int_arrays =
   ; "wrap_type"
   ; "wrap_objid"
   ; "ten_limited"
+  ; "exclude_body1"
+  ; "exclude_body2"
   ]
 
 let name_tables = [ "body_names"; "jnt_names"; "geom_names"; "site_names" ]
@@ -428,6 +430,8 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; Array.map t.wrap_type ~f:wrap_type_code
       ; t.wrap_objid
       ; Array.map t.ten_limited ~f:Bool.to_int
+      ; Array.map t.exclude_pairs ~f:fst
+      ; Array.map t.exclude_pairs ~f:snd
       ]
       ~f:(put_ints buf);
     put_i32 buf (List.length name_tables);
@@ -671,6 +675,13 @@ let parse (c : cursor) : Model.host =
     ; wrap_type = Array.map (i "wrap_type") ~f:wrap_type_of_code
     ; wrap_objid = i "wrap_objid"
     ; ten_limited = Array.map (i "ten_limited") ~f:(fun x -> Stdlib.( > ) x 0)
+    ; exclude_pairs =
+        Array.init
+          (Array.length (i "exclude_body1"))
+          ~f:(fun k ->
+            let a = (i "exclude_body1").(k)
+            and b = (i "exclude_body2").(k) in
+            if Int.( <= ) a b then a, b else b, a)
     ; actuator_trntype = Array.map (i "actuator_trntype") ~f:trn_type_of_code
     ; actuator_trnid = i "actuator_trnid"
     ; actuator_gaintype = Array.map (i "actuator_gaintype") ~f:gain_type_of_code

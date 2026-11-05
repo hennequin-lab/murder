@@ -135,6 +135,7 @@ type t =
   ; tendon_num : int array
   ; wrap_type : wrap_type array
   ; wrap_objid : int array
+  ; exclude_pairs : (int * int) array
   ; ten_limited : bool array
   ; actuator_trntype : trn_type array
   ; actuator_trnid : int array

@@ -999,3 +999,18 @@ The humanoid itself now gets past the load and the tendon check; the next
 refusals behind it are the elliptic friction cone (`cone="elliptic"`, which the
 format cannot even express) and `<exclude>` contact pairs (humanoid has two, and
 without them every limb collides with its own parent).
+
+**`<exclude>` pairs, and a test that cannot pass vacuously.** Every geom in
+MuJoCo's humanoid shares `contype=1 conaffinity=1`, so without the model's two
+exclusions each limb collides with its own parent and the robot tears itself
+apart. Exclusions are now part of the format (two int tables, unpacked from
+MuJoCo's packed signature at conversion) and of `Topo.t`, and the candidate
+filter drops a pair whose *welded* bodies are excluded — welded, because that is
+what MuJoCo's signature is built from.
+
+The corpus model `exclude` exists to make the test honest. Its two limbs overlap
+by 4 cm and are excluded, and a pebble touches them and the torso, so "three
+contacts and not four" is a statement a filter cannot satisfy by filtering
+everything. At the recorded (random) poses the balls mostly miss each other,
+which would have made the check vacuous, so the test also asserts the reference
+pose's three contacts explicitly.

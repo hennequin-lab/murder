@@ -78,6 +78,13 @@ let pair_limit (t : Topo.t) g1 g2 =
   | Box, Box -> Collision_box_tensor.max_contacts
   | _ -> 4
 
+(* [excluded t b1 b2] is whether the model says these two bodies never touch.
+   The comparison is on welded bodies, because that is what MuJoCo builds its
+   signature from: a body fused into its parent is the parent. *)
+let excluded t b1 b2 =
+  let a, b = if Int.( <= ) b1 b2 then b1, b2 else b2, b1 in
+  Array.exists t.exclude_pairs ~f:(fun (x, y) -> Int.equal a x && Int.equal b y)
+
 let candidates (m : Model.host) : cand array =
   let t = m.topo in
   let out = ref [] in
@@ -93,7 +100,11 @@ let candidates (m : Model.host) : cand array =
         let weld1 = weldbody t t.geom_bodyid.(g1)
         and weld2 = weldbody t t.geom_bodyid.(g2) in
         let filtered =
-          Int.equal weld1 weld2
+          (* An explicit exclusion is the model saying these two never touch,
+             and it is the only thing that stops two limbs of one robot from
+             colliding with each other. *)
+          excluded t weld1 weld2
+          || Int.equal weld1 weld2
           || (Int.equal weld1 0 && Int.equal weld2 0)
           (* filterparent, MuJoCo's default: a body does not touch its own
              parent, but the world body is exempt. *)
