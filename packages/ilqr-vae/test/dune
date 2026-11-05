@@ -1,4 +1,10 @@
 (test
  (name test_ilqr_vae)
  (modules test_ilqr_vae)
- (libraries base stdio nx rune windtrap dilqr ilqr_vae))
+ (libraries base nx rune windtrap dilqr rig ilqr_vae)
+ ; A hung test fails rather than blocking the gate.
+ (action
+  (setenv
+   WINDTRAP_TIMEOUT
+   120
+   (run %{test}))))

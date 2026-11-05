@@ -17,9 +17,10 @@
     generative model is completed by a factorized prior over inputs [p(u)],
     an optional prior over the initial state [p(x_0)], and — when the input
     is used — an encoder prior [p̃] that shapes the iLQR cost. {!Model}
-    bundles the pieces; {!Model.params} bundles their parameters, whose
-    structure {!Model.structure} is what {!Rune.grad}, {!Rune.jit} and the
-    optimizers take.
+    bundles the pieces into a description, {!Model.make} builds it without
+    drawing anything, and {!Model.init} draws the parameters a fresh model
+    starts from, whose structure {!Model.structure} is what {!Rune.grad},
+    {!Rune.jit} and the optimizers take.
 
     {b The recognition model.} [q(x_0, u | o)] is a {!Recognition.t}: a value
     with its own parameters. Two are provided and the model takes either as
@@ -54,7 +55,7 @@
 
     {[
       let model = … Model.make … in
-      let params = Model.params model in
+      let params = Model.init ~at:Nx.Host.on ~key model in
       let step =
         Rune.jit
           Nx.Ptree.(
@@ -64,7 +65,7 @@
              Rune.value_and_grad
                (Model.structure model)
                (fun p ->
-                  Elbo.batch_loss_fixed model p ~key ~n_samples:16 ~iters:4 data)
+                  Elbo.loss_fixed model p ~key ~n_samples:16 ~iters:4 data)
                params)
       in
       let loss, grads = step params key batch
@@ -75,7 +76,7 @@
     draws out and decodes them; {!integrate} is the deterministic rollout.
 
     {b Everything else.} The pieces are exposed as their own modules —
-    {!Types}, {!Covariance}, {!Initial}, {!Prior}, {!Likelihood},
+    {!Types}, {!Covariance}, {!Density}, {!Initial}, {!Prior}, {!Likelihood},
     {!Dynamics}, {!Schedule}, {!Recognition}, {!Model}, {!Elbo} — and the
     functions below are the front page. There is no functor and no parameter framework: a
     model is a value, its parameters are a value, and a transformation is a
@@ -92,8 +93,30 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) model = ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
 (** A model's parameters, the recognition's included. See {!module:Model}. *)
 type ('w, 'd, 'l, 'p, 'e, 'r, 's) params = ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
 
+(** One draw of the generative model: the initial state [[n]], the inputs
+    [[n_steps; m]], the state path they drive [[n_steps + 1; n]] and the
+    observations sampled from it [[n_steps; n_output]]. A record because the
+    four are the same type: a tuple's members could be swapped without a
+    compile error. *)
+type ('w, 's) generated =
+  { x0 : ('w, 's) value
+  ; u : ('w, 's) value
+  ; z : ('w, 's) value (** the state path; observation [k] is emitted by [z] at [k + 1] *)
+  ; observations : ('w, 's) value
+  }
+
+(** A latent trajectory rolled out and decoded: the inputs, the state path and
+    the likelihood's deterministic readout of it, with the batch axes of the
+    latents. *)
+type ('w, 's) prediction =
+  { u : ('w, 's) value
+  ; z : ('w, 's) value
+  ; observations : ('w, 's) value
+  }
+
 module Types = Types
 module Covariance = Covariance
+module Density = Density
 module Initial = Initial
 module Prior = Prior
 module Likelihood = Likelihood
@@ -105,16 +128,16 @@ module Elbo = Elbo
 
 (** {1:inference Inference} *)
 
-(** [posterior_mean model params ?iters data] is the recognition's posterior
+(** [posterior_mean model params ?solve data] is the recognition's posterior
     mean: one deterministic latent trajectory per trial ([x0] of shape
     [[1; n]] and [u] of shape [[n_steps; 1; m]] for one trial, and
     [[batch…; 1; n]] and [[batch…; n_steps; 1; m]] for a mini-batch).
-    [iters] asks for that many fixed iLQR
-    iterations; [None] uses the adaptive solve. See {!Recognition.mean}. *)
+    [solve] selects the recognition's inner solver; see
+    {!Recognition.type-solve}. See {!Recognition.mean}. *)
 val posterior_mean
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
-  -> ?iters:int
+  -> ?solve:Recognition.solve
   -> ('w, 's) value
   -> ('w, 's) Recognition.samples
 
@@ -125,7 +148,7 @@ val posterior_mean
 val posterior_draws
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
-  -> ?iters:int
+  -> ?solve:Recognition.solve
   -> n_samples:int
   -> key:'s Nx.Rng.key
   -> ('w, 's) value
@@ -137,7 +160,7 @@ val posterior_draws
 val log_prob
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
-  -> ?iters:int
+  -> ?solve:Recognition.solve
   -> ('w, 's) value
   -> ('w, 's) Recognition.samples
   -> ('w, 's) value
@@ -159,7 +182,7 @@ val loss
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
   -> ?beta:('w, 's) value
-  -> ?iters:int
+  -> ?solve:Recognition.solve
   -> key:'s Nx.Rng.key
   -> n_samples:int
   -> ('w, 's) value
@@ -177,25 +200,13 @@ val loss_fixed
   -> ('w, 's) value
   -> ('w, 's) value
 
-(** The mean of {!loss_fixed} over a tensor mini-batch of trials,
-    [[batch…; n_steps; n_output]]. See {!Elbo.batch_loss_fixed}. *)
-val batch_loss_fixed
-  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
-  -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
-  -> ?beta:('w, 's) value
-  -> key:'s Nx.Rng.key
-  -> n_samples:int
-  -> iters:int
-  -> ('w, 's) value
-  -> ('w, 's) value
-
 (** {1:sampling Sampling and prediction} *)
 
 (** [integrate model params ~u] rolls the model's dynamics out from
-    [x_0 = 0] under the inputs [u] ([[n_steps; m]], or a batch
-    [[batch…; n_steps; m]]): states [[batch…; n_steps + 1; n]]. Differentiable
-    in [u] and in the parameters. {!integrate_from} starts from a given
-    initial state. *)
+    [x_0 = 0] under the inputs [u] ([[batch…; T; m]]): states
+    [[batch…; T + 1; n]]. [T] is the model's horizon in every use below, but
+    nothing here requires it. Differentiable in [u] and in the parameters.
+    {!integrate_from} starts from a given initial state. *)
 val integrate
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
@@ -203,7 +214,8 @@ val integrate
   -> ('w, 's) value
 
 (** [integrate_from model params ~x0 ~u] is {!integrate} from [x0]
-    ([[n]], or a batch [[batch…; n]]); trial axes lead [u]'s horizon. *)
+    ([[batch…; n]], with the same batch axes as [u]); trial axes lead [u]'s
+    horizon. *)
 val integrate_from
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
@@ -221,25 +233,24 @@ val sample_generative
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
   -> key:'s Nx.Rng.key
-  -> ('w, 's) value * ('w, 's) value * ('w, 's) value * ('w, 's) value
+  -> ('w, 's) generated
 
 (** [predictions model params posterior] rolls the posterior's draws out and
-    decodes them: the inputs ([[batch…; n_steps; n_samples; m]]), the states
-    ([[batch…; n_steps + 1; n_samples; n]]) and the per-sample readouts
-    ([[batch…; n_steps; n_samples; n_output]]), decoded from the states the
-    observations belong to. The readouts are the likelihood's deterministic
-    [mean], not samples. *)
+    decodes them. The inputs are the posterior's ([[batch…; n_steps; n_samples; m]]), the states [[batch…; n_steps + 1; n_samples; n]] and the
+    readouts [[batch…; n_steps; n_samples; n_output]], decoded from the states
+    the observations belong to. The readouts are the likelihood's
+    deterministic [mean], not samples. *)
 val predictions
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
   -> ('w, 's) Recognition.posterior
-  -> ('w, 's) value * ('w, 's) value * ('w, 's) value
+  -> ('w, 's) prediction
 
-(** [predictions_deterministic model params samples] rolls a deterministic
-    latent trajectory out and decodes it: states [[batch…; n_steps + 1; n]]
-    and readouts [[batch…; n_steps; n_output]] for a sample batch of one. *)
+(** [predictions_deterministic model params samples] is {!predictions} for a
+    deterministic latent trajectory: a sample batch of one, whose states are
+    [[batch…; n_steps + 1; 1; n]] and readouts [[batch…; n_steps; 1; n_output]]. *)
 val predictions_deterministic
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
   -> ('w, 's) Recognition.samples
-  -> ('w, 's) value * ('w, 's) value
+  -> ('w, 's) prediction

@@ -10,34 +10,86 @@
     encoder cost and of the ELBO, [mean] is the deterministic readout used for
     predictions and R², and [sample] generates observations.
 
-    A likelihood is a value whose parameters are passed into its functions;
-    nothing here mentions [rune], so every operation differentiates and traces
-    by construction. Parameters that must be positive (Gaussian variances,
+    A likelihood is a {e description} — dimensions, the structure of its
+    parameters, the three functions that take them, and how to draw those
+    parameters. Its parameters are a value of their own, made by {!val-init}:
+    a description holds no tensor, so building one is free, and it can be
+    built before the device that will run it is known. Nothing here mentions [rune], so every operation differentiates and
+    traces by construction. Parameters that must be positive (Gaussian variances,
     Poisson gains) are log-parameterized: the stored parameter is the log of
     the quantity and the functions exponentiate it.
 
     A {e datum} is one row of a trial, of shape [[n_output]]; a [logp_t] over
     a batch of rows takes [[batch…; n]] states and [[batch…; n_output]]
-    data and returns one scalar per row. *)
+    data and returns one scalar per row. [k] is the step of the {e state}, not
+    of the datum: the encoder emits [o_{k−1}] from [x_k], and the terminal loss
+    is the last observation at [k = n_steps]. A likelihood that ignores [k]
+    — both of this module's are stationary — is the usual case. *)
 
 open Types
 
-type ('w, 'p, 's) t =
-  { n : int (** state dimension *)
-  ; n_output : int (** observation dimension *)
-  ; structure : ('p, 's) Nx.Ptree.t (** the structure of the likelihood's parameters *)
-  ; params : 'p (** the parameters a fresh model starts from *)
-  ; logp_t :
-      'p -> k:('w, 's) value -> x:('w, 's) value -> o:('w, 's) value -> ('w, 's) value
-    (** [logp_t p ~k ~x ~o] is log p(o_k | x), summed over the observation
-        channels: a scalar for one row, or one value per row for a batch
-        ([[batch…; n]] states against [[batch…; n_output]] data). *)
-  ; mean : 'p -> ('w, 's) value -> ('w, 's) value
-    (** [mean p z] is the readout of a state or state sequence: the last axis
-        ([n]) is replaced by [n_output], every leading axis kept. *)
-  ; sample : 'p -> key:'s Nx.Rng.key -> mean:('w, 's) value -> ('w, 's) value
-    (** [sample p ~key ~mean] draws observations of the shape of [mean]. *)
-  }
+(** A likelihood: a description, read through the accessors below and built by
+    {!make} or by one of the likelihoods further down. It holds no parameter value
+    and no tensor. *)
+type ('w, 'p, 's) t
+
+(** [make ~n ~n_output ~structure ~init ~logp_t ~mean ~sample ()] is the
+    likelihood those describe, and the way to write one the library does not
+    ship. [n] and [n_output] are the state and observation dimensions,
+    [structure] is how the parameters are walked, [init] draws them, and the three
+    maps are the density, the readout and the sampler.
+
+    Raises [Invalid_argument] if [n] or [n_output] is not positive. *)
+val make
+  :  n:int
+  -> n_output:int
+  -> structure:('p, 's) Nx.Ptree.t
+  -> init:(?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> 'p)
+  -> logp_t:
+       ('p -> k:('w, 's) value -> x:('w, 's) value -> o:('w, 's) value -> ('w, 's) value)
+  -> mean:('p -> ('w, 's) value -> ('w, 's) value)
+  -> sample:('p -> key:'s Nx.Rng.key -> mean:('w, 's) value -> ('w, 's) value)
+  -> unit
+  -> ('w, 'p, 's) t
+
+(** {1:reading Reading a likelihood} *)
+
+(** [n l] is the state dimension. *)
+val n : ('w, 'p, 's) t -> int
+
+(** [n_output l] is the observation dimension. *)
+val n_output : ('w, 'p, 's) t -> int
+
+(** [structure l] is the [Nx.Ptree.t] of its parameters. *)
+val structure : ('w, 'p, 's) t -> ('p, 's) Nx.Ptree.t
+
+(** [init ?key dtype l] draws the parameters a fresh model starts from, at the
+    placement the description was made at. [key] defaults to the current random
+    scope. *)
+val init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> ('w, 'p, 's) t -> 'p
+
+(** [logp_t l p ~k ~x ~o] is log p(o | x) at step [k], summed over the observation
+    channels: a scalar for one row, or one value per row for a batch ([[batch…; n]]
+    states against [[batch…; n_output]] data). *)
+val logp_t
+  :  ('w, 'p, 's) t
+  -> 'p
+  -> k:('w, 's) value
+  -> x:('w, 's) value
+  -> o:('w, 's) value
+  -> ('w, 's) value
+
+(** [mean l p z] is the readout of a state or state sequence: the last axis ([n])
+    is replaced by [n_output], every leading axis kept. *)
+val mean : ('w, 'p, 's) t -> 'p -> ('w, 's) value -> ('w, 's) value
+
+(** [sample l p ~key ~mean] draws observations of the shape of [mean]. *)
+val sample
+  :  ('w, 'p, 's) t
+  -> 'p
+  -> key:'s Nx.Rng.key
+  -> mean:('w, 's) value
+  -> ('w, 's) value
 
 (** {1:gaussian Gaussian} *)
 
@@ -63,9 +115,9 @@ module Gaussian : sig
       instead. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ~key ~c_mask ~scale ~sigma2 ~bias ~n ~n_output dtype] is a
-      Gaussian readout of [[n]] dimensional states to [[n_output]]
-      observations.
+  (** [make ~key ~c_mask ~scale ~sigma2 ~bias ~n ~n_output ()] is a Gaussian
+      readout of [[n]] dimensional states to [[n_output]] observations. Its
+      parameters, which {!init} draws, start as follows.
 
       - [c] is drawn ([Rng.normal] with standard deviation [scale / sqrt n],
         as in the reference implementation) unless [c_mask] is given, in which
@@ -83,15 +135,21 @@ module Gaussian : sig
       Raises [Invalid_argument] if [n] or [n_output] is not positive, or
       [sigma2] or [scale] is not positive. *)
   val make
-    :  ?key:Nx.host Nx.Rng.key
-    -> ?c_mask:('w, Nx.host) value
+    :  at:'s Nx.Placement.t
+    -> ?c_mask:('w, 's) value
     -> ?scale:float
     -> ?sigma2:float
     -> ?bias:float
     -> n:int
     -> n_output:int
-    -> (float, 'w) Nx.dtype
-    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
+    -> unit
+    -> ('w, ((float, 'w, 's) Nx.t, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> ((float, 'w, 's) Nx.t, 's) params
+    -> ((float, 'w, 'e) Nx.t, 'e) params
 end
 
 (** {1:poisson Poisson} *)
@@ -120,29 +178,31 @@ module Poisson : sig
       instead. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ~key ~c_mask ~link ~dt ~n ~n_output dtype] is a Poisson readout of
-      [[n]] dimensional states to [[n_output]] observation channels.
+  (** [make ~at ~c_mask ~link ~dt ~n ~n_output ()] is a Poisson readout of
+      [[n]] dimensional states to [[n_output]] observation channels; {!init}
+      draws its parameters:
 
       - [c] is drawn from a standard normal scaled by [1 / sqrt n] (the
         reference initialization) and masked by [c_mask] when given.
       - [link] defaults to [fun x -> 1e-3 + exp x].
       - [dt] is the bin width multiplying the rate, default [1.].
       - The gains start at [1] (that is, [log_gain = 0]) and the bias at [0].
-      - [key] defaults to the current random scope.
-
-      As for {!module:Gaussian}, [logp_t], [mean] and [sample] are the fields
-      of the returned record, capturing [c_mask], [link] and [dt]. [sample]
-      draws counts with [Rng.poisson].
 
       Raises [Invalid_argument] if [n] or [n_output] is not positive, or [dt]
       is not positive. *)
   val make
-    :  ?key:Nx.host Nx.Rng.key
-    -> ?c_mask:('w, Nx.host) value
-    -> ?link:(('w, Nx.host) value -> ('w, Nx.host) value)
+    :  at:'s Nx.Placement.t
+    -> ?c_mask:('w, 's) value
+    -> ?link:(('w, 's) value -> ('w, 's) value)
     -> ?dt:float
     -> n:int
     -> n_output:int
-    -> (float, 'w) Nx.dtype
-    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
+    -> unit
+    -> ('w, ((float, 'w, 's) Nx.t, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> ((float, 'w, 's) Nx.t, 's) params
+    -> ((float, 'w, 'e) Nx.t, 'e) params
 end

@@ -50,9 +50,16 @@ open Types
 (* {1 Interface types} *)
 
 (** The generative model as a recognition sees it: the dimensions, the
-    dynamics, the likelihood and the priors. A subset of {!Model.t}, built by
-    {!Model.generative}, so that this module does not depend on the model. *)
-type ('w, 'd, 'l, 'p, 'e, 's) generative =
+    dynamics, the likelihood and the encoder prior. A subset of {!Model.t},
+    built by {!Model.generative}, so that this module does not depend on the
+    model.
+
+    The components appear here as their descriptions. A recognition reads the
+    maps and the structures, and the parameters those maps take arrive with
+    {!type-gparams}. The generative prior over inputs is not part of this view
+    at all (only {!Elbo} reads it), and neither is the initial-state prior,
+    which is a parameter and so lives in {!type-gparams}. *)
+type ('w, 'd, 'l, 'e, 's) generative =
   { dtype : (float, 'w) Nx.dtype
   ; n : int
   ; m : int
@@ -60,21 +67,19 @@ type ('w, 'd, 'l, 'p, 'e, 's) generative =
   ; n_output : int
   ; dynamics : ('w, 'd, 's) Dynamics.t
   ; likelihood : ('w, 'l, 's) Likelihood.t
-  ; prior : ('w, 'p, 's) Prior.t (** the generative prior over inputs *)
   ; encoder_prior : ('w, 'e, 's) Prior.t (** the prior of the iLQR cost, [p̃] *)
-  ; initial_prior : (('w, 's) value, 's) Initial.params option
-    (** the prior over the initial state. The encoder infers an initial state
-        exactly when it is [Some], so this field is also the switch between
-        the fixed-zero and the free initial state. *)
   }
 
 (** The corresponding parameters, a subset of {!Model.params}. The type
     parameter ['w] is phantom; it keeps the shape of the type parallel to
-    {!type-generative}. *)
-type ('w, 'd, 'l, 'p, 'e, 's) gparams =
+    {!type-generative}.
+
+    [initial_prior] is present exactly when the encoder prices an initial
+    state: it is then the boundary condition of its control problem, so it is
+    a term of the cost the solve differentiates. *)
+type ('w, 'd, 'l, 'e, 's) gparams =
   { dynamics : 'd
   ; likelihood : 'l
-  ; prior : 'p
   ; encoder_prior : 'e
   ; initial_prior : (('w, 's) value, 's) Initial.params option
   }
@@ -94,6 +99,16 @@ type ('w, 's) posterior =
   ; log_prob : ('w, 's) value
   }
 
+(** The Gaussian the encoder's local quadratic model puts on the initial
+    state: a mean and a precision, both [[n]], so that its inverse — the
+    covariance the analogous linear model's posterior would have — is what the
+    recognition draws its initial states from. A recognition reports one when
+    it infers the initial state and [None] when it fixes [x_0 = 0]. *)
+type ('w, 's) initial =
+  { mean : ('w, 's) value
+  ; precision : ('w, 's) value
+  }
+
 (** The dimensions a recognition is built for. {!Model.make} takes [n_steps]
     from here and checks the rest against the other components. *)
 type dims =
@@ -103,47 +118,93 @@ type dims =
   ; n_output : int
   }
 
+(** How a recognition whose mean solves an iterative problem reaches it.
+
+    Build one with {!adaptive} or {!fixed} and pass it as [~solve] wherever a
+    recognition is asked for a mean: the choice is a value, not the presence or
+    absence of an iteration count, because it selects behaviour. A
+    recognition without an iterative inner solve ignores it. *)
+type solve =
+  | Adaptive of
+      { max_iter : int option
+      ; conv_threshold : float option
+      }
+  | Fixed of
+      { iters : int
+      ; alphas : float list option
+      ; mu : float option
+      ; c1 : float option
+      }
+
+(** [adaptive ?max_iter ?conv_threshold ()] stops when the solve converges,
+    with the solver's own defaults. Its stopping rule reads scalars on the
+    host, so it runs eagerly: it cannot be traced or compiled.
+
+    Raises [Invalid_argument] if [max_iter] is not positive. *)
+let adaptive ?max_iter ?conv_threshold () =
+  Option.iter max_iter ~f:(fun n ->
+    if n <= 0 then invalid_arg "Recognition.adaptive: max_iter must be positive");
+  Adaptive { max_iter; conv_threshold }
+
+(** [fixed ?alphas ?mu ?c1 ~iters ()] runs exactly [iters] iterations with
+    tensor-only control flow: traceable and compilable, its implicit gradient
+    included. [alphas] is the line-search step list, [mu] the
+    Levenberg-Marquardt damping and [c1] the line-search constant.
+
+    Raises [Invalid_argument] if [iters] is not positive. *)
+let fixed ?alphas ?mu ?c1 ~iters () =
+  if iters <= 0 then invalid_arg "Recognition.fixed: iters must be positive";
+  Fixed { iters; alphas; mu; c1 }
+
+let default = Adaptive { max_iter = None; conv_threshold = None }
+
 (** A recognition model over parameters ['r]. Everything but {!type-dims},
-    {!field-name} and {!field-infers_initial} is a function of the current
-    parameters, the way the constructors of {!Dynamics}, {!Prior} and
-    {!Likelihood} are. *)
-type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
+    {!field-name}, {!field-infers_initial} and {!field-infers_inputs} is a
+    function of the current parameters, the way the constructors of
+    {!Dynamics}, {!Prior} and {!Likelihood} are. *)
+type ('w, 'd, 'l, 'e, 'r, 's) t =
   { dims : dims
   ; infers_initial : bool
     (** [true] when [q] carries an initial-state factor, so that
         {!Model.make} can require a matching initial-state prior. *)
+  ; infers_inputs : bool
+    (** [true] when [q] carries an input factor. A recognition that leaves the
+        inputs at the point mass at zero ([Recognition.Lfads]'s
+        [~with_inputs:false]) has none: {!Elbo} then drops the input prior's
+        term, because pricing a point mass is not part of the bound. *)
   ; name : string (** for diagnostics *)
   ; structure : ('r, 's) Nx.Ptree.t (** the structure of the parameters *)
-  ; params : 'r (** the parameters a fresh model starts from *)
+  ; init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> 'r
+    (** the parameter value a fresh model starts from, made at the placement
+        the description was made at *)
   ; infer :
-      ('w, 'd, 'l, 'p, 'e, 's) generative
-      -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+      ('w, 'd, 'l, 'e, 's) generative
+      -> ('w, 'd, 'l, 'e, 's) gparams
       -> params:'r
-      -> ?iters:int
+      -> ?solve:solve
       -> n_samples:int
       -> key:'s Nx.Rng.key
       -> ('w, 's) value
       -> ('w, 's) posterior
-    (** [infer gen gp ~params ~n_samples ~key data] draws [n_samples] latent
-        trajectories from [q(· | data)] and evaluates [log q] at each of them.
-        [iters] is a hint for recognitions with an iterative inner solver:
-        [Some n] asks for [n] fixed iterations (traceable), [None] for the
-        default complete solve. Recognitions without one ignore it. *)
+    (** [infer gen gp ~params ?solve ~n_samples ~key data] draws [n_samples]
+        latent trajectories from [q(· | data)] and evaluates [log q] at each of
+        them. [solve] picks the inner solver of a recognition that has one;
+        see {!type-solve}. *)
   ; mean :
-      ('w, 'd, 'l, 'p, 'e, 's) generative
-      -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+      ('w, 'd, 'l, 'e, 's) generative
+      -> ('w, 'd, 'l, 'e, 's) gparams
       -> params:'r
-      -> ?iters:int
+      -> ?solve:solve
       -> ('w, 's) value
       -> ('w, 's) samples
     (** [mean gen gp ~params data] is the posterior mean — a single
         deterministic latent trajectory, shaped like one member of a sample
         batch ([n_samples = 1]). *)
   ; log_prob :
-      ('w, 'd, 'l, 'p, 'e, 's) generative
-      -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+      ('w, 'd, 'l, 'e, 's) generative
+      -> ('w, 'd, 'l, 'e, 's) gparams
       -> params:'r
-      -> ?iters:int
+      -> ?solve:solve
       -> ('w, 's) value
       -> ('w, 's) samples
       -> ('w, 's) value
@@ -151,39 +212,59 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
         the latents: one value per member of a batch. *)
   }
 
+let make
+      ~dims
+      ~infers_initial
+      ~infers_inputs
+      ~name
+      ~structure
+      ~init
+      ~infer
+      ~mean
+      ~log_prob
+      ()
+  =
+  { dims; infers_initial; infers_inputs; name; structure; init; infer; mean; log_prob }
+
+let dims (r : ('w, 'd, 'l, 'e, 'r, 's) t) = r.dims
+let infers_initial (r : ('w, 'd, 'l, 'e, 'r, 's) t) = r.infers_initial
+let infers_inputs (r : ('w, 'd, 'l, 'e, 'r, 's) t) = r.infers_inputs
+let name (r : ('w, 'd, 'l, 'e, 'r, 's) t) = r.name
+let structure (r : ('w, 'd, 'l, 'e, 'r, 's) t) = r.structure
+let init ?key dtype (r : ('w, 'd, 'l, 'e, 'r, 's) t) = r.init ?key dtype
+
 (* {1 Helpers} *)
 
 let log_2pi = Float.log (2.0 *. Float.pi)
-let infer (type w d l p e r) (recog : (w, d, l, p, e, r, 's) t) = recog.infer
-let mean (type w d l p e r) (recog : (w, d, l, p, e, r, 's) t) = recog.mean
-let log_prob (type w d l p e r) (recog : (w, d, l, p, e, r, 's) t) = recog.log_prob
+let infer (type w d l e r) (recog : (w, d, l, e, r, 's) t) = recog.infer
+let mean (type w d l e r) (recog : (w, d, l, e, r, 's) t) = recog.mean
+let log_prob (type w d l e r) (recog : (w, d, l, e, r, 's) t) = recog.log_prob
 
 (** [gparams_structure gen] is the [Nx.Ptree.t] of {!type-gparams} at [gen]:
     the same structure the model gives its own parameters, with only the
     paths a recognition reads. *)
-let gparams_structure (type w d l p e) (gen : (w, d, l, p, e, 's) generative)
-  : ((w, d, l, p, e, 's) gparams, 's) Nx.Ptree.t
+let gparams_structure (type w d l e) (gen : (w, d, l, e, 's) generative)
+  : ((w, d, l, e, 's) gparams, 's) Nx.Ptree.t
   =
   Nx.Ptree.v (fun c r ->
     let open Nx.Ptree.Walk in
     let dynamics =
-      field c "dynamics" (structure gen.dynamics.Dynamics.structure) r.dynamics
+      field c "dynamics" (structure (Dynamics.structure gen.dynamics)) r.dynamics
     in
     let likelihood =
-      field c "likelihood" (structure gen.likelihood.Likelihood.structure) r.likelihood
+      field c "likelihood" (structure (Likelihood.structure gen.likelihood)) r.likelihood
     in
-    let prior = field c "prior" (structure gen.prior.Prior.structure) r.prior in
     let encoder_prior =
       field
         c
         "encoder_prior"
-        (structure gen.encoder_prior.Prior.structure)
+        (structure (Prior.structure gen.encoder_prior))
         r.encoder_prior
     in
     let initial_prior =
       field c "initial_prior" (option (structure (Initial.structure ()))) r.initial_prior
     in
-    { dynamics; likelihood; prior; encoder_prior; initial_prior })
+    { dynamics; likelihood; encoder_prior; initial_prior })
 
 let shape_string shape =
   String.concat ~sep:"; " (Array.to_list (Array.map shape ~f:Int.to_string))
@@ -266,6 +347,36 @@ let unflat_u ~dims ~n_steps ~n_samples ~m u =
 let unflat_log_prob ~dims ~n_samples log_prob =
   reshape (append_shape dims [| n_samples |]) log_prob
 
+(* [check_samples ~caller ~n_steps ~n ~m s] requires one trial's latents to
+   have the shapes a draw has: [x0] [[n_samples; n]] and [u]
+   [[n_steps; n_samples; m]]. Every recogniser's [log_prob] takes latents from
+   the caller, so a wrong shape must be reported here rather than broadcast
+   into a wrong answer. *)
+let check_samples ~caller ~n_steps ~n ~m (s : ('w, 's) samples) =
+  let x0_shape = Nx.shape s.x0 in
+  if Array.length x0_shape <> 2 || not (Int.equal x0_shape.(1) n)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "%s: x0 must be [n_samples; %d], got [%s]"
+         caller
+         n
+         (shape_string x0_shape));
+  let n_samples = x0_shape.(0) in
+  let u_shape = Nx.shape s.u in
+  if not (Array.equal Int.equal u_shape [| n_steps; n_samples; m |])
+  then
+    invalid_arg
+      (Printf.sprintf
+         "%s: u must be [%d; %d; %d] for an x0 of [%d; %d], got [%s]"
+         caller
+         n_steps
+         n_samples
+         m
+         n_samples
+         n
+         (shape_string u_shape))
+
 (* The structures of a posterior and of samples, as the pairs
    [(x0, (u, log_prob))] and [(x0, u)], for the [Rune.vmap]s below; the
    [_pair] functions convert at the map's boundary. *)
@@ -304,14 +415,14 @@ let stack_samples (type w) ~dims ~n_samples ~n ~n_steps ~m (ss : (w, 's) samples
   ; u = unflat_u ~dims ~n_steps ~n_samples ~m (stack (fun s -> s.u))
   }
 
-(* [scaled_randn ?key ~sigma dtype shape] is a normal draw of standard
-   deviation [sigma], from [key] when given and from the current random scope
-   otherwise. *)
-let scaled_randn ?key ~sigma dtype shape =
+(* [scaled_randn ~at ?key ~sigma dtype shape] is a normal draw of standard
+   deviation [sigma] at [at], from [key] when given and from the current
+   random scope otherwise. *)
+let scaled_randn ~at ?key ~sigma dtype shape =
   let draw =
     match key with
-    | Some key -> Nx.Rng.normal ~key dtype shape
-    | None -> Nx.Rng.normal dtype shape
+    | Some key -> Nx.Rng.normal_at at ~key dtype shape
+    | None -> Nx.Rng.normal_at at dtype shape
   in
   Infix.(draw *$ sigma)
 
@@ -322,12 +433,14 @@ let split2 ~axis t =
   | [ a; b ] -> a, b
   | _ -> assert false
 
-(* [gaussian_logp ~x ~mu ~logvar] is the diagonal Gaussian log density of [x]
-   summed over the last axis: one value per row of a batch. *)
-let gaussian_logp ~x ~mu ~logvar =
-  let open Infix in
-  let scaled = (x - mu) / exp (logvar *$ 0.5) in
-  sum ~axes:[ -1 ] ((scaled * scaled) + (logvar + scalar_like logvar log_2pi)) *$ -0.5
+(* [diagonal_logp ~mean ~log_variances x] is the log density of a diagonal
+   Gaussian, one value per row of [x]: the form the encoder and the controller
+   readouts give their draws. *)
+let diagonal_logp ~mean ~log_variances x =
+  Density.logp
+    ~mean
+    ~covariance:(Density.Diagonal { log_stds = Infix.(log_variances *$ 0.5) })
+    x
 
 (* {1 iLQR recognition} *)
 
@@ -364,31 +477,7 @@ module Iilqr = struct
         let walk = walk_params
       end)
 
-  (** [init ?space_sigma2 ?time_sigma2 ?infer_initial ~n ~m ~n_steps ~n_output dtype] is the recognition's initial parameters: two covariance factors of
-      [space_sigma2 · I] and [time_sigma2 · I], both [1.] by default, and the
-      initial state's log scale at [0] ([Σ = P⁻¹]) when [infer_initial]. The
-      dimensions only say what the factors must multiply; they are checked
-      against the model's by {!make}. *)
-  let init
-        ?space_sigma2
-        ?time_sigma2
-        ?(infer_initial = false)
-        ~n
-        ~m
-        ~n_steps
-        ~n_output
-        dtype
-    =
-    if n <= 0 then invalid_arg "Recognition.Iilqr.init: n must be positive";
-    if m <= 0 then invalid_arg "Recognition.Iilqr.init: m must be positive";
-    if n_steps <= 0 then invalid_arg "Recognition.Iilqr.init: n_steps must be positive";
-    if n_output <= 0 then invalid_arg "Recognition.Iilqr.init: n_output must be positive";
-    { space_cov = Covariance.make ?sigma2:space_sigma2 ~n:m dtype
-    ; time_cov = Covariance.make ?sigma2:time_sigma2 ~n:n_steps dtype
-    ; initial_log_scale = (if infer_initial then Some (scalar dtype 0.0) else None)
-    }
-
-  let initial_controls (type w) (gen : (w, _, _, _, _, 's) generative) ~at u_init =
+  let initial_controls (type w) (gen : (w, _, _, _, 's) generative) ~at u_init =
     match u_init with
     | None -> Array.init gen.n_steps ~f:(fun _ -> zeros_at at gen.dtype [| gen.m |])
     | Some u ->
@@ -399,19 +488,20 @@ module Iilqr = struct
       then invalid_arg "Recognition.Iilqr: u_init must be [n_steps; m]";
       Array.init gen.n_steps ~f:(fun k -> get [ k ] u)
 
-  (** [problem gen gp data] is the encoder's control problem for one trial:
-      horizon [n_steps], state [n], control [m], dynamics from
+  (** [problem gen ?verbose data] is the encoder's control problem for one
+      trial: horizon [n_steps], state [n], control [m], dynamics from
       [gen.dynamics], running loss the encoder prior minus the likelihood and
       terminal loss the last observation's likelihood. The trial's data is
-      captured by the losses. The problem's parameters are the generative
-      share of the model's, so {!Dilqr} differentiates the solve with respect
-      to the dynamics, the likelihood and the encoder prior. *)
+      captured by the losses. The problem's parameters are
+      {!Recognition.gparams}, so {!Dilqr} differentiates the solve with
+      respect to the dynamics, the likelihood, the encoder prior and the
+      initial-state prior. *)
   let problem
-        (type w d l p e)
-        (gen : (w, d, l, p, e, 's) generative)
-        (_gp : (w, d, l, p, e, 's) gparams)
+        (type w d l e)
+        (gen : (w, d, l, e, 's) generative)
+        ?(verbose = false)
         (data : (w, 's) value)
-    : (w, (w, d, l, p, e, 's) gparams, 's) Dilqr.Problem.t
+    : (w, (w, d, l, e, 's) gparams, 's) Dilqr.Problem.t
     =
     let n = gen.n
     and m = gen.m
@@ -428,20 +518,20 @@ module Iilqr = struct
        index with [Nx.take], clamped so that step 0 reads a valid row and is
        then masked out. *)
     let running_loss
-          (theta : (w, d, l, p, e, 's) gparams)
+          (theta : (w, d, l, e, 's) gparams)
           ~(k : (w, 's) value)
           ~(x : (w, 's) value)
           ~(u : (w, 's) value)
       =
       let prior_term =
-        Infix.(-gen.encoder_prior.Prior.logp_t theta.encoder_prior ~k ~u)
+        Infix.(-Prior.logp_t gen.encoder_prior theta.encoder_prior ~k ~u)
       in
       let index = maximum Infix.(k - one) zero in
       (* [take] with a 0-d [indices] removes the axis, so the row is
          [n_output]. *)
       let o = take ~axis:0 (cast int64 index) data in
       let likelihood_term =
-        Infix.(-gen.likelihood.Likelihood.logp_t theta.likelihood ~k ~x ~o)
+        Infix.(-Likelihood.logp_t gen.likelihood theta.likelihood ~k ~x ~o)
       in
       (* The initial state is a variable exactly when the model has a prior
          over it, and then that prior is the boundary condition of the local
@@ -454,9 +544,10 @@ module Iilqr = struct
       in
       Infix.(prior_term + initial_term + where (Nx.equal k zero) zero likelihood_term)
     in
-    let final_loss (theta : (w, d, l, p, e, 's) gparams) ~(x : (w, 's) value) =
+    let final_loss (theta : (w, d, l, e, 's) gparams) ~(x : (w, 's) value) =
       neg
-        (gen.likelihood.Likelihood.logp_t
+        (Likelihood.logp_t
+           gen.likelihood
            theta.likelihood
            ~k:(scalar_at (beside data) dtype (Float.of_int t_steps))
            ~x
@@ -466,9 +557,9 @@ module Iilqr = struct
     ; n
     ; m
     ; horizon = t_steps
-    ; verbose = false
+    ; verbose
     ; params = gparams_structure gen
-    ; dynamics = (fun theta ~k ~x ~u -> gen.dynamics.Dynamics.dyn theta.dynamics ~k ~x ~u)
+    ; dynamics = (fun theta ~k ~x ~u -> Dynamics.dyn gen.dynamics theta.dynamics ~k ~x ~u)
     ; running_loss
     ; final_loss
     }
@@ -478,13 +569,18 @@ module Iilqr = struct
      trial's data, and zero when the initial state is fixed. *)
   let initial_guess
         (type w)
-        (gen : (w, _, _, _, _, 's) generative)
-        (gp : (w, _, _, _, _, 's) gparams)
+        (gen : (w, _, _, _, 's) generative)
+        (gp : (w, _, _, _, 's) gparams)
         ~at
     =
     match gp.initial_prior with
     | None -> zeros_at at gen.dtype [| gen.n |]
     | Some prior -> prior.Initial.mean
+
+  (* dilqr returns its own record; the recognition's is the pair the rest of
+     this library knows, so the conversion happens here and nowhere else. *)
+  let of_dilqr (type w) (init : (float, w, 's) Dilqr.Lqr.initial) : (w, 's) initial =
+    { mean = init.Dilqr.Lqr.mean; precision = init.Dilqr.Lqr.precision }
 
   (* [laplace_initial problem gp ~xs ~us] is the Gaussian the local quadratic
      model at the trajectory implies for the initial state, when the model has
@@ -497,9 +593,9 @@ module Iilqr = struct
      the Riccati recursion that produced the value Hessian, and the recognition
      stops both wherever it draws from the Gaussian or scores it. *)
   let laplace_initial
-        (type w d l p e)
-        (problem : (w, (w, d, l, p, e, 's) gparams, 's) Dilqr.Problem.t)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (type w d l e)
+        (problem : (w, (w, d, l, e, 's) gparams, 's) Dilqr.Problem.t)
+        (gp : (w, d, l, e, 's) gparams)
         ~(xs : (w, 's) value array)
         ~(us : (w, 's) value array)
     =
@@ -514,40 +610,39 @@ module Iilqr = struct
         Dilqr.Lqr.backward_lin ~common ~tape ~lin:(Dilqr.Lqr.lin_of_tape tape)
       in
       Some
-        (Dilqr.Lqr.initial_condition
-           ~common
-           ~value_grad
-           ~nominal:(Array.get xs 0)
-           ~prior:None)
+        (of_dilqr
+           (Dilqr.Lqr.initial_condition
+              ~common
+              ~value_grad
+              ~nominal:(Array.get xs 0)
+              ~prior:None))
 
-  (* [adaptive_solve gen gp ?u_init ?max_iter ?conv_threshold ~x0 data] is the
-     adaptive solve from a given initial state: the trajectory's states and
-     controls, unstacked. *)
-  let adaptive_solve gen gp ?u_init ?max_iter ?conv_threshold ~x0 data =
-    let p = problem gen gp data in
+  (* [solve_from problem gen gp ?u_init ?solve ~x0 data] is one encoder solve
+     from a given initial state: the trajectory's states and controls,
+     unstacked. The problem is built by the caller, so the rounds of
+     {!solve_trial} price the same tape. *)
+  let solve_from
+        (type w d l e)
+        (p : (w, (w, d, l, e, 's) gparams, 's) Dilqr.Problem.t)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
+        ?u_init
+        ?(solve = default)
+        ~(x0 : (w, 's) value)
+        (data : (w, 's) value)
+    =
     let inputs : (_, _) Dilqr.Problem.Inputs.t =
       { theta = gp; x0; us0 = initial_controls gen ~at:(beside data) u_init }
     in
-    Dilqr.split_taus p (Dilqr.solve_adaptive p ?max_iter ?conv_threshold inputs)
+    match solve with
+    | Adaptive { max_iter; conv_threshold } ->
+      Dilqr.split_taus p (Dilqr.solve_adaptive p ?max_iter ?conv_threshold inputs)
+    | Fixed { iters; alphas; mu; c1 } ->
+      Dilqr.split_taus p (Dilqr.solve_fixed p ~iters ?alphas ?mu ?c1 inputs)
 
-  (* The same with [iters] fixed iterations: tensor-only control flow. *)
-  let fixed_solve gen gp ?u_init ~iters ?alphas ?mu ?c1 ~x0 data =
-    let p = problem gen gp data in
-    let inputs : (_, _) Dilqr.Problem.Inputs.t =
-      { theta = gp; x0; us0 = initial_controls gen ~at:(beside data) u_init }
-    in
-    Dilqr.split_taus p (Dilqr.solve_fixed p ~iters ?alphas ?mu ?c1 inputs)
-
-  (* [solve_controls gen gp ?u_init ?iters data] is the encoder's solve from a
-     given initial state, adaptive when [iters] is absent. *)
-  let solve_controls gen gp ?u_init ?iters data =
-    match iters with
-    | None -> fun ~x0 -> adaptive_solve gen gp ?u_init ~x0 data
-    | Some iters -> fun ~x0 -> fixed_solve gen gp ?u_init ~iters ~x0 data
-
-  (* [solve_trial gen gp ?rounds ~solve data] is one trial's encoder solution:
-     the Laplace posterior of the initial state, and the states and controls of
-     the last solve.
+  (* [solve_trial gen gp ?u_init ?solve ?rounds data] is one trial's encoder
+     solution: the Laplace posterior of the initial state, and the states and
+     controls of the last solve.
 
      A free initial state is not a variable of the iLQR solve. It is a
      variational parameter whose value is the joint mode of the local model:
@@ -559,17 +654,18 @@ module Iilqr = struct
      two reach the fixed point of a linear model exactly and come to first
      order for a nonlinear one. *)
   let solve_trial
-        (type w d l p e)
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (type w d l e)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
+        ?u_init
+        ?solve
         ?(rounds = 2)
-        ~(solve : x0:(w, 's) value -> (w, 's) value array * (w, 's) value array)
         (data : (w, 's) value)
     =
-    let p = problem gen gp data in
+    let p = problem gen data in
     let rounds = if Option.is_none gp.initial_prior then 1 else Int.max 1 rounds in
     let rec go i x0 =
-      let xs, us = solve ~x0 in
+      let xs, us = solve_from p gen gp ?u_init ?solve ~x0 data in
       let initial = laplace_initial p gp ~xs ~us in
       if i <= 1
       then xs, us, initial
@@ -577,41 +673,29 @@ module Iilqr = struct
         let x0 =
           match initial with
           | None -> x0
-          | Some init -> Rune.detach init.Dilqr.Lqr.mean
+          | Some init -> Rune.detach init.mean
         in
         go (i - 1) x0)
     in
     go rounds (initial_guess gen gp ~at:(beside data))
 
-  (** [posterior_mean gen gp ?u_init ?max_iter ?conv_threshold ?rounds data] is
-      the adaptive iLQR solution's controls, of shape [[n_steps; m]] — the
-      recognition mean. [u_init] ([n_steps; m], zeros when omitted) is the
-      initial guess and carries no gradient: the idealized solve does not
-      depend on it. Eager only. *)
-  let posterior_mean gen gp ?u_init ?max_iter ?conv_threshold ?rounds data =
-    let solve ~x0 = adaptive_solve gen gp ?u_init ?max_iter ?conv_threshold ~x0 data in
-    let _, us, _ = solve_trial gen gp ?rounds ~solve data in
+  (** [posterior_mean gen gp ?u_init ?solve ?rounds data] is the iLQR
+      solution's controls, of shape [[n_steps; m]] — the recognition mean.
+      [u_init] ([n_steps; m], zeros when omitted) is the initial guess and
+      carries no gradient: the idealized solve does not depend on it. *)
+  let posterior_mean gen gp ?u_init ?solve ?rounds data =
+    let _, us, _ = solve_trial gen gp ?u_init ?solve ?rounds data in
     stack ~axis:0 (Array.to_list us)
 
-  (** [posterior_mean_fixed gen gp ?u_init ~iters ?alphas ?mu ?c1 ?rounds data]
-      is the same mean with [iters] fixed iterations: tensor-only control flow,
-      traceable and JIT-compilable together with its implicit VJP. *)
-  let posterior_mean_fixed gen gp ?u_init ~iters ?alphas ?mu ?c1 ?rounds data =
-    let solve ~x0 = fixed_solve gen gp ?u_init ~iters ?alphas ?mu ?c1 ~x0 data in
-    let _, us, _ = solve_trial gen gp ?rounds ~solve data in
-    stack ~axis:0 (Array.to_list us)
-
-  (** [posterior_initial gen gp ?u_init ?iters ?rounds data] is the Laplace
+  (** [posterior_initial gen gp ?u_init ?solve ?rounds data] is the Laplace
       posterior of the initial state — its mean and precision — when the model
       has an initial-state prior, and [None] when it fixes [x_0 = 0]. The mean
       is the value the solve's trajectory starts from once the rounds have
       converged, and the precision is the Hessian of the encoder's cost in
       [x_0], so its inverse is the covariance the analogous linear model's
       posterior would have. *)
-  let posterior_initial gen gp ?u_init ?iters ?rounds data =
-    let _, _, initial =
-      solve_trial gen gp ?rounds ~solve:(solve_controls gen gp ?u_init ?iters data) data
-    in
+  let posterior_initial gen gp ?u_init ?solve ?rounds data =
+    let _, _, initial = solve_trial gen gp ?u_init ?solve ?rounds data in
     initial
 
   (* [sample_u gen p ~mu ~n_samples ~key] draws [u = mu + L_time xi L_spaceᵀ] with [xi] standard normal: [L_time] acts on the time axis and
@@ -619,7 +703,7 @@ module Iilqr = struct
      [Σ_time ⊗ Σ_space]. *)
   let sample_u
         (type w)
-        (gen : (w, _, _, _, _, 's) generative)
+        (gen : (w, _, _, _, 's) generative)
         (p : ((w, 's) value, 's) params)
         ~mu
         ~n_samples
@@ -645,7 +729,7 @@ module Iilqr = struct
      triangular solves against the Cholesky factors. *)
   let log_prob_u
         (type w)
-        (gen : (w, _, _, _, _, 's) generative)
+        (gen : (w, _, _, _, 's) generative)
         (p : ((w, 's) value, 's) params)
         ~mu
         u
@@ -655,13 +739,15 @@ module Iilqr = struct
     and dtype = gen.dtype in
     let shape = Nx.shape u in
     let rank = Array.length shape in
-    if not (Int.equal shape.(0) t_steps && Int.equal shape.(rank - 1) m)
+    if rank < 2 || not (Int.equal shape.(0) t_steps && Int.equal shape.(rank - 1) m)
     then
       invalid_arg
         (Printf.sprintf
-           "Recognition.Iilqr.log_prob: expected [n_steps; …; m] = [%d; …; %d]"
+           "Recognition.Iilqr.log_prob: u must be [%d; …; %d] (the horizon, any sample \
+            axes, the input dimension), got [%s]"
            t_steps
-           m);
+           m
+           (shape_string shape));
     let batch_dims = Array.sub shape ~pos:1 ~len:(rank - 2) in
     let batch = Array.fold batch_dims ~init:1 ~f:( * ) in
     let l_time = Covariance.factor p.time_cov in
@@ -693,8 +779,8 @@ module Iilqr = struct
   (* [initial_factor init] is the upper factor [U] of the Laplace precision
      [P = UᵀU]. The initial state's covariance is [exp (2 log_scale) · P⁻¹],
      which is [M Mᵀ] with [M = exp log_scale · U⁻¹]. *)
-  let initial_factor (type w) (init : (float, w, 's) Dilqr.Lqr.initial) =
-    cholesky ~triangle:Upper init.Dilqr.Lqr.precision
+  let initial_factor (type w) (init : (w, 's) initial) =
+    cholesky ~triangle:Upper init.precision
 
   (* [sample_initial init ~log_scale ~n_samples ~key] draws
      [x = mean + exp log_scale · U⁻¹ ξ] with [ξ] standard normal: the draws
@@ -702,14 +788,14 @@ module Iilqr = struct
      in the scale. *)
   let sample_initial
         (type w)
-        (init : (float, w, 's) Dilqr.Lqr.initial)
+        (init : (w, 's) initial)
         ~(log_scale : (w, 's) value)
         ~n_samples
         ~key
     =
     if n_samples <= 0
     then invalid_arg "Recognition.Iilqr.sample_initial: n_samples must be positive";
-    let n = (Nx.shape init.Dilqr.Lqr.mean).(0) in
+    let n = (Nx.shape init.mean).(0) in
     let xi =
       Nx.Rng.normal_at (beside init.mean) ~key (Nx.dtype init.mean) [| n_samples; n |]
     in
@@ -722,40 +808,35 @@ module Iilqr = struct
 
   (* [log_prob_initial init ~log_scale x] is [log q (x)] for
      [q = N(mean, exp (2 log_scale) · P⁻¹)], summed over the last axis: one
-     value per row of [x]. The quadratic form is one product with [U]. *)
+     value per row of [x]. The scale belongs in the precision factor:
+     [exp (2 log_scale) · P⁻¹ = (e^{-log_scale} U)⁻ᵀ (e^{-log_scale} U)⁻¹], so
+     scaling [U] is the whole of it. *)
   let log_prob_initial
         (type w)
-        (init : (float, w, 's) Dilqr.Lqr.initial)
+        (init : (w, 's) initial)
         ~(log_scale : (w, 's) value)
         (x : (w, 's) value)
     =
-    let upper = initial_factor init in
-    let n = (Nx.shape init.Dilqr.Lqr.mean).(0) in
-    let dim = Float.of_int n in
-    let diff = Infix.(x - reshape [| 1; n |] init.mean) in
-    (* [U (x − mean)] per row: a row [r] maps to [r Uᵀ]. *)
-    let whitened = Infix.(diff *@ matrix_transpose upper) in
-    let quadratic =
-      Infix.(sum ~axes:[ -1 ] (whitened * whitened) * exp (log_scale *$ -2.0))
-    in
-    (* [log det Σ = 2 n log_scale − log det P], and [log det P = 2 Σ log diag U]. *)
-    let log_det = Infix.(sum (log (diag upper)) *$ 2.0) in
-    Infix.(
-      (quadratic
-       + (log_scale *$ (2.0 *. dim))
-       - log_det
-       + scalar_like init.mean (dim *. log_2pi))
-      *$ -0.5)
+    let factor = Infix.(initial_factor init * exp (log_scale *$ -1.0)) in
+    Density.logp ~mean:init.mean ~covariance:(Density.Precision_cholesky { factor }) x
 
   (* [stopped_initial init] is the same Gaussian with every tensor detached:
      [infer] evaluates its density at it, so the gradient of the bound reaches
      the local model only through the sampled latents. *)
-  let stopped_initial (type w) (init : (float, w, 's) Dilqr.Lqr.initial)
-    : (float, w, 's) Dilqr.Lqr.initial
-    =
-    { Dilqr.Lqr.mean = Rune.detach init.Dilqr.Lqr.mean
-    ; precision = Rune.detach init.Dilqr.Lqr.precision
-    }
+  (* [initial_log_scale params] is the scale of the Laplace covariance and the
+     block's only learned parameter. A recognition built with
+     [~infer_initial:true] has it; a hand-built parameter value for a model
+     with an initial-state prior may not, and that is what this reports. *)
+  let initial_log_scale (type w) (params : ((w, 's) value, 's) params) =
+    match params.initial_log_scale with
+    | Some scale -> scale
+    | None ->
+      invalid_arg
+        "Recognition.Iilqr: the model has an initial-state prior but the recognition has \
+         no initial scale; build it with ~infer_initial:true"
+
+  let stopped_initial (type w) (init : (w, 's) initial) : (w, 's) initial =
+    { mean = Rune.detach init.mean; precision = Rune.detach init.precision }
 
   (* [stopped params] is the same parameters with every tensor detached. The
      density of [infer] is evaluated at it, so that the gradient of the bound
@@ -774,19 +855,17 @@ module Iilqr = struct
     }
 
   let infer_one
-        (type w d l p e)
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (type w d l e)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~(params : ((w, 's) value, 's) params)
-        ?iters
+        ?solve
         ~n_samples
         ~key
         data
     =
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
-    let _, us, initial =
-      solve_trial gen gp ~solve:(solve_controls gen gp data ?iters) data
-    in
+    let _, us, initial = solve_trial gen gp ?solve data in
     let mu_u = stack ~axis:0 (Array.to_list us) in
     match initial with
     | None ->
@@ -795,14 +874,7 @@ module Iilqr = struct
       let log_prob = log_prob_u gen (stopped params) ~mu:(Rune.detach mu_u) u in
       { x0 = broadcast_to [| n_samples; gen.n |] x0; u; log_prob }
     | Some init ->
-      let log_scale =
-        match params.initial_log_scale with
-        | Some scale -> scale
-        | None ->
-          invalid_arg
-            "Recognition.Iilqr: the model has an initial-state prior but the recognition \
-             has no initial scale; build it with ~infer_initial:true"
-      in
+      let log_scale = initial_log_scale params in
       (* One subkey per draw group, so the initial state and the inputs are
          independent draws. *)
       let keys = Nx.Rng.split ~n:2 key in
@@ -825,75 +897,72 @@ module Iilqr = struct
       { x0; u; log_prob }
 
   let mean_one
-        (type w d l p e)
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
-        ~(params : ((w, 's) value, 's) params)
-        ?iters
+        (type w d l e)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
+        ~params:_
+        ?solve
         data
     =
-    let _ = params in
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
-    let _, us, initial =
-      solve_trial gen gp ~solve:(solve_controls gen gp data ?iters) data
-    in
+    let _, us, initial = solve_trial gen gp ?solve data in
     let mu_u = stack ~axis:0 (Array.to_list us) in
     let x0 =
       match initial with
       | None -> zeros_at (beside data) gen.dtype [| gen.n |]
-      | Some init -> init.Dilqr.Lqr.mean
+      | Some init -> init.mean
     in
     { x0 = reshape [| 1; gen.n |] x0; u = reshape [| gen.n_steps; 1; gen.m |] mu_u }
 
   let log_prob_one
-        (type w d l p e)
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (type w d l e)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~(params : ((w, 's) value, 's) params)
-        ?iters
+        ?solve
         data
         (samples : (w, 's) samples)
     =
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
-    let _, us, initial =
-      solve_trial gen gp ~solve:(solve_controls gen gp data ?iters) data
-    in
+    check_samples
+      ~caller:"Recognition.Iilqr.log_prob"
+      ~n_steps:gen.n_steps
+      ~n:gen.n
+      ~m:gen.m
+      samples;
+    let _, us, initial = solve_trial gen gp ?solve data in
     let mu_u = stack ~axis:0 (Array.to_list us) in
     let log_prob_u' = log_prob_u gen params ~mu:mu_u samples.u in
     match initial with
     | None -> log_prob_u'
     | Some init ->
-      let log_scale =
-        match params.initial_log_scale with
-        | Some scale -> scale
-        | None ->
-          invalid_arg
-            "Recognition.Iilqr: the model has an initial-state prior but the recognition \
-             has no initial scale; build it with ~infer_initial:true"
-      in
-      Infix.(log_prob_u' + log_prob_initial init ~log_scale samples.x0)
+      Infix.(
+        log_prob_u'
+        + log_prob_initial init ~log_scale:(initial_log_scale params) samples.x0)
 
   (* One iLQR solve per trial. The solve itself is unbatched; [Rune.vmap] maps
-     it over the flattened trial batch, and its implicit VJP is batched by the
-     same map, so a mini-batch differentiates in one pass. *)
+     a fixed one over the flattened trial batch, and its implicit VJP is
+     batched by the same map, so a mini-batch differentiates in one pass. The
+     adaptive solve reads scalars on the host, so it runs one trial at a
+     time. *)
   let infer
-        (type w d l p e)
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (type w d l e)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~params
-        ?iters
+        ?solve
         ~n_samples
         ~key
         data
     =
     let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
     if Array.is_empty dims
-    then infer_one gen gp ~params ?iters ~n_samples ~key data
+    then infer_one gen gp ~params ?solve ~n_samples ~key data
     else (
       let batch = batch_size dims in
       let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
-      if Option.is_none iters
-      then (
+      match Option.value solve ~default with
+      | Adaptive _ ->
         (* The adaptive solve reads scalars on the host, so it cannot run
            inside [Rune.vmap]; solve the trials one by one instead. *)
         let keys = Nx.Rng.split ~n:batch key in
@@ -903,72 +972,72 @@ module Iilqr = struct
               gen
               gp
               ~params
-              ?iters
+              ?solve
               ~n_samples
               ~key:keys.(i)
               (slice [ I i ] flat_data))
         in
-        stack_posterior ~dims ~n_samples ~n:gen.n ~n_steps:gen.n_steps ~m:gen.m ps)
-      else (
+        stack_posterior ~dims ~n_samples ~n:gen.n ~n_steps:gen.n_steps ~m:gen.m ps
+      | Fixed _ ->
         let keys = Nx.Rng.split_batch ~n:batch key in
         let p =
           posterior_of_pair
             (Rune.vmap
                Nx.Ptree.(pair tensor Nx.Rng.ptree @-> returns (posterior_structure ()))
                (fun (data, key) ->
-                  posterior_to_pair (infer_one gen gp ~params ?iters ~n_samples ~key data))
+                  posterior_to_pair (infer_one gen gp ~params ?solve ~n_samples ~key data))
                (flat_data, keys))
         in
         { x0 = unflat_x0 ~dims ~n_samples ~n:gen.n p.x0
         ; u = unflat_u ~dims ~n_steps:gen.n_steps ~n_samples ~m:gen.m p.u
         ; log_prob = unflat_log_prob ~dims ~n_samples p.log_prob
-        }))
+        })
 
   let mean
-        (type w d l p e)
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (type w d l e)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~params
-        ?iters
+        ?solve
         data
     =
     let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
     if Array.is_empty dims
-    then mean_one gen gp ~params ?iters data
+    then mean_one gen gp ~params ?solve data
     else (
       let batch = batch_size dims in
       let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
-      if Option.is_none iters
-      then (
+      match Option.value solve ~default with
+      | Adaptive _ ->
         let ss =
           Array.init batch ~f:(fun i ->
-            mean_one gen gp ~params ?iters (slice [ I i ] flat_data))
+            mean_one gen gp ~params ?solve (slice [ I i ] flat_data))
         in
-        stack_samples ~dims ~n_samples:1 ~n:gen.n ~n_steps:gen.n_steps ~m:gen.m ss)
-      else (
+        stack_samples ~dims ~n_samples:1 ~n:gen.n ~n_steps:gen.n_steps ~m:gen.m ss
+      | Fixed _ ->
         let p =
           samples_of_pair
             (Rune.vmap
                Nx.Ptree.(tensor @-> returns (samples_structure ()))
-               (fun data -> samples_to_pair (mean_one gen gp ~params ?iters data))
+               (fun data -> samples_to_pair (mean_one gen gp ~params ?solve data))
                flat_data)
         in
         { x0 = unflat_x0 ~dims ~n_samples:1 ~n:gen.n p.x0
         ; u = unflat_u ~dims ~n_steps:gen.n_steps ~n_samples:1 ~m:gen.m p.u
-        }))
+        })
 
   let log_prob
-        (type w d l p e)
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (type w d l e)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~params
-        ?iters
+        ?solve
         data
         (samples : (w, 's) samples)
     =
     let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
     if Array.is_empty dims
-    then log_prob_one gen gp ~params ?iters data samples
+    then log_prob_one gen gp ~params ?solve data samples
     else (
       let batch = batch_size dims in
       let batch_rank = Array.length dims in
@@ -985,8 +1054,8 @@ module Iilqr = struct
       let x0 = flat_x0 ~dims ~n_samples ~n:gen.n samples.x0 in
       let u = flat_u ~dims ~n_steps:gen.n_steps ~n_samples ~m:gen.m samples.u in
       let log_prob =
-        if Option.is_none iters
-        then
+        match Option.value solve ~default with
+        | Adaptive _ ->
           (* [Rune.vmap] cannot hold the adaptive solve's host-side reads. *)
           stack
             ~axis:0
@@ -996,24 +1065,26 @@ module Iilqr = struct
                     gen
                     gp
                     ~params
-                    ?iters
+                    ?solve
                     (slice [ I i ] flat_data)
                     { x0 = slice [ I i ] x0; u = slice [ I i ] u })))
-        else
+        | Fixed _ ->
           Rune.vmap
             Nx.Ptree.(pair tensor (pair tensor tensor) @-> returns tensor)
-            (fun (data, (x0, u)) -> log_prob_one gen gp ~params ?iters data { x0; u })
+            (fun (data, (x0, u)) -> log_prob_one gen gp ~params ?solve data { x0; u })
             (flat_data, (x0, u))
       in
       unflat_log_prob ~dims ~n_samples log_prob)
 
-  (** [make ?space_sigma2 ?time_sigma2 ?infer_initial ~n ~m ~n_steps ~n_output dtype] is the iLQR recognition with covariance factors initialized to
+  (** [make ?space_sigma2 ?time_sigma2 ?infer_initial ~n ~m ~n_steps ~n_output ()] is the iLQR recognition whose covariance factors start at
       [space_sigma2 · I] and [time_sigma2 · I]. [infer_initial] (default
       [false]) makes the initial state a latent: the encoder then prices it
       with the model's initial-state prior, and {!Model.make} requires one.
       The dimensions are the model's; {!Model.make} checks them against the
-      other components and takes the horizon from here. *)
+      other components and takes the horizon from here. {!init} draws the
+      starting factors. *)
   let make
+        ~at
         ?space_sigma2
         ?time_sigma2
         ?(infer_initial = false)
@@ -1021,18 +1092,40 @@ module Iilqr = struct
         ~m
         ~n_steps
         ~n_output
-        dtype
+        ()
     =
-    { dims = { n; m; n_steps; n_output }
-    ; infers_initial = infer_initial
-    ; name = "ilqr"
-    ; structure = structure ()
-    ; params =
-        init ?space_sigma2 ?time_sigma2 ~infer_initial ~n ~m ~n_steps ~n_output dtype
-    ; infer
-    ; mean
-    ; log_prob
-    }
+    if n <= 0 then invalid_arg "Recognition.Iilqr.make: n must be positive";
+    if m <= 0 then invalid_arg "Recognition.Iilqr.make: m must be positive";
+    if n_steps <= 0 then invalid_arg "Recognition.Iilqr.make: n_steps must be positive";
+    if n_output <= 0 then invalid_arg "Recognition.Iilqr.make: n_output must be positive";
+    let init (type w) ?key:(_ : 's Nx.Rng.key option) (dtype : (float, w) Nx.dtype) =
+      { space_cov = Covariance.make ~at ?sigma2:space_sigma2 ~n:m dtype
+      ; time_cov = Covariance.make ~at ?sigma2:time_sigma2 ~n:n_steps dtype
+      ; initial_log_scale =
+          (if infer_initial then Some (scalar_at at dtype 0.0) else None)
+      }
+    in
+    make
+      ~dims:{ n; m; n_steps; n_output }
+      ~infers_initial:infer_initial
+      ~infers_inputs:true
+      ~name:"ilqr"
+      ~structure:(structure ())
+      ~init
+      ~infer
+      ~mean
+      ~log_prob
+      ()
+
+  let place ~at p =
+    Nx.Ptree.place
+      (module struct
+        type ('a, 's) t = ('a, 's) params
+
+        let walk = walk_params
+      end)
+      at
+      p
 end
 
 (* {1 LFADS recognition} *)
@@ -1156,10 +1249,10 @@ module Lfads = struct
      [[n_steps; n_samples; m]] and the per-step means and log-variances of
      their Gaussian conditionals, both of the same shape. *)
   let rollout
-        (type w d l p e)
+        (type w d l e)
         ~phi
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         (p : ((w, 's) value, 's) params)
         ~e_con
         ~x0
@@ -1176,7 +1269,7 @@ module Lfads = struct
       let c' = Dynamics.Mgu.dyn ~phi p.con ~k ~x:c ~u:inp in
       let mu, logvar = split2 ~axis:1 Infix.((c' *@ p.u_readout) + p.u_readout_bias) in
       let u = Infix.(mu + (eps_t * exp (logvar *$ 0.5))) in
-      let g' = gen.dynamics.Dynamics.dyn gp.dynamics ~k ~x:g ~u in
+      let g' = Dynamics.dyn gen.dynamics gp.dynamics ~k ~x:g ~u in
       (g', c'), (u, (mu, logvar))
     in
     let _, (us, (mus, logvars)) =
@@ -1196,10 +1289,10 @@ module Lfads = struct
      by the given inputs, so the replay is exact — the chain rule needs the
      conditionals at the values they conditioned on, nothing else. *)
   let replay
-        (type w d l p e)
+        (type w d l e)
         ~phi
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         (p : ((w, 's) value, 's) params)
         ~e_con
         ~x0
@@ -1215,8 +1308,8 @@ module Lfads = struct
       let inp = concatenate ~axis:1 [ e; g ] in
       let c' = Dynamics.Mgu.dyn ~phi p.con ~k ~x:c ~u:inp in
       let mu, logvar = split2 ~axis:1 Infix.((c' *@ p.u_readout) + p.u_readout_bias) in
-      let lp = gaussian_logp ~x:u_t ~mu ~logvar in
-      let g' = gen.dynamics.Dynamics.dyn gp.dynamics ~k ~x:g ~u:u_t in
+      let lp = diagonal_logp ~mean:mu ~log_variances:logvar u_t in
+      let g' = Dynamics.dyn gen.dynamics gp.dynamics ~k ~x:g ~u:u_t in
       (g', c'), lp
     in
     let _, lps =
@@ -1231,18 +1324,17 @@ module Lfads = struct
     sum ~axes:[ 0 ] lps
 
   let infer_one
-        (type w d l p e)
+        (type w d l e)
         ~phi
         ~with_inputs
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~params
-        ?(iters = 0)
+        ?solve:_
         ~n_samples
         ~key
         data
     =
-    let _ = iters in
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
     if n_samples <= 0 then invalid_arg "Recognition.Lfads: n_samples must be positive";
     let e_ic = encode_ic ~phi params data in
@@ -1260,7 +1352,7 @@ module Lfads = struct
        (sticking-the-landing) estimator of the KL gradient. The values are
        the exact log densities. *)
     let ic_logp =
-      gaussian_logp ~x:x0 ~mu:(Rune.detach ic_mean) ~logvar:(Rune.detach ic_logvar)
+      diagonal_logp ~mean:(Rune.detach ic_mean) ~log_variances:(Rune.detach ic_logvar) x0
     in
     if not with_inputs
     then
@@ -1281,21 +1373,20 @@ module Lfads = struct
       let u_logp =
         sum
           ~axes:[ 0 ]
-          (gaussian_logp ~x:u ~mu:(Rune.detach mus) ~logvar:(Rune.detach logvars))
+          (diagonal_logp ~mean:(Rune.detach mus) ~log_variances:(Rune.detach logvars) u)
       in
       { x0; u; log_prob = Infix.(ic_logp + u_logp) })
 
   let mean_one
-        (type w d l p e)
+        (type w d l e)
         ~phi
         ~with_inputs
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~params
-        ?(iters = 0)
+        ?solve:_
         data
     =
-    let _ = iters in
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
     let e_ic = encode_ic ~phi params data in
     let ic_mean, _ = ic_posterior params e_ic in
@@ -1309,25 +1400,30 @@ module Lfads = struct
       { x0; u })
 
   let log_prob_one
-        (type w d l p e)
+        (type w d l e)
         ~phi
         ~with_inputs
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~params
-        ?(iters = 0)
+        ?solve:_
         data
         (samples : (w, 's) samples)
     =
-    let _ = iters in
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
+    check_samples
+      ~caller:"Recognition.Lfads.log_prob"
+      ~n_steps:gen.n_steps
+      ~n:gen.n
+      ~m:gen.m
+      samples;
     let e_ic = encode_ic ~phi params data in
     let ic_mean, ic_logvar = ic_posterior params e_ic in
     let ic_logp =
-      gaussian_logp
-        ~x:samples.x0
-        ~mu:(reshape [| 1; gen.n |] ic_mean)
-        ~logvar:(reshape [| 1; gen.n |] ic_logvar)
+      diagonal_logp
+        ~mean:(reshape [| 1; gen.n |] ic_mean)
+        ~log_variances:(reshape [| 1; gen.n |] ic_logvar)
+        samples.x0
     in
     if not with_inputs
     then ic_logp
@@ -1338,20 +1434,20 @@ module Lfads = struct
   (* The same trial-level map as the iLQR recognition: the encoder reads one
      trial and [Rune.vmap] stacks the trials' draws. *)
   let infer
-        (type w d l p e)
+        (type w d l e)
         ~phi
         ~with_inputs
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~params
-        ?iters
+        ?solve:_
         ~n_samples
         ~key
         data
     =
     let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
     if Array.is_empty dims
-    then infer_one ~phi ~with_inputs gen gp ~params ?iters ~n_samples ~key data
+    then infer_one ~phi ~with_inputs gen gp ~params ~n_samples ~key data
     else (
       let batch = batch_size dims in
       let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
@@ -1362,7 +1458,7 @@ module Lfads = struct
              Nx.Ptree.(pair tensor Nx.Rng.ptree @-> returns (posterior_structure ()))
              (fun (data, key) ->
                 posterior_to_pair
-                  (infer_one ~phi ~with_inputs gen gp ~params ?iters ~n_samples ~key data))
+                  (infer_one ~phi ~with_inputs gen gp ~params ~n_samples ~key data))
              (flat_data, keys))
       in
       { x0 = unflat_x0 ~dims ~n_samples ~n:gen.n p.x0
@@ -1371,18 +1467,18 @@ module Lfads = struct
       })
 
   let mean
-        (type w d l p e)
+        (type w d l e)
         ~phi
         ~with_inputs
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~params
-        ?iters
+        ?solve:_
         data
     =
     let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
     if Array.is_empty dims
-    then mean_one ~phi ~with_inputs gen gp ~params ?iters data
+    then mean_one ~phi ~with_inputs gen gp ~params data
     else (
       let batch = batch_size dims in
       let flat_data = reshape [| batch; gen.n_steps; gen.n_output |] data in
@@ -1391,7 +1487,7 @@ module Lfads = struct
           (Rune.vmap
              Nx.Ptree.(tensor @-> returns (samples_structure ()))
              (fun data ->
-                samples_to_pair (mean_one ~phi ~with_inputs gen gp ~params ?iters data))
+                samples_to_pair (mean_one ~phi ~with_inputs gen gp ~params data))
              flat_data)
       in
       { x0 = unflat_x0 ~dims ~n_samples:1 ~n:gen.n p.x0
@@ -1399,19 +1495,19 @@ module Lfads = struct
       })
 
   let log_prob
-        (type w d l p e)
+        (type w d l e)
         ~phi
         ~with_inputs
-        (gen : (w, d, l, p, e, 's) generative)
-        (gp : (w, d, l, p, e, 's) gparams)
+        (gen : (w, d, l, e, 's) generative)
+        (gp : (w, d, l, e, 's) gparams)
         ~params
-        ?iters
+        ?solve:_
         data
         (samples : (w, 's) samples)
     =
     let dims = data_batch_dims ~n_steps:gen.n_steps ~n_output:gen.n_output data in
     if Array.is_empty dims
-    then log_prob_one ~phi ~with_inputs gen gp ~params ?iters data samples
+    then log_prob_one ~phi ~with_inputs gen gp ~params data samples
     else (
       let batch = batch_size dims in
       let batch_rank = Array.length dims in
@@ -1431,7 +1527,7 @@ module Lfads = struct
         Rune.vmap
           Nx.Ptree.(pair tensor (pair tensor tensor) @-> returns tensor)
           (fun (data, (x0, u)) ->
-             log_prob_one ~phi ~with_inputs gen gp ~params ?iters data { x0; u })
+             log_prob_one ~phi ~with_inputs gen gp ~params data { x0; u })
           (flat_data, (x0, u))
       in
       unflat_log_prob ~dims ~n_samples log_prob)
@@ -1443,59 +1539,80 @@ module Lfads = struct
       activation of every {!Dynamics.Mgu} cell. [key] seeds the initialization
       and defaults to the current random scope. *)
   let make
+        (type w)
+        ~at
         ?(n_ic = 64)
         ?n_ci
         ?(n_ctrl = 32)
         ?(with_inputs = true)
         ?(phi = tanh)
-        ?key
         ~n
         ~m
         ~n_steps
         ~n_output
-        dtype
+        ()
     =
     let n_ci = Option.value n_ci ~default:n_ic in
     if n_ic <= 0 then invalid_arg "Recognition.Lfads.make: n_ic must be positive";
     if n_ci <= 0 then invalid_arg "Recognition.Lfads.make: n_ci must be positive";
     if n_ctrl <= 0 then invalid_arg "Recognition.Lfads.make: n_ctrl must be positive";
-    let keys = Option.map key ~f:(fun key -> Nx.Rng.split ~n:7 key) in
-    let sub i = Option.map keys ~f:(fun keys -> keys.(i)) in
-    let cell key ~n ~m = (Dynamics.Mgu.make ?key ~n ~m ~phi dtype).Dynamics.params in
-    let params =
+    if n <= 0 then invalid_arg "Recognition.Lfads.make: n must be positive";
+    if m <= 0 then invalid_arg "Recognition.Lfads.make: m must be positive";
+    if n_steps <= 0 then invalid_arg "Recognition.Lfads.make: n_steps must be positive";
+    if n_output <= 0 then invalid_arg "Recognition.Lfads.make: n_output must be positive";
+    let init ?key (dtype : (float, w) Nx.dtype) =
+      let keys = Option.map key ~f:(fun key -> Nx.Rng.split ~n:7 key) in
+      let sub i = Option.map keys ~f:(fun keys -> keys.(i)) in
+      let cell key ~n ~m =
+        Dynamics.init ?key dtype (Dynamics.Mgu.make ~at ~n ~m ~phi ())
+      in
       { ic_fwd = cell (sub 0) ~n:n_ic ~m:n_output
       ; ic_bwd = cell (sub 1) ~n:n_ic ~m:n_output
       ; ci_fwd = cell (sub 2) ~n:n_ci ~m:n_output
       ; ci_bwd = cell (sub 3) ~n:n_ci ~m:n_output
       ; con = cell (sub 4) ~n:n_ctrl ~m:((2 * n_ci) + n)
-      ; ic_fwd_init = zeros dtype [| n_ic |]
-      ; ic_bwd_init = zeros dtype [| n_ic |]
-      ; ci_fwd_init = zeros dtype [| n_ci |]
-      ; ci_bwd_init = zeros dtype [| n_ci |]
-      ; con_init = zeros dtype [| n_ctrl |]
+      ; ic_fwd_init = zeros_at at dtype [| n_ic |]
+      ; ic_bwd_init = zeros_at at dtype [| n_ic |]
+      ; ci_fwd_init = zeros_at at dtype [| n_ci |]
+      ; ci_bwd_init = zeros_at at dtype [| n_ci |]
+      ; con_init = zeros_at at dtype [| n_ctrl |]
       ; ic_readout =
           scaled_randn
+            ~at
             ?key:(sub 5)
             ~sigma:(1.0 /. Float.sqrt (Float.of_int (2 * n_ic)))
             dtype
             [| 2 * n_ic; 2 * n |]
-      ; ic_readout_bias = zeros dtype [| 2 * n |]
+      ; ic_readout_bias = zeros_at at dtype [| 2 * n |]
       ; u_readout =
           scaled_randn
+            ~at
             ?key:(sub 6)
             ~sigma:(1e-2 /. Float.sqrt (Float.of_int n_ctrl))
             dtype
             [| n_ctrl; 2 * m |]
-      ; u_readout_bias = zeros dtype [| 2 * m |]
+      ; u_readout_bias = zeros_at at dtype [| 2 * m |]
       }
     in
-    { dims = { n; m; n_steps; n_output }
-    ; infers_initial = true
-    ; name = (if with_inputs then "lfads" else "lfads_initial_condition")
-    ; structure = structure ()
-    ; params
-    ; infer = infer ~phi ~with_inputs
-    ; mean = mean ~phi ~with_inputs
-    ; log_prob = log_prob ~phi ~with_inputs
-    }
+    make
+      ~dims:{ n; m; n_steps; n_output }
+      ~infers_initial:true
+      ~infers_inputs:with_inputs
+      ~name:(if with_inputs then "lfads" else "lfads_initial_condition")
+      ~structure:(structure ())
+      ~init
+      ~infer:(infer ~phi ~with_inputs)
+      ~mean:(mean ~phi ~with_inputs)
+      ~log_prob:(log_prob ~phi ~with_inputs)
+      ()
+
+  let place ~at p =
+    Nx.Ptree.place
+      (module struct
+        type ('a, 's) t = ('a, 's) params
+
+        let walk = walk_params
+      end)
+      at
+      p
 end

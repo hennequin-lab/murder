@@ -40,16 +40,18 @@ type ('a, _) params =
     instead. *)
 val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-(** [make ~sigma2 ~n dtype] is the factor of a covariance [sigma2 · I]: its
-    diagonal is [sqrt sigma2] and its strictly upper triangle is zero.
+(** [make ~at ?sigma2 ~n dtype] is the factor of a covariance [sigma2 · I],
+    made at [at]: its diagonal is [sqrt sigma2] and its strictly upper triangle
+    is zero.
 
     [sigma2] defaults to [1.]. Raises [Invalid_argument] if [n] is not
     positive or [sigma2] is not positive. *)
 val make
-  :  ?sigma2:float
+  :  at:'s Nx.Placement.t
+  -> ?sigma2:float
   -> n:int
   -> (float, 'w) Nx.dtype
-  -> (('w, Nx.host) value, Nx.host) params
+  -> (('w, 's) value, 's) params
 
 (** [factor p] is [L = triu p.t 1 + diag p.d], the triangular factor with
     [Σ = L Lᵀ]. Differentiable and traceable. *)

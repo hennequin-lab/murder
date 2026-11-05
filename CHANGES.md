@@ -116,6 +116,55 @@ changes do not need an entry.
   `Recognition.Iilqr.posterior_initial` reports the pair. A
   model with such a recognition must pass `~initial_prior`; one with the
   fixed-zero recognition must not, as before.
+- `Elbo.batch_loss_fixed` is gone: `Elbo.loss_fixed` already takes a tensor mini-batch, and the two names differed by a rank check and documentation only.
+- `Recognition.solve` selects the iLQR inner solver: `Recognition.adaptive` and
+  `Recognition.fixed` replace the `?iters` argument of every recognition call,
+  `Iilqr.posterior_mean_fixed` folds into `Iilqr.posterior_mean`, and
+  `Ilqr_vae.posterior_mean`, `posterior_draws`, `log_prob` and `loss` take
+  `?solve`.
+- `Recognition.generative` and `Recognition.gparams` no longer carry the
+  generative input prior, which no recognition reads, and `generative` no
+  longer carries the initial-state prior, which is a parameter:
+  `Recognition.t` takes one type parameter fewer.
+- `Ilqr_vae.sample_generative`, `predictions` and `predictions_deterministic`
+  return the records `Ilqr_vae.generated` and `Ilqr_vae.prediction` instead of
+  tuples of same-typed tensors.
+- The bound of a recognition that leaves the inputs at the point mass at zero
+  (`Lfads ~with_inputs:false`) no longer carries the input prior's term, which
+  moved with the prior's scales although there was no input density to weigh.
+  `Recognition.infers_inputs` states the case.
+- Shapes are checked where they were broadcast into a wrong answer: the latents
+  of `Recognition.log_prob`, the batch axes of `Elbo.compute`'s `log_prob`,
+  `Elbo.log_prior`'s two tensors, and the dimension axes of
+  `Dynamics.integrate` and `integrate_samples`.
+- `Iilqr.problem` takes no gparams, which it never read, and takes `?verbose`;
+  `Dynamics.Linear.make` takes `?dt_over_tau`; `Model.make` checks both vectors
+  of an `initial_prior`; and the decoders use the horizon of the state path
+  they are given instead of the model's.
+- `Recognition.Iilqr.posterior_initial` returns `Recognition.initial` — a mean
+  and a precision — instead of `Dilqr.Lqr.initial`: a caller reading the
+  encoder's initial state no longer names dilqr's record, and the conversion
+  happens once, inside the recognition.
+- Every component constructor takes `~at`, the device set its parameters live
+  at: `~at:Nx.Host.on` is the host, as before, and a device placement makes a
+  model whose parameters are there (`Covariance.make`, `Initial.make`, the
+  priors, the likelihoods, the dynamics and the recognitions).
+- A model component is a description, and its parameters are a value of their
+  own: none of the component records has a `params` field, `Dynamics.Linear.make`
+  and the rest build only the description, and `init` draws the parameters a
+  fresh model starts from — `Model.init ~at ~key model`, one subkey per
+  component. `Model.make` no longer returns parameters, and `Model.params` is
+  gone: building a model allocates nothing, so building one per device costs
+  nothing.
+- `place` moves a component's parameter value to another placement —
+  `Prior.Gaussian.place ~at p`, and the same for every component and for
+  `Initial` — with `Nx.Ptree.place`, so a checkpoint can follow the device it
+  runs on.
+- `Density` is the library's Gaussian log density, written once for the form
+  the covariance is held in — `Isotropic`, `Diagonal`, `Cholesky` of the
+  covariance, `Precision_cholesky` — so a diagonal costs `O (d)` and a factor
+  one triangular solve. `Initial.logp`, the priors and the two recognitions'
+  own densities go through it.
 - `Model.make` takes no dimensions. Every one of them is a field of a
   component — `n` and `m` of the dynamics, `n_output` of the likelihood,
   `n_steps` of the recognition — so the model reads them from there and only

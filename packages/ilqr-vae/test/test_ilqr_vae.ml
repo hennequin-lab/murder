@@ -4,9 +4,9 @@
   ---------------------------------------------------------------------------*)
 
 (* iLQR-VAE test suite:
-   - covariance factors, log-determinants and the Kronecker recognition
-     covariance (sampling covariance, log density and entropy against dense
-     computations),
+   - covariance factors and log-determinants, the Gaussian density in each of
+     its covariance forms, and the Kronecker recognition covariance (sampling
+     covariance and log density against dense computations),
    - the prior log densities (normalization by numerical integration and
      sampling moments), the Gaussian KL, and the initial-state prior,
    - the likelihoods (log densities against hand-computed values),
@@ -30,6 +30,7 @@ open Nx
 open Windtrap
 module Nx = Nx
 module C = Ilqr_vae.Covariance
+module Density = Ilqr_vae.Density
 module I = Ilqr_vae.Initial
 module P = Ilqr_vae.Prior
 module L = Ilqr_vae.Likelihood
@@ -43,25 +44,29 @@ module El = Ilqr_vae.Elbo
 
 let dtype = float64
 let phi = tanh
-let require ~msg b = if not b then failwith ("assert failed: " ^ msg)
 
-let check_close ~msg ~tol got expected =
-  let g = to_array got
-  and e = to_array expected in
-  require ~msg (Array.length g = Array.length e);
-  Array.iteri g ~f:(fun i a ->
-    let b = e.(i) in
-    let within = Float.(abs (a -. b) <= tol +. (tol *. abs b)) in
-    if not within
-    then
-      Stdio.printf
-        "MISMATCH %s: got %.8g expected %.8g (diff %.3g, tol %g)\n%!"
-        msg
-        a
-        b
-        (a -. b)
-        tol;
-    require ~msg Float.(abs (a -. b) <= tol +. (tol *. abs b)))
+(* windtrap's tolerant float witness: [close tol] compares within [tol],
+   relative or absolute, and reports the largest error it saw. *)
+let close tol = float_rel ~rel:tol ~abs:tol
+
+(* The iLQR recognition's inner solver, as the tests ask for it: a fixed
+   number of iterations, which is what makes the whole path traceable. *)
+let fixed iters = R.fixed ~iters ()
+
+let check_close ?msg ~tol got expected =
+  equal ?msg (array (close tol)) (to_array expected) (to_array got)
+
+let check_shape ?msg expected t = equal ?msg (array int) expected (Nx.shape t)
+
+(* windtrap has no finiteness verb: [fail] names the value. *)
+let check_finite ?msg x =
+  if not (Float.is_finite x)
+  then
+    fail
+      (Printf.sprintf
+         "%s: %s is not finite"
+         (Option.value msg ~default:"value")
+         (Float.to_string x))
 
 let vec values = create dtype [| List.length values |] (Array.of_list values)
 let scalar v = Nx.scalar dtype v
@@ -114,27 +119,29 @@ type lfads_params =
     M.params
 
 let setup ?(key = Nx.Rng.key 0) ~n ~m ~t_steps ~n_output () : iilqr_model * iilqr_params =
-  let keys = Nx.Rng.split ~n:2 key in
-  let dynamics = D.Linear.make ~key:keys.(0) ~n ~m dtype in
-  let likelihood = L.Gaussian.make ~key:keys.(1) ~n ~n_output dtype in
-  let prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
-  let encoder_prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
-  let recognition = Il.make ~n ~m ~n_steps:t_steps ~n_output dtype in
+  let at = Nx.Host.on in
+  let dynamics = D.Linear.make ~at ~n ~m () in
+  let likelihood = L.Gaussian.make ~at:Nx.Host.on ~n ~n_output () in
+  let prior = P.Gaussian.make ~at:Nx.Host.on ~m ~spatial_std:1.0 () in
+  let encoder_prior = P.Gaussian.make ~at:Nx.Host.on ~m ~spatial_std:1.0 () in
+  let recognition = Il.make ~at:Nx.Host.on ~n ~m ~n_steps:t_steps ~n_output () in
   let model = M.make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition () in
-  model, M.params model
+  model, M.init ~at ~key model
 
 (* The same model with a free initial state: the encoder prices it with the
    initial-state prior, and the recognition carries the covariance scale. *)
 let setup_initial ?(key = Nx.Rng.key 2) ~n ~m ~t_steps ~n_output ()
   : iilqr_model * iilqr_params
   =
-  let keys = Nx.Rng.split ~n:2 key in
-  let dynamics = D.Linear.make ~key:keys.(0) ~n ~m dtype in
-  let likelihood = L.Gaussian.make ~key:keys.(1) ~n ~n_output dtype in
-  let prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
-  let encoder_prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
-  let initial_prior = I.make ~mean:0.5 ~std:1.5 ~n dtype in
-  let recognition = Il.make ~infer_initial:true ~n ~m ~n_steps:t_steps ~n_output dtype in
+  let at = Nx.Host.on in
+  let dynamics = D.Linear.make ~at ~n ~m () in
+  let likelihood = L.Gaussian.make ~at:Nx.Host.on ~n ~n_output () in
+  let prior = P.Gaussian.make ~at:Nx.Host.on ~m ~spatial_std:1.0 () in
+  let encoder_prior = P.Gaussian.make ~at:Nx.Host.on ~m ~spatial_std:1.0 () in
+  let initial_prior = I.make ~mean:0.5 ~std:1.5 ~n () in
+  let recognition =
+    Il.make ~at:Nx.Host.on ~infer_initial:true ~n ~m ~n_steps:t_steps ~n_output ()
+  in
   let model =
     M.make
       dtype
@@ -146,7 +153,7 @@ let setup_initial ?(key = Nx.Rng.key 2) ~n ~m ~t_steps ~n_output ()
       ~initial_prior
       ()
   in
-  model, M.params model
+  model, M.init ~at ~key model
 
 let setup_lfads
       ?(key = Nx.Rng.key 1)
@@ -161,15 +168,15 @@ let setup_lfads
       ()
   : lfads_model * lfads_params
   =
-  let keys = Nx.Rng.split ~n:4 key in
-  let dynamics = D.Mgu.make ~key:keys.(0) ~n ~m ~phi dtype in
-  let likelihood = L.Gaussian.make ~key:keys.(1) ~n ~n_output dtype in
-  let prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
-  let encoder_prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
-  let initial_prior = I.make ~std:1.0 ~n dtype in
+  let at = Nx.Host.on in
+  let dynamics = D.Mgu.make ~at ~n ~m ~phi () in
+  let likelihood = L.Gaussian.make ~at:Nx.Host.on ~n ~n_output () in
+  let prior = P.Gaussian.make ~at:Nx.Host.on ~m ~spatial_std:1.0 () in
+  let encoder_prior = P.Gaussian.make ~at:Nx.Host.on ~m ~spatial_std:1.0 () in
+  let initial_prior = I.make ~std:1.0 ~n () in
   let recognition =
     Lf.make
-      ~key:keys.(2)
+      ~at:Nx.Host.on
       ~n_ic
       ~n_ci
       ~n_ctrl
@@ -179,7 +186,7 @@ let setup_lfads
       ~m
       ~n_steps:t_steps
       ~n_output
-      dtype
+      ()
   in
   let model =
     M.make
@@ -192,7 +199,7 @@ let setup_lfads
       ~initial_prior
       ()
   in
-  model, M.params model
+  model, M.init ~at ~key model
 
 let data_of ~n_output ~t_steps values =
   create dtype [| t_steps; n_output |] (Array.of_list values)
@@ -210,15 +217,95 @@ let run_mgu ~phi (p : mgu_params) ~init inputs =
    Covariance
    ────────────────────────────────────────────────────────────────────────── *)
 
+(* The four forms of a covariance are one density: each is checked against a
+   dense computation, and the two factor forms are checked against their own
+   factor, so a wrong triangular convention would show. *)
+let test_density () =
+  let d = 3 in
+  let mean = vec [ 0.2; -0.4; 0.1 ] in
+  let x = create dtype [| 2; 3 |] [| 0.1; 0.2; 0.3; -0.5; 0.0; 0.7 |] in
+  let identity = eye dtype d in
+  let inverse sigma = solve sigma identity in
+  (* the dense log density of [N (mean, sigma)] at every row of [x] *)
+  let reference sigma =
+    let diff = reshape [| 2; d |] Infix.(x - reshape [| 1; d |] mean) in
+    let quadratic =
+      sum ~axes:[ -1 ] Infix.(diff * (diff *@ matrix_transpose (inverse sigma)))
+    in
+    let log_det = item Infix.(sum (log (diag (cholesky sigma))) *$ 2.0) in
+    let dim = Float.of_int d in
+    let normalizer = 0.5 *. (log_det +. (dim *. Float.log (2.0 *. Float.pi))) in
+    Infix.((quadratic *$ -0.5) - scalar normalizer)
+  in
+  let sigma =
+    create dtype [| d; d |] [| 1.2; 0.3; -0.2; 0.3; 0.8; 0.15; -0.2; 0.15; 1.5 |]
+  in
+  check_close
+    ~msg:"cholesky of the covariance"
+    ~tol:1e-10
+    (Density.logp ~mean ~covariance:(Density.Cholesky { factor = cholesky sigma }) x)
+    (reference sigma);
+  check_close
+    ~msg:"cholesky of the precision"
+    ~tol:1e-10
+    (Density.logp
+       ~mean
+       ~covariance:
+         (Density.Precision_cholesky { factor = cholesky ~triangle:Upper (inverse sigma) })
+       x)
+    (reference sigma);
+  (* a scaled precision is a scaled factor: the Laplace block's form *)
+  let log_scale = 0.3 in
+  let scaled = Infix.(sigma *$ Float.exp (2.0 *. log_scale)) in
+  check_close
+    ~msg:"scaled precision factor"
+    ~tol:1e-10
+    (Density.logp
+       ~mean
+       ~covariance:
+         (Density.Precision_cholesky
+            { factor =
+                Infix.(
+                  cholesky ~triangle:Upper (inverse sigma) *$ Float.exp (-.log_scale))
+            })
+       x)
+    (reference scaled);
+  let variances = vec [ 0.5; 2.0; 0.25 ] in
+  check_close
+    ~msg:"diagonal"
+    ~tol:1e-12
+    (Density.logp
+       ~mean
+       ~covariance:(Density.Diagonal { log_stds = Infix.(log variances *$ 0.5) })
+       x)
+    (reference (diag variances));
+  (* one scale per row: the shape a per-step prior has *)
+  let per_row = create dtype [| 2; 3 |] [| 0.0; 0.0; 0.0; 0.1; -0.2; 0.0 |] in
+  let rows = Density.logp ~mean ~covariance:(Density.Diagonal { log_stds = per_row }) x in
+  check_shape ~msg:"per-row diagonal shape" [| 2 |] rows;
+  for i = 0 to 1 do
+    check_close
+      ~msg:"per-row diagonal"
+      ~tol:1e-12
+      (get [ i ] rows)
+      (get [ i ] (reference (diag Infix.(exp (get [ i ] per_row *$ 2.0)))))
+  done;
+  let variance = 0.7 in
+  check_close
+    ~msg:"isotropic"
+    ~tol:1e-12
+    (Density.logp ~mean ~covariance:(Density.Isotropic (scalar variance)) x)
+    (reference Infix.(identity *$ variance))
+
 let test_covariance () =
   let n = 3 in
-  let p = C.make ~sigma2:2.0 ~n dtype in
+  let p = C.make ~at:Nx.Host.on ~sigma2:2.0 ~n dtype in
   let l = C.factor p in
   let arr = to_array l in
   for i = 0 to n - 1 do
     for j = 0 to i - 1 do
       let index = (i * n) + j in
-      require ~msg:"factor is upper triangular" (Float.equal arr.(index) 0.0)
+      equal ~msg:"factor is upper triangular" float_exact 0.0 arr.(index)
     done
   done;
   let sigma = Infix.(l *@ matrix_transpose l) in
@@ -251,7 +338,8 @@ let test_covariance () =
 
 let test_initial_prior () =
   let n = 2 in
-  let p = I.make ~mean:0.5 ~std:2.0 ~n dtype in
+  let prior = I.make ~mean:0.5 ~std:2.0 ~n () in
+  let p = I.init ~at:Nx.Host.on dtype prior in
   let density x =
     let sq = (x -. 0.5) *. (x -. 0.5) in
     -0.5 *. ((sq /. 4.0) +. (2.0 *. Float.log 2.0) +. Float.log (2.0 *. Float.pi))
@@ -270,7 +358,7 @@ let test_initial_prior () =
   (* the sampler reproduces the mean and standard deviation *)
   let n_samples = 40_000 in
   let s = I.sample p ~key:(Nx.Rng.key 3) ~n_samples in
-  require ~msg:"initial sample shape" Poly.(shape s = [| n_samples; n |]);
+  check_shape ~msg:"initial sample shape" [| n_samples; n |] s;
   let mean = Nx.mean ~axes:[ 0 ] s in
   check_close ~msg:"initial sample mean" ~tol:0.05 mean (vec [ 0.5; 0.5 ]);
   let sd =
@@ -328,10 +416,10 @@ let test_recognition_sampling () =
   in
   let n_samples = 40_000 in
   let data = zeros dtype [| t_steps; 2 |] in
-  let posterior = M.infer model params ~iters:4 ~n_samples ~key:(Nx.Rng.key 17) data in
-  require
-    ~msg:"posterior u shape"
-    Poly.(shape posterior.R.u = [| t_steps; n_samples; m |]);
+  let posterior =
+    M.infer model params ~solve:(fixed 4) ~n_samples ~key:(Nx.Rng.key 17) data
+  in
+  check_shape ~msg:"posterior u shape" [| t_steps; n_samples; m |] posterior.R.u;
   (* empirical covariance over samples, laid out like the dense one *)
   let u2 =
     reshape [| t_steps; m; n_samples |] (transpose ~axes:[ 0; 2; 1 ] posterior.R.u)
@@ -375,10 +463,16 @@ let test_recognition_log_prob () =
     }
   in
   let data = create dtype [| t_steps; 2 |] [| 0.1; -0.2; 0.3; 0.0; -0.4; 0.2 |] in
-  let mu = (M.mean model params ~iters:60 data).R.u in
+  let mu = (M.mean model params ~solve:(fixed 60) data).R.u in
   let u = create dtype [| 3; 2 |] [| 0.0; 0.1; -0.2; 0.3; 0.5; -0.1 |] in
+  let one = unsqueeze ~axes:[ 1 ] u in
   let log_q =
-    M.log_prob model params ~iters:60 data { R.x0 = zeros dtype [| 1; 2 |]; u }
+    M.log_prob
+      model
+      params
+      ~solve:(fixed 60)
+      data
+      { R.x0 = zeros dtype [| 1; 2 |]; u = one }
   in
   (* dense Gaussian log density, same covariance and mean *)
   let mu2 = reshape [| t_steps; m |] mu in
@@ -390,7 +484,7 @@ let test_recognition_log_prob () =
   let log_det = item Infix.(sum (log (diag factor)) *$ 2.0) in
   let dim = Float.of_int (t_steps * m) in
   let expected = -0.5 *. (quadratic +. log_det +. (dim *. Float.log (2.0 *. Float.pi))) in
-  check_close ~msg:"log q" ~tol:1e-9 log_q (scalar expected);
+  check_close ~msg:"log q" ~tol:1e-9 log_q (vec [ expected ]);
   (* a batch of two sequences gives one value per sequence *)
   let u_batch =
     concatenate
@@ -398,9 +492,14 @@ let test_recognition_log_prob () =
       [ unsqueeze ~axes:[ 1 ] u; unsqueeze ~axes:[ 1 ] Infix.(u +$ 0.1) ]
   in
   let batch =
-    M.log_prob model params ~iters:60 data { R.x0 = zeros dtype [| 2; 2 |]; u = u_batch }
+    M.log_prob
+      model
+      params
+      ~solve:(fixed 60)
+      data
+      { R.x0 = zeros dtype [| 2; 2 |]; u = u_batch }
   in
-  require ~msg:"batched log q shape" Poly.(shape batch = [| 2 |]);
+  check_shape ~msg:"batched log q shape" [| 2 |] batch;
   check_close
     ~msg:"batched log q"
     ~tol:1e-9
@@ -411,9 +510,9 @@ let test_recognition_log_prob () =
        ; M.log_prob
            model
            params
-           ~iters:60
+           ~solve:(fixed 60)
            data
-           { R.x0 = zeros dtype [| 1; 2 |]; u = Infix.(u +$ 0.1) }
+           { R.x0 = zeros dtype [| 1; 2 |]; u = unsqueeze ~axes:[ 1 ] Infix.(u +$ 0.1) }
        ])
 
 (* ──────────────────────────────────────────────────────────────────────────
@@ -433,12 +532,17 @@ let integrate_density f lo hi n =
 let test_prior_densities () =
   let m = 1 in
   (* The exact densities of the reference implementation, normalized. *)
-  let gaussian = P.Gaussian.make ~spatial_std:1.5 ~first_bin:0.25 ~m dtype in
-  let student = P.Student.make ~spatial_std:1.5 ~nu:7.0 ~first_std:0.5 ~m dtype in
-  let laplacian = P.Laplacian.make ~spatial_std:1.5 ~first_std:0.5 ~m dtype in
-  let mass prior k =
+  let gaussian = P.Gaussian.make ~at:Nx.Host.on ~spatial_std:1.5 ~first_bin:0.25 ~m () in
+  let gaussian_params = P.init dtype gaussian in
+  let student =
+    P.Student.make ~at:Nx.Host.on ~spatial_std:1.5 ~nu:7.0 ~first_std:0.5 ~m ()
+  in
+  let student_params = P.init dtype student in
+  let laplacian = P.Laplacian.make ~at:Nx.Host.on ~spatial_std:1.5 ~first_std:0.5 ~m () in
+  let laplacian_params = P.init dtype laplacian in
+  let mass (prior, params) k =
     integrate_density
-      (fun u -> prior.P.logp_t prior.P.params ~k:(scalar (Float.of_int k)) ~u)
+      (fun u -> P.logp_t prior params ~k:(scalar (Float.of_int k)) ~u)
       (-25.0)
       25.0
       20_000
@@ -446,33 +550,41 @@ let test_prior_densities () =
   check_close
     ~msg:"gaussian density k=0"
     ~tol:1e-4
-    (scalar (mass gaussian 0))
+    (scalar (mass (gaussian, gaussian_params) 0))
     (scalar 1.0);
   check_close
     ~msg:"gaussian density k=1"
     ~tol:1e-4
-    (scalar (mass gaussian 1))
+    (scalar (mass (gaussian, gaussian_params) 1))
     (scalar 1.0);
-  check_close ~msg:"student density k=0" ~tol:1e-4 (scalar (mass student 0)) (scalar 1.0);
-  check_close ~msg:"student density k=1" ~tol:1e-3 (scalar (mass student 1)) (scalar 1.0);
+  check_close
+    ~msg:"student density k=0"
+    ~tol:1e-4
+    (scalar (mass (student, student_params) 0))
+    (scalar 1.0);
+  check_close
+    ~msg:"student density k=1"
+    ~tol:1e-3
+    (scalar (mass (student, student_params) 1))
+    (scalar 1.0);
   check_close
     ~msg:"laplacian density k=0"
     ~tol:1e-4
-    (scalar (mass laplacian 0))
+    (scalar (mass (laplacian, laplacian_params) 0))
     (scalar 1.0);
   check_close
     ~msg:"laplacian density k=1"
     ~tol:1e-4
-    (scalar (mass laplacian 1))
+    (scalar (mass (laplacian, laplacian_params) 1))
     (scalar 1.0);
   (* the Student's scale makes its variance spatial_std²; the Laplacian's is
      2 spatial_std² *)
-  let sample_var prior =
+  let sample_var (prior, params) =
     let n_steps = 2_000 in
     let n_keys = 64 in
     let total = ref 0.0 in
     for i = 1 to n_keys do
-      let u = prior.P.sample prior.P.params ~key:(Nx.Rng.key i) ~n_steps in
+      let u = P.sample prior params ~key:(Nx.Rng.key i) ~n_steps in
       let x = slice [ R (1, n_steps) ] u |> reshape [| n_steps - 1 |] in
       let scale = 1.0 /. Float.of_int (n_steps - 1) in
       total := !total +. item Infix.(sum (x * x) *$ scale)
@@ -482,12 +594,12 @@ let test_prior_densities () =
   check_close
     ~msg:"student sample variance"
     ~tol:0.6
-    (scalar (sample_var student))
+    (scalar (sample_var (student, student_params)))
     (scalar (1.5 *. 1.5));
   check_close
     ~msg:"laplacian sample variance"
     ~tol:0.05
-    (scalar (sample_var laplacian))
+    (scalar (sample_var (laplacian, laplacian_params)))
     (scalar (2.0 *. 1.5 *. 1.5))
 
 (* The Gaussian prior's closed-form KL, against a dense computation of
@@ -496,7 +608,8 @@ let test_prior_densities () =
 let test_kl () =
   let t_steps = 3
   and m = 2 in
-  let prior = P.Gaussian.make ~spatial_std:1.5 ~first_bin:0.5 ~m dtype in
+  let prior = P.Gaussian.make ~at:Nx.Host.on ~spatial_std:1.5 ~first_bin:0.5 ~m () in
+  let prior_params = P.init dtype prior in
   let time_cov =
     { C.d = vec [ 0.7; 1.0; 1.3 ]
     ; t = create dtype [| 3; 3 |] [| 0.; 0.2; 0.1; 0.; 0.; -0.3; 0.; 0.; 0. |]
@@ -507,15 +620,15 @@ let test_kl () =
   in
   let mu = create dtype [| 3; 2 |] [| 0.2; -0.1; 0.4; 0.0; -0.3; 0.5 |] in
   let got =
-    (Option.value_exn prior.P.kl_to_gaussian)
-      prior.P.params
+    (Option.value_exn (P.kl_to_gaussian prior))
+      prior_params
       ~mu
       ~space_factor:(C.factor space_cov)
       ~time_factor:(C.factor time_cov)
   in
   let dense_q = dense_covariance ~t_steps ~m time_cov space_cov in
-  let spatial = to_array (exp prior.P.params.P.Gaussian.log_spatial_stds) in
-  let first_bin = Float.exp (item prior.P.params.P.Gaussian.log_first_bin) in
+  let spatial = to_array (exp prior_params.P.Gaussian.log_spatial_stds) in
+  let first_bin = Float.exp (item prior_params.P.Gaussian.log_first_bin) in
   let d = t_steps * m in
   let prior_var r =
     let t = r / m
@@ -541,31 +654,31 @@ let test_kl () =
   in
   check_close ~msg:"KL against a dense computation" ~tol:1e-9 got (scalar expected);
   (* The KL is non-negative and grows as the prior narrows. *)
-  require ~msg:"KL is non-negative" Float.(item got > -1e-9);
-  let narrow =
-    { prior with
-      P.params =
-        { prior.P.params with
-          P.Gaussian.log_spatial_stds =
-            Infix.(prior.P.params.P.Gaussian.log_spatial_stds -$ 1.0)
-        }
+  greater ~msg:"KL is non-negative" float_exact ~than:(-1e-9) (item got);
+  let narrow_params =
+    { prior_params with
+      P.Gaussian.log_spatial_stds =
+        Infix.(prior_params.P.Gaussian.log_spatial_stds -$ 1.0)
     }
   in
   let narrow_kl =
-    (Option.value_exn narrow.P.kl_to_gaussian)
-      narrow.P.params
+    (Option.value_exn (P.kl_to_gaussian prior))
+      narrow_params
       ~mu
       ~space_factor:(C.factor space_cov)
       ~time_factor:(C.factor time_cov)
   in
-  require ~msg:"narrower prior, larger KL" Float.(item narrow_kl > item got);
+  greater ~msg:"narrower prior, larger KL" float_exact ~than:(item got) (item narrow_kl);
   (* mu = 0 and q matching the prior factor gives no KL at all. *)
-  let matching_prior = P.Gaussian.make ~spatial_std:1.0 ~first_bin:1.0 ~m dtype in
+  let matching_prior =
+    P.Gaussian.make ~at:Nx.Host.on ~spatial_std:1.0 ~first_bin:1.0 ~m ()
+  in
+  let matching_params = P.init dtype matching_prior in
   let identity_space = { C.d = vec [ 1.0; 1.0 ]; t = zeros dtype [| 2; 2 |] } in
   let identity_time = { C.d = vec [ 1.0; 1.0; 1.0 ]; t = zeros dtype [| 3; 3 |] } in
   let zero_kl =
-    (Option.value_exn matching_prior.P.kl_to_gaussian)
-      matching_prior.P.params
+    (Option.value_exn (P.kl_to_gaussian matching_prior))
+      matching_params
       ~mu:(zeros dtype [| t_steps; m |])
       ~space_factor:(C.factor identity_space)
       ~time_factor:(C.factor identity_time)
@@ -579,7 +692,7 @@ let test_kl () =
 let test_likelihoods () =
   let n = 2
   and n_output = 2 in
-  let likelihood = L.Gaussian.make ~n ~n_output dtype in
+  let likelihood = L.Gaussian.make ~at:Nx.Host.on ~n ~n_output () in
   let params : lik_params =
     { L.Gaussian.c = eye dtype n
     ; bias = zeros dtype [| n_output |]
@@ -588,7 +701,7 @@ let test_likelihoods () =
   in
   let x = vec [ 1.0; -1.0 ]
   and o = vec [ 0.5; 0.5 ] in
-  let logp = likelihood.L.logp_t params ~k:(scalar 0.0) ~x ~o in
+  let logp = L.logp_t likelihood params ~k:(scalar 0.0) ~x ~o in
   let expected =
     let sq x = x *. x in
     -0.5
@@ -598,9 +711,9 @@ let test_likelihoods () =
         +. ((sq (0.5 +. 1.0) /. 2.0) +. Float.log 2.0 +. Float.log (2.0 *. Float.pi)))
   in
   check_close ~msg:"gaussian log p" ~tol:1e-12 logp (scalar expected);
-  let mean = likelihood.L.mean params (vec [ 2.0; 3.0 ]) in
+  let mean = L.mean likelihood params (vec [ 2.0; 3.0 ]) in
   check_close ~msg:"gaussian mean" ~tol:1e-12 mean (vec [ 2.0; 3.0 ]);
-  let poisson = L.Poisson.make ~n ~n_output ~dt:0.1 dtype in
+  let poisson = L.Poisson.make ~at:Nx.Host.on ~n ~n_output ~dt:0.1 () in
   let poisson_params : poisson_params =
     { L.Poisson.c = eye dtype n
     ; bias = vec [ 0.0; 0.0 ]
@@ -609,7 +722,7 @@ let test_likelihoods () =
   in
   let x = vec [ 1.0; 0.5 ] in
   let o = vec [ 3.0; 2.0 ] in
-  let logp = poisson.L.logp_t poisson_params ~k:(scalar 0.0) ~x ~o in
+  let logp = L.logp_t poisson poisson_params ~k:(scalar 0.0) ~x ~o in
   let rate _j xj g = 0.1 *. g *. (Float.exp xj +. 1e-3) in
   let lgamma_exact z =
     (* log Γ of a small integer + 1, by definition *)
@@ -630,13 +743,18 @@ let test_likelihoods () =
   in
   check_close ~msg:"poisson log p" ~tol:1e-9 logp (scalar expected);
   let counts =
-    poisson.L.sample poisson_params ~key:(Nx.Rng.key 5) ~mean:(full dtype [| 5 |] 3.0)
+    L.sample poisson poisson_params ~key:(Nx.Rng.key 5) ~mean:(full dtype [| 5 |] 3.0)
   in
-  require ~msg:"poisson sample shape" Poly.(shape counts = [| 5 |]);
+  check_shape ~msg:"poisson sample shape" [| 5 |] counts;
   let arr = to_array counts in
-  Array.iter arr ~f:(fun v -> require ~msg:"poisson sample non-negative" Float.(v >= 0.0));
+  Array.iter arr ~f:(fun v ->
+    greater ~msg:"poisson sample non-negative" float_exact ~than:(-1e-9) v);
   let mean = item Infix.(sum counts *$ (1.0 /. 5.0)) in
-  require ~msg:"poisson sample mean near rate" Float.(Float.abs (mean -. 3.0) < 2.5)
+  less
+    ~msg:"poisson sample mean near rate"
+    float_exact
+    ~than:2.5
+    (Float.abs (mean -. 3.0))
 
 (* ──────────────────────────────────────────────────────────────────────────
    Dynamics
@@ -645,9 +763,10 @@ let test_likelihoods () =
 let test_dynamics () =
   let n = 2
   and m = 2 in
-  let dynamics = D.Linear.make ~n ~m dtype in
+  let dynamics = D.Linear.make ~at:Nx.Host.on ~n ~m () in
+  let initial = D.init dtype dynamics in
   let params =
-    { dynamics.D.params with
+    { initial with
       w = create dtype [| 2; 2 |] [| 0.8; 0.2; 0.0; 0.9 |]
     ; dt_over_tau = 1.0
     }
@@ -663,12 +782,12 @@ let test_dynamics () =
   check_close
     ~msg:"linear step k=0"
     ~tol:1e-12
-    (dynamics.D.dyn params ~k:(scalar 0.0) ~x ~u)
+    (D.dyn dynamics params ~k:(scalar 0.0) ~x ~u)
     (vec [ 1.3; 1.5 ]);
   check_close
     ~msg:"linear step k=1"
     ~tol:1e-12
-    (dynamics.D.dyn params ~k:(scalar 1.0) ~x ~u)
+    (D.dyn dynamics params ~k:(scalar 1.0) ~x ~u)
     (vec [ 1.3; 1.5 ]);
   (* a rollout matches a hand-written loop *)
   let t_steps = 5 in
@@ -679,32 +798,35 @@ let test_dynamics () =
       [| 0.1; 0.0; 0.2; -0.1; 0.0; 0.3; -0.2; 0.1; 0.05; 0.0 |]
   in
   let z = D.integrate dynamics params ~x0:(zeros dtype [| n |]) ~u in
-  require ~msg:"rollout shape" Poly.(shape z = [| t_steps + 1; n |]);
+  check_shape ~msg:"rollout shape" [| t_steps + 1; n |] z;
   let expected =
     let xs = Array.create ~len:(t_steps + 1) (zeros dtype [| n |]) in
     for k = 0 to t_steps - 1 do
       xs.(k + 1)
-      <- dynamics.D.dyn params ~k:(scalar (Float.of_int k)) ~x:xs.(k) ~u:(get [ k ] u)
+      <- D.dyn dynamics params ~k:(scalar (Float.of_int k)) ~x:xs.(k) ~u:(get [ k ] u)
     done;
     stack ~axis:0 (Array.to_list xs)
   in
   check_close ~msg:"rollout" ~tol:1e-12 z expected;
   (* the tanh RNN rolls out, batched and unbatched, with the same values *)
-  let rnn = D.Linear_nonlinear.make ~n ~nh:4 ~m ~dt:0.1 ~tau:1.0 ~phi:tanh dtype in
+  let rnn =
+    D.Linear_nonlinear.make ~at:Nx.Host.on ~n ~nh:4 ~m ~dt:0.1 ~tau:1.0 ~phi:tanh ()
+  in
+  let rnn_params = D.init dtype rnn in
   let batched =
     D.integrate
       rnn
-      rnn.D.params
+      rnn_params
       ~x0:(zeros dtype [| 2; n |])
       ~u:(broadcast_to [| 2; t_steps; m |] (unsqueeze ~axes:[ 0 ] u))
   in
-  require ~msg:"batched rollout shape" Poly.(shape batched = [| 2; t_steps + 1; n |]);
+  check_shape ~msg:"batched rollout shape" [| 2; t_steps + 1; n |] batched;
   let first = slice [ I 0 ] batched in
   check_close
     ~msg:"batched rollout member"
     ~tol:1e-10
     first
-    (D.integrate rnn rnn.D.params ~x0:(zeros dtype [| n |]) ~u)
+    (D.integrate rnn rnn_params ~x0:(zeros dtype [| n |]) ~u)
 
 (* The paper's MGU (Appendix B.2, with the [z_{t-1}] subscript typo of (S9)
    corrected): the input is additive in the candidate and does not enter the
@@ -713,7 +835,7 @@ let test_dynamics () =
 let test_mgu () =
   let n = 2
   and m = 2 in
-  let dynamics = D.Mgu.make ~n ~m ~key:(Nx.Rng.key 4) ~phi dtype in
+  let dynamics = D.Mgu.make ~at:Nx.Host.on ~n ~m ~phi () in
   let params : mgu_params =
     { uf = create dtype [| n; n |] [| 0.5; 0.0; 0.0; -0.5 |]
     ; uh = create dtype [| n; n |] [| 0.25; 0.0; 0.0; 0.25 |]
@@ -735,7 +857,7 @@ let test_mgu () =
   and uh2 = (0.5 *. 0.5) +. (-1.0 *. 1.0) in
   let z1 = ((1.0 -. f1) *. 1.0) +. (f1 *. (Float.tanh h1 +. uh1))
   and z2 = ((1.0 -. f2) *. -2.0) +. (f2 *. (Float.tanh h2 +. uh2)) in
-  check_close ~msg:"mgu step" ~tol:1e-12 (dynamics.D.dyn params ~k ~x ~u) (vec [ z1; z2 ]);
+  check_close ~msg:"mgu step" ~tol:1e-12 (D.dyn dynamics params ~k ~x ~u) (vec [ z1; z2 ]);
   (* the same step under the ReLU activation: the paper's gate and candidate
      with [phi = relu] *)
   let relu x = maximum x (zeros_like x) in
@@ -752,10 +874,10 @@ let test_mgu () =
     (D.Mgu.dyn ~phi:relu params ~k ~x ~u)
     (vec [ z1r; z2r ]);
   let u' = vec [ -0.25; 0.75 ] in
-  let z_u = dynamics.D.dyn params ~k ~x ~u in
-  let z_u' = dynamics.D.dyn params ~k ~x ~u:u' in
-  let z_zero = dynamics.D.dyn params ~k ~x ~u:(zeros dtype [| m |]) in
-  let z_sum = dynamics.D.dyn params ~k ~x ~u:Infix.(u + u') in
+  let z_u = D.dyn dynamics params ~k ~x ~u in
+  let z_u' = D.dyn dynamics params ~k ~x ~u:u' in
+  let z_zero = D.dyn dynamics params ~k ~x ~u:(zeros dtype [| m |]) in
+  let z_sum = D.dyn dynamics params ~k ~x ~u:Infix.(u + u') in
   check_close
     ~msg:"mgu input additivity"
     ~tol:1e-12
@@ -769,12 +891,12 @@ let test_mgu () =
   in
   let x0 = vec [ 0.3; -0.4 ] in
   let z = D.integrate dynamics params ~x0 ~u:us in
-  require ~msg:"mgu rollout shape" Poly.(shape z = [| t_steps + 1; n |]);
+  check_shape ~msg:"mgu rollout shape" [| t_steps + 1; n |] z;
   let expected =
     let xs = Array.create ~len:(t_steps + 1) x0 in
     for k = 0 to t_steps - 1 do
       xs.(k + 1)
-      <- dynamics.D.dyn params ~k:(scalar (Float.of_int k)) ~x:xs.(k) ~u:(get [ k ] us)
+      <- D.dyn dynamics params ~k:(scalar (Float.of_int k)) ~x:xs.(k) ~u:(get [ k ] us)
     done;
     stack ~axis:0 (Array.to_list xs)
   in
@@ -786,7 +908,7 @@ let test_mgu () =
       ~x0:(broadcast_to [| 2; n |] x0)
       ~u:(broadcast_to [| 2; t_steps; m |] (unsqueeze ~axes:[ 0 ] us))
   in
-  require ~msg:"mgu batched rollout shape" Poly.(shape batched = [| 2; t_steps + 1; n |]);
+  check_shape ~msg:"mgu batched rollout shape" [| 2; t_steps + 1; n |] batched;
   check_close ~msg:"mgu batched rollout member" ~tol:1e-10 (slice [ I 0 ] batched) z;
   (* the dynamics is differentiable in every parameter *)
   match
@@ -796,7 +918,7 @@ let test_mgu () =
       params
   with
   | Ok () -> ()
-  | Error msg -> failwith ("mgu gradient check failed: " ^ msg)
+  | Error msg -> fail ("mgu gradient check failed: " ^ msg)
 
 (* ──────────────────────────────────────────────────────────────────────────
    iLQR encoder
@@ -850,18 +972,22 @@ let test_encoder_stationarity () =
   let model, params, o = lqr_setup () in
   let generative = M.generative model
   and gparams = M.gparams params in
-  let mu = Il.posterior_mean generative gparams ~max_iter:100 ~conv_threshold:1e-14 o in
-  require ~msg:"posterior mean shape" Poly.(shape mu = [| 5; 2 |]);
+  let mu =
+    Il.posterior_mean
+      generative
+      gparams
+      ~solve:(R.adaptive ~max_iter:100 ~conv_threshold:1e-14 ())
+      o
+  in
+  check_shape ~msg:"posterior mean shape" [| 5; 2 |] mu;
   let a = D.Linear.matrix params.M.dynamics in
   let grad = Rune.grad' (fun u -> lqr_cost ~a ~o ~t_steps:5 u) mu in
   let max_grad = item (max (abs grad)) in
-  if not Float.(max_grad < 1e-6)
-  then Stdio.printf "encoder stationarity: max |grad| = %.3g\n%!" max_grad;
-  require ~msg:"iLQR solves the LQR problem" Float.(max_grad < 1e-6);
+  less ~msg:"iLQR solves the LQR problem" float_exact ~than:1e-6 max_grad;
   (* the fixed solver finds the same point, and the generic mean agrees *)
-  let mu_fixed = Il.posterior_mean_fixed generative gparams ~iters:60 o in
+  let mu_fixed = Il.posterior_mean generative gparams ~solve:(fixed 60) o in
   check_close ~msg:"fixed encoder matches adaptive" ~tol:1e-6 mu_fixed mu;
-  let via_model = (M.mean model params ~iters:60 o).R.u in
+  let via_model = (M.mean model params ~solve:(fixed 60) o).R.u in
   check_close
     ~msg:"model mean matches the encoder"
     ~tol:1e-6
@@ -884,9 +1010,9 @@ let test_lfads_shapes_and_density () =
   let model, params = setup_lfads ~n ~m ~t_steps ~n_output:2 () in
   let data = lfads_data ~t_steps ~n_output:2 () in
   let posterior = M.infer model params ~n_samples:3 ~key:(Nx.Rng.key 11) data in
-  require ~msg:"lfads x0 shape" Poly.(shape posterior.R.x0 = [| 3; n |]);
-  require ~msg:"lfads u shape" Poly.(shape posterior.R.u = [| t_steps; 3; m |]);
-  require ~msg:"lfads log_prob shape" Poly.(shape posterior.R.log_prob = [| 3 |]);
+  check_shape ~msg:"lfads x0 shape" [| 3; n |] posterior.R.x0;
+  check_shape ~msg:"lfads u shape" [| t_steps; 3; m |] posterior.R.u;
+  check_shape ~msg:"lfads log_prob shape" [| 3 |] posterior.R.log_prob;
   (* the standalone density replays the same trajectory: same value *)
   let replay =
     M.log_prob model params data { R.x0 = posterior.R.x0; u = posterior.R.u }
@@ -896,9 +1022,11 @@ let test_lfads_shapes_and_density () =
   let again = M.infer model params ~n_samples:3 ~key:(Nx.Rng.key 11) data in
   check_close ~msg:"lfads draws are keyed" ~tol:1e-12 again.R.u posterior.R.u;
   let other = M.infer model params ~n_samples:3 ~key:(Nx.Rng.key 12) data in
-  require
+  greater
     ~msg:"different keys draw differently"
-    Float.(max_abs Infix.(other.R.u - posterior.R.u) > 1e-6);
+    float_exact
+    ~than:1e-6
+    (max_abs Infix.(other.R.u - posterior.R.u));
   (* without inferred inputs the inputs are the point mass at zero *)
   let model0, params0 = setup_lfads ~n ~m ~t_steps ~n_output:2 ~with_inputs:false () in
   let posterior0 = M.infer model0 params0 ~n_samples:3 ~key:(Nx.Rng.key 13) data in
@@ -909,8 +1037,8 @@ let test_lfads_shapes_and_density () =
     (zeros dtype [| t_steps; 3; m |]);
   (* the mean is a batch of one *)
   let mean = M.mean model params data in
-  require ~msg:"lfads mean x0 shape" Poly.(shape mean.R.x0 = [| 1; n |]);
-  require ~msg:"lfads mean u shape" Poly.(shape mean.R.u = [| t_steps; 1; m |])
+  check_shape ~msg:"lfads mean x0 shape" [| 1; n |] mean.R.x0;
+  check_shape ~msg:"lfads mean u shape" [| t_steps; 1; m |] mean.R.u
 
 (* The initial-condition encoder against a hand-rolled MGU rollout: a readout
    that selects the forward (resp. backward) encoder's final state must give
@@ -985,7 +1113,7 @@ let test_lfads_controller () =
   let mean = M.mean model params data in
   let expected_u = broadcast_to [| t_steps; 1; m |] (reshape [| 1; 1; m |] c) in
   check_close ~msg:"push-mean inputs" ~tol:1e-12 mean.R.u expected_u;
-  let z, _ = Ilqr_vae.predictions_deterministic model params mean in
+  let z = (Ilqr_vae.predictions_deterministic model params mean).Ilqr_vae.z in
   let x = ref (reshape [| n |] mean.R.x0) in
   let states = ref [ !x ] in
   for k = 0 to t_steps - 1 do
@@ -1009,15 +1137,15 @@ let test_lfads_sticking_the_landing () =
   and n = 2
   and m = 2
   and spatial_std = 0.8 in
-  let initial_prior = I.make ~mean:0.25 ~std:0.6 ~n dtype in
-  let keys = Nx.Rng.split ~n:5 (Nx.Rng.key 42) in
-  let dynamics = D.Mgu.make ~key:keys.(0) ~n ~m ~phi dtype in
-  let likelihood = L.Gaussian.make ~key:keys.(1) ~n ~n_output:2 dtype in
-  let prior = P.Gaussian.make ~m ~spatial_std ~first_bin:1.0 dtype in
-  let encoder_prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
+  let initial_prior = I.make ~mean:0.25 ~std:0.6 ~n () in
+  let at = Nx.Host.on in
+  let dynamics = D.Mgu.make ~at ~n ~m ~phi () in
+  let likelihood = L.Gaussian.make ~at:Nx.Host.on ~n ~n_output:2 () in
+  let prior = P.Gaussian.make ~at:Nx.Host.on ~m ~spatial_std ~first_bin:1.0 () in
+  let encoder_prior = P.Gaussian.make ~at:Nx.Host.on ~m ~spatial_std:1.0 () in
   let recognition =
     Lf.make
-      ~key:keys.(2)
+      ~at:Nx.Host.on
       ~n_ic:4
       ~n_ci:4
       ~n_ctrl:3
@@ -1026,7 +1154,7 @@ let test_lfads_sticking_the_landing () =
       ~m
       ~n_steps:t_steps
       ~n_output:2
-      dtype
+      ()
   in
   let model =
     M.make
@@ -1039,8 +1167,9 @@ let test_lfads_sticking_the_landing () =
       ~initial_prior
       ()
   in
-  let params = M.params model in
+  let params = M.init ~at ~key:(Nx.Rng.key 42) model in
   let p = params.M.recognition in
+  let initial_params = Option.value_exn params.M.initial_prior in
   (* q(x0) = p(x0) and q(u_t) = p(u_t) for every t. *)
   let recognition_params =
     { p with
@@ -1048,7 +1177,7 @@ let test_lfads_sticking_the_landing () =
     ; Lf.ic_readout_bias =
         concatenate
           ~axis:0
-          [ initial_prior.I.mean; Infix.(initial_prior.I.log_stds *$ 2.0) ]
+          [ initial_params.I.mean; Infix.(initial_params.I.log_stds *$ 2.0) ]
     ; Lf.u_readout = zeros dtype [| (shape p.Lf.u_readout).(0); 2 * m |]
     ; Lf.u_readout_bias =
         concatenate
@@ -1070,9 +1199,11 @@ let test_lfads_sticking_the_landing () =
   let stl_grad =
     Rune.grad' (fun bias -> kl (with_bias bias)) params.M.recognition.Lf.u_readout_bias
   in
-  require
+  less
     ~msg:"path-derivative gradient sticks to the landing"
-    Float.(max_abs stl_grad < 1e-10);
+    float_exact
+    ~than:1e-10
+    (max_abs stl_grad);
   (* the live-parameter density, by contrast, has a nonzero sampled gradient *)
   let live_kl params =
     let posterior = M.infer model params ~n_samples:4 ~key data in
@@ -1086,9 +1217,7 @@ let test_lfads_sticking_the_landing () =
       (fun bias -> live_kl (with_bias bias))
       params.M.recognition.Lf.u_readout_bias
   in
-  if Float.(max_abs live_grad < 1e-8)
-  then Stdio.printf "note: the live-density gradient happened to vanish\n%!";
-  require ~msg:"live density does not stick" Float.(max_abs live_grad > 1e-8)
+  greater ~msg:"live density does not stick" float_exact ~than:1e-8 (max_abs live_grad)
 
 (* A plain-pathwise objective: the same value as {!Elbo.loss_fixed}, but its
    density is evaluated with live parameters, so its autodiff gradient is the
@@ -1106,9 +1235,9 @@ let plain_objective
       ~iters
       data
   =
-  let posterior = M.infer model params ~iters ~n_samples ~key data in
+  let posterior = M.infer model params ~solve:(fixed iters) ~n_samples ~key data in
   let samples : (w, 's) R.samples = { R.x0 = posterior.R.x0; u = posterior.R.u } in
-  let log_prob = M.log_prob model params ~iters data samples in
+  let log_prob = M.log_prob model params ~solve:(fixed iters) data samples in
   let posterior = { posterior with R.log_prob } in
   Infix.(-(El.compute model params ~posterior data).El.elbo)
 
@@ -1127,7 +1256,7 @@ let test_lfads_gradients () =
        params
    with
    | Ok () -> ()
-   | Error msg -> failwith ("lfads gradient check failed: " ^ msg));
+   | Error msg -> fail ("lfads gradient check failed: " ^ msg));
   check_close
     ~msg:"lfads path-derivative objective has the same value"
     ~tol:1e-12
@@ -1199,7 +1328,7 @@ let test_elbo_gradient () =
        params
    with
    | Ok () -> ()
-   | Error msg -> failwith ("implicit-gradient check failed: " ^ msg));
+   | Error msg -> fail ("implicit-gradient check failed: " ^ msg));
   (* the library objective differs only in the backward pass: same value *)
   check_close
     ~msg:"the path-derivative objective has the same value"
@@ -1214,14 +1343,16 @@ let test_elbo_terms () =
   let model, params = setup ~n ~m ~t_steps ~n_output:2 () in
   let o = create dtype [| t_steps; 2 |] [| 1.0; 0.0; 0.5; -0.5; -0.2; 0.7; 0.3; 0.1 |] in
   let structure = M.structure model in
-  let posterior = M.infer model params ~iters:12 ~n_samples:4 ~key:(Nx.Rng.key 2) o in
+  let posterior =
+    M.infer model params ~solve:(fixed 12) ~n_samples:4 ~key:(Nx.Rng.key 2) o
+  in
   let terms = El.compute model params ~posterior o in
   check_close
     ~msg:"elbo = ll − beta kl"
     ~tol:1e-10
     terms.El.elbo
     Infix.(terms.El.log_likelihood - terms.El.kl);
-  let loss = El.loss model params ~iters:12 ~key:(Nx.Rng.key 2) ~n_samples:4 o in
+  let loss = El.loss model params ~solve:(fixed 12) ~key:(Nx.Rng.key 2) ~n_samples:4 o in
   check_close ~msg:"loss is the negated elbo" ~tol:1e-12 loss Infix.(-terms.El.elbo);
   (* beta scales the KL term *)
   let half = El.compute model params ~beta:(scalar 0.5) ~posterior o in
@@ -1239,9 +1370,15 @@ let test_elbo_terms () =
         }
     }
   in
-  let wide_posterior = M.infer model wide ~iters:12 ~n_samples:4 ~key:(Nx.Rng.key 2) o in
+  let wide_posterior =
+    M.infer model wide ~solve:(fixed 12) ~n_samples:4 ~key:(Nx.Rng.key 2) o
+  in
   let wide_terms = El.compute model wide ~posterior:wide_posterior o in
-  require ~msg:"wider prior, larger KL" Float.(item wide_terms.El.kl > item terms.El.kl);
+  greater
+    ~msg:"wider prior, larger KL"
+    float_exact
+    ~than:(item terms.El.kl)
+    (item wide_terms.El.kl);
   (* the parameters carry gradients through the implicit solve *)
   let _, grads =
     Rune.value_and_grad
@@ -1249,9 +1386,11 @@ let test_elbo_terms () =
       (fun p -> El.loss_fixed model p ~key:(Nx.Rng.key 2) ~n_samples:2 ~iters:8 o)
       params
   in
-  require
+  greater
     ~msg:"the covariance parameters are learned"
-    Float.(max_abs grads.M.recognition.Il.time_cov.t > 1e-10)
+    float_exact
+    ~than:1e-10
+    (max_abs grads.M.recognition.Il.time_cov.t)
 
 let test_kl_schedule () =
   let n = 2
@@ -1310,9 +1449,11 @@ let test_kl_schedule () =
     (scalar (Schedule.value custom 3))
     (scalar 0.75);
   let beta = Schedule.at sched 5 in
-  require ~msg:"beta is a scalar tensor" Poly.(shape beta = [||]);
+  check_shape ~msg:"beta is a scalar tensor" [||] beta;
   (* beta = 0 leaves the log likelihood alone *)
-  let posterior = M.infer model params ~iters:6 ~n_samples:3 ~key:(Nx.Rng.key 30) o in
+  let posterior =
+    M.infer model params ~solve:(fixed 6) ~n_samples:3 ~key:(Nx.Rng.key 30) o
+  in
   let zero = El.compute model params ~beta:(Schedule.at sched 0) ~posterior o in
   check_close
     ~msg:"beta 0 gives the log likelihood"
@@ -1351,9 +1492,11 @@ let test_kl_schedule () =
     ~tol:1e-10
     (scalar (via_jit 10))
     (scalar (eager 10));
-  require
+  greater
     ~msg:"the weight changes the loss"
-    Float.(Float.abs (via_jit 0 -. via_jit 10) > 1e-6)
+    float_exact
+    ~than:1e-6
+    (Float.abs (via_jit 0 -. via_jit 10))
 
 let test_jit () =
   let n = 2
@@ -1416,39 +1559,35 @@ let test_batched_iilqr () =
   let n_samples = 3
   and iters = 4 in
   (* the recognition maps one trial's solve over the leading batch axis *)
-  let posterior = M.infer model params ~iters ~n_samples ~key batch in
-  require ~msg:"batched x0 shape" Poly.(shape posterior.R.x0 = [| 2; n_samples; n |]);
-  require
-    ~msg:"batched u shape"
-    Poly.(shape posterior.R.u = [| 2; t_steps; n_samples; m |]);
-  require
-    ~msg:"batched log_prob shape"
-    Poly.(shape posterior.R.log_prob = [| 2; n_samples |]);
-  let posterior_mean = M.mean model params ~iters batch in
-  require ~msg:"batched mean x0 shape" Poly.(shape posterior_mean.R.x0 = [| 2; 1; n |]);
-  require
-    ~msg:"batched mean u shape"
-    Poly.(shape posterior_mean.R.u = [| 2; t_steps; 1; m |]);
-  let pu, pz, po = Ilqr_vae.predictions model params posterior in
-  require
-    ~msg:"batched predictions u shape"
-    Poly.(shape pu = [| 2; t_steps; n_samples; m |]);
-  require
-    ~msg:"batched predictions z shape"
-    Poly.(shape pz = [| 2; t_steps + 1; n_samples; n |]);
-  require
-    ~msg:"batched predictions o shape"
-    Poly.(shape po = [| 2; t_steps; n_samples; 2 |]);
-  let dz, do_ = Ilqr_vae.predictions_deterministic model params posterior_mean in
-  require
-    ~msg:"batched deterministic z shape"
-    Poly.(shape dz = [| 2; t_steps + 1; 1; n |]);
-  require ~msg:"batched deterministic o shape" Poly.(shape do_ = [| 2; t_steps; 1; 2 |]);
+  let posterior = M.infer model params ~solve:(fixed iters) ~n_samples ~key batch in
+  check_shape ~msg:"batched x0 shape" [| 2; n_samples; n |] posterior.R.x0;
+  check_shape ~msg:"batched u shape" [| 2; t_steps; n_samples; m |] posterior.R.u;
+  check_shape ~msg:"batched log_prob shape" [| 2; n_samples |] posterior.R.log_prob;
+  let posterior_mean = M.mean model params ~solve:(fixed iters) batch in
+  check_shape ~msg:"batched mean x0 shape" [| 2; 1; n |] posterior_mean.R.x0;
+  check_shape ~msg:"batched mean u shape" [| 2; t_steps; 1; m |] posterior_mean.R.u;
+  let prediction = Ilqr_vae.predictions model params posterior in
+  let pu = prediction.Ilqr_vae.u
+  and pz = prediction.Ilqr_vae.z
+  and po = prediction.Ilqr_vae.observations in
+  check_shape ~msg:"batched predictions u shape" [| 2; t_steps; n_samples; m |] pu;
+  check_shape ~msg:"batched predictions z shape" [| 2; t_steps + 1; n_samples; n |] pz;
+  check_shape ~msg:"batched predictions o shape" [| 2; t_steps; n_samples; 2 |] po;
+  let deterministic = Ilqr_vae.predictions_deterministic model params posterior_mean in
+  let dz = deterministic.Ilqr_vae.z
+  and do_ = deterministic.Ilqr_vae.observations in
+  check_shape ~msg:"batched deterministic z shape" [| 2; t_steps + 1; 1; n |] dz;
+  check_shape ~msg:"batched deterministic o shape" [| 2; t_steps; 1; 2 |] do_;
   let pz0 = Ilqr_vae.integrate model params ~u:(zeros dtype [| 2; t_steps; m |]) in
-  require ~msg:"batched integrate shape" Poly.(shape pz0 = [| 2; t_steps + 1; n |]);
+  check_shape ~msg:"batched integrate shape" [| 2; t_steps + 1; n |] pz0;
   (* the density at the draws is the same one the recognition reports *)
   let log_prob =
-    M.log_prob model params ~iters batch { R.x0 = posterior.R.x0; u = posterior.R.u }
+    M.log_prob
+      model
+      params
+      ~solve:(fixed iters)
+      batch
+      { R.x0 = posterior.R.x0; u = posterior.R.u }
   in
   check_close ~msg:"batched log q replays" ~tol:1e-10 log_prob posterior.R.log_prob;
   (* compute averages the per-trial bounds of the same draws *)
@@ -1493,14 +1632,14 @@ let test_batched_iilqr () =
   check_close
     ~msg:"batched loss is the trial mean"
     ~tol:1e-12
-    (El.batch_loss_fixed model params ~key ~n_samples ~iters batch)
+    (El.loss_fixed model params ~key ~n_samples ~iters batch)
     (mean separate);
   (* the mini-batch is an argument of the compiled step, not a closed array *)
   let structure = M.structure model in
   let eager =
     Rune.value_and_grad
       structure
-      (fun p -> El.batch_loss_fixed model p ~key ~n_samples ~iters batch)
+      (fun p -> El.loss_fixed model p ~key ~n_samples ~iters batch)
       params
   in
   let compiled =
@@ -1509,7 +1648,7 @@ let test_batched_iilqr () =
       (fun p k data ->
          Rune.value_and_grad
            structure
-           (fun p -> El.batch_loss_fixed model p ~key:k ~n_samples ~iters data)
+           (fun p -> El.loss_fixed model p ~key:k ~n_samples ~iters data)
            p)
   in
   let loss, grads = compiled params key batch in
@@ -1527,34 +1666,35 @@ let test_batched_iilqr () =
     eager_grads.M.recognition.Il.time_cov.t;
   (* the adaptive solve is eager and runs one trial at a time *)
   let adaptive = M.infer model params ~n_samples:2 ~key:(Nx.Rng.key 43) batch in
-  require ~msg:"adaptive batched x0 shape" Poly.(shape adaptive.R.x0 = [| 2; 2; n |]);
-  require
-    ~msg:"adaptive batched u shape"
-    Poly.(shape adaptive.R.u = [| 2; t_steps; 2; m |]);
+  check_shape ~msg:"adaptive batched x0 shape" [| 2; 2; n |] adaptive.R.x0;
+  check_shape ~msg:"adaptive batched u shape" [| 2; t_steps; 2; m |] adaptive.R.u;
   let adaptive_log_prob =
     M.log_prob model params batch { R.x0 = adaptive.R.x0; u = adaptive.R.u }
   in
-  require ~msg:"adaptive batched log q shape" Poly.(shape adaptive_log_prob = [| 2; 2 |]);
+  check_shape ~msg:"adaptive batched log q shape" [| 2; 2 |] adaptive_log_prob;
   let adaptive_mean = M.mean model params batch in
-  require
+  check_shape
     ~msg:"adaptive batched mean u shape"
-    Poly.(shape adaptive_mean.R.u = [| 2; t_steps; 1; m |]);
+    [| 2; t_steps; 1; m |]
+    adaptive_mean.R.u;
   let adaptive_loss = El.loss model params ~key:(Nx.Rng.key 44) ~n_samples:2 batch in
-  require ~msg:"adaptive batched loss is finite" Float.(is_finite (item adaptive_loss));
+  check_finite ~msg:"adaptive batched loss" (item adaptive_loss);
   (* more than one leading trial axis behaves as one flattened batch *)
   let batch2 = stack ~axis:0 [ batch; batch ] in
-  let posterior2 = M.infer model params ~iters ~n_samples ~key:(Nx.Rng.key 42) batch2 in
-  require
-    ~msg:"two-axis batch x0 shape"
-    Poly.(shape posterior2.R.x0 = [| 2; 2; n_samples; n |]);
-  require
+  let posterior2 =
+    M.infer model params ~solve:(fixed iters) ~n_samples ~key:(Nx.Rng.key 42) batch2
+  in
+  check_shape ~msg:"two-axis batch x0 shape" [| 2; 2; n_samples; n |] posterior2.R.x0;
+  check_shape
     ~msg:"two-axis batch u shape"
-    Poly.(shape posterior2.R.u = [| 2; 2; t_steps; n_samples; m |]);
-  require
+    [| 2; 2; t_steps; n_samples; m |]
+    posterior2.R.u;
+  check_shape
     ~msg:"two-axis batch log_prob shape"
-    Poly.(shape posterior2.R.log_prob = [| 2; 2; n_samples |]);
+    [| 2; 2; n_samples |]
+    posterior2.R.log_prob;
   let terms2 = El.compute model params ~posterior:posterior2 batch2 in
-  require ~msg:"two-axis batch bound is scalar" Poly.(shape terms2.El.elbo = [||])
+  check_shape ~msg:"two-axis batch bound is scalar" [||] terms2.El.elbo
 
 let test_batched_lfads () =
   let n = 2
@@ -1566,18 +1706,17 @@ let test_batched_lfads () =
   let key = Nx.Rng.key 41 in
   let n_samples = 3
   and iters = 4 in
-  let posterior = M.infer model params ~iters ~n_samples ~key batch in
-  require
-    ~msg:"lfads batched x0 shape"
-    Poly.(shape posterior.R.x0 = [| 2; n_samples; n |]);
-  require
-    ~msg:"lfads batched u shape"
-    Poly.(shape posterior.R.u = [| 2; t_steps; n_samples; m |]);
-  require
-    ~msg:"lfads batched log_prob shape"
-    Poly.(shape posterior.R.log_prob = [| 2; n_samples |]);
+  let posterior = M.infer model params ~solve:(fixed iters) ~n_samples ~key batch in
+  check_shape ~msg:"lfads batched x0 shape" [| 2; n_samples; n |] posterior.R.x0;
+  check_shape ~msg:"lfads batched u shape" [| 2; t_steps; n_samples; m |] posterior.R.u;
+  check_shape ~msg:"lfads batched log_prob shape" [| 2; n_samples |] posterior.R.log_prob;
   let log_prob =
-    M.log_prob model params ~iters batch { R.x0 = posterior.R.x0; u = posterior.R.u }
+    M.log_prob
+      model
+      params
+      ~solve:(fixed iters)
+      batch
+      { R.x0 = posterior.R.x0; u = posterior.R.u }
   in
   check_close ~msg:"lfads batched log q replays" ~tol:1e-10 log_prob posterior.R.log_prob;
   (* the bound is the mean over the trials, from the same draws *)
@@ -1602,11 +1741,11 @@ let test_batched_lfads () =
     (mean_of (fun t -> t.El.elbo));
   (* eager and compiled batch losses are one function of the data argument *)
   let structure = M.structure model in
-  let eager = El.batch_loss_fixed model params ~key ~n_samples ~iters batch in
+  let eager = El.loss_fixed model params ~key ~n_samples ~iters batch in
   let compiled =
     Rune.jit
       Nx.Ptree.(structure @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
-      (fun p k data -> El.batch_loss_fixed model p ~key:k ~n_samples ~iters data)
+      (fun p k data -> El.loss_fixed model p ~key:k ~n_samples ~iters data)
   in
   check_close ~msg:"lfads batched jit loss" ~tol:1e-10 (compiled params key batch) eager
 
@@ -1618,11 +1757,11 @@ let test_swapping () =
   let n = 2
   and m = 2
   and t_steps = 3 in
-  let keys = Nx.Rng.split ~n:2 (Nx.Rng.key 31) in
-  let dynamics = D.Linear.make ~key:keys.(0) ~n ~m dtype in
-  let likelihood = L.Gaussian.make ~key:keys.(1) ~n ~n_output:2 dtype in
-  let prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
-  let encoder_prior = P.Gaussian.make ~m ~spatial_std:1.0 dtype in
+  let at = Nx.Host.on in
+  let dynamics = D.Linear.make ~at ~n ~m () in
+  let likelihood = L.Gaussian.make ~at ~n ~n_output:2 () in
+  let prior = P.Gaussian.make ~at ~m ~spatial_std:1.0 () in
+  let encoder_prior = P.Gaussian.make ~at ~m ~spatial_std:1.0 () in
   let data = lfads_data ~t_steps ~n_output:2 () in
   let make recognition initial_prior =
     M.make
@@ -1635,113 +1774,92 @@ let test_swapping () =
       ?initial_prior
       ()
   in
-  let iilqr = make (Il.make ~n ~m ~n_steps:t_steps ~n_output:2 dtype) None in
+  let iilqr = make (Il.make ~at ~n ~m ~n_steps:t_steps ~n_output:2 ()) None in
+  let iilqr_params = M.init ~at ~key:(Nx.Rng.key 31) iilqr in
   let lfads =
     make
-      (Lf.make
-         ~key:(Nx.Rng.key 32)
-         ~n_ic:4
-         ~n_ctrl:3
-         ~phi
-         ~n
-         ~m
-         ~n_steps:t_steps
-         ~n_output:2
-         dtype)
-      (Some (I.make ~std:1.0 ~n dtype))
+      (Lf.make ~at ~n_ic:4 ~n_ctrl:3 ~phi ~n ~m ~n_steps:t_steps ~n_output:2 ())
+      (Some (I.make ~std:1.0 ~n ()))
   in
-  let loss_of model =
-    let params = M.params model in
+  let lfads_params = M.init ~at ~key:(Nx.Rng.key 32) lfads in
+  let loss_of model params =
     El.loss_fixed model params ~key:(Nx.Rng.key 33) ~n_samples:2 ~iters:4 data
   in
-  let l_iilqr = loss_of iilqr
-  and l_lfads = loss_of lfads in
-  require
-    ~msg:"both recognitions give finite losses"
-    (Float.is_finite (item l_iilqr) && Float.is_finite (item l_lfads));
+  let l_iilqr = loss_of iilqr iilqr_params
+  and l_lfads = loss_of lfads lfads_params in
+  check_finite ~msg:"the iLQR bound" (item l_iilqr);
+  check_finite ~msg:"the LFADS bound" (item l_lfads);
   (* both recognition parameter blocks receive gradients *)
-  let params = M.params iilqr in
   let _, grads =
     Rune.value_and_grad
       (M.structure iilqr)
       (fun p -> El.loss_fixed iilqr p ~key:(Nx.Rng.key 33) ~n_samples:2 ~iters:4 data)
-      params
+      iilqr_params
   in
-  require
+  greater
     ~msg:"the iLQR covariance receives gradients"
-    Float.(max_abs grads.M.recognition.Il.space_cov.d > 1e-10);
-  let params = M.params lfads in
+    float_exact
+    ~than:1e-10
+    (max_abs grads.M.recognition.Il.space_cov.d);
   let _, grads =
     Rune.value_and_grad
       (M.structure lfads)
       (fun p -> El.loss_fixed lfads p ~key:(Nx.Rng.key 33) ~n_samples:2 ~iters:4 data)
-      params
+      lfads_params
   in
-  require
+  greater
     ~msg:"the LFADS encoder receives gradients"
-    Float.(max_abs grads.M.recognition.Lf.ic_readout > 1e-10);
+    float_exact
+    ~than:1e-10
+    (max_abs grads.M.recognition.Lf.ic_readout);
   (* mismatched initial-state prior and recognition are rejected *)
-  let rejects f =
-    match f () with
-    | _ -> false
-    | exception Invalid_argument _ -> true
-  in
-  require
-    ~msg:"iLQR rejects an initial-state prior"
-    (rejects (fun () ->
-       make (Il.make ~n ~m ~n_steps:t_steps ~n_output:2 dtype) (Some (I.make ~n dtype))));
-  require
-    ~msg:"LFADS requires an initial-state prior"
-    (rejects (fun () ->
-       make
-         (Lf.make
-            ~key:(Nx.Rng.key 32)
-            ~n_ic:4
-            ~n_ctrl:3
-            ~phi
-            ~n
-            ~m
-            ~n_steps:t_steps
-            ~n_output:2
-            dtype)
-         None));
+  let rejects ?msg f = raises_match ?msg (Exn.invalid_arg ~sub:"Model.make") f in
+  rejects ~msg:"iLQR rejects an initial-state prior" (fun () ->
+    make (Il.make ~at ~n ~m ~n_steps:t_steps ~n_output:2 ()) (Some (I.make ~n ())));
+  rejects ~msg:"LFADS requires an initial-state prior" (fun () ->
+    make (Lf.make ~at ~n_ic:4 ~n_ctrl:3 ~phi ~n ~m ~n_steps:t_steps ~n_output:2 ()) None);
   (* the model takes its dimensions from the components, so it checks that
      they agree with each other *)
-  require
-    ~msg:"the model takes its dimensions from the components"
-    (Int.equal iilqr.M.n n
-     && Int.equal iilqr.M.m m
-     && Int.equal iilqr.M.n_steps t_steps
-     && Int.equal iilqr.M.n_output 2);
+  equal ~msg:"the model takes its state dimension from the dynamics" int n (M.n iilqr);
+  equal ~msg:"the model takes its input dimension from the dynamics" int m (M.m iilqr);
+  equal
+    ~msg:"the model takes its horizon from the recognition"
+    int
+    t_steps
+    (M.n_steps iilqr);
+  equal
+    ~msg:"the model takes its observation dimension from the likelihood"
+    int
+    2
+    (M.n_output iilqr);
   let rejects_model
+        ?msg
         ?(dynamics = dynamics)
         ?(likelihood = likelihood)
         ?(prior = prior)
         ?(encoder_prior = encoder_prior)
-        ?(recognition = Il.make ~n ~m ~n_steps:t_steps ~n_output:2 dtype)
+        ?(recognition = Il.make ~at ~n ~m ~n_steps:t_steps ~n_output:2 ())
         ()
     =
-    rejects (fun () ->
+    rejects ?msg (fun () ->
       M.make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition ())
   in
-  require
+  rejects_model
     ~msg:"a recognition built for another state dimension is rejected"
-    (rejects_model
-       ~recognition:(Il.make ~n:(n + 1) ~m ~n_steps:t_steps ~n_output:2 dtype)
-       ());
-  require
+    ~recognition:(Il.make ~at ~n:(n + 1) ~m ~n_steps:t_steps ~n_output:2 ())
+    ();
+  rejects_model
     ~msg:"a likelihood built for another state dimension is rejected"
-    (rejects_model
-       ~likelihood:(L.Gaussian.make ~key:(Nx.Rng.key 34) ~n:(n + 1) ~n_output:2 dtype)
-       ());
-  require
+    ~likelihood:(L.Gaussian.make ~at ~n:(n + 1) ~n_output:2 ())
+    ();
+  rejects_model
     ~msg:"a likelihood with another observation dimension is rejected"
-    (rejects_model
-       ~likelihood:(L.Gaussian.make ~key:(Nx.Rng.key 34) ~n ~n_output:3 dtype)
-       ());
-  require
+    ~likelihood:(L.Gaussian.make ~at ~n ~n_output:3 ())
+    ();
+  rejects_model
     ~msg:"a prior over other inputs is rejected"
-    (rejects_model ~prior:(P.Gaussian.make ~m:(m + 1) ~spatial_std:1.0 dtype) ())
+    ~prior:(P.Gaussian.make ~at ~m:(m + 1) ~spatial_std:1.0 ())
+    ()
 
 (* ──────────────────────────────────────────────────────────────────────────
    End to end
@@ -1757,13 +1875,13 @@ let test_training_smoke () =
   let trial_data =
     Array.init 4 ~f:(fun i ->
       let key = Nx.Rng.key (100 + i) in
-      let _, _, _, o = Ilqr_vae.sample_generative model true_params ~key in
+      let o = (Ilqr_vae.sample_generative model true_params ~key).Ilqr_vae.observations in
       o)
   in
   let trials = stack ~axis:0 (Array.to_list trial_data) in
   let structure = M.structure model in
   let key = Nx.Rng.key 7 in
-  let objective p = El.batch_loss_fixed model p ~key ~n_samples:4 ~iters:4 trials in
+  let objective p = El.loss_fixed model p ~key ~n_samples:4 ~iters:4 trials in
   let initial = item (objective params) in
   let lr = 0.02 in
   let params = ref params in
@@ -1781,25 +1899,39 @@ let test_training_smoke () =
     params := Nx.Ptree.map2 structure step !params grads
   done;
   let final = item (objective !params) in
-  Stdio.printf "training smoke: %.6g -> %.6g\n%!" initial final;
-  require ~msg:"training decreases the loss" Float.(final < initial);
+  less ~msg:"training decreases the loss" float_exact ~than:initial final;
   (* generative and predictive shapes *)
-  let x0, u, z, o = Ilqr_vae.sample_generative model !params ~key:(Nx.Rng.key 9) in
-  require ~msg:"generative x0 shape" Poly.(shape x0 = [| n |]);
-  require ~msg:"generative u shape" Poly.(shape u = [| t_steps; m |]);
-  require ~msg:"generative z shape" Poly.(shape z = [| t_steps + 1; n |]);
-  require ~msg:"generative o shape" Poly.(shape o = [| t_steps; 2 |]);
+  let draw = Ilqr_vae.sample_generative model !params ~key:(Nx.Rng.key 9) in
+  let x0 = draw.Ilqr_vae.x0
+  and u = draw.Ilqr_vae.u
+  and z = draw.Ilqr_vae.z
+  and o = draw.Ilqr_vae.observations in
+  check_shape ~msg:"generative x0 shape" [| n |] x0;
+  check_shape ~msg:"generative u shape" [| t_steps; m |] u;
+  check_shape ~msg:"generative z shape" [| t_steps + 1; n |] z;
+  check_shape ~msg:"generative o shape" [| t_steps; 2 |] o;
   let posterior =
-    M.infer model !params ~iters:4 ~n_samples:5 ~key:(Nx.Rng.key 10) trial_data.(0)
+    M.infer
+      model
+      !params
+      ~solve:(fixed 4)
+      ~n_samples:5
+      ~key:(Nx.Rng.key 10)
+      trial_data.(0)
   in
-  let u, z, o = Ilqr_vae.predictions model !params posterior in
-  require ~msg:"predictions u shape" Poly.(shape u = [| t_steps; 5; m |]);
-  require ~msg:"predictions z shape" Poly.(shape z = [| t_steps + 1; 5; n |]);
-  require ~msg:"predictions o shape" Poly.(shape o = [| t_steps; 5; 2 |]);
+  let prediction = Ilqr_vae.predictions model !params posterior in
+  let u = prediction.Ilqr_vae.u
+  and z = prediction.Ilqr_vae.z
+  and o = prediction.Ilqr_vae.observations in
+  check_shape ~msg:"predictions u shape" [| t_steps; 5; m |] u;
+  check_shape ~msg:"predictions z shape" [| t_steps + 1; 5; n |] z;
+  check_shape ~msg:"predictions o shape" [| t_steps; 5; 2 |] o;
   let mean = M.mean model !params trial_data.(0) in
-  let z, o = Ilqr_vae.predictions_deterministic model !params mean in
-  require ~msg:"deterministic z shape" Poly.(shape z = [| t_steps + 1; 1; n |]);
-  require ~msg:"deterministic o shape" Poly.(shape o = [| t_steps; 1; 2 |])
+  let deterministic = Ilqr_vae.predictions_deterministic model !params mean in
+  let z = deterministic.Ilqr_vae.z
+  and o = deterministic.Ilqr_vae.observations in
+  check_shape ~msg:"deterministic z shape" [| t_steps + 1; 1; n |] z;
+  check_shape ~msg:"deterministic o shape" [| t_steps; 1; 2 |] o
 
 let test_lfads_training_smoke () =
   let n = 2
@@ -1810,13 +1942,13 @@ let test_lfads_training_smoke () =
   let trial_data =
     Array.init 3 ~f:(fun i ->
       let key = Nx.Rng.key (200 + i) in
-      let _, _, _, o = Ilqr_vae.sample_generative model true_params ~key in
+      let o = (Ilqr_vae.sample_generative model true_params ~key).Ilqr_vae.observations in
       o)
   in
   let trials = stack ~axis:0 (Array.to_list trial_data) in
   let structure = M.structure model in
   let key = Nx.Rng.key 17 in
-  let objective p = El.batch_loss_fixed model p ~key ~n_samples:3 ~iters:4 trials in
+  let objective p = El.loss_fixed model p ~key ~n_samples:3 ~iters:4 trials in
   let initial = item (objective params) in
   let lr = 0.002 in
   let params = ref params in
@@ -1834,8 +1966,7 @@ let test_lfads_training_smoke () =
     params := Nx.Ptree.map2 structure step !params grads
   done;
   let final = item (objective !params) in
-  Stdio.printf "lfads training smoke: %.6g -> %.6g\n%!" initial final;
-  require ~msg:"lfads training decreases the loss" Float.(final < initial)
+  less ~msg:"lfads training decreases the loss" float_exact ~than:initial final
 
 (* [visits s v] is the steps of [s]'s walk of [v], one per line. *)
 let visits s v =
@@ -1859,50 +1990,55 @@ let test_initial_state_recognition () =
   and m = 2
   and t_steps = 5 in
   let model, params = setup_initial ~n ~m ~t_steps ~n_output:2 () in
-  require
-    ~msg:"an inferred initial state without a prior is rejected"
-    (Result.is_error
-       (Result.try_with (fun () ->
-          M.make
-            dtype
-            ~dynamics:model.M.dynamics
-            ~likelihood:model.M.likelihood
-            ~prior:model.M.prior
-            ~encoder_prior:model.M.encoder_prior
-            ~recognition:model.M.recognition
-            ())));
+  raises_match (Exn.invalid_arg ~sub:"pass ~initial_prior") (fun () ->
+    M.make
+      dtype
+      ~dynamics:(M.dynamics model)
+      ~likelihood:(M.likelihood model)
+      ~prior:(M.prior model)
+      ~encoder_prior:(M.encoder_prior model)
+      ~recognition:(M.recognition model)
+      ());
   let data =
-    let _, _, _, o = Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key 31) in
+    let o =
+      (Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key 31)).Ilqr_vae.observations
+    in
     o
   in
   let gen = M.generative model
   and gp = M.gparams params in
-  let initial = Option.value_exn (Il.posterior_initial gen gp ~iters:8 data) in
-  require ~msg:"initial mean shape" Poly.(shape initial.Dilqr.Lqr.mean = [| n |]);
-  require
-    ~msg:"initial precision shape"
-    Poly.(shape initial.Dilqr.Lqr.precision = [| n; n |]);
-  require
+  let initial = Option.value_exn (Il.posterior_initial gen gp ~solve:(fixed 8) data) in
+  check_shape ~msg:"initial mean shape" [| n |] initial.R.mean;
+  check_shape ~msg:"initial precision shape" [| n; n |] initial.R.precision;
+  greater
     ~msg:"the initial state is not the fixed zero"
-    Float.(max_abs initial.Dilqr.Lqr.mean > 1e-3);
-  let posterior = M.infer model params ~iters:8 ~n_samples:4 ~key:(Nx.Rng.key 32) data in
-  require ~msg:"posterior x0 shape" Poly.(shape posterior.R.x0 = [| 4; n |]);
-  require ~msg:"posterior u shape" Poly.(shape posterior.R.u = [| t_steps; 4; m |]);
-  require ~msg:"posterior log_prob shape" Poly.(shape posterior.R.log_prob = [| 4 |]);
-  require ~msg:"posterior is finite" (item (all (isfinite posterior.R.log_prob)));
-  let mean = M.mean model params ~iters:8 data in
-  require ~msg:"mean x0 shape" Poly.(shape mean.R.x0 = [| 1; n |]);
-  require ~msg:"mean u shape" Poly.(shape mean.R.u = [| t_steps; 1; m |]);
-  require
+    float_exact
+    ~than:1e-3
+    (max_abs initial.R.mean);
+  let posterior =
+    M.infer model params ~solve:(fixed 8) ~n_samples:4 ~key:(Nx.Rng.key 32) data
+  in
+  check_shape ~msg:"posterior x0 shape" [| 4; n |] posterior.R.x0;
+  check_shape ~msg:"posterior u shape" [| t_steps; 4; m |] posterior.R.u;
+  check_shape ~msg:"posterior log_prob shape" [| 4 |] posterior.R.log_prob;
+  equal ~msg:"posterior is finite" bool true (item (all (isfinite posterior.R.log_prob)));
+  let mean = M.mean model params ~solve:(fixed 8) data in
+  check_shape ~msg:"mean x0 shape" [| 1; n |] mean.R.x0;
+  check_shape ~msg:"mean u shape" [| t_steps; 1; m |] mean.R.u;
+  equal
     ~msg:"the mean scores finitely under its own density"
-    (Float.is_finite (Nx.item [ 0 ] (M.log_prob model params ~iters:8 data mean)));
+    bool
+    true
+    (Nx.item [ 0 ] (isfinite (M.log_prob model params ~solve:(fixed 8) data mean)));
   (* a mini-batch keeps the trial axes leading *)
   let batch =
     concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] data; unsqueeze ~axes:[ 0 ] data ]
   in
-  let batched = M.infer model params ~iters:4 ~n_samples:2 ~key:(Nx.Rng.key 33) batch in
-  require ~msg:"batched x0 shape" Poly.(shape batched.R.x0 = [| 2; 2; n |]);
-  require ~msg:"batched u shape" Poly.(shape batched.R.u = [| 2; t_steps; 2; m |]);
+  let batched =
+    M.infer model params ~solve:(fixed 4) ~n_samples:2 ~key:(Nx.Rng.key 33) batch
+  in
+  check_shape ~msg:"batched x0 shape" [| 2; 2; n |] batched.R.x0;
+  check_shape ~msg:"batched u shape" [| 2; t_steps; 2; m |] batched.R.u;
   (* the scale is what widens the draws *)
   let spread scale =
     let params =
@@ -1911,7 +2047,9 @@ let test_initial_state_recognition () =
           { params.M.recognition with Il.initial_log_scale = Some (scalar scale) }
       }
     in
-    let draws = M.infer model params ~iters:8 ~n_samples:400 ~key:(Nx.Rng.key 34) data in
+    let draws =
+      M.infer model params ~solve:(fixed 8) ~n_samples:400 ~key:(Nx.Rng.key 34) data
+    in
     let centered =
       Infix.(draws.R.x0 - reshape [| 1; n |] (Nx.mean ~axes:[ 0 ] draws.R.x0))
     in
@@ -1933,14 +2071,18 @@ let test_initial_state_is_the_mode () =
   and t_steps = 5 in
   let model, params = setup_initial ~n ~m ~t_steps ~n_output:3 () in
   let data =
-    let _, _, _, o = Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key 41) in
+    let o =
+      (Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key 41)).Ilqr_vae.observations
+    in
     o
   in
   let gen = M.generative model
   and gp = M.gparams params in
   let iters = 40 in
-  let initial = Option.value_exn (Il.posterior_initial gen gp ~iters data) in
-  let problem = Il.problem gen gp data in
+  let initial =
+    Option.value_exn (Il.posterior_initial gen gp ~solve:(fixed iters) data)
+  in
+  let problem = Il.problem gen data in
   let us0 = Array.init t_steps ~f:(fun _ -> zeros dtype [| m |]) in
   (* [value x0] is the encoder's own cost with the initial state held at [x0]:
      the value the local model approximates. *)
@@ -1956,36 +2098,26 @@ let test_initial_state_is_the_mode () =
        { Dilqr.Inputs.theta = gp; x0; us0 })
       .Dilqr.Inputs.x0
   in
-  Stdio.printf
-    "stationarity: |grad| = %.6g, |mean| = %.6g\n%!"
-    (max_abs (gradient initial.Dilqr.Lqr.mean))
-    (max_abs initial.Dilqr.Lqr.mean);
   (* The point of the free initial state, in one number: the part of it the
      first input cannot produce. [m < n] and [b] is the input weight, so the
      reachable set of [x_1] is the span of [bᵀ] and the projection below
      removes it. *)
   let b = Option.value_exn params.M.dynamics.D.Linear.b in
-  let mean = initial.Dilqr.Lqr.mean in
+  let mean = initial.R.mean in
   let reachable =
     Infix.(matrix_transpose b *@ (b *@ mean) *$ (1.0 /. item (sum (b * b))))
   in
   let outside = Infix.(mean - reachable) in
-  Stdio.printf
-    "initial mean: [%s]\n\
-    \  reachable by the first input: %.4g\n\
-    \  outside its span: %.4g\n\
-     %!"
-    (String.concat
-       ~sep:"; "
-       (Array.to_list (Array.map (to_array mean) ~f:(Printf.sprintf "%.4g"))))
-    (max_abs reachable)
-    (max_abs outside);
-  require
+  greater
     ~msg:"the mean has a component the first input cannot produce"
-    Float.(max_abs outside > 1e-2);
-  require
+    float_exact
+    ~than:1e-2
+    (max_abs outside);
+  less
     ~msg:"the initial state is stationary"
-    Float.(max_abs (gradient initial.Dilqr.Lqr.mean) < 1e-5);
+    float_exact
+    ~than:1e-5
+    (max_abs (gradient initial.R.mean));
   (* The value's gradient is affine in [x_0] with slope its curvature, so one
      central difference of it gives the precision a column at a time — through
      the implicit VJP rather than through the Riccati recursion the precision
@@ -1995,13 +2127,13 @@ let test_initial_state_is_the_mode () =
     create dtype [| n |] (Array.init n ~f:(fun k -> if Int.equal k i then s else 0.0))
   in
   for j = 0 to n - 1 do
-    let at s = gradient Infix.(initial.Dilqr.Lqr.mean + scale j s) in
+    let at s = gradient Infix.(initial.R.mean + scale j s) in
     let column = Infix.((at h - at (-.h)) /$ (2.0 *. h)) in
     for i = 0 to n - 1 do
       check_close
         ~msg:(Printf.sprintf "curvature %d %d is the precision" i j)
         ~tol:1e-6
-        (get [ i; j ] initial.Dilqr.Lqr.precision)
+        (get [ i; j ] initial.R.precision)
         (get [ i ] column)
     done
   done
@@ -2015,17 +2147,18 @@ let test_initial_state_training_smoke () =
   let model, params = setup_initial ~n ~m ~t_steps ~n_output:2 () in
   let trial_data =
     Array.init 3 ~f:(fun i ->
-      let _, _, _, o =
-        Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key (300 + i))
+      let o =
+        (Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key (300 + i)))
+          .Ilqr_vae.observations
       in
       o)
   in
   let trials = stack ~axis:0 (Array.to_list trial_data) in
   let structure = M.structure model in
   let key = Nx.Rng.key 21 in
-  let objective p = El.batch_loss_fixed model p ~key ~n_samples:3 ~iters:4 trials in
+  let objective p = El.loss_fixed model p ~key ~n_samples:3 ~iters:4 trials in
   let initial = item (objective params) in
-  require ~msg:"the bound is finite" (Float.is_finite initial);
+  check_finite ~msg:"the bound" initial;
   let lr = 0.01 in
   let params = ref params in
   for _ = 1 to 12 do
@@ -2042,10 +2175,192 @@ let test_initial_state_training_smoke () =
     params := Nx.Ptree.map2 structure step !params grads
   done;
   let final = item (objective !params) in
-  Stdio.printf "initial-state smoke: %.6g -> %.6g\n%!" initial final;
-  require
+  less
     ~msg:"training with a free initial state decreases the loss"
-    Float.(final < initial)
+    float_exact
+    ~than:initial
+    final
+
+(* The input prior is a term of the bound exactly when the recognition infers
+   the inputs: a recognition that leaves them at the point mass at zero has no
+   input factor, so widening the generative input prior cannot move the bound.
+   With recorded inputs it must. *)
+let test_input_prior_terms () =
+  let n = 2
+  and m = 2
+  and t_steps = 3 in
+  let o = lfads_data ~t_steps ~n_output:2 () in
+  let widened params =
+    { params with
+      M.prior =
+        { params.M.prior with
+          P.Gaussian.log_spatial_stds =
+            Infix.(params.M.prior.P.Gaussian.log_spatial_stds +$ 1.0)
+        }
+    }
+  in
+  let bound ~with_inputs =
+    let model, params =
+      setup_lfads ~key:(Nx.Rng.key 60) ~with_inputs ~n ~m ~t_steps ~n_output:2 ()
+    in
+    let key = Nx.Rng.key 61 in
+    let posterior = M.infer model params ~n_samples:4 ~key o in
+    let narrow = (El.compute model params ~posterior o).El.elbo in
+    let wide =
+      let posterior = M.infer model (widened params) ~n_samples:4 ~key o in
+      (El.compute model (widened params) ~posterior o).El.elbo
+    in
+    narrow, wide
+  in
+  let narrow, wide = bound ~with_inputs:false in
+  check_close ~msg:"an uninferred input has no prior term" ~tol:1e-12 wide narrow;
+  let narrow, wide = bound ~with_inputs:true in
+  greater
+    ~msg:"an inferred input brings the prior into the bound"
+    float_exact
+    ~than:1e-3
+    (Float.abs (item Infix.(wide - narrow)))
+
+(* The shapes the interfaces state, refused rather than broadcast: a wrong
+   latent or batch shape would otherwise reach the arithmetic and answer a
+   different question. *)
+let test_shape_errors () =
+  let n = 2
+  and m = 2
+  and t_steps = 3 in
+  let model, params = setup ~n ~m ~t_steps ~n_output:2 () in
+  let data = zeros dtype [| t_steps; 2 |] in
+  let batch = stack ~axis:0 [ data; data ] in
+  let solve = fixed 3 in
+  let posterior = M.infer model params ~solve ~n_samples:2 ~key:(Nx.Rng.key 70) batch in
+  raises_match (Exn.invalid_arg ~sub:"log_prob must be") (fun () ->
+    El.compute
+      model
+      params
+      ~posterior:
+        { posterior with
+          R.log_prob = reshape [| 1; 2 |] (slice [ I 0 ] posterior.R.log_prob)
+        }
+      batch);
+  raises_match (Exn.invalid_arg ~sub:"x0 must be [n_samples; 2]") (fun () ->
+    M.log_prob
+      model
+      params
+      ~solve
+      data
+      { R.x0 = zeros dtype [| 1; 3 |]; u = zeros dtype [| t_steps; 1; 2 |] });
+  raises_match (Exn.invalid_arg ~sub:"u must be [3; 1; 2]") (fun () ->
+    M.log_prob
+      model
+      params
+      ~solve
+      data
+      { R.x0 = zeros dtype [| 1; 2 |]; u = zeros dtype [| t_steps; 2 |] });
+  raises_match (Exn.invalid_arg ~sub:"input dimension 2") (fun () ->
+    D.integrate
+      (M.dynamics model)
+      params.M.dynamics
+      ~x0:(zeros dtype [| 2 |])
+      ~u:(zeros dtype [| t_steps; 3 |]));
+  raises_match (Exn.invalid_arg ~sub:"Elbo.log_prior") (fun () ->
+    El.log_prior model params ~x0:(zeros dtype [| 4; 2 |]) ~u:(zeros dtype [| 3; 2 |]));
+  let lfads, lfads_params = setup_lfads ~n ~m ~t_steps ~n_output:2 () in
+  raises_match (Exn.invalid_arg ~sub:"Recognition.Lfads.log_prob") (fun () ->
+    M.log_prob
+      lfads
+      lfads_params
+      data
+      { R.x0 = zeros dtype [| 1; 2 |]; u = zeros dtype [| t_steps; 2 |] });
+  (* the constructors refuse the arguments that cannot mean anything *)
+  raises_match (Exn.invalid_arg ~sub:"iters") (fun () -> R.fixed ~iters:0 ());
+  raises_match (Exn.invalid_arg ~sub:"max_iter") (fun () -> R.adaptive ~max_iter:0 ());
+  raises_match (Exn.invalid_arg ~sub:"initial_prior is over 3 dimensions") (fun () ->
+    M.make
+      dtype
+      ~dynamics:(M.dynamics model)
+      ~likelihood:(M.likelihood model)
+      ~prior:(M.prior model)
+      ~encoder_prior:(M.encoder_prior model)
+      ~recognition:
+        (R.Iilqr.make
+           ~at:Nx.Host.on
+           ~n
+           ~m
+           ~n_steps:t_steps
+           ~n_output:2
+           ~infer_initial:true
+           ())
+      ~initial_prior:(I.make ~n:3 ())
+      ())
+
+(* A placement is a real parameter of a model: built at a brand that is not
+   [Nx.host], its parameters are made there and inference, the encoder's solve
+   and the bound run there. A minted set over the host device exercises the
+   path without a GPU; every tensor it creates, and the key, must be at that
+   brand, which the types enforce. *)
+let test_placement () =
+  let module Brand = (val Nx.devices [ Rig.host ] : Nx.Devices) in
+  let at = Brand.on in
+  let n = 2
+  and m = 2
+  and t_steps = 3 in
+  let dynamics = D.Linear.make ~at ~n ~m () in
+  let likelihood = L.Gaussian.make ~at ~n ~n_output:2 () in
+  let prior = P.Gaussian.make ~at ~m () in
+  let encoder_prior = P.Gaussian.make ~at ~m () in
+  let recognition = Il.make ~at ~n ~m ~n_steps:t_steps ~n_output:2 () in
+  let model = M.make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition () in
+  let key = Nx.Rng.place at (Nx.Rng.key 1) in
+  let params = M.init ~at ~key model in
+  let data = Nx.zeros_at at dtype [| t_steps; 2 |] in
+  let posterior = M.infer model params ~solve:(fixed 4) ~n_samples:2 ~key data in
+  check_shape ~msg:"draws at the placement" [| 2; n |] posterior.R.x0;
+  check_shape ~msg:"inputs at the placement" [| t_steps; 2; m |] posterior.R.u;
+  let terms = El.compute model params ~posterior data in
+  check_finite ~msg:"the bound at the placement" (item terms.El.elbo);
+  let mean = M.mean model params ~solve:(fixed 4) data in
+  check_shape ~msg:"the mean at the placement" [| t_steps; 1; m |] mean.R.u
+
+(* A component's parameters can be moved to another placement: the values are
+   the same, and the type says where they live. *)
+let test_place () =
+  let module Brand = (val Nx.devices [ Rig.host ] : Nx.Devices) in
+  let at = Brand.on in
+  let prior = P.Gaussian.make ~at:Nx.Host.on ~spatial_std:1.5 ~first_bin:0.5 ~m:2 () in
+  let params = P.init dtype prior in
+  let moved = P.Gaussian.place ~at params in
+  equal
+    ~msg:"a placed prior keeps its scales"
+    (array float_exact)
+    (to_array params.P.Gaussian.log_spatial_stds)
+    (to_array moved.P.Gaussian.log_spatial_stds);
+  equal
+    ~msg:"a placed prior keeps its first-step multiplier"
+    float_exact
+    (item params.P.Gaussian.log_first_bin)
+    (item moved.P.Gaussian.log_first_bin);
+  (* an optional field is a subtree, and moves with the rest *)
+  let dynamics = D.Linear.make ~at:Nx.Host.on ~n:2 ~m:3 () in
+  let params = D.init dtype dynamics in
+  let moved = D.Linear.place ~at params in
+  equal
+    ~msg:"a placed dynamics keeps its readout"
+    (array float_exact)
+    (to_array params.D.Linear.w)
+    (to_array moved.D.Linear.w);
+  (match params.D.Linear.b, moved.D.Linear.b with
+   | Some b, Some moved_b ->
+     equal ~msg:"the input projection" (array float_exact) (to_array b) (to_array moved_b)
+   | None, None -> ()
+   | _ -> fail "a placed dynamics changed its optional input projection");
+  (* the initial-state prior and the recognition's blocks too *)
+  let initial = I.init ~at dtype (I.make ~n:2 ()) in
+  let moved_initial = I.place ~at initial in
+  equal
+    ~msg:"a placed initial-state prior keeps its mean"
+    (array float_exact)
+    (to_array initial.I.mean)
+    (to_array moved_initial.I.mean)
 
 let test_structures () =
   let model, params = setup ~n:2 ~m:1 ~t_steps:3 ~n_output:2 () in
@@ -2078,8 +2393,6 @@ let test_structures () =
     likelihood.c: a leaf
     likelihood.bias: a leaf
     likelihood.log_variances: a leaf
-    prior.log_spatial_stds: a leaf
-    prior.log_first_bin: a leaf
     encoder_prior.log_spatial_stds: a leaf
     encoder_prior.log_first_bin: a leaf
     initial_prior: None
@@ -2146,6 +2459,7 @@ let () =
     (run
        "ilqr_vae"
        [ test "covariance factors" test_covariance
+       ; test "gaussian densities" test_density
        ; test "initial-state prior" test_initial_prior
        ; test "initial-state recognition" test_initial_state_recognition
        ; test "initial state is the mode" test_initial_state_is_the_mode
@@ -2173,5 +2487,9 @@ let () =
        ; test "recognition swapping" test_swapping
        ; test "training smoke test" test_training_smoke
        ; test "lfads training smoke test" test_lfads_training_smoke
+       ; test "input prior terms" test_input_prior_terms
+       ; test "shape errors" test_shape_errors
+       ; test "placement" test_placement
+       ; test "placing parameters" test_place
        ; test "structures" test_structures
        ])

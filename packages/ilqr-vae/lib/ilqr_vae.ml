@@ -6,6 +6,7 @@
 open Nx
 module Types = Types
 module Covariance = Covariance
+module Density = Density
 module Initial = Initial
 module Prior = Prior
 module Likelihood = Likelihood
@@ -19,12 +20,24 @@ type ('w, 's) value = (float, 'w, 's) Nx.t
 type ('w, 'd, 'l, 'p, 'e, 'r, 's) model = ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
 type ('w, 'd, 'l, 'p, 'e, 'r, 's) params = ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
 
+type ('w, 's) generated =
+  { x0 : ('w, 's) value
+  ; u : ('w, 's) value
+  ; z : ('w, 's) value
+  ; observations : ('w, 's) value
+  }
+
+type ('w, 's) prediction =
+  { u : ('w, 's) value
+  ; z : ('w, 's) value
+  ; observations : ('w, 's) value
+  }
+
 let posterior_mean = Model.mean
 let posterior_draws = Model.infer
 let log_prob = Model.log_prob
 let loss = Elbo.loss
 let loss_fixed = Elbo.loss_fixed
-let batch_loss_fixed = Elbo.batch_loss_fixed
 
 let elbo model params ?beta ~posterior data =
   (Elbo.compute model params ?beta ~posterior data).Elbo.elbo
@@ -44,13 +57,13 @@ let integrate
     invalid_arg
       (Printf.sprintf
          "Ilqr_vae.integrate: u must be [batch…; n_steps; %d], got rank %d"
-         model.Model.m
+         (Model.m model)
          rank);
   let batch_dims = Array.sub u_shape 0 (rank - 2) in
   let x0 =
-    zeros_at (beside u) model.Model.dtype (Array.append batch_dims [| model.Model.n |])
+    zeros_at (beside u) (Model.dtype model) (Array.append batch_dims [| Model.n model |])
   in
-  Dynamics.integrate model.Model.dynamics params.Model.dynamics ~x0 ~u
+  Dynamics.integrate (Model.dynamics model) params.Model.dynamics ~x0 ~u
 
 let integrate_from
       (type w d l p e r)
@@ -59,10 +72,11 @@ let integrate_from
       ~x0
       ~u
   =
-  Dynamics.integrate model.Model.dynamics params.Model.dynamics ~x0 ~u
+  Dynamics.integrate (Model.dynamics model) params.Model.dynamics ~x0 ~u
 
 (* [decode model params ~time_axis z] is the likelihood's readout of a state
-   sequence: observation [k] belongs to state [k + 1]. *)
+   sequence: observation [k] belongs to state [k + 1]. The horizon comes from
+   [z], so a rollout of any length decodes to the same length. *)
 let decode
       (type w d l p e r)
       (model : (w, d, l, p, e, r, 's) Model.t)
@@ -71,14 +85,13 @@ let decode
       (z : (w, 's) value)
   =
   let rank = Array.length (shape z) in
+  let t_steps = (shape z).(time_axis) - 1 in
   let indices =
     List.init rank (fun axis ->
-      if Int.equal axis time_axis
-      then (R (1, model.Model.n_steps + 1) : 's Nx.index)
-      else A)
+      if Int.equal axis time_axis then (R (1, t_steps + 1) : 's Nx.index) else A)
   in
   let z_next = slice indices z in
-  model.Model.likelihood.Likelihood.mean params.Model.likelihood z_next
+  Likelihood.mean (Model.likelihood model) params.Model.likelihood z_next
 
 let sample_generative
       (type w d l p e r)
@@ -91,25 +104,27 @@ let sample_generative
   and key_x0 = keys.(1)
   and key_o = keys.(2) in
   let u =
-    model.Model.prior.Prior.sample
+    Prior.sample
+      (Model.prior model)
       params.Model.prior
       ~key:key_u
-      ~n_steps:model.Model.n_steps
+      ~n_steps:(Model.n_steps model)
   in
   let x0 =
     match params.Model.initial_prior with
-    | None -> zeros_at (beside u) model.Model.dtype [| model.Model.n |]
-    | Some p -> reshape [| model.Model.n |] (Initial.sample p ~key:key_x0 ~n_samples:1)
+    | None -> zeros_at (beside u) (Model.dtype model) [| Model.n model |]
+    | Some p -> reshape [| Model.n model |] (Initial.sample p ~key:key_x0 ~n_samples:1)
   in
   let z = integrate_from model params ~x0 ~u in
   let time_axis = Array.length (shape z) - 2 in
-  let o =
-    model.Model.likelihood.Likelihood.sample
+  let observations =
+    Likelihood.sample
+      (Model.likelihood model)
       params.Model.likelihood
       ~key:key_o
       ~mean:(decode model params ~time_axis z)
   in
-  x0, u, z, o
+  { x0; u; z; observations }
 
 let predictions
       (type w d l p e r)
@@ -119,13 +134,13 @@ let predictions
   =
   let z =
     Dynamics.integrate_samples
-      model.Model.dynamics
+      (Model.dynamics model)
       params.Model.dynamics
       ~x0:posterior.Recognition.x0
       ~u:posterior.Recognition.u
   in
   let time_axis = Array.length (shape z) - 3 in
-  posterior.Recognition.u, z, decode model params ~time_axis z
+  { u = posterior.Recognition.u; z; observations = decode model params ~time_axis z }
 
 let predictions_deterministic
       (type w d l p e r)
@@ -135,10 +150,10 @@ let predictions_deterministic
   =
   let z =
     Dynamics.integrate_samples
-      model.Model.dynamics
+      (Model.dynamics model)
       params.Model.dynamics
       ~x0:samples.Recognition.x0
       ~u:samples.Recognition.u
   in
   let time_axis = Array.length (shape z) - 3 in
-  z, decode model params ~time_axis z
+  { u = samples.Recognition.u; z; observations = decode model params ~time_axis z }

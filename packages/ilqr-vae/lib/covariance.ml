@@ -20,11 +20,11 @@ let structure () =
       let walk = walk_params
     end)
 
-let make ?(sigma2 = 1.0) ~n dtype =
+let make ~at ?(sigma2 = 1.0) ~n dtype =
   if n <= 0 then invalid_arg "Covariance.make: n must be positive";
   if not (Float.( > ) sigma2 0.0)
   then invalid_arg "Covariance.make: sigma2 must be positive";
-  { d = full dtype [| n |] (Float.sqrt sigma2); t = zeros dtype [| n; n |] }
+  { d = full_at at dtype [| n |] (Float.sqrt sigma2); t = zeros_at at dtype [| n; n |] }
 
 let factor { d; t } = Infix.(triu ~k:1 t + diag d)
 let log_det { d; _ } = Infix.(sum (log d) *$ 2.0)

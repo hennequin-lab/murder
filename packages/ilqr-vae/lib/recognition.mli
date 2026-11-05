@@ -23,10 +23,11 @@
       pair produces an autoregressive Gaussian posterior over the inputs.
       Both use {!Dynamics.Mgu} as their recurrent cell.
 
-    A recognition is a value with its own parameters: they are a field of
-    {!Model.params} and are learned with the rest of the model. Swapping the
-    two is changing the [~recognition] argument of {!Model.make}; nothing
-    else in the model or in {!Elbo} knows which one is in use.
+    A recognition is a description with parameters of its own type: the
+    constructor returns both, the parameters are a field of {!Model.params}
+    and are learned with the rest of the model. Swapping the two is changing
+    the [~recognition] argument of {!Model.make}; nothing else in the model or
+    in {!Elbo} knows which one is in use.
 
     {b The objective.} {!Elbo} draws from [q] with {!val-infer} and evaluates
     both [log q] (the returned [log_prob] field) and the model's
@@ -48,9 +49,13 @@
 open Types
 
 (** The generative model as a recognition sees it: the dimensions, the
-    dynamics, the likelihood and the priors. A subset of {!Model.t}, built by
-    {!Model.generative}. *)
-type ('w, 'd, 'l, 'p, 'e, 's) generative =
+    dynamics, the likelihood and the encoder prior. A subset of {!Model.t},
+    built by {!Model.generative}: the components appear as their descriptions,
+    whose maps and structures a recognition reads, and the parameters those
+    maps take arrive with {!type-gparams}. The generative prior over inputs is
+    not part of this view (only {!Elbo} reads it), and neither is the
+    initial-state prior, which is a parameter. *)
+type ('w, 'd, 'l, 'e, 's) generative =
   { dtype : (float, 'w) Nx.dtype
   ; n : int
   ; m : int
@@ -58,22 +63,19 @@ type ('w, 'd, 'l, 'p, 'e, 's) generative =
   ; n_output : int
   ; dynamics : ('w, 'd, 's) Dynamics.t
   ; likelihood : ('w, 'l, 's) Likelihood.t
-  ; prior : ('w, 'p, 's) Prior.t (** the generative prior over inputs *)
   ; encoder_prior : ('w, 'e, 's) Prior.t (** the prior of the iLQR cost, [p̃] *)
-  ; initial_prior : (('w, 's) value, 's) Initial.params option
-    (** the prior over the initial state. The iLQR encoder infers an initial
-        state exactly when it is [Some]: the prior is then the boundary
-        condition of the encoder's control problem, so it is a term of the
-        cost the solve differentiates. *)
   }
 
 (** The corresponding parameters: a subset of {!Model.params}. The device set
     ['s] is that of the initial-state prior's tensors, which the encoder
-    prices. *)
-type ('w, 'd, 'l, 'p, 'e, 's) gparams =
+    prices.
+
+    [initial_prior] is present exactly when the encoder infers an initial
+    state: the prior is then the boundary condition of the encoder's control
+    problem, so it is a term of the cost the solve differentiates. *)
+type ('w, 'd, 'l, 'e, 's) gparams =
   { dynamics : 'd
   ; likelihood : 'l
-  ; prior : 'p
   ; encoder_prior : 'e
   ; initial_prior : (('w, 's) value, 's) Initial.params option
   }
@@ -99,6 +101,16 @@ type ('w, 's) posterior =
   ; log_prob : ('w, 's) value
   }
 
+(** The Gaussian the encoder's local quadratic model puts on the initial
+    state: a mean and a precision, both [[n]]. Its inverse is the covariance
+    the analogous linear model's posterior would have, and it is what an
+    encoder that infers the initial state draws from, up to the recognition's
+    one learned scale. *)
+type ('w, 's) initial =
+  { mean : ('w, 's) value
+  ; precision : ('w, 's) value
+  }
+
 (** The dimensions a recognition is built for. {!Model.make} takes [n_steps]
     from here — no other component knows the horizon — and checks the rest
     against the other components. *)
@@ -109,50 +121,119 @@ type dims =
   ; n_output : int
   }
 
-(** A recognition model over parameters ['r]. The functions take the
-    generative model and its parameters as values, and the recognition's own
+(** How a recognition whose mean solves an iterative problem reaches it.
+
+    Build one with {!adaptive} or {!fixed} and pass it as [~solve] wherever a
+    recognition is asked for a mean. The choice is a value rather than the
+    presence or absence of an iteration count, because it selects behaviour:
+    the adaptive solve stops on a host-side test and runs eagerly, the fixed
+    one runs a known number of iterations with tensor-only control flow and is
+    traceable. A recognition without an iterative inner solve ignores it. *)
+type solve
+
+(** [adaptive ?max_iter ?conv_threshold ()] stops when the solve converges,
+    with the solver's own defaults. Its stopping rule reads scalars on the
+    host, so it cannot be traced or compiled.
+
+    Raises [Invalid_argument] if [max_iter] is not positive. *)
+val adaptive : ?max_iter:int -> ?conv_threshold:float -> unit -> solve
+
+(** [fixed ?alphas ?mu ?c1 ~iters ()] runs exactly [iters] iterations with
+    tensor-only control flow: traceable and compilable together with its
+    implicit gradient. [alphas] is the line-search step list, [mu] the
+    Levenberg-Marquardt damping and [c1] the line-search constant; each
+    defaults to the solver's own.
+
+    Raises [Invalid_argument] if [iters] is not positive. *)
+val fixed : ?alphas:float list -> ?mu:float -> ?c1:float -> iters:int -> unit -> solve
+
+(** [default] is {!adaptive} with every default: the solver a recognition uses
+    when the caller passes no [~solve]. *)
+val default : solve
+
+(** A recognition: a description, read through the accessors below and built by
+    {!make} or by one of the recognitions further down. Its three functions take
+    the generative model and its parameters as values, and the recognition's own
     parameters explicitly, so a recognition built once is applied at whatever
-    parameters a training step reaches. *)
-type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
-  { dims : dims
-  ; infers_initial : bool
-  ; name : string (** a short name, for diagnostics and printing *)
-  ; structure : ('r, 's) Nx.Ptree.t
-  ; params : 'r (** the parameters a fresh model starts from *)
-  ; infer :
-      ('w, 'd, 'l, 'p, 'e, 's) generative
-      -> ('w, 'd, 'l, 'p, 'e, 's) gparams
-      -> params:'r
-      -> ?iters:int
-      -> n_samples:int
-      -> key:'s Nx.Rng.key
-      -> ('w, 's) value
-      -> ('w, 's) posterior
-  ; mean :
-      ('w, 'd, 'l, 'p, 'e, 's) generative
-      -> ('w, 'd, 'l, 'p, 'e, 's) gparams
-      -> params:'r
-      -> ?iters:int
-      -> ('w, 's) value
-      -> ('w, 's) samples
-  ; log_prob :
-      ('w, 'd, 'l, 'p, 'e, 's) generative
-      -> ('w, 'd, 'l, 'p, 'e, 's) gparams
-      -> params:'r
-      -> ?iters:int
-      -> ('w, 's) value
-      -> ('w, 's) samples
-      -> ('w, 's) value
-  }
+    parameters a training step reaches. It holds no parameter value and no
+    tensor. *)
+type ('w, 'd, 'l, 'e, 'r, 's) t
+
+(** [make ~dims ~infers_initial ~infers_inputs ~name ~structure ~init ~infer ~mean ~log_prob ()] is the recognition those describe, and the way to write
+    one the library does not ship. [dims] is the shape of model it is built for,
+    [infers_initial] and [infers_inputs] say which factors [q] carries (what
+    {!Model.make} and {!Elbo} check), [structure] is how its parameters are
+    walked, [init] draws them, and the three maps are the posterior. *)
+val make
+  :  dims:dims
+  -> infers_initial:bool
+  -> infers_inputs:bool
+  -> name:string
+  -> structure:('r, 's) Nx.Ptree.t
+  -> init:(?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> 'r)
+  -> infer:
+       (('w, 'd, 'l, 'e, 's) generative
+        -> ('w, 'd, 'l, 'e, 's) gparams
+        -> params:'r
+        -> ?solve:solve
+        -> n_samples:int
+        -> key:'s Nx.Rng.key
+        -> ('w, 's) value
+        -> ('w, 's) posterior)
+  -> mean:
+       (('w, 'd, 'l, 'e, 's) generative
+        -> ('w, 'd, 'l, 'e, 's) gparams
+        -> params:'r
+        -> ?solve:solve
+        -> ('w, 's) value
+        -> ('w, 's) samples)
+  -> log_prob:
+       (('w, 'd, 'l, 'e, 's) generative
+        -> ('w, 'd, 'l, 'e, 's) gparams
+        -> params:'r
+        -> ?solve:solve
+        -> ('w, 's) value
+        -> ('w, 's) samples
+        -> ('w, 's) value)
+  -> unit
+  -> ('w, 'd, 'l, 'e, 'r, 's) t
+
+(** {1:reading Reading a recognition} *)
+
+(** [dims r] is the shape of model it is built for. *)
+val dims : ('w, 'd, 'l, 'e, 'r, 's) t -> dims
+
+(** [infers_initial r] is [true] when [q] carries an initial-state factor, so
+    that {!Model.make} can require a matching initial-state prior. *)
+val infers_initial : ('w, 'd, 'l, 'e, 'r, 's) t -> bool
+
+(** [infers_inputs r] is [true] when [q] carries an input factor. A recognition
+    that leaves the inputs at the point mass at zero has none: {!Elbo} then drops
+    the input prior's term, because pricing a point mass is not part of the
+    bound. *)
+val infers_inputs : ('w, 'd, 'l, 'e, 'r, 's) t -> bool
+
+(** [name r] is a short name, for diagnostics and printing. *)
+val name : ('w, 'd, 'l, 'e, 'r, 's) t -> string
+
+(** [structure r] is the [Nx.Ptree.t] of its parameters. *)
+val structure : ('w, 'd, 'l, 'e, 'r, 's) t -> ('r, 's) Nx.Ptree.t
+
+(** [init ?key dtype r] draws the parameters a fresh model starts from, at the
+    placement the description was made at. [key] defaults to the current random
+    scope. *)
+val init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> ('w, 'd, 'l, 'e, 'r, 's) t -> 'r
 
 (** [infer rec gen gp ~params ~n_samples ~key data] draws [n_samples] latent
     trajectories from [q(· | data)] and evaluates [log q] at each of them.
 
     [data] is one trial ([[n_steps; n_output]]) or a mini-batch
     ([[batch…; n_steps; n_output]]). A mini-batch is one tensor argument: the
-    recognition maps one trial's encoder over its leading axes, and the key
-    is split into one subkey per trial, so their draws are independent. The
-    result carries the batch axes as documented at {!type-posterior}.
+    recognition applies one trial's encoder to each of its leading axes — one
+    {!Rune.vmap} when the solve is fixed, one host-side iteration per trial
+    when it is adaptive — and the key is split into one subkey per trial, so
+    their draws are independent. The result carries the batch axes as
+    documented at {!type-posterior}.
 
     The returned density is evaluated with the recognition's own distribution
     parameters detached: its value is [log q], but its gradient reaches the
@@ -164,13 +245,18 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
     an estimator of the bound's gradient rather than the derivative of one
     traced value at one key, so a finite-difference gradient check of the
     library objective will disagree — check a live-density objective, as the
-    test suite does. *)
+    test suite does.
+
+    [solve] selects how a recognition with an iterative inner solver reaches
+    its mean; see {!type-solve}. The adaptive solve cannot run inside
+    {!Rune.vmap}, so a mini-batch is solved one trial at a time with it and
+    with one map of the whole batch when the solve is {!fixed}. *)
 val infer
-  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) t
-  -> ('w, 'd, 'l, 'p, 'e, 's) generative
-  -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+  :  ('w, 'd, 'l, 'e, 'r, 's) t
+  -> ('w, 'd, 'l, 'e, 's) generative
+  -> ('w, 'd, 'l, 'e, 's) gparams
   -> params:'r
-  -> ?iters:int
+  -> ?solve:solve
   -> n_samples:int
   -> key:'s Nx.Rng.key
   -> ('w, 's) value
@@ -182,11 +268,11 @@ val infer
     trial, and [[batch…; 1; n]] and [[batch…; n_steps; 1; m]] for a
     mini-batch). *)
 val mean
-  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) t
-  -> ('w, 'd, 'l, 'p, 'e, 's) generative
-  -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+  :  ('w, 'd, 'l, 'e, 'r, 's) t
+  -> ('w, 'd, 'l, 'e, 's) generative
+  -> ('w, 'd, 'l, 'e, 's) gparams
   -> params:'r
-  -> ?iters:int
+  -> ?solve:solve
   -> ('w, 's) value
   -> ('w, 's) samples
 
@@ -198,11 +284,11 @@ val mean
     second pass over the data, so this is for latents from elsewhere: an
     importance-weighted bound, a fixed set of draws, a diagnostic. *)
 val log_prob
-  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) t
-  -> ('w, 'd, 'l, 'p, 'e, 's) generative
-  -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+  :  ('w, 'd, 'l, 'e, 'r, 's) t
+  -> ('w, 'd, 'l, 'e, 's) generative
+  -> ('w, 'd, 'l, 'e, 's) gparams
   -> params:'r
-  -> ?iters:int
+  -> ?solve:solve
   -> ('w, 's) value
   -> ('w, 's) samples
   -> ('w, 's) value
@@ -211,8 +297,8 @@ val log_prob
     for a caller that differentiates through a recognition's own use of the
     generative parameters. *)
 val gparams_structure
-  :  ('w, 'd, 'l, 'p, 'e, 's) generative
-  -> (('w, 'd, 'l, 'p, 'e, 's) gparams, 's) Nx.Ptree.t
+  :  ('w, 'd, 'l, 'e, 's) generative
+  -> (('w, 'd, 'l, 'e, 's) gparams, 's) Nx.Ptree.t
 
 (** {1 iLQR recognition} *)
 
@@ -272,60 +358,37 @@ module Iilqr : sig
       value, so that it stays polymorphic in the dtype. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [init ?space_sigma2 ?time_sigma2 ?infer_initial ~n ~m ~n_steps ~n_output dtype] is the initial parameters: factors of [space_sigma2 · I] and
-      [time_sigma2 · I], both [1.] by default, and the initial state's log
-      scale at [0] when [infer_initial] (default [false]). Raises
-      [Invalid_argument] if a dimension is not positive. *)
-  val init
-    :  ?space_sigma2:float
-    -> ?time_sigma2:float
-    -> ?infer_initial:bool
-    -> n:int
-    -> m:int
-    -> n_steps:int
-    -> n_output:int
-    -> (float, 'w) Nx.dtype
-    -> (('w, Nx.host) value, Nx.host) params
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> (('w, 's) value, 's) params
+    -> (('w, 'e) value, 'e) params
 
-  (** [problem gen gp data] is the encoder's control problem for one trial,
-      as a {!Dilqr.Problem.t} whose parameters are [gp]. *)
+  (** [problem gen ?verbose data] is the encoder's control problem for one
+      trial, as a {!Dilqr.Problem.t} whose parameters are {!type-gparams}.
+      [verbose] is the solver's, off by default. *)
   val problem
-    :  ('w, 'd, 'l, 'p, 'e, 's) generative
-    -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+    :  ('w, 'd, 'l, 'e, 's) generative
+    -> ?verbose:bool
     -> ('w, 's) value
-    -> ('w, ('w, 'd, 'l, 'p, 'e, 's) gparams, 's) Dilqr.Problem.t
+    -> ('w, ('w, 'd, 'l, 'e, 's) gparams, 's) Dilqr.Problem.t
 
-  (** [posterior_mean gen gp ?u_init ?max_iter ?conv_threshold data] is the
-      adaptive iLQR solution's controls, of shape [[n_steps; m]]. [u_init]
-      ([n_steps; m], zeros when omitted) is the initial guess and carries no
-      gradient. Differentiable through {!Dilqr.solve_adaptive}'s implicit VJP;
-      eager only, so do not put it inside {!Rune.jit}. *)
+  (** [posterior_mean gen gp ?u_init ?solve ?rounds data] is the iLQR
+      solution's controls, of shape [[n_steps; m]] — the recognition mean.
+      [u_init] ([n_steps; m], zeros when omitted) is the initial guess and
+      carries no gradient: the idealized solve does not depend on it.
+      Differentiable through {!Dilqr}'s implicit VJP of whichever solve
+      {!type-solve} selects. *)
   val posterior_mean
-    :  ('w, 'd, 'l, 'p, 'e, 's) generative
-    -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+    :  ('w, 'd, 'l, 'e, 's) generative
+    -> ('w, 'd, 'l, 'e, 's) gparams
     -> ?u_init:('w, 's) value
-    -> ?max_iter:int
-    -> ?conv_threshold:float
+    -> ?solve:solve
     -> ?rounds:int
     -> ('w, 's) value
     -> ('w, 's) value
 
-  (** [posterior_mean_fixed gen gp ?u_init ~iters ?alphas ?mu ?c1 data] is the
-      same mean with [iters] fixed iterations: tensor-only control flow,
-      traceable and JIT-compilable together with its implicit VJP. *)
-  val posterior_mean_fixed
-    :  ('w, 'd, 'l, 'p, 'e, 's) generative
-    -> ('w, 'd, 'l, 'p, 'e, 's) gparams
-    -> ?u_init:('w, 's) value
-    -> iters:int
-    -> ?alphas:float list
-    -> ?mu:float
-    -> ?c1:float
-    -> ?rounds:int
-    -> ('w, 's) value
-    -> ('w, 's) value
-
-  (** [posterior_initial gen gp ?u_init ?iters ?rounds data] is the Laplace
+  (** [posterior_initial gen gp ?u_init ?solve ?rounds data] is the Laplace
       posterior of the initial state — the mean and the precision of the
       Gaussian the local quadratic model implies for it — when the model has
       an initial-state prior, and [None] when it fixes [x_0 = 0].
@@ -334,33 +397,33 @@ module Iilqr : sig
       inputs, i.e. the value the trajectory starts from once [rounds] rounds
       (default 2) of solve-then-replace have converged; the precision is the
       same cost's Hessian in [x_0], so its inverse is the covariance the
-      analogous linear model's posterior would have. [iters] selects the
-      adaptive solve (absent) or a fixed iteration count, as the means do.
+      analogous linear model's posterior would have.
 
       This is the diagnostic entry point as much as a component: it answers
       "what initial condition does the encoder want, given this trial", which
       is what the [u_0] channel of the fixed-zero encoder stood in for. *)
   val posterior_initial
-    :  ('w, 'd, 'l, 'p, 'e, 's) generative
-    -> ('w, 'd, 'l, 'p, 'e, 's) gparams
+    :  ('w, 'd, 'l, 'e, 's) generative
+    -> ('w, 'd, 'l, 'e, 's) gparams
     -> ?u_init:('w, 's) value
-    -> ?iters:int
+    -> ?solve:solve
     -> ?rounds:int
     -> ('w, 's) value
-    -> (float, 'w, 's) Dilqr.Lqr.initial option
+    -> ('w, 's) initial option
 
-  (** [make ?space_sigma2 ?time_sigma2 ~n ~m ~n_steps ~n_output dtype] is the
-      recognition, with covariance factors initialized as {!init} does. *)
+  (** [make ?space_sigma2 ?time_sigma2 ~infer_initial ~n ~m ~n_steps ~n_output dtype] is the recognition, with covariance factors initialized as
+      {!init} does. *)
   val make
-    :  ?space_sigma2:float
+    :  at:'s Nx.Placement.t
+    -> ?space_sigma2:float
     -> ?time_sigma2:float
     -> ?infer_initial:bool
     -> n:int
     -> m:int
     -> n_steps:int
     -> n_output:int
-    -> (float, 'w) Nx.dtype
-    -> ('w, 'd, 'l, 'p, 'e, (('w, Nx.host) value, Nx.host) params, Nx.host) t
+    -> unit
+    -> ('w, 'd, 'l, 'e, (('w, 's) value, 's) params, 's) t
 end
 
 (** {1 LFADS recognition} *)
@@ -414,7 +477,7 @@ module Lfads : sig
       value, so that it stays polymorphic in the dtype. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ?n_ic ?n_ci ?n_ctrl ?with_inputs ?phi ?key ~n ~m ~n_steps ~n_output dtype] is the recognition.
+  (** [make ~at ?n_ic ?n_ci ?n_ctrl ?with_inputs ?phi ?key ~n ~m ~n_steps ~n_output dtype] is the recognition, its parameters made at [at].
 
       - [n_ic] is the state size of the two initial-condition encoders
         (default [64]);
@@ -431,16 +494,22 @@ module Lfads : sig
       close to the model's input prior. Raises [Invalid_argument] if a size
       is not positive. *)
   val make
-    :  ?n_ic:int
+    :  at:'s Nx.Placement.t
+    -> ?n_ic:int
     -> ?n_ci:int
     -> ?n_ctrl:int
     -> ?with_inputs:bool
-    -> ?phi:(('w, Nx.host) value -> ('w, Nx.host) value)
-    -> ?key:Nx.host Nx.Rng.key
+    -> ?phi:(('w, 's) value -> ('w, 's) value)
     -> n:int
     -> m:int
     -> n_steps:int
     -> n_output:int
-    -> (float, 'w) Nx.dtype
-    -> ('w, 'd, 'l, 'p, 'e, (('w, Nx.host) value, Nx.host) params, Nx.host) t
+    -> unit
+    -> ('w, 'd, 'l, 'e, (('w, 's) value, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> (('w, 's) value, 's) params
+    -> (('w, 'e) value, 'e) params
 end

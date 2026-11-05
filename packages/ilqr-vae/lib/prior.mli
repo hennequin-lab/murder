@@ -13,43 +13,83 @@
     may differ — a Student-t generative prior with a Gaussian encoder prior is
     the sparse-input configuration the paper argues for.
 
-    A prior is a value. Its parameters are passed into its functions, so
-    everything below is differentiable and traceable; its {!type-t} carries
-    the parameters a fresh model starts from, and [structure] is the
-    [Nx.Ptree.t] the transformations walk. [k] is a tensor, because the
+    A prior is a {e description}: the dimension, the [Nx.Ptree.t] the
+    transformations walk, the functions that take its parameters, and how to
+    draw those parameters. The parameters themselves are a value of their own,
+    made by {!val-init}. Everything below is differentiable and traceable. [k] is a tensor, because the
     encoder's cost runs under {!Rune.scan}; a prior that treats the first step
     differently selects on it with [Nx.where] rather than a host [if]. *)
 
 open Types
 
-type ('w, 'p, 's) t =
-  { m : int (** input dimension *)
-  ; structure : ('p, 's) Nx.Ptree.t (** the structure of the prior's parameters *)
-  ; params : 'p (** the parameters a fresh model starts from *)
-  ; logp_t : 'p -> k:('w, 's) value -> u:('w, 's) value -> ('w, 's) value
-    (** [logp_t p ~k ~u] is log p(u_k). [u] is one input row, of shape [[m]]
-        or a batch [[batch…; m]]; the result is a scalar tensor, or one value
-        per row. *)
-  ; sample : 'p -> key:'s Nx.Rng.key -> n_steps:int -> ('w, 's) value
-    (** [sample p ~key ~n_steps] draws one input sequence, of shape
-        [[n_steps; m]]. *)
-  ; kl_to_gaussian :
-      ('p
-       -> mu:('w, 's) value
-       -> space_factor:('w, 's) value
-       -> time_factor:('w, 's) value
-       -> ('w, 's) value)
-        option
-    (** [Some kl] exactly when the prior is Gaussian;
-        [kl p ~mu ~space_factor ~time_factor] is the exact KL [KL(q ‖ p)] for
-        the recognition distribution [q = N(mu, Σ_time ⊗ Σ_space)], where the
-        two factors are the Cholesky factors [L] of the covariances
-        ([Σ = L Lᵀ], triangular, as {!Covariance.factor} returns). {!Elbo}
-        estimates its KL from samples whatever the prior — that is what lets
-        [q] be any distribution a recognition can sample — so this remains
-        for diagnostics and for a caller with a Gaussian prior who wants the
-        exact value. *)
-  }
+(** A prior: a description, read through the accessors below and built by
+    {!make} or by one of the priors further down. It holds no parameter value and
+    no tensor. *)
+type ('w, 'p, 's) t
+
+(** [make ~m ~structure ~init ~logp_t ~sample ?kl_to_gaussian ()] is the prior
+    those describe, and the way to write one the library does not ship. [m] is
+    the input dimension, [structure] is how the parameters are walked, [init]
+    draws them, and the maps are the density and the sampler.
+    [kl_to_gaussian] is [Some kl] exactly when the density is Gaussian.
+
+    Raises [Invalid_argument] if [m] is not positive. *)
+val make
+  :  m:int
+  -> structure:('p, 's) Nx.Ptree.t
+  -> init:(?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> 'p)
+  -> logp_t:('p -> k:('w, 's) value -> u:('w, 's) value -> ('w, 's) value)
+  -> sample:('p -> key:'s Nx.Rng.key -> n_steps:int -> ('w, 's) value)
+  -> ?kl_to_gaussian:
+       ('p
+        -> mu:('w, 's) value
+        -> space_factor:('w, 's) value
+        -> time_factor:('w, 's) value
+        -> ('w, 's) value)
+  -> unit
+  -> ('w, 'p, 's) t
+
+(** {1:reading Reading a prior} *)
+
+(** [m p] is the input dimension. *)
+val m : ('w, 'p, 's) t -> int
+
+(** [structure p] is the [Nx.Ptree.t] of its parameters. *)
+val structure : ('w, 'p, 's) t -> ('p, 's) Nx.Ptree.t
+
+(** [init ?key dtype p] draws the parameters a fresh model starts from, at the
+    placement the description was made at. [key] defaults to the current random
+    scope. *)
+val init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> ('w, 'p, 's) t -> 'p
+
+(** [logp_t p θ ~k ~u] is log p(u_k). [u] is one input row, of shape [[m]] or a
+    batch [[batch…; m]]; the result is a scalar tensor, or one value per row. *)
+val logp_t
+  :  ('w, 'p, 's) t
+  -> 'p
+  -> k:('w, 's) value
+  -> u:('w, 's) value
+  -> ('w, 's) value
+
+(** [sample p θ ~key ~n_steps] draws one input sequence, of shape
+    [[n_steps; m]]. *)
+val sample : ('w, 'p, 's) t -> 'p -> key:'s Nx.Rng.key -> n_steps:int -> ('w, 's) value
+
+(** [kl_to_gaussian p] is the exact [KL(q ‖ p)] when the prior is Gaussian, and
+    [None] otherwise. With [q = N(mu, Σ_time ⊗ Σ_space)] the two factors are the
+    Cholesky factors [L] of the covariances ([Σ = L Lᵀ], triangular, as
+    {!Covariance.factor} returns). {!Elbo} estimates its KL from samples whatever
+    the prior — that is what lets [q] be any distribution a recognition can sample
+    — so this remains for diagnostics and for a caller with a Gaussian prior who
+    wants the exact value. *)
+val kl_to_gaussian
+  :  ('w, 'p, 's) t
+  -> ('p
+      -> mu:('w, 's) value
+      -> space_factor:('w, 's) value
+      -> time_factor:('w, 's) value
+      -> ('w, 's) value)
+       option
 
 (** {1:gaussian Gaussian} *)
 
@@ -78,18 +118,25 @@ module Gaussian : sig
       instead. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ~spatial_std ~first_bin ~m dtype] is a Gaussian prior over [[m]]
-      dimensional inputs whose scales all start at [spatial_std], and whose
-      first step's multiplier starts at [first_bin].
+  (** [make ~at ~spatial_std ~first_bin ~m ()] is a Gaussian prior over [[m]]
+      dimensional inputs whose parameters start with scales [spatial_std] and a
+      first step's multiplier [first_bin]; {!init} draws them at [at].
 
       Raises [Invalid_argument] if [m] is not positive or either scale is not
       positive. *)
   val make
-    :  ?spatial_std:float
+    :  at:'s Nx.Placement.t
+    -> ?spatial_std:float
     -> ?first_bin:float
     -> m:int
-    -> (float, 'w) Nx.dtype
-    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
+    -> unit
+    -> ('w, ((float, 'w, 's) Nx.t, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> ((float, 'w, 's) Nx.t, 's) params
+    -> ((float, 'w, 'e) Nx.t, 'e) params
 
   (** The per-step log density of {!make}; the function the prior's
       [logp_t] is. *)
@@ -157,19 +204,27 @@ module Student : sig
       instead. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ~spatial_std ~nu ~first_std ~m dtype] is a Student-t prior over
-      [[m]] dimensional inputs with degrees of freedom [nu], scales [spatial_std]
-      and a first step with scales [first_std].
+  (** [make ~at ~spatial_std ~nu ~first_std ~m ()] is a Student-t prior over
+      [[m]] dimensional inputs whose parameters start with degrees of freedom
+      [nu], scales [spatial_std] and a first step with scales [first_std];
+      {!init} draws them at [at].
 
       [nu] defaults to [10.]. Raises [Invalid_argument] if [m] is not positive,
       [nu ≤ 2], or a scale is not positive. *)
   val make
-    :  ?spatial_std:float
+    :  at:'s Nx.Placement.t
+    -> ?spatial_std:float
     -> ?nu:float
     -> ?first_std:float
     -> m:int
-    -> (float, 'w) Nx.dtype
-    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
+    -> unit
+    -> ('w, ((float, 'w, 's) Nx.t, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> ((float, 'w, 's) Nx.t, 's) params
+    -> ((float, 'w, 'e) Nx.t, 'e) params
 
   (** The per-step log density and the sampler of {!make}. *)
   val logp_t
@@ -211,18 +266,25 @@ module Laplacian : sig
       instead. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ~spatial_std ~first_std ~m dtype] is a Laplacian prior over [[m]]
-      dimensional inputs with scales [spatial_std] and a first step with
-      scales [first_std].
+  (** [make ~at ~spatial_std ~first_std ~m ()] is a Laplacian prior over [[m]]
+      dimensional inputs whose parameters start with scales [spatial_std] and a
+      first step with scales [first_std]; {!init} draws them at [at].
 
       Raises [Invalid_argument] if [m] is not positive or a scale is not
       positive. *)
   val make
-    :  ?spatial_std:float
+    :  at:'s Nx.Placement.t
+    -> ?spatial_std:float
     -> ?first_std:float
     -> m:int
-    -> (float, 'w) Nx.dtype
-    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
+    -> unit
+    -> ('w, ((float, 'w, 's) Nx.t, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> ((float, 'w, 's) Nx.t, 's) params
+    -> ((float, 'w, 'e) Nx.t, 'e) params
 
   (** The per-step log density and the sampler of {!make}. *)
   val logp_t

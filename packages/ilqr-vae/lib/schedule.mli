@@ -26,7 +26,7 @@
         Rune.jit
           Nx.Ptree.(structure @-> tensor @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
           (fun params beta key data ->
-             Elbo.batch_loss_fixed
+             Elbo.loss_fixed
                model params ~beta ~iters:4 ~key ~n_samples:16 data)
       in
       let loss = step params (Schedule.at schedule i) key batch in
