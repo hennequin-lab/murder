@@ -1,4 +1,4 @@
 (executables
- (names spike_la bench_step)
- (modules spike_la bench_step)
+ (names spike_la bench_step spike_grad spike_contact_grad)
+ (modules spike_la bench_step spike_grad spike_contact_grad)
  (libraries base mjc nx rune unix))

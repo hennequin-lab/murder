@@ -792,3 +792,45 @@ is visibly violated rather than merely wrong in the seventh digit — to see it,
 and `test/fixtures/stiff.xml` now pins it: a joint pushed against a direct-form
 limit, with `efc_aref` in the fixture, which the bug turns from `+4958` into
 `-563`.
+
+## M6 — differentiability, first increment (2026)
+
+**A masked-out branch does not mask an infinite derivative.** `Nx.sqrt`'s reverse
+rule divides by the root, so at a zero argument its cotangent is infinite, and
+`Nx.where` multiplies the *unselected* branch's cotangent by zero — `0 * inf` is
+a NaN. Every `max (sqrt x) tiny` idiom in the codebase therefore handed a NaN to
+the reverse pass of any model that reached it, even though the forward value was
+right and no test noticed. In practice the idioms were the normalizers
+(`make_frame`, `fallback_normal`, `sphere_sphere`) and the quaternion branch
+chain (`quat_of_mat`, whose three candidates each take a root of a matrix
+combination that is exactly zero at a 180-degree rotation), plus
+`norm_along_1`/`quat_of_rotvec` (which reach a zero root when a tangent vector
+or a rotation vector is zero). `boxes2` was the model that showed it: the
+reverse mode of the step was NaN at every recorded state, in exactly the
+coordinates of every box's quaternion, and the first stage that was not finite
+was `contact_dist`.
+
+The fix is `Rigid.safe_sqrt` and `Rigid.safe_sqrt_exact`: a root whose argument
+has a floor under it, and — for the exact one — a mask that multiplies the floor
+root back to the value it would have had, so **the value is unchanged** and only
+the derivative at zero differs. The first attempt used the floored root alone,
+and `test_rigid`'s "zero rotvec" case failed: a quaternion that must be exactly
+`[1; 0; 0; 0]` came back `[1 - 1.3e-16, ...]`. That is the honesty invariant
+working — the derivative fix is not allowed to move a value.
+
+The floor is `1e-200` on a *squared* quantity, i.e. a length below `1e-100`:
+below anything a model's geometry produces, and large enough that the derivative
+at the floor, `5e99`, does not overflow when a cotangent multiplies it. The
+floor on a squared argument is the subtlety of the floor: `1e-15` there would
+have made every vector shorter than `3e-8` normalize to zero, which is a
+different engine.
+
+`test/test_grad.ml` is the harness this bought: the reverse mode of the step is
+finite at every recorded state of thirteen models (including `boxes2`'s 22
+contacts and `bounce`'s and `blocks`'s); it matches central differences within
+`1e-6` on the smooth models; and it does not change when the solver's iteration
+budget changes from 3 to 8. What it does **not** yet do is take the gradient
+through the solver as an implicit function — the unrolled answer happens to
+agree on these models, which is why the budget test passes, but that agreement
+is a property of the models, not of the implementation, and the implicit rule is
+the next increment.

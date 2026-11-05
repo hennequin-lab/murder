@@ -86,6 +86,19 @@ val vec_cross : ('s, 'd) f -> ('s, 'd) f -> ('s, 'd) f
     [[n]]. *)
 val vec_norm : ('s, 'd) f -> ('s, 'd) f
 
+(** [safe_sqrt x] is [sqrt x] with a floor under its argument, so that its
+    derivative stays finite at zero: [sqrt]'s own rule divides by the root, and
+    a select that masks the value out does not mask an infinite cotangent —
+    [0 * inf] is a NaN, and it reaches the reverse pass of every model whose
+    frame is built from a zero normal. [safe_sqrt_exact] is the same root with
+    the value it would have had: exactly zero at zero, [sqrt x] everywhere a
+    model's geometry reaches. Use it wherever a length, a normalization or a
+    norm is computed under a mask. *)
+val safe_sqrt : ('s, 'd) f -> ('s, 'd) f
+
+(** See {!safe_sqrt}. *)
+val safe_sqrt_exact : ('s, 'd) f -> ('s, 'd) f
+
 (** [vec_normalize a] is [a] divided by its norm; a zero vector stays zero. *)
 val vec_normalize : ('s, 'd) f -> ('s, 'd) f
 

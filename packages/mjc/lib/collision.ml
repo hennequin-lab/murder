@@ -133,25 +133,38 @@ let geom_zaxis (d : Data.host) g =
 
 let geom_pos (d : Data.host) g = Nx.slice [ I g; A ] d.geom_xpos
 
+(* A root of a squared length, with a finite derivative where the length is
+   zero. [Nx.sqrt]'s own rule divides by the root, so a branch that is masked
+   out because its pair is degenerate still sends an infinity into the reverse
+   pass, where [0 * inf] is a NaN: the gradient of every contact model whose
+   frames are built from a zero normal, which is every model with a dead slot
+   in a manifold. The value is [sqrt]'s, at every length the geometry can
+   produce; only the derivative at zero differs, and there it is finite. *)
+let ssqrt = Rigid.safe_sqrt_exact
+let len v = ssqrt (Nx.dot v v)
+
+(* The same length, clamped away from zero for a division. *)
+let len_clamped v = Nx.maximum_s (len v) 1e-300
+
 (* The two z axes coincide, so no direction is defined: MuJoCo takes their
    cross product and falls back to x when even that is zero. *)
 let fallback_normal axis1 axis2 =
   let cross = Nx.cross axis1 axis2 in
-  let len = Nx.sqrt (Nx.dot cross cross) in
+  let norm = len cross in
   let x = Nx.set [ I 0 ] (Nx.scalar Nx.float64 1.0) (Nx.zeros Nx.float64 [| 3 |]) in
-  let v = Nx.where (Nx.greater_s len 1e-15) cross x in
-  Nx.div v (Nx.maximum_s (Nx.sqrt (Nx.dot v v)) 1e-300)
+  let v = Nx.where (Nx.greater_s norm 1e-15) cross x in
+  Nx.div v (len_clamped v)
 
 let sphere_sphere ~pos1 ~size1 ~pos2 ~size2 ~axis1 ~axis2 =
   let dif = Nx.sub pos1 pos2 in
-  let cdist = Nx.sqrt (Nx.dot dif dif) in
+  let cdist = len dif in
   let dist = Nx.sub (Nx.sub cdist size1) size2 in
   let towards = Nx.sub pos2 pos1 in
-  let len = Nx.sqrt (Nx.dot towards towards) in
+  let norm = len towards in
   let normal =
     Nx.where
-      (Nx.greater_s len 1e-15)
-      (Nx.div towards (Nx.maximum_s len 1e-300))
+      (Nx.greater_s norm 1e-15)
+      (Nx.div towards (len_clamped towards))
       (fallback_normal axis1 axis2)
   in
   let pos = Nx.add pos1 (Nx.mul normal (Nx.add size1 (Nx.mul_s dist 0.5))) in
@@ -167,7 +180,7 @@ let plane_sphere ~pos1 ~normal ~pos2 ~size =
    tangent the pair supplied, orthonormalised. *)
 let make_frame ~normal ~tangent =
   let sc = Nx.scalar Nx.float64 in
-  let norm v = Nx.maximum_s (Nx.sqrt (Nx.dot v v)) 1e-300 in
+  let norm v = len_clamped v in
   let n = Nx.div normal (norm normal) in
   let degenerate = Nx.less_s (Nx.dot tangent tangent) 0.25 in
   let fallback =

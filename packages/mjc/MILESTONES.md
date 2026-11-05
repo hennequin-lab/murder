@@ -543,6 +543,15 @@ tendons (M9). 49 sensor types; v1 ships the list in `PLAN.md` §8.
 
 **2.5 weeks · gate G6 · the reason for the project**
 
+*Status (in progress).* The forward step differentiates: reverse mode is finite
+on every recorded state of the thirteen corpus models, matches central
+differences on the smooth ones, and is invariant to the solver's iteration
+budget. The traps this found were all the same shape — a `sqrt` at zero handed
+an infinite cotangent to a masked-out branch, and `0 * inf` is a NaN — and they
+are fixed without moving a single value (`doc/log.md`). Still open: the
+implicit rule for the solver, gradients with respect to model parameters, the
+`dynamics` closure, `remat`, the cost sheet and the demo.
+
 **Goal.** A gradient of the step, of the answer rather than of the last
 iterate, at a cost independent of the solver iteration count.
 

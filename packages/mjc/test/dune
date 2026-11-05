@@ -12,7 +12,8 @@
   test_tendon
   test_sensor
   test_boxbox
-  test_boxbox_tensor)
+  test_boxbox_tensor
+  test_grad)
  (modules
   support
   test_mjcb
@@ -27,7 +28,8 @@
   test_tendon
   test_sensor
   test_boxbox
-  test_boxbox_tensor)
+  test_boxbox_tensor
+  test_grad)
  (deps
   (glob_files fixtures/*))
  (libraries base mjc nx rune windtrap))

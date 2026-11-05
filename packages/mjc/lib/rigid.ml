@@ -44,7 +44,27 @@ let quat_deriv q omega =
 let quat_conj q =
   of_cols [ comp 0 q; Nx.neg (comp 1 q); Nx.neg (comp 2 q); Nx.neg (comp 3 q) ]
 
-let norm_along_1 x = Nx.sqrt (Nx.sum ~axes:[ 1 ] (Nx.mul x x))
+(* A square root whose derivative stays finite at zero. [Nx.sqrt]'s own rule
+   divides by the root, so at a zero argument it produces an infinite cotangent,
+   and a select that masks the value out does not mask that: [0 * inf] is a NaN,
+   and it reaches the reverse pass of every model whose rotation is a 180-degree
+   one, or whose tangent vector happens to be zero. The floor is small enough
+   that a value it perturbs is invisible next to the 0.5 and 1.0 factors around
+   it — a squared norm below [1e-200] is a vector shorter than [1e-100], which
+   no geometry in a model has — and large enough that its derivative,
+   [1 / (2 sqrt floor)] = [5e99], does not overflow a float64. *)
+let sqrt_floor = 1e-200
+let safe_sqrt x = Nx.sqrt (Nx.maximum_s x sqrt_floor)
+
+(* The same root, with the value it would have had: exactly zero at zero, and a
+   finite derivative there. The floor's root is multiplied out by a mask, which
+   keeps the value exact and passes no cotangent to it. *)
+let safe_sqrt_exact x =
+  let s = safe_sqrt x in
+  let at_zero = Nx.less_s x sqrt_floor in
+  Nx.mul s (Nx.where at_zero (Nx.zeros_like x) (Nx.ones_like x))
+
+let norm_along_1 x = safe_sqrt_exact (Nx.sum ~axes:[ 1 ] (Nx.mul x x))
 
 let safe_norm x =
   let n = norm_along_1 x in
@@ -105,7 +125,7 @@ let quat_of_mat (mat : ('s, 'd) f) =
   in
   let trace = Nx.add (Nx.add (at 0 0) (at 1 1)) (at 2 2) in
   let b0 = Nx.greater_s trace 0. in
-  let s0 = Nx.mul_s (Nx.sqrt (Nx.maximum_s (Nx.add_s trace 1.) 0.)) 0.5 in
+  let s0 = Nx.mul_s (safe_sqrt (Nx.add_s trace 1.)) 0.5 in
   let q0 =
     [| s0
      ; safe_div (Nx.sub (at 2 1) (at 1 2)) s0
@@ -117,10 +137,7 @@ let quat_of_mat (mat : ('s, 'd) f) =
     let j = i + 1 - (3 * ((i + 1) / 3))
     and k = i + 2 - (3 * ((i + 2) / 3)) in
     let s =
-      Nx.mul_s
-        (Nx.sqrt
-           (Nx.maximum_s (Nx.sub (Nx.sub (Nx.add_s (at i i) 1.) (at j j)) (at k k)) 0.))
-        0.5
+      Nx.mul_s (safe_sqrt (Nx.sub (Nx.sub (Nx.add_s (at i i) 1.) (at j j)) (at k k))) 0.5
     in
     let q = Array.init 4 ~f:(fun _ -> s) in
     q.(0) <- safe_div (Nx.sub (at k j) (at j k)) s;
@@ -164,7 +181,7 @@ let quat_of_axis_angle ~axis ~angle =
 
 let quat_of_rotvec r =
   let t2 = Nx.sum ~axes:[ 1 ] (Nx.mul r r) in
-  let theta = Nx.sqrt t2 in
+  let theta = safe_sqrt_exact t2 in
   let half = Nx.mul_s theta 0.5 in
   (* sin(half)/theta tends to 1/2; its series is 1/2 - theta^2/48. *)
   let small = Nx.less_s theta 1e-8 in
