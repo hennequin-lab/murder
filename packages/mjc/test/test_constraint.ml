@@ -77,10 +77,7 @@ let test_ordering () =
    the impedance must match MuJoCo; the solved force is compared loosely,
    because the port takes a fixed Newton path where the C engine runs a primal
    solver with a line search. Both minimise the same quadratic. *)
-let optional f name =
-  match List.Assoc.find f.Support.tensors ~equal:String.equal name with
-  | Some x -> Some x
-  | None -> None
+let optional f name = List.Assoc.find f.Support.tensors ~equal:String.equal name
 
 let limited_states name =
   let m = model name in
