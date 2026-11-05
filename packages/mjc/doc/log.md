@@ -780,3 +780,15 @@ accelerometer, velocimeter), a ray-geometry query (touch, rangefinder, contact,
 tactile), or a reference frame are refused where a model asks for them. Also
 refused: ball and free joints in actuators and joint sensors, site wraps, muscle
 gain and bias, PID and DC motors, and `actearly`.
+
+**A demo found a constraint bug: the refsafe clamp was applied to the direct
+solref form.** MuJoCo's `mj_impedance` clamps `solref[0]` up to `2 dt` — but
+only when `solref[0] > 0`, the time-constant form, because the direct form is a
+*negative stiffness* and `max(-1e5, 0.004)` is `0.004`: a joint that asked for
+a stiff limit got a four-millisecond time constant instead and could be driven
+past its range by hand. The corpus never noticed because every model in it uses
+the default positive form. It took a demo with light links — where a soft limit
+is visibly violated rather than merely wrong in the seventh digit — to see it,
+and `test/fixtures/stiff.xml` now pins it: a joint pushed against a direct-form
+limit, with `efc_aref` in the fixture, which the bug turns from `+4958` into
+`-563`.

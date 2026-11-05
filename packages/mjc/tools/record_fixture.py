@@ -545,6 +545,29 @@ MODELS = {
 </mujoco>
 """,
 
+    # A stiff limit: the direct solref form, which is a negative stiffness, not
+    # a time constant. A joint pushed against it by a spring settles a
+    # millimetre past its range, not a hundred, and the difference is the
+    # refsafe clamp being applied where it does not belong.
+    "stiff": """
+<mujoco model="stiff">
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.5">
+      <joint name="hinge" type="hinge" axis="0 1 0" range="-0.20 0.20"
+             stiffness="40" damping="0.2" springref="0.5" solreflimit="-1e5 -400"/>
+      <geom name="g_arm" type="capsule" size="0.02 0.2" pos="0 0 -0.2"/>
+      <body name="tip" pos="0 0 -0.4">
+        <joint name="wrist" type="hinge" axis="0 1 0" range="-0.05 0.05"
+               stiffness="8" damping="0.1" springref="0.3" solreflimit="-2e5 -800"/>
+        <geom name="g_tip" type="sphere" size="0.04"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+""",
+
 }
 
 

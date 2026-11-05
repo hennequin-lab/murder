@@ -516,7 +516,16 @@ let impedance (m : Model.host) (d : Data.host) : Data.host =
   let r0 = col 0 solref
   and r1 = col 1 solref in
   let mixed = Nx.logical_xor (Nx.greater_s r0 0.0) (Nx.greater_s r1 0.0) in
-  let r0 = Nx.where mixed (Nx.full_like r0 0.02) (Nx.maximum_s r0 (2.0 *. dt)) in
+  (* The refsafe clamp is for the time-constant form only: a direct-form solref
+     is a negative stiffness, and taking its maximum against 2 dt would turn it
+     into a four-millisecond time constant — a soft limit on a model that asked
+     for a stiff one. *)
+  let r0 =
+    Nx.where
+      mixed
+      (Nx.full_like r0 0.02)
+      (Nx.where (Nx.greater_s r0 0.0) (Nx.maximum_s r0 (2.0 *. dt)) r0)
+  in
   let r1 = Nx.where mixed (Nx.full_like r1 1.0) r1 in
   let s1 = col 1 solimp in
   let kinv_std =

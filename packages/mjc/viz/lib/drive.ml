@@ -10,7 +10,7 @@ type t =
   ; period : float
   }
 
-let default = { amplitude = 1.6; period = 2.4 }
+let default = { amplitude = 1.2; period = 0.9 }
 
 let ctrl (t : t) ~nu ~time =
   let w = 2. *. Float.pi /. t.period in

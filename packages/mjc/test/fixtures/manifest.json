@@ -102,7 +102,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "1fb1ceebc8f2f6cc"
+      "xml_sha256": "6b74bc494687a234"
     },
     {
       "name": "blocks",
@@ -173,6 +173,16 @@
       "nv": 17,
       "nstates": 32,
       "xml_sha256": "2d1b7fb790990904"
+    },
+    {
+      "name": "stiff",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "70b663b4027fe3e7"
     }
   ]
 }

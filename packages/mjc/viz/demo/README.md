@@ -34,16 +34,21 @@ joint springs open the hand and the tendon closes it, so every motion in the
 picture comes from the actuator path: moment arm, length, force, `qfrc_actuator`.
 
 It has no keyboard to lean on, so the window can drive it: `--drive` feeds each
-actuator a sine (amplitude 1.6, period 2.4 s, from `Mjc_viz.Drive`), and the
-fingers close and open on their own.
+actuator a sine (amplitude 1.2, period 0.9 s, from `Mjc_viz.Drive`), and the
+fingers close and open on their own. The fingers touch nothing — their joint
+ranges are the stopper, sized so the tips just meet when both joints reach the
+limit, which is what keeps the closing symmetric instead of one finger shoving
+the other through. The limits are written in the *direct* `solref` form
+(a negative stiffness) because these links are light; see `doc/log.md` for the
+engine bug the demo found on the way.
 
     dune exec packages/mjc/viz/window/main.exe -- \
       --model packages/mjc/viz/demo/gripper.mjcb --drive \
-      --steps-per-frame 4 --eye 0.34,-0.50,0.28 --target 0,0,0.84
+      --steps-per-frame 4 --eye 0,-0.62,0.88 --target 0,0,0.88
 
 The HUD carries an M5 line under the joint line:
 
-    tendons 0.48 0.52 | force 1.60 1.60 | sensors 0.48 0.15 0.09 1.60 -0.03 0.00 0.95
+    tendons 0.28 0.28 | force 1.18 1.18 | sensors 0.28 0.02 0.13 1.18 -0.03 0.00 0.93
 
 which is `ten_length` (growing as the fingers close), `actuator_force` (the
 sine's current value) and the model's sensors — two tendon readings, a joint
@@ -53,8 +58,8 @@ angle, an actuator force and a subtree centre of mass. The same command with
 A still needs no window and no keyboard either:
 
     dune exec packages/mjc/viz/bin/mjc_view.exe -- \
-      --model packages/mjc/viz/demo/gripper.mjcb --steps 150 --drive \
-      --eye 0.30,-0.46,0.26 --target 0,0,0.84 --shot gripper.png
+      --model packages/mjc/viz/demo/gripper.mjcb --steps 100 --drive \
+      --eye 0,-0.55,0.88 --target 0,0,0.88 --shot gripper.png
 
 `gripper.mjcb` is generated from `gripper.xml` the way `demo.mjcb` is:
 

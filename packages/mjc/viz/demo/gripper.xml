@@ -5,39 +5,56 @@
        and open together. The joint springs open the hand when the tendon
        force reverses.
 
-       Nothing here touches anything else, which is the point: every motion in
-       this demo comes from the tendon, the actuator behind it, and the joint
-       springs that open the hand again. -->
+       The fingers touch nothing: their ranges are the stopper, sized so that
+       the two tips just meet when both joints are at their upper limit, which
+       is why the hand closes symmetrically instead of one finger shoving the
+       other through. Contacts have their own demo in demo.xml; this one is
+       about the actuator path from tendon to generalized force. -->
+  <!-- Ranges below are radians, which MuJoCo only reads as those if it is told
+       to: the default angle convention is degrees, and a range written in
+       radians under that convention is a joint pinned almost solid. -->
+  <compiler angle="radian"/>
+  <!-- The links are light and the tendon is not, so the default softness would
+       let the fingers drive straight through each other and through their own
+       limits: solref as a time constant is measured against the inertia, and
+       this inertia is tiny. Direct stiffness and damping instead. -->
+  <default>
+    <geom solref="-2e5 -600"/>
+    <joint solreflimit="-2e5 -600"/>
+  </default>
   <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
   <worldbody>
     <body name="palm" pos="0 0 1.0">
-      <geom name="g_palm" contype="0" conaffinity="0" type="box" size="0.055 0.075 0.02" rgba="0.30 0.34 0.40 1"/>
-      <!-- Left finger: hinges about -y, so a positive joint angle closes it. -->
-      <body name="fl1" pos="-0.045 0 -0.02">
-        <joint name="fl1j" type="hinge" axis="0 -1 0" stiffness="0.55" damping="0.02"
-               range="-1.1 0.02" limited="true"/>
-        <geom name="g_fl1" contype="0" conaffinity="0" type="box" size="0.012 0.012 0.075" pos="0 0 -0.075"
-              rgba="0.85 0.35 0.25 1"/>
-        <body name="fl2" pos="0 0 -0.15">
-          <joint name="fl2j" type="hinge" axis="0 -1 0" stiffness="0.35" damping="0.02"
-                 range="-1.2 0.02" limited="true"/>
-          <geom name="g_fl2" contype="0" conaffinity="0" type="box" size="0.010 0.010 0.055" pos="0 0 -0.055"
-                rgba="0.92 0.55 0.35 1"/>
-          <site name="sl" pos="0 0 -0.11"/>
+      <geom name="g_palm" type="box" size="0.050 0.070 0.02" contype="0" conaffinity="0"
+            rgba="0.30 0.34 0.40 1"/>
+      <!-- Left finger: hinges about -y, so a positive joint angle closes it.
+           The links are short enough that the fingers meet before they cross,
+           and the masks let the two fingers meet. -->
+      <body name="fl1" pos="-0.040 0 -0.02">
+        <joint name="fl1j" type="hinge" axis="0 -1 0" stiffness="0.45" damping="0.03"
+               range="-0.02 0.13" limited="true"/>
+        <geom name="g_fl1" type="box" size="0.012 0.012 0.0375" pos="0 0 -0.0375" contype="0" conaffinity="0" rgba="0.85 0.35 0.25 1"/>
+        <body name="fl2" pos="0 0 -0.075">
+          <joint name="fl2j" type="hinge" axis="0 -1 0" stiffness="0.30" damping="0.03"
+                 range="-0.02 0.13" limited="true"/>
+          <geom name="g_fl2" type="box" size="0.011 0.011 0.0325" pos="0 0 -0.0325"
+                contype="0" conaffinity="0" rgba="0.92 0.55 0.35 1"/>
+          <site name="sl" pos="0 0 -0.065"/>
         </body>
       </body>
-      <!-- Right finger: the mirror, hinges about +y. -->
-      <body name="fr1" pos="0.045 0 -0.02">
-        <joint name="fr1j" type="hinge" axis="0 1 0" stiffness="0.55" damping="0.02"
-               range="-0.02 1.1" limited="true"/>
-        <geom name="g_fr1" contype="0" conaffinity="0" type="box" size="0.012 0.012 0.075" pos="0 0 -0.075"
-              rgba="0.25 0.45 0.85 1"/>
-        <body name="fr2" pos="0 0 -0.15">
-          <joint name="fr2j" type="hinge" axis="0 1 0" stiffness="0.35" damping="0.02"
-                 range="-0.02 1.2" limited="true"/>
-          <geom name="g_fr2" contype="0" conaffinity="0" type="box" size="0.010 0.010 0.055" pos="0 0 -0.055"
-                rgba="0.35 0.65 0.95 1"/>
-          <site name="sr" pos="0 0 -0.11"/>
+      <!-- Right finger: the mirror. The axis is +y where the left is -y, so
+           the same positive joint angle closes it too; the ranges are therefore
+           the same positive pair and not their negatives. -->
+      <body name="fr1" pos="0.040 0 -0.02">
+        <joint name="fr1j" type="hinge" axis="0 1 0" stiffness="0.45" damping="0.03"
+               range="-0.02 0.13" limited="true"/>
+        <geom name="g_fr1" type="box" size="0.012 0.012 0.0375" pos="0 0 -0.0375" contype="0" conaffinity="0" rgba="0.25 0.45 0.85 1"/>
+        <body name="fr2" pos="0 0 -0.075">
+          <joint name="fr2j" type="hinge" axis="0 1 0" stiffness="0.30" damping="0.03"
+                 range="-0.02 0.13" limited="true"/>
+          <geom name="g_fr2" type="box" size="0.011 0.011 0.0325" pos="0 0 -0.0325"
+                contype="0" conaffinity="0" rgba="0.35 0.65 0.95 1"/>
+          <site name="sr" pos="0 0 -0.065"/>
         </body>
       </body>
     </body>

@@ -17,9 +17,10 @@ type t =
   ; period : float (** Seconds for a full cycle. *)
   }
 
-(** [default] is a signal sized for the gripper demo: amplitude 1.6 and a period
-    of 2.4 s, which closes the hand over about half a second and opens it
-    again — fast enough to watch, slow enough to see the fingers. *)
+(** [default] is a signal sized for the gripper demo: amplitude 1.2 and a period
+    of 0.9 s. The hand closes in about a fifth of a second, holds, opens again,
+    and repeats — fast enough to read as a gripper, slow enough to see the
+    links. *)
 val default : t
 
 (** [ctrl t ~nu ~time] is [nu] controls at [time]: every actuator follows
