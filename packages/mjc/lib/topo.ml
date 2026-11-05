@@ -28,6 +28,10 @@ type eq_objtype =
   | Eq_body
   | Eq_site
 
+type wrap_type =
+  | Wrap_joint
+  | Wrap_site
+
 type trn_type =
   | Trn_joint
   | Trn_tendon
@@ -64,6 +68,7 @@ type t =
   ; neq : int (** Equality constraints. *)
   ; nsite : int
   ; ntendon : int
+  ; nwrap : int
   ; nu : int
   ; na : int
   ; nsensor : int
@@ -97,6 +102,11 @@ type t =
   ; integrator : integrator
   ; geom_condim : int array (** [[ngeom]] *)
   ; contacts_enabled : bool
+  ; tendon_adr : int array
+  ; tendon_num : int array
+  ; wrap_type : wrap_type array
+  ; wrap_objid : int array
+  ; ten_limited : bool array
   ; actuator_trntype : trn_type array
   ; actuator_trnid : int array
   ; actuator_gaintype : gain_type array
@@ -211,6 +221,12 @@ let validate (t : t) : (unit, string) Result.t =
   then add "eq_type has length %d, expected %d" (Array.length t.eq_type) t.neq;
   if Array.length t.eq_objtype <> t.neq
   then add "eq_objtype has length %d, expected %d" (Array.length t.eq_objtype) t.neq;
+  length_ok problems "tendon_adr" t.ntendon t.tendon_adr;
+  length_ok problems "tendon_num" t.ntendon t.tendon_num;
+  if Array.length t.wrap_type <> t.nwrap
+  then add "wrap_type has length %d, expected %d" (Array.length t.wrap_type) t.nwrap;
+  length_ok problems "wrap_objid" t.nwrap t.wrap_objid;
+  length_ok problems "ten_limited" t.ntendon (Array.map t.ten_limited ~f:Bool.to_int);
   if Array.length t.actuator_trntype <> t.nu
   then
     add

@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 10
+let version = 11
 
 (* Layout, in writing order:
 
@@ -45,6 +45,7 @@ let counts =
   ; "nconmax"
   ; "nefcmax"
   ; "max_geom_pairs"
+  ; "nwrap"
   ]
 
 let int_arrays =
@@ -76,6 +77,11 @@ let int_arrays =
   ; "actuator_dyntype"
   ; "actuator_actadr"
   ; "actuator_actearly"
+  ; "tendon_adr"
+  ; "tendon_num"
+  ; "wrap_type"
+  ; "wrap_objid"
+  ; "ten_limited"
   ]
 
 let name_tables = [ "body_names"; "jnt_names"; "geom_names"; "site_names" ]
@@ -127,6 +133,9 @@ let fields =
   ; "eq_solref"
   ; "eq_solimp"
   ; "eq_active0"
+  ; "wrap_prm"
+  ; "ten_range"
+  ; "ten_margin"
   ; "actuator_gear"
   ; "actuator_gainprm"
   ; "actuator_biasprm"
@@ -183,6 +192,15 @@ let integrator_of_code = function
   | 0 -> Topo.Euler
   | 3 -> Topo.Implicit_fast
   | c -> raise (Invalid_argument (Printf.sprintf "unsupported integrator %d" c))
+
+let wrap_type_code = function
+  | Topo.Wrap_joint -> 0
+  | Topo.Wrap_site -> 1
+
+let wrap_type_of_code = function
+  | 0 -> Topo.Wrap_joint
+  | 1 -> Topo.Wrap_site
+  | c -> raise (Invalid_argument (Printf.sprintf "unsupported tendon wrap type %d" c))
 
 let trn_type_code = function
   | Topo.Trn_joint -> 0
@@ -309,6 +327,7 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; t.nconmax
       ; t.nefcmax
       ; t.max_geom_pairs
+      ; t.nwrap
       ]
       ~f:(put_i32 buf);
     put_i32 buf (List.length int_arrays);
@@ -341,6 +360,11 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; Array.map t.actuator_dyntype ~f:dyn_type_code
       ; t.actuator_actadr
       ; Array.map t.actuator_actearly ~f:Bool.to_int
+      ; t.tendon_adr
+      ; t.tendon_num
+      ; Array.map t.wrap_type ~f:wrap_type_code
+      ; t.wrap_objid
+      ; Array.map t.ten_limited ~f:Bool.to_int
       ]
       ~f:(put_ints buf);
     put_i32 buf (List.length name_tables);
@@ -393,6 +417,9 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.eq_solref
       ; p.eq_solimp
       ; p.eq_active0
+      ; p.wrap_prm
+      ; p.ten_range
+      ; p.ten_margin
       ; p.actuator_gear
       ; p.actuator_gainprm
       ; p.actuator_biasprm
@@ -565,6 +592,12 @@ let parse (c : cursor) : Model.host =
     ; contacts_enabled = Int.( land ) disable (1 lsl 4) = 0
     ; jnt_limited = Array.map limited ~f:(fun x -> Stdlib.( > ) x 0.5)
     ; dof_frictionloss = frictionloss
+    ; nwrap = field "nwrap" counts_map
+    ; tendon_adr = i "tendon_adr"
+    ; tendon_num = i "tendon_num"
+    ; wrap_type = Array.map (i "wrap_type") ~f:wrap_type_of_code
+    ; wrap_objid = i "wrap_objid"
+    ; ten_limited = Array.map (i "ten_limited") ~f:(fun x -> Stdlib.( > ) x 0)
     ; actuator_trntype = Array.map (i "actuator_trntype") ~f:trn_type_of_code
     ; actuator_trnid = i "actuator_trnid"
     ; actuator_gaintype = Array.map (i "actuator_gaintype") ~f:gain_type_of_code
@@ -626,6 +659,9 @@ let parse (c : cursor) : Model.host =
     ; eq_solref = tensor "eq_solref"
     ; eq_solimp = tensor "eq_solimp"
     ; eq_active0 = tensor "eq_active0"
+    ; wrap_prm = tensor "wrap_prm"
+    ; ten_range = tensor "ten_range"
+    ; ten_margin = tensor "ten_margin"
     ; actuator_gear = tensor "actuator_gear"
     ; actuator_gainprm = tensor "actuator_gainprm"
     ; actuator_biasprm = tensor "actuator_biasprm"

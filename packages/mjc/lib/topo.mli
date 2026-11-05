@@ -52,6 +52,12 @@ type integrator =
   | Euler (** Semi-implicit, damping integrated implicitly. *)
   | Implicit_fast (** Semi-implicit, velocity solved in [M + h diag(B)]. *)
 
+(** The type for what a tendon wraps. v1 has fixed tendons over joints; a site
+    or a geometric wrap needs the spatial-tendon path, which is not v1. *)
+type wrap_type =
+  | Wrap_joint (** The joint's coordinate, scaled by [wrap_prm.[0]]. *)
+  | Wrap_site (** A site, which v1 does not have. *)
+
 (** The type for what an actuator drives. v1 supports a joint's single
     degree of freedom and a fixed tendon; a site and a ball joint's three
     degrees of freedom are rejected when a model loads. *)
@@ -93,6 +99,7 @@ type t =
   ; neq : int (** Equality constraints. *)
   ; nsite : int
   ; ntendon : int
+  ; nwrap : int (** Tendon path points, summed over the tendons. *)
   ; nu : int (** Actuators. *)
   ; na : int (** Activation states, summed over actuators. *)
   ; nsensor : int
@@ -136,6 +143,11 @@ type t =
   ; contacts_enabled : bool
     (** Whether MuJoCo's contact-disable flag is set. A model that disables
         contacts produces no rows and no contact array. *)
+  ; tendon_adr : int array (** [[ntendon]], first wrap of each tendon. *)
+  ; tendon_num : int array (** [[ntendon]], how many wraps it has. *)
+  ; wrap_type : wrap_type array (** [[nwrap]] *)
+  ; wrap_objid : int array (** [[nwrap]], the joint or site wrapped. *)
+  ; ten_limited : bool array (** [[ntendon]], whether its range is a row. *)
   ; actuator_trntype : trn_type array (** [[nu]], what each actuator drives. *)
   ; actuator_trnid : int array
     (** [[nu;2]], flattened: the joint or tendon index, and MuJoCo's second

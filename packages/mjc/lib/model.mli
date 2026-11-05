@@ -67,6 +67,9 @@ module Params : sig
     ; eq_solref : 'a (** [[neq;2]] *)
     ; eq_solimp : 'a (** [[neq;5]] *)
     ; eq_active0 : 'a (** [[neq]], [1] where the constraint is on. *)
+    ; wrap_prm : 'a (** [[nwrap]], the coefficient of each wrap. *)
+    ; ten_range : 'a (** [[ntendon;2]], the tendon's limits. *)
+    ; ten_margin : 'a (** [[ntendon]] *)
     ; actuator_gear : 'a
       (** [[nu;6]], the transmission gear. Element 0 scales the joint's or the
           tendon's scalar transmission; the rest belong to site transmissions,

@@ -102,7 +102,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "7fc335aebb655e43"
+      "xml_sha256": "b871f7012eed2d10"
     },
     {
       "name": "blocks",
@@ -153,6 +153,16 @@
       "nv": 6,
       "nstates": 32,
       "xml_sha256": "680d5555f01575bf"
+    },
+    {
+      "name": "finger",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "019d3582b56e13f9"
     }
   ]
 }

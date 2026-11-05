@@ -37,11 +37,9 @@ let check (m : Model.host) =
                    of freedom, which v1 does not have"
                   i)))
      | Topo.Trn_tendon ->
-       raise
-         (Invalid_argument
-            (Printf.sprintf
-               "actuator %d: tendon transmission, which v1 does not have yet"
-               i)));
+       (* The tendon's geometry refuses what v1 does not have — a site wrap, a
+          limited tendon — and the transmission reads its Jacobian. *)
+       ());
     if t.actuator_actearly.(i)
     then
       raise

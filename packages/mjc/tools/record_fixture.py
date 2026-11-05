@@ -343,6 +343,34 @@ MODELS = {
 </mujoco>
 """,
 
+    # A two-link finger driven through a fixed tendon over both joints: the
+    # tendon length is a linear combination of the two coordinates, so one
+    # actuator moves both, and the tendon Jacobian is what says how.
+    "finger": """
+<mujoco model="finger">
+  <option timestep="0.001" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="prox" pos="0 0 0.3">
+      <joint name="j1" type="hinge" axis="0 1 0" damping="0.005"/>
+      <geom name="g1" type="capsule" size="0.012 0.05" pos="0 0 0.05"/>
+      <body name="dist" pos="0 0 0.1">
+        <joint name="j2" type="hinge" axis="0 1 0" damping="0.008"/>
+        <geom name="g2" type="capsule" size="0.012 0.04" pos="0 0 0.04"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t1">
+      <joint joint="j1" coef="1"/>
+      <joint joint="j2" coef="0.5"/>
+    </fixed>
+  </tendon>
+  <actuator>
+    <motor name="a_tendon" tendon="t1" gear="2"/>
+  </actuator>
+</mujoco>
+""",
+
 }
 
 
@@ -391,7 +419,21 @@ CONTACT_FIELDS = {
     "contact_geom": 2, "contact_body": 2, "contact_dim": 1,
     "contact_includemargin": 1, "contact_friction": 5,
     "contact_solref": 2, "contact_solimp": 5,
+
+
 }
+
+
+def dense_ten_J(m, d):
+    """The tendon Jacobian, which the engine keeps sparse, as a dense matrix."""
+    J = np.zeros((m.ntendon, m.nv))
+    for i in range(m.ntendon):
+        adr = int(m.ten_J_rowadr[i])
+        nnz = int(m.ten_J_rownnz[i])
+        J[i, np.asarray(m.ten_J_colind[adr:adr + nnz], dtype=int)] = np.asarray(
+            d.ten_J[adr:adr + nnz]
+        )
+    return J
 
 
 def contact_state(m, d):
@@ -434,7 +476,7 @@ STAGE_FIELDS = [
     # the actuator surface: what the transmissions measure and what the
     # actuators make of it
     "qfrc_actuator", "actuator_length", "actuator_velocity", "actuator_force",
-    "act_dot",
+    "act_dot", "ten_length", "ten_velocity",
 ]
 
 TRAJ_STEPS = 10
@@ -477,6 +519,7 @@ def record(name, xml, outdir, rng):
         fields = {f: np.array(getattr(d, f)) for f in POSE_FIELDS + STAGE_FIELDS}
         fields["ctrl"] = np.array(d.ctrl)
         fields["act"] = np.array(d.act)
+        fields["ten_J"] = dense_ten_J(m, d)
         fields["mass_matrix"] = full
         nefc = int(d.nefc)
         efc = {"nefc": nefc}
@@ -492,7 +535,7 @@ def record(name, xml, outdir, rng):
 
     tensors = {"qpos": np.stack([s[0] for s in states])}
     tensors["qvel"] = np.stack(qvels)
-    for f in POSE_FIELDS + STAGE_FIELDS + ["mass_matrix", "ctrl", "act"]:
+    for f in POSE_FIELDS + STAGE_FIELDS + ["mass_matrix", "ctrl", "act", "ten_J"]:
         tensors[f] = np.stack([s[1][f] for s in states])
     width = max(1, max(s[2]["nefc"] for s in states))
     tensors["nefc"] = np.array([s[2]["nefc"] for s in states], dtype=float)

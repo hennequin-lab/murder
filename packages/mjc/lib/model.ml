@@ -53,6 +53,9 @@ module Params = struct
     ; eq_solref : 'a
     ; eq_solimp : 'a
     ; eq_active0 : 'a
+    ; wrap_prm : 'a
+    ; ten_range : 'a
+    ; ten_margin : 'a
     ; actuator_gear : 'a
     ; actuator_gainprm : 'a
     ; actuator_biasprm : 'a
@@ -213,6 +216,9 @@ let validate (m : host) : (unit, string) Result.t =
   want "eq_solref" [| t.neq; 2 |] p.eq_solref;
   want "eq_solimp" [| t.neq; 5 |] p.eq_solimp;
   want "eq_active0" [| t.neq |] p.eq_active0;
+  want "wrap_prm" [| t.nwrap |] p.wrap_prm;
+  want "ten_range" [| t.ntendon; 2 |] p.ten_range;
+  want "ten_margin" [| t.ntendon |] p.ten_margin;
   want "actuator_gear" [| t.nu; 6 |] p.actuator_gear;
   want "actuator_gainprm" [| t.nu; 3 |] p.actuator_gainprm;
   want "actuator_biasprm" [| t.nu; 3 |] p.actuator_biasprm;
