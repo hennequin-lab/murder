@@ -143,6 +143,36 @@ let test_finite () =
            name
            w))
 
+(* {1 The library's own check} *)
+
+(* The acceptance item is Rune's checker, not one written here: on a smooth
+   step it passes, and if this codebase's notion of a correct derivative ever
+   drifts from the library's, it is the library that is right. *)
+let test_check_grads () =
+  List.iter [ "chain6"; "finger" ] ~f:(fun name ->
+    let m = Support.model name in
+    let q0, v0 = (trajectory name).(0) in
+    let d = data_at m q0 v0 in
+    let nq = Array.fold (Nx.shape q0) ~init:1 ~f:( * ) in
+    let qpos =
+      Nx.add
+        q0
+        (Nx.create
+           f64
+           (Nx.shape q0)
+           (Array.init nq ~f:(fun i -> 0.2 *. Float.sin (Float.of_int (i + 1)))))
+    in
+    let d = { d with qpos } in
+    match
+      Rune.check_grads
+        ~eps:1e-6
+        Nx.Ptree.tensor
+        (fun qpos -> loss m ~n:1 { d with qpos })
+        d.qpos
+    with
+    | Ok () -> ()
+    | Error e -> fail (Printf.sprintf "mjc grad: check_grads on %s: %s" name e))
+
 (* {1 A contact sequence} *)
 
 (* The gate asks for a thousand states, not a hundred: a gradient that is finite
@@ -485,6 +515,7 @@ let () =
     ; test "the row solve's minimiser" test_qp_solution
     ; test "the implicit rule's gradient" test_qp_gradient
     ; test "the implicit rule's transpose" test_qp_transpose
+    ; test "Rune.check_grads on a smooth step" test_check_grads
     ; test "a thousand contact states stay finite" test_contact_sweep
     ]
   |> ignore

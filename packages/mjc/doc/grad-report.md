@@ -25,6 +25,11 @@ so rather than leaving it to be discovered.
 
 ## Accuracy away from transitions
 
+`Rune.check_grads` passes on `chain6` and `finger` at `eps = 1e-6` — the
+acceptance item is the library's checker, not one written here, so that this
+codebase's notion of a correct derivative cannot drift from the library's
+without failing.
+
 Compared against central differences (`test/test_grad.ml`, "gradient matches
 central differences") and, for model parameters, against Richardson-extrapolated
 central differences ("gradient with respect to model parameters"): agreement
