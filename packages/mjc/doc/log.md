@@ -1046,3 +1046,43 @@ distances are compared to 1e-9 because a random pose buries the robot in the
 floor and two formulations of a primitive distance can differ in the eleventh
 digit under that much interpenetration. The trajectory test, which has physics in
 it, holds the same model to 1e-10.
+
+## G4 — the four gate models, and the solver they broke
+
+MuJoCo's humanoid and dm_control's hopper, walker and quadruped (the "ant") are
+corpus models now. Three of them are planes and capsules with the engine's own
+default options; the quadruped is blocked one step earlier, on the **tendon
+equality** its four leg-couplings use, which is a row type v1 does not have.
+
+What works, measured: the models load and step; the contact **set** matches
+MuJoCo at every recorded pose (pairs exact, distances to 1e-9: `hopper`,
+`walker`, `humanoid`, and the humanoid's 32 states); and their rows — `efc_J`,
+`efc_R`, `efc_D`, `efc_aref`, `efc_vel` — match at **1e-12**.
+
+What does not: the **forces**. On `walker`'s first state, `efc_force` is 18.13 in
+MuJoCo and 39.67 in ours — same rows, same quadratic, a different answer. A
+quadratic over a box has one minimiser, so this is our solver, and the
+measurement says exactly where it goes wrong: raising the iteration budget does
+not converge it, and it is *idempotent* from two iterations on. That is the
+signature of the line search, not of the iteration count: the step is projected
+into the box and accepted only if a small set of fractions improves the
+objective, so when every fraction is rejected the solve stops — at a point that
+is not the optimum. On small contact sets the projection almost never bites and
+this never mattered; on eight frictional contacts with frictionless ones mixed in
+it does.
+
+The fix is the ratio-tested primal active set the literature describes and the
+C engine implements: step towards the unconstrained optimum, stop at the first
+bound a row would cross, freeze that row, re-solve, and only stop when the
+stationarity conditions hold on the free rows *and* the frozen ones have the
+right sign. That is a focused change to `Solver.iterate` with its own tests —
+the QP from `test_grad.ml` already gives a hand-checked oracle — and it is the
+next thing to do, because gate G4 is "step hopper, walker, ant, humanoid" and
+nothing else in it is missing.
+
+*A correction to the previous entry in this log*: it claimed the humanoid matched
+`mj_step` at 1e-10 over ten steps. It does not — the humanoid was never in the
+trajectory test's list, and when it was added the check failed at step 1. The
+claim came from a probe that ran twenty steps and matched at the *state* level,
+not from the trajectory test. `test/test_dyn.ml` now carries the comment instead
+of the model, and the gate stays open.

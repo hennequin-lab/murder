@@ -526,7 +526,10 @@ written for MuJoCo loads and behaves.
 5. A full humanoid with position actuators tracks the C engine over 1000
    re-synchronised steps within `1e-8` relative.
 
-*Progress.* The humanoid runs and matches (see `doc/log.md`); tendon limits landed (format 13, `tendonlim` corpus model, a
+*Progress.* The four G4 models are in the corpus and their contact sets and rows
+match at 1e-12, but the **solved forces do not**: the row solve stops on a point
+that is not the quadratic's optimum, so trajectories diverge. That is the gate's
+one remaining blocker and it is a solver fix, described in `doc/log.md`. Tendon limits landed (format 13, `tendonlim` corpus model, a
 trajectory through the limit at 1e-10); the humanoid that refused on them now
 gets past the load, and the next two refusals are named in `doc/log.md`: the
 elliptic cone and `<exclude>` pairs.

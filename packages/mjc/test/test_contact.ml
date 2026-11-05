@@ -78,23 +78,25 @@ let test_geometry_set () =
       parity ~tol:1e-12 ~name:(label "contacts as a set") expected actual))
 
 let test_count () =
-  List.iter [ "bounce"; "boxes"; "blocks"; "boxes2"; "humanoid" ] ~f:(fun name ->
-    let m = model name in
-    let f = fixture name in
-    List.iteri (states name) ~f:(fun s (d, ncon) ->
-      equal ~msg:(Printf.sprintf "state %d ncon" s) int ncon (int_of_t d.Mjc.Data.ncon);
-      (* the compaction sends contacts past the budget to a sink slot, so a
-         model whose recording exceeds its own budget would lose them silently *)
-      if Int.( > ) ncon m.Mjc.Model.topo.Mjc.Topo.nconmax
-      then
-        fail
-          (Printf.sprintf
-             "%s state %d: %d contacts exceed nconmax %d"
-             name
-             s
-             ncon
-             m.Mjc.Model.topo.Mjc.Topo.nconmax);
-      ignore f))
+  List.iter
+    [ "bounce"; "boxes"; "blocks"; "boxes2"; "humanoid"; "hopper"; "walker" ]
+    ~f:(fun name ->
+      let m = model name in
+      let f = fixture name in
+      List.iteri (states name) ~f:(fun s (d, ncon) ->
+        equal ~msg:(Printf.sprintf "state %d ncon" s) int ncon (int_of_t d.Mjc.Data.ncon);
+        (* the compaction sends contacts past the budget to a sink slot, so a
+           model whose recording exceeds its own budget would lose them silently *)
+        if Int.( > ) ncon m.Mjc.Model.topo.Mjc.Topo.nconmax
+        then
+          fail
+            (Printf.sprintf
+               "%s state %d: %d contacts exceed nconmax %d"
+               name
+               s
+               ncon
+               m.Mjc.Model.topo.Mjc.Topo.nconmax);
+        ignore f))
 
 (* The humanoid is compared as a set. Its contacts come out in MuJoCo's
    broadphase order, which is a body-pair traversal the engine has no reason to
@@ -210,7 +212,7 @@ let test_exclusions () =
 
 let test_geometry () =
   (* [boxes2] is compared as a set below: its box pairs have their own order *)
-  List.iter [ "bounce"; "boxes"; "blocks" ] ~f:(fun name ->
+  List.iter [ "bounce"; "boxes"; "blocks"; "hopper"; "walker" ] ~f:(fun name ->
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
       let label tag = Printf.sprintf "%s state %d %s" name s tag in

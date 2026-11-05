@@ -677,6 +677,24 @@ def source_of(name, text):
     return text
 
 
+# Models whose random poses are not physical. A free-jointed robot sampled
+# uniformly in position is buried in the floor; its states are drawn near the
+# reference pose instead, so that a trajectory is something a controller could
+# have produced and the gate is a statement about physics rather than about how
+# far a solver can be pushed in a pose no controller would command.
+PHYSICAL = {"humanoid", "hopper", "walker", "quadruped"}
+
+MODELS.update(
+    {
+        # dm_control's locomotion suite: the models gate G4 names. All three are
+        # planes and capsules with the engine's own default options.
+        "hopper": "@test/fixtures/hopper.xml",
+        "walker": "@test/fixtures/walker.xml",
+        "quadruped": "@test/fixtures/quadruped.xml",
+    }
+)
+
+
 def random_qpos(m, rng):
     qpos = np.array(m.qpos0, dtype=np.float64)
     for j in range(m.njnt):
@@ -797,7 +815,11 @@ def record(name, xml, outdir, rng):
     # Read the source once: a file-sourced model would otherwise be truncated by
     # its own rewrite before it is copied to the corpus.
     xml_text = source_of(name, xml)
-    m = mujoco.MjModel.from_xml_string(xml_text)
+    m = (
+        mujoco.MjModel.from_xml_path(xml[1:])
+        if xml.startswith("@")
+        else mujoco.MjModel.from_xml_string(xml_text)
+    )
     # Actuator controls come from their own stream: adding them must not
     # renumber the poses and velocities the rest of the corpus is built from.
     crng = np.random.default_rng(SEED + 1 + len(MODELS))
@@ -807,14 +829,19 @@ def record(name, xml, outdir, rng):
     m.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
     d = mujoco.MjData(m)
     xml_path = os.path.join(outdir, f"{name}.xml")
-    with open(xml_path, "w") as f:
-        f.write(xml_text.lstrip() + "\n")
+    if not xml.startswith("@"):
+        with open(xml_path, "w") as f:
+            f.write(xml_text.lstrip() + "\n")
 
     states = []
     qvels = []
     cons = []
     for _ in range(NSTATES):
-        qpos = random_qpos(m, rng)
+        qpos = (
+            np.array(m.qpos0) + rng.uniform(-0.05, 0.05, size=m.nq)
+            if name in PHYSICAL
+            else random_qpos(m, rng)
+        )
         qvel = rng.uniform(-2.0, 2.0, size=m.nv)
         d.qpos[:] = qpos
         d.qvel[:] = qvel

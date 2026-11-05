@@ -102,7 +102,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "492cba084793a9ca"
+      "xml_sha256": "7f335b2c93def1fd"
     },
     {
       "name": "blocks",
@@ -223,6 +223,36 @@
       "nv": 14,
       "nstates": 32,
       "xml_sha256": "452814cb7a802beb"
+    },
+    {
+      "name": "hopper",
+      "nbody": 6,
+      "ngeom": 7,
+      "njnt": 7,
+      "nq": 7,
+      "nv": 7,
+      "nstates": 32,
+      "xml_sha256": "030cd667f89a61ab"
+    },
+    {
+      "name": "walker",
+      "nbody": 8,
+      "ngeom": 8,
+      "njnt": 9,
+      "nq": 9,
+      "nv": 9,
+      "nstates": 32,
+      "xml_sha256": "6ee59a8052dd8bf0"
+    },
+    {
+      "name": "quadruped",
+      "nbody": 19,
+      "ngeom": 26,
+      "njnt": 18,
+      "nq": 30,
+      "nv": 28,
+      "nstates": 32,
+      "xml_sha256": "c57a90f479e6a513"
     }
   ]
 }
