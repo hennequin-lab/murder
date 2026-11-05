@@ -568,6 +568,34 @@ MODELS = {
 </mujoco>
 """,
 
+    # A two-link arm: two hinges in the xz plane, one motor each, gravity, no
+    # contacts and no limits. It is the model the iLQR demo swings to a target,
+    # and it is here rather than in the demo so that the dynamics it uses are
+    # the ones the corpus checks against MuJoCo.
+    "arm2": """
+<mujoco model="arm2">
+  <compiler angle="radian"/>
+  <option timestep="0.01" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="upper" pos="0 0 0.6">
+      <joint name="shoulder" type="hinge" axis="0 1 0"/>
+      <geom name="g_upper" type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
+      <body name="lower" pos="0 0 -0.3">
+        <joint name="elbow" type="hinge" axis="0 1 0"/>
+        <geom name="g_lower" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"/>
+        <body name="hand" pos="0 0 -0.25">
+          <geom name="g_hand" type="sphere" size="0.04"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="m_shoulder" joint="shoulder" gear="1"/>
+    <motor name="m_elbow" joint="elbow" gear="1"/>
+  </actuator>
+</mujoco>
+""",
+
 }
 
 

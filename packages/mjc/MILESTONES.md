@@ -551,7 +551,10 @@ an infinite cotangent to a masked-out branch, and `0 * inf` is a NaN — and the
 are fixed without moving a single value (`doc/log.md`). Gradients with respect
 to model parameters work through `Dynamics`, where structure is compiled once
 and parameters flow as tensors; that also settled the design, so the remaining
-work is the `dilqr` demonstration. The memory item is done and did not need what
+work is the `dilqr` demonstration — which runs, and whose gradient check does
+not pass yet: the implicit derivative through mjc's own step differs from finite
+differences while the same dilqr problem with a trivial analytic dynamics agrees
+to six digits, so the fault is on the engine's side and is open (`doc/log.md`). The memory item is done and did not need what
 it asked for: rematerializing a step inside a `for` loop makes peak memory 2.3×
 *worse*, while expressing the horizon as `Rune.scan` with a rematerialized body
 gives 74× less (`Dynamics.horizon_scan`, `doc/grad-report.md`). The implicit rule for the solver has landed: the row

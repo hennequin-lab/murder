@@ -952,3 +952,28 @@ Asking the question also found a defect in the hand rule: a stray
 iteration **twice** in the forward pass. Removing it took the rule's advantage
 in the solver's own backward pass from 1.1–2.2× to **3.9–10.4×** — the defect
 had been hiding most of the benefit it was written for.
+
+**The iLQR demo: the solve works, the implicit gradient through mjc's step does
+not.** `bench/mjc_ilqr.ml` is the demo — `Dilqr.solve_adaptive` on a new corpus
+model `arm2` (two hinges, two motors, no limits) whose dynamics *is*
+`Dynamics.run`, 20 control steps of four engine steps each. It reaches the
+target (final angles `1.377, -1.205` against `1.400, -1.200`) and prints the
+implicit gradient of the user's objective with respect to the initial state
+beside central differences of the same objective.
+
+They disagree, and the disagreement is not noise: the objective is smooth in
+`x0` to twelve digits (slope `0.0435` from `±1e-5` and from `±1e-3` alike), and
+the implicit gradient says `0.0494` for `x0[1]` and `0.0419` for `x0[0]` where
+the differences say `0.0435` and `0.0047`. `bench/iso.ml` isolates it: the same
+problem — same shapes, horizon, losses and dilqr plumbing — with a trivial
+analytic double integrator in place of the engine's step agrees with finite
+differences to six decimals. So the fault is on the engine's side of the
+interface, not dilqr's, and it is open.
+
+Two candidates were eliminated and one is named. A saturated control
+(`ctrlrange`) is a kink that a local quadratic model cannot represent, so the
+model's motors are now unbounded — but the mismatch predates and outlives that
+change. The remaining suspect is a `Nx.where`/`Nx.maximum_s` kink inside the
+step whose derivative Rune reports correctly *at* the point and which the
+KKT idealization does not hold across. Item 6 of M6's acceptance is therefore
+**not** claimed.
