@@ -70,6 +70,9 @@ module Params : sig
     ; wrap_prm : 'a (** [[nwrap]], the coefficient of each wrap. *)
     ; ten_range : 'a (** [[ntendon;2]], the tendon's limits. *)
     ; ten_margin : 'a (** [[ntendon]] *)
+    ; ten_invweight0 : 'a (** [[ntendon]], [1 / J M⁻¹ Jᵀ] at the reference pose. *)
+    ; ten_solref : 'a (** [[ntendon;2]], a limit's stiffness and damping. *)
+    ; ten_solimp : 'a (** [[ntendon;5]], its impedance. *)
     ; actuator_gear : 'a
       (** [[nu;6]], the transmission gear. Element 0 scales the joint's or the
           tendon's scalar transmission; the rest belong to site transmissions,

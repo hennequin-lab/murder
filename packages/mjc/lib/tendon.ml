@@ -12,15 +12,8 @@ type t =
   }
 
 let check (t : Topo.t) =
-  Array.iteri t.ten_limited ~f:(fun i limited ->
-    if limited
-    then
-      raise
-        (Invalid_argument
-           (Printf.sprintf
-              "tendon %d: a limited tendon is a constraint row, which v1 does not have \
-               yet"
-              i)));
+  (* Tendon limits are constraint rows now ({!Constraint.tendon_limits}), so a
+     limited tendon is no longer refused here. *)
   Array.iteri t.wrap_type ~f:(fun w kind ->
     match kind with
     | Topo.Wrap_joint -> ()

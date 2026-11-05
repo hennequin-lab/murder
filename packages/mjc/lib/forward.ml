@@ -41,9 +41,13 @@ let forward ?linear ?iters ?dt (m : Model.host) (d : Data.host) : Data.host =
   Array.iter (fun x -> if x > 0.0 then friction_possible := true) t.dof_frictionloss;
   let limits_possible = !limits_possible
   and friction_possible = !friction_possible in
+  let tendon_limits_possible = ref false in
+  Array.iter (fun x -> if x then tendon_limits_possible := true) t.ten_limited;
+  let tendon_limits_possible = !tendon_limits_possible in
   let constrained =
     t.neq > 0
     || limits_possible
+    || tendon_limits_possible
     || friction_possible
     || (t.contacts_enabled && t.ngeom > 1)
   in
@@ -54,6 +58,7 @@ let forward ?linear ?iters ?dt (m : Model.host) (d : Data.host) : Data.host =
       let d = Constraint.equality m d in
       let d = Constraint.friction m d in
       let d = Constraint.limits m d in
+      let d = Constraint.tendon_limits m d in
       let d = Constraint.contact m d in
       let d = Constraint.impedance ?dt m d in
       Solver.forward ?linear ?iters m d)

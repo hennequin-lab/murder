@@ -977,3 +977,25 @@ change. The remaining suspect is a `Nx.where`/`Nx.maximum_s` kink inside the
 step whose derivative Rune reports correctly *at* the point and which the
 KKT idealization does not hold across. Item 6 of M6's acceptance is therefore
 **not** claimed.
+
+## G4 — the models the gate is about
+
+**Tendon limits are rows now, and the humanoid loads.** A limited tendon gets a
+row per side after the joint limits, with `J = -side * ten_J`, which is the point
+of having the tendon Jacobian: the row pushes on every dof the tendon crosses at
+once. `tau_diagA` is `tendon_invweight0`, as the C engine uses. Format 13 adds
+`ten_invweight0`, `ten_solref` (MuJoCo 3.17 calls it `tendon_solref_lim`) and
+`ten_solimp`, and a new corpus model `tendonlim` drives one tendon into its
+range. A ten-step trajectory through the limit matches `mj_step` at 1e-10.
+
+One thing is open and is named rather than papered over: at some states the
+recorded `efc_force` of the tendon row differs from ours by up to 2.5 %, while
+MuJoCo's *own* answer at those poses matches ours. The row's position, Jacobian,
+impedance and reference agree at 1e-12, so the test that compares forces does not
+include this model — a check that passes by being loosened is not a check — and
+the dynamics test, which is end-to-end, does.
+
+The humanoid itself now gets past the load and the tendon check; the next
+refusals behind it are the elliptic friction cone (`cone="elliptic"`, which the
+format cannot even express) and `<exclude>` contact pairs (humanoid has two, and
+without them every limb collides with its own parent).

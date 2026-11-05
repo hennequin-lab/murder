@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 12
+let version = 13
 
 (* Layout, in writing order:
 
@@ -143,6 +143,9 @@ let fields =
   ; "wrap_prm"
   ; "ten_range"
   ; "ten_margin"
+  ; "ten_invweight0"
+  ; "ten_solref"
+  ; "ten_solimp"
   ; "actuator_gear"
   ; "actuator_gainprm"
   ; "actuator_biasprm"
@@ -480,6 +483,9 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.wrap_prm
       ; p.ten_range
       ; p.ten_margin
+      ; p.ten_invweight0
+      ; p.ten_solref
+      ; p.ten_solimp
       ; p.actuator_gear
       ; p.actuator_gainprm
       ; p.actuator_biasprm
@@ -729,6 +735,9 @@ let parse (c : cursor) : Model.host =
     ; wrap_prm = tensor "wrap_prm"
     ; ten_range = tensor "ten_range"
     ; ten_margin = tensor "ten_margin"
+    ; ten_invweight0 = tensor "ten_invweight0"
+    ; ten_solref = tensor "ten_solref"
+    ; ten_solimp = tensor "ten_solimp"
     ; actuator_gear = tensor "actuator_gear"
     ; actuator_gainprm = tensor "actuator_gainprm"
     ; actuator_biasprm = tensor "actuator_biasprm"

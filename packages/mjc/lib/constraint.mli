@@ -70,4 +70,6 @@ val contact : Model.host -> Data.host -> Data.host
     [solref.0 >= 2 dt] and its standard-versus-direct reference rule. Rows
     beyond [nefc] are given [R = 1] and [D = 0] so that a fixed-size system
     stays positive definite. *)
+val tendon_limits : Model.host -> Data.host -> Data.host
+
 val impedance : ?dt:float -> Model.host -> Data.host -> Data.host

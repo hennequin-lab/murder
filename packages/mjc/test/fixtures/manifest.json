@@ -102,7 +102,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "c098e30a6527bc79"
+      "xml_sha256": "42b7f9fddaf4ad07"
     },
     {
       "name": "blocks",
@@ -193,6 +193,16 @@
       "nv": 2,
       "nstates": 32,
       "xml_sha256": "eec5ef9c15eda068"
+    },
+    {
+      "name": "tendonlim",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "ee3250e9e79a1429"
     }
   ]
 }

@@ -505,7 +505,7 @@ written for MuJoCo loads and behaves.
 - `lib/actuator.ml`: motor, position, velocity, intvelocity, damper, general
   gain/bias; `act` dynamics for `intvelocity`; `gear`, `ctrlrange`,
   `forcerange`, `ctrllimited`. Cylinder and muscle are deferred.
-- `lib/tendon.ml`: fixed tendons only. `ten_length`, `ten_velocity`, `ten_J`,
+- `lib/tendon.ml`: fixed tendons only, with their limits as rows. `ten_length`, `ten_velocity`, `ten_J`,
   tendon limits and tendon equality rows (wired into `constraint.ml`).
 - `lib/sensor.ml`: the state-projection family and subtree reductions
   (`Nx.reduce_segments`): jointpos/vel, framepos/quat/vel, gyro,
@@ -525,6 +525,11 @@ written for MuJoCo loads and behaves.
    subtree reduction on a 17-body model.
 5. A full humanoid with position actuators tracks the C engine over 1000
    re-synchronised steps within `1e-8` relative.
+
+*Progress.* Tendon limits landed (format 13, `tendonlim` corpus model, a
+trajectory through the limit at 1e-10); the humanoid that refused on them now
+gets past the load, and the next two refusals are named in `doc/log.md`: the
+elliptic cone and `<exclude>` pairs.
 
 **Gate G5.** Whether MJCF reading is now on the critical path. If the lab's
 own models are only available as MJCF and the converter loses information,

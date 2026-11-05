@@ -446,6 +446,90 @@ let limits (m : Model.host) (d : Data.host) : Data.host =
   in
   d
 
+(* {1 Tendon limits}
+
+   A limited tendon's range is a row per side, after the joint limits and in
+   MuJoCo's order. The row's Jacobian is the tendon's own, which is the whole
+   point of having one: [ten_length] is a sum of joint coordinates, so its
+   gradient is a vector of gears, and the row pushes on every dof the tendon
+   crosses at once. *)
+
+type tcand =
+  { tendon : int
+  ; side : float
+  ; range_index : int
+  }
+
+let tendon_candidates (t : Topo.t) : tcand array =
+  let cands = ref [] in
+  for i = 0 to t.ntendon - 1 do
+    if t.ten_limited.(i)
+    then (
+      cands := { tendon = i; side = -1.0; range_index = 0 } :: !cands;
+      cands := { tendon = i; side = 1.0; range_index = 1 } :: !cands)
+  done;
+  Array.of_list (List.rev !cands)
+
+let tendon_limits (m : Model.host) (d : Data.host) : Data.host =
+  let t = m.topo
+  and p = m.params in
+  let nv = t.nv in
+  let nb = t.nefcmax in
+  let cands = tendon_candidates t in
+  let ncand = Array.length cands in
+  if Int.equal ncand 0
+  then d
+  else (
+    let jac_tendon = (Tendon.forward m d).Tendon.jac in
+    let scalar_like x = Nx.scalar Nx.float64 x in
+    let dists = ref (Nx.zeros Nx.float64 [| ncand |])
+    and margins = ref (Nx.zeros Nx.float64 [| ncand |])
+    and active = ref (Nx.zeros Nx.float64 [| ncand |])
+    and jac = ref (Nx.zeros Nx.float64 [| ncand; nv |]) in
+    for i = 0 to ncand - 1 do
+      let c = cands.(i) in
+      let value = Nx.get [ c.tendon ] d.ten_length in
+      let bound = Nx.get [ c.tendon; c.range_index ] p.ten_range in
+      let margin_i = Nx.get [ c.tendon ] p.ten_margin in
+      (* [dist = side (bound - value)]: positive inside the range, which is the
+         same convention the joint limits use, so the impedance below needs to
+         know nothing new. *)
+      let dist = Nx.mul_s (Nx.sub bound value) c.side in
+      let on = Nx.less dist margin_i in
+      dists := Nx.set [ I i ] dist !dists;
+      margins := Nx.set [ I i ] margin_i !margins;
+      active := Nx.set [ I i ] (Nx.where on (scalar_like 1.0) (scalar_like 0.0)) !active;
+      jac := Nx.set [ I i ] (Nx.mul_s (Nx.get [ c.tendon ] jac_tendon) (-.c.side)) !jac
+    done;
+    let start = Nx.cast Nx.float64 d.nefc in
+    let before = Nx.sub (Nx.cumsum ~axis:0 !active) !active in
+    let far = Nx.full_like before (Float.of_int nb) in
+    let idx =
+      Nx.cast Nx.int64 (Nx.where (Nx.greater_s !active 0.5) (Nx.add start before) far)
+    in
+    let put v x = Nx.scatter ~combine:Set ~axis:0 idx v x in
+    let put_cols v x =
+      let cols = (Nx.shape v).(1) in
+      let idx_rows = Nx.broadcast_to [| ncand; cols |] (Nx.reshape [| ncand; 1 |] idx) in
+      Nx.scatter ~combine:Set ~axis:0 idx_rows v x
+    in
+    let ids = Nx.init Nx.int32 [| ncand |] (fun i -> Int32.of_int cands.(i.(0)).tendon) in
+    let take k x = Nx.take ~axis:0 (Nx.cast Nx.int64 k) x in
+    let types = Nx.full Nx.int32 [| ncand |] (Int32.of_int type_limit_tendon) in
+    let zero = Nx.zeros Nx.float64 [| ncand |] in
+    { d with
+      efc_type = put types d.efc_type
+    ; efc_id = put ids d.efc_id
+    ; efc_pos = put !dists d.efc_pos
+    ; efc_margin = put !margins d.efc_margin
+    ; efc_diagA = put (take ids p.ten_invweight0) d.efc_diagA
+    ; efc_solref = put_cols (take ids p.ten_solref) d.efc_solref
+    ; efc_solimp = put_cols (take ids p.ten_solimp) d.efc_solimp
+    ; efc_jdotv = put zero d.efc_jdotv
+    ; efc_J = put_cols !jac d.efc_J
+    ; nefc = Nx.add d.nefc (Nx.cast Nx.int32 (Nx.sum !active))
+    })
+
 (* {1 Impedance}
 
    [mj_regularizeConstraint] and [mj_referenceConstraint] for the rows already
