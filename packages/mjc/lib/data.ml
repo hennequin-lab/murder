@@ -31,6 +31,8 @@ type ('a, 'd) t =
   ; cinert : 'a
   ; com : 'a
   ; subtree_com : 'a
+  ; subtree_linvel : 'a
+  ; subtree_angmom : 'a
   ; qfrc_bias : 'a
   ; qfrc_passive : 'a
   ; qfrc_actuator : 'a
@@ -114,6 +116,8 @@ let create (m : Model.host) : host =
   ; cinert = zeros [| t.nbody; 10 |]
   ; com = zeros [| 3 |]
   ; subtree_com = zeros [| t.nbody; 3 |]
+  ; subtree_linvel = zeros [| t.nbody; 3 |]
+  ; subtree_angmom = zeros [| t.nbody; 3 |]
   ; qfrc_bias = zeros [| t.nv |]
   ; qfrc_passive = zeros [| t.nv |]
   ; qfrc_actuator = zeros [| t.nv |]
@@ -194,6 +198,8 @@ let validate (m : Model.host) (d : host) : (unit, string) Result.t =
   want "cinert" [| t.nbody; 10 |] d.cinert;
   want "com" [| 3 |] d.com;
   want "subtree_com" [| t.nbody; 3 |] d.subtree_com;
+  want "subtree_linvel" [| t.nbody; 3 |] d.subtree_linvel;
+  want "subtree_angmom" [| t.nbody; 3 |] d.subtree_angmom;
   want "qfrc_bias" [| t.nv |] d.qfrc_bias;
   want "qfrc_passive" [| t.nv |] d.qfrc_passive;
   want "qfrc_actuator" [| t.nv |] d.qfrc_actuator;

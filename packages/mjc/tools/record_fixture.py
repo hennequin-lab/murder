@@ -471,7 +471,8 @@ def contact_state(m, d):
 # spatial velocities and the forces it leaves behind.
 # MuJoCo has no separate global centre of mass in 3.17: subtree_com[0] is it.
 STAGE_FIELDS = [
-    "subtree_com", "cinert", "cdof", "cvel", "cdof_dot",
+    "subtree_com", "subtree_linvel", "subtree_angmom",
+    "cinert", "cdof", "cvel", "cdof_dot",
     "qfrc_bias", "qfrc_passive", "qfrc_smooth",
     # the actuator surface: what the transmissions measure and what the
     # actuators make of it
@@ -514,6 +515,9 @@ def record(name, xml, outdir, rng):
         if m.nu:
             d.ctrl[:] = crng.uniform(lo, hi)
         mujoco.mj_forward(m, d)
+        # The subtree velocities are computed lazily, inside the sensor stage,
+        # by the engine; the fixture asks for them so a test can compare them.
+        mujoco.mj_subtreeVel(m, d)
         full = np.zeros((m.nv, m.nv))
         mujoco.mj_fullM(m, d, full)
         fields = {f: np.array(getattr(d, f)) for f in POSE_FIELDS + STAGE_FIELDS}

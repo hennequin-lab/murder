@@ -40,6 +40,8 @@ type ('a, 'd) t =
   ; cinert : 'a (** [[nbody;10]], inertia about the subtree centre of mass. *)
   ; com : 'a (** [[3]], centre of mass. *)
   ; subtree_com : 'a (** [[nbody;3]], centre of mass of each subtree. *)
+  ; subtree_linvel : 'a (** [[nbody;3]], its velocity, world. *)
+  ; subtree_angmom : 'a (** [[nbody;3]], angular momentum about its centre. *)
   ; qfrc_bias : 'a (** [[nv]], Coriolis, centrifugal and gravity forces. *)
   ; qfrc_passive : 'a (** [[nv]], springs, dampers and fluid forces. *)
   ; qfrc_actuator : 'a (** [[nv]], actuator forces. *)

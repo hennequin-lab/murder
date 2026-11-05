@@ -50,6 +50,8 @@ let test_velocity () =
       List.iter
         [ "cvel", d.cvel
         ; "cdof_dot", d.cdof_dot
+        ; "subtree_linvel", d.subtree_linvel
+        ; "subtree_angmom", d.subtree_angmom
         ; "qfrc_bias", d.qfrc_bias
         ; "qfrc_passive", d.qfrc_passive
         ; "qfrc_smooth", d.qfrc_smooth
