@@ -12,6 +12,13 @@ let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
   let d = Passive.forward m d in
   let d = Bias.forward m d in
   let d = Actuator.forward m d in
+  let tendons = Tendon.forward m d in
+  let d =
+    { d with
+      Data.ten_length = tendons.Tendon.length
+    ; ten_velocity = tendons.Tendon.velocity
+    }
+  in
   let qfrc_smooth =
     Nx.add (Nx.sub (Nx.add d.qfrc_passive d.qfrc_applied) d.qfrc_bias) d.qfrc_actuator
   in
@@ -40,12 +47,16 @@ let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
     || friction_possible
     || (t.contacts_enabled && t.ngeom > 1)
   in
-  if not constrained
-  then d
-  else (
-    let d = Constraint.equality m d in
-    let d = Constraint.friction m d in
-    let d = Constraint.limits m d in
-    let d = Constraint.contact m d in
-    let d = Constraint.impedance m d in
-    Solver.forward ?linear m d)
+  let d =
+    if not constrained
+    then d
+    else (
+      let d = Constraint.equality m d in
+      let d = Constraint.friction m d in
+      let d = Constraint.limits m d in
+      let d = Constraint.contact m d in
+      let d = Constraint.impedance m d in
+      Solver.forward ?linear m d)
+  in
+  (* The sensor block reads the solved state, as MuJoCo's does. *)
+  Sensor.forward m d

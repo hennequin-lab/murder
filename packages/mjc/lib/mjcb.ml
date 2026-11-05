@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 11
+let version = 12
 
 (* Layout, in writing order:
 
@@ -46,6 +46,7 @@ let counts =
   ; "nefcmax"
   ; "max_geom_pairs"
   ; "nwrap"
+  ; "nsensordata"
   ]
 
 let int_arrays =
@@ -77,6 +78,12 @@ let int_arrays =
   ; "actuator_dyntype"
   ; "actuator_actadr"
   ; "actuator_actearly"
+  ; "sensor_type"
+  ; "sensor_objtype"
+  ; "sensor_objid"
+  ; "sensor_adr"
+  ; "sensor_dim"
+  ; "sensor_refid"
   ; "tendon_adr"
   ; "tendon_num"
   ; "wrap_type"
@@ -192,6 +199,44 @@ let integrator_of_code = function
   | 0 -> Topo.Euler
   | 3 -> Topo.Implicit_fast
   | c -> raise (Invalid_argument (Printf.sprintf "unsupported integrator %d" c))
+
+let obj_type_code = function
+  | Topo.Obj_body -> 0
+  | Topo.Obj_site -> 1
+  | Topo.Obj_joint -> 2
+  | Topo.Obj_actuator -> 3
+  | Topo.Obj_tendon -> 4
+
+let obj_type_of_code = function
+  | 0 -> Topo.Obj_body
+  | 1 -> Topo.Obj_site
+  | 2 -> Topo.Obj_joint
+  | 3 -> Topo.Obj_actuator
+  | 4 -> Topo.Obj_tendon
+  | c -> raise (Invalid_argument (Printf.sprintf "unsupported sensor object type %d" c))
+
+let sensor_type_code = function
+  | Topo.Sens_jointpos -> 0
+  | Topo.Sens_jointvel -> 1
+  | Topo.Sens_framepos -> 2
+  | Topo.Sens_actuatorfrc -> 5
+  | Topo.Sens_tendonpos -> 6
+  | Topo.Sens_tendonvel -> 7
+  | Topo.Sens_subtreecom -> 8
+  | Topo.Sens_subtreelinvel -> 9
+  | Topo.Sens_subtreeangmom -> 10
+
+let sensor_type_of_code = function
+  | 0 -> Topo.Sens_jointpos
+  | 1 -> Topo.Sens_jointvel
+  | 2 -> Topo.Sens_framepos
+  | 5 -> Topo.Sens_actuatorfrc
+  | 6 -> Topo.Sens_tendonpos
+  | 7 -> Topo.Sens_tendonvel
+  | 8 -> Topo.Sens_subtreecom
+  | 9 -> Topo.Sens_subtreelinvel
+  | 10 -> Topo.Sens_subtreeangmom
+  | c -> raise (Invalid_argument (Printf.sprintf "unsupported sensor type %d" c))
 
 let wrap_type_code = function
   | Topo.Wrap_joint -> 0
@@ -328,6 +373,7 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; t.nefcmax
       ; t.max_geom_pairs
       ; t.nwrap
+      ; t.nsensordata
       ]
       ~f:(put_i32 buf);
     put_i32 buf (List.length int_arrays);
@@ -360,6 +406,12 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; Array.map t.actuator_dyntype ~f:dyn_type_code
       ; t.actuator_actadr
       ; Array.map t.actuator_actearly ~f:Bool.to_int
+      ; Array.map t.sensor_type ~f:sensor_type_code
+      ; Array.map t.sensor_objtype ~f:obj_type_code
+      ; t.sensor_objid
+      ; t.sensor_adr
+      ; t.sensor_dim
+      ; t.sensor_refid
       ; t.tendon_adr
       ; t.tendon_num
       ; Array.map t.wrap_type ~f:wrap_type_code
@@ -593,6 +645,13 @@ let parse (c : cursor) : Model.host =
     ; jnt_limited = Array.map limited ~f:(fun x -> Stdlib.( > ) x 0.5)
     ; dof_frictionloss = frictionloss
     ; nwrap = field "nwrap" counts_map
+    ; nsensordata = field "nsensordata" counts_map
+    ; sensor_type = Array.map (i "sensor_type") ~f:sensor_type_of_code
+    ; sensor_objtype = Array.map (i "sensor_objtype") ~f:obj_type_of_code
+    ; sensor_objid = i "sensor_objid"
+    ; sensor_adr = i "sensor_adr"
+    ; sensor_dim = i "sensor_dim"
+    ; sensor_refid = i "sensor_refid"
     ; tendon_adr = i "tendon_adr"
     ; tendon_num = i "tendon_num"
     ; wrap_type = Array.map (i "wrap_type") ~f:wrap_type_of_code

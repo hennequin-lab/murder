@@ -102,7 +102,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "92b6f1db1e9074ed"
+      "xml_sha256": "0f1c6924b50c48d9"
     },
     {
       "name": "blocks",
@@ -163,6 +163,16 @@
       "nv": 2,
       "nstates": 32,
       "xml_sha256": "019d3582b56e13f9"
+    },
+    {
+      "name": "sensors",
+      "nbody": 19,
+      "ngeom": 17,
+      "njnt": 17,
+      "nq": 17,
+      "nv": 17,
+      "nstates": 32,
+      "xml_sha256": "f683678a2e1d9c1e"
     }
   ]
 }
