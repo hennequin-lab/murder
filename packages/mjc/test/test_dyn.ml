@@ -15,6 +15,13 @@ module S = Mjc.Step
 
 let models = [ "pendulum"; "chain6"; "floating"; "ball"; "actuators" ]
 
+(* A fixture carries a tensor only for the stages its model has: a model with
+   no actuators has no control to compare. The reader's only failure is a
+   missing name, which is exactly the question being asked. *)
+let optional f name =
+  try Some (tensor f name) with
+  | Support.Bad _ -> None
+
 let staged m s =
   let f = fixture m in
   let qpos = tensor f "qpos"
@@ -24,14 +31,14 @@ let staged m s =
   (* A model with actuators is asked about the state it was recorded at, which
      includes the control and the activation. *)
   let d =
-    match tensor f "ctrl" with
-    | exception _ -> d
-    | c -> { d with Mjc.Data.ctrl = vec1 (row c s) }
+    match optional f "ctrl" with
+    | None -> d
+    | Some c -> { d with Mjc.Data.ctrl = vec1 (row c s) }
   in
   let d =
-    match tensor f "act" with
-    | exception _ -> d
-    | a -> { d with Mjc.Data.act = vec1 (row a s) }
+    match optional f "act" with
+    | None -> d
+    | Some a -> { d with Mjc.Data.act = vec1 (row a s) }
   in
   F.forward (model m) d
 
@@ -63,10 +70,7 @@ let test_trajectory () =
     and qvel = tensor f "traj_qvel" in
     let qacc = tensor f "traj_qacc" in
     let states = f.nstates in
-    let optional name =
-      try Some (tensor f name) with
-      | _ -> None
-    in
+    let optional name = optional f name in
     (* An actuator model's step reads the control and the activation, and the
        recorded trajectory was driven with them. *)
     let ctrls = optional "traj_ctrl"
