@@ -394,7 +394,6 @@ def record(name, xml, outdir, rng):
     xml_path = os.path.join(outdir, f"{name}.xml")
     with open(xml_path, "w") as f:
         f.write(xml.lstrip() + "\n")
-    mjcb.write_model(m, os.path.join(outdir, f"{name}.mjcb"), name=name)
 
     states = []
     qvels = []
@@ -486,6 +485,14 @@ def record(name, xml, outdir, rng):
         },
     )
 
+    # The engine's contact budget is static, and a box pair fills a manifold
+    # rather than a slot: the contacts this model actually made are the only
+    # honest source for it. Twice the maximum is slack for a longer run.
+    recorded = int(max(tensors["ncon"])) if len(tensors["ncon"]) else 0
+    budget = max(mjcb.budgets(m)["nconmax"], 2 * recorded)
+    mjcb.write_model(
+        m, os.path.join(outdir, f"{name}.mjcb"), name=name, nconmax=budget
+    )
     mjcb.write_fixture(os.path.join(outdir, f"{name}.mjbf"), name, tensors)
     return {
         "name": name,

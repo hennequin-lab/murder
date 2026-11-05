@@ -123,20 +123,21 @@ def _names(m, objtype, n):
 EQ_ROWS = {0: 3, 1: 6, 2: 1, 3: 1, 4: 0, 5: 0, 6: 0}
 
 
-def budgets(m):
+def budgets(m, nconmax=None):
     """Compile-time budgets for a model, from its size.
 
     The row budget covers what v1 can instantiate: two sides for every hinge
-    or slide limit, the equality rows, and one friction row per dof. Contacts
-    are not counted yet; a model with a contact budget of its own overrides
-    this.
+    or slide limit, the equality rows, and one friction row per dof. The
+    contact budget is a guess from the geom count, which is wrong as soon as a
+    box pair makes a manifold — a recorder that has seen the model's contacts
+    passes the count it measured here.
     """
     ng = m.ngeom
     limited = sum(1 for t, on in zip(m.jnt_type, m.jnt_limited)
                   if int(t) in (2, 3) and on)
     eq = sum(EQ_ROWS.get(int(t), 0) for t in m.eq_type)
     friction = sum(1 for d in m.dof_frictionloss if d > 0)
-    nconmax = max(8, 2 * ng)
+    nconmax = max(8, 2 * ng) if nconmax is None else nconmax
     # A model that disables contacts, or has nothing to collide with, pays no
     # row budget for them: the dense factor is quadratic in this number.
     disabled = bool(m.opt.disableflags & (1 << 4))
@@ -144,16 +145,17 @@ def budgets(m):
     rows_per_contact = 1 if condim <= 1 else 2 * (condim - 1)
     contact_rows = 0 if disabled or ng < 2 else nconmax * rows_per_contact
     return {
-        "nconmax": max(8, 2 * ng),
+        "nconmax": nconmax,
         "nefcmax": max(4, 2 * limited + eq + friction + contact_rows),
         "max_geom_pairs": max(16, 2 * ng),
     }
 
 
 def model_bytes(m, nconmax=None, nefcmax=None, max_geom_pairs=None, name=None):
+    # an explicit contact budget has to drive the row budget too
     import mujoco
 
-    b = budgets(m)
+    b = budgets(m, nconmax)
     nconmax = b["nconmax"] if nconmax is None else nconmax
     nefcmax = b["nefcmax"] if nefcmax is None else nefcmax
     max_geom_pairs = b["max_geom_pairs"] if max_geom_pairs is None else max_geom_pairs

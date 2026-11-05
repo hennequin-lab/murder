@@ -23,14 +23,81 @@ let states name =
     let d = Mjc.Kinematics.forward m (data_with_qpos m (row qpos s)) in
     Mjc.Collision.contacts m d, Int.of_float (row (tensor f "ncon") s).(0))
 
+(* A box pair's manifold is a clipped polygon, and the engine emits its vertices
+   in clip order while the tensor kernel takes the vertex set directly, so the
+   rows of a box pair come out in a different order from MuJoCo's. The contacts
+   are the same; the order reaches the solver only through the warm start. For
+   the box models the rows are therefore compared as a set, sorted by distance
+   and point, which a missing, duplicated or wrong contact still fails. *)
+
+let flat_rows ~ncon ~dist ~pos ~normal ~frame =
+  List.init ncon ~f:(fun i ->
+    Array.concat
+      [ [| dist.(i) |]
+      ; Array.init 3 ~f:(fun k -> pos.((3 * i) + k))
+      ; Array.init 3 ~f:(fun k -> normal.((3 * i) + k))
+      ; Array.init 9 ~f:(fun k -> frame.((9 * i) + k))
+      ])
+
+let rec lex_compare_from k a b =
+  if Int.( >= ) k (Array.length a)
+  then 0
+  else (
+    let c = Float.compare a.(k) b.(k) in
+    if Int.equal c 0 then lex_compare_from (k + 1) a b else c)
+
+let sorted_flat ~ncon ~dist ~pos ~normal ~frame =
+  let rows = flat_rows ~ncon ~dist ~pos ~normal ~frame in
+  let rows =
+    Array.of_list (List.sort rows ~compare:(fun a b -> lex_compare_from 0 a b))
+  in
+  Array.concat (Array.to_list rows)
+
+let test_geometry_set () =
+  List.iter [ "boxes2" ] ~f:(fun name ->
+    let f = fixture name in
+    List.iteri (states name) ~f:(fun s (d, ncon) ->
+      let label tag = Printf.sprintf "%s state %d %s" name s tag in
+      let slice n x = take n x in
+      let expected =
+        sorted_flat
+          ~ncon
+          ~dist:(slice ncon (row (tensor f "contact_dist") s))
+          ~pos:(slice (ncon * 3) (row (tensor f "contact_pos") s))
+          ~normal:(slice (ncon * 3) (row (tensor f "contact_normal") s))
+          ~frame:(slice (ncon * 9) (row (tensor f "contact_frame") s))
+      and actual =
+        let rows x = Nx.to_array (Nx.slice [ R (0, ncon); A ] x) in
+        sorted_flat
+          ~ncon
+          ~dist:(take ncon (Nx.to_array d.Mjc.Data.contact_dist))
+          ~pos:(rows d.Mjc.Data.contact_pos)
+          ~normal:(rows d.Mjc.Data.contact_normal)
+          ~frame:(rows d.Mjc.Data.contact_frame)
+      in
+      parity ~tol:1e-12 ~name:(label "contacts as a set") expected actual))
+
 let test_count () =
-  List.iter [ "bounce"; "boxes"; "blocks" ] ~f:(fun name ->
+  List.iter [ "bounce"; "boxes"; "blocks"; "boxes2" ] ~f:(fun name ->
+    let m = model name in
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
       equal ~msg:(Printf.sprintf "state %d ncon" s) int ncon (int_of_t d.Mjc.Data.ncon);
+      (* the compaction sends contacts past the budget to a sink slot, so a
+         model whose recording exceeds its own budget would lose them silently *)
+      if Int.( > ) ncon m.Mjc.Model.topo.Mjc.Topo.nconmax
+      then
+        fail
+          (Printf.sprintf
+             "%s state %d: %d contacts exceed nconmax %d"
+             name
+             s
+             ncon
+             m.Mjc.Model.topo.Mjc.Topo.nconmax);
       ignore f))
 
 let test_geometry () =
+  (* [boxes2] is compared as a set below: its box pairs have their own order *)
   List.iter [ "bounce"; "boxes"; "blocks" ] ~f:(fun name ->
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
@@ -208,6 +275,7 @@ let () =
        "mjc contact"
        [ test "contact count" test_count
        ; test "contact geometry" test_geometry
+       ; test "box-box contacts, as a set" test_geometry_set
        ; test "contact rows, frictionless" (fun () -> test_rows_of "slide1")
        ; test "contact rows, pyramidal cone" (fun () -> test_rows_of "friction3")
        ; test "contact trajectory, frictionless" (fun () -> test_trajectory_of "slide1")

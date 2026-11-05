@@ -48,7 +48,8 @@ let supported (t : Topo.t) g1 g2 =
   | Sphere, Capsule
   | Plane, Box
   | Sphere, Box
-  | Capsule, Capsule -> true
+  | Capsule, Capsule
+  | Box, Box -> true
   | _ -> false
 
 (* One contact slot a pair can produce: a capsule against a plane yields one
@@ -64,7 +65,18 @@ let slots (t : Topo.t) g1 g2 =
   | Plane, Capsule -> 2
   | Plane, Box -> 8
   | Capsule, Capsule -> 2
+  (* a face contact is a clipped polygon: a quad through four half-planes has at
+     most eight vertices, and the tensor kernel holds twelve slots *)
+  | Box, Box -> Collision_box_tensor.max_contacts
   | _ -> 1
+
+(* MuJoCo keeps at most four contacts per pair of the primitive kinds, taking
+   them in the order the distance function emits them; a box pair is the
+   exception and fills the whole manifold. *)
+let pair_limit (t : Topo.t) g1 g2 =
+  match t.geom_type.(g1), t.geom_type.(g2) with
+  | Box, Box -> Collision_box_tensor.max_contacts
+  | _ -> 4
 
 let candidates (m : Model.host) : cand array =
   let t = m.topo in
@@ -478,6 +490,69 @@ let mixed_params (m : Model.host) (cands : cand array) : mixed =
    contacts before it, and a dead candidate is sent past the buffer where a
    scatter writes nothing. *)
 
+(* {1 Box-box}
+
+   The one pair whose manifold is more than one contact, and the one whose
+   geometry is tensor code over a batch of pairs rather than one expression over
+   the candidate list: {!Collision_box_tensor} wants a batch, so every box pair
+   in the list is gathered once, solved once, and read back slot by slot. *)
+
+type box_manifold =
+  { row : (int, int) Hashtbl.t (** [g1 * ngeom + g2] to the pair's row in the batch *)
+  ; manifold : Collision_box_tensor.manifold
+  }
+
+let is_box_pair (t : Topo.t) g1 g2 =
+  match t.geom_type.(g1), t.geom_type.(g2) with
+  | Box, Box -> true
+  | _ -> false
+
+let box_box (m : Model.host) (d : Data.host) (cands : cand array) =
+  let t = m.topo in
+  let pairs =
+    Array.filter cands ~f:(fun c -> is_box_pair t c.g1 c.g2 && Int.equal c.slot 0)
+  in
+  let n = Array.length pairs in
+  if Int.equal n 0
+  then None
+  else (
+    let p = m.params in
+    let g1 i = pairs.(i).g1
+    and g2 i = pairs.(i).g2 in
+    let gather (x : _ Nx.t) f =
+      let idx = Nx.init Nx.int64 [| n |] (fun i -> Int64.of_int (f i.(0))) in
+      Nx.take ~axis:0 idx x
+    in
+    let batch =
+      Collision_box_tensor.
+        { pos1 = gather d.geom_xpos g1
+        ; mat1 = gather d.geom_xmat g1
+        ; size1 = gather p.geom_size g1
+        ; pos2 = gather d.geom_xpos g2
+        ; mat2 = gather d.geom_xmat g2
+        ; size2 =
+            gather p.geom_size g2
+            (* the engine's collision functions take the two geom margins, not the
+               gaps, which only widen the driver's inclusion test *)
+        ; margin = Nx.add (gather p.geom_margin g1) (gather p.geom_margin g2)
+        }
+    in
+    let man = Collision_box_tensor.manifold batch in
+    let row = Hashtbl.create (module Int) in
+    for i = 0 to n - 1 do
+      Hashtbl.set row ~key:((g1 i * t.ngeom) + g2 i) ~data:i
+    done;
+    Some { row; manifold = man })
+
+(* [box_slot bm row slot] is one contact of a pair's manifold, or an infinite
+   distance for a dead slot, which the inclusion test then drops. *)
+let box_slot (bm : box_manifold) row slot =
+  let m = bm.manifold in
+  let dead = Nx.equal_s (Nx.slice [ I row; I slot ] m.Collision_box_tensor.live) 0. in
+  ( Nx.where dead (Nx.scalar Nx.float64 1e30) (Nx.slice [ I row; I slot ] m.dist)
+  , Nx.where dead (Nx.zeros Nx.float64 [| 3 |]) (Nx.slice [ I row; I slot; A ] m.pos)
+  , Nx.slice [ I row; I slot; A ] m.normal )
+
 let contacts (m : Model.host) (d : Data.host) : Data.host =
   let t = m.topo in
   let cands = candidates m in
@@ -488,6 +563,7 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
   then { d with ncon = Nx.zeros Nx.int32 [||] }
   else (
     let mix = mixed_params m cands in
+    let boxes = box_box m d cands in
     let row_of k x = Nx.slice [ I k ] x in
     let tangent (t : Topo.t) d (c : cand) =
       match t.geom_type.(c.g1), t.geom_type.(c.g2) with
@@ -506,7 +582,17 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
     let seen = ref (Nx.scalar Nx.float64 0.0)
     and pair = ref (-1, -1) in
     Array.iteri cands ~f:(fun i c ->
-      let dist_i, pos_i, normal_i = geometry m d c in
+      let dist_i, pos_i, normal_i =
+        if is_box_pair t c.g1 c.g2
+        then (
+          let row =
+            match boxes with
+            | Some bm -> Hashtbl.find_exn bm.row ((c.g1 * t.ngeom) + c.g2)
+            | None -> assert false
+          in
+          box_slot (Option.value_exn boxes) row c.slot)
+        else geometry m d c
+      in
       let includemargin = row_of i mix.includemargin
       and reach = row_of i mix.reach in
       let plane =
@@ -529,7 +615,7 @@ let contacts (m : Model.host) (d : Data.host) : Data.host =
         seen := Nx.scalar Nx.float64 0.0);
       let room =
         Nx.where
-          (Nx.less_s !seen 4.0)
+          (Nx.less_s !seen (Float.of_int (pair_limit t c.g1 c.g2)))
           (Nx.scalar Nx.float64 1.0)
           (Nx.scalar Nx.float64 0.0)
       in
