@@ -21,8 +21,14 @@ let rec weldbody (t : Topo.t) b =
   then b
   else weldbody t t.body_parentid.(b)
 
+(* [weldparent t b] is the weld root of [b]'s *weld root*'s parent. The
+   distinction is the bug the humanoid found: a body with no joint is welded
+   into its parent, so a hand welded into a forearm must be compared with the
+   upper arm it now touches directly, and asking for the parent of the original
+   body instead compares the forearm with itself and lets the pair through. *)
 let weldparent (t : Topo.t) b =
-  if Int.equal b 0 then 0 else weldbody t t.body_parentid.(b)
+  let w = weldbody t b in
+  if Int.equal w 0 then 0 else weldbody t t.body_parentid.(w)
 
 let bitmask_ok (t : Topo.t) g1 g2 =
   (not (Int.equal (t.geom_contype.(g1) land t.geom_conaffinity.(g2)) 0))

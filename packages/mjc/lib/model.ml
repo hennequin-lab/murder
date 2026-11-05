@@ -70,6 +70,7 @@ module Params = struct
     ; gravity : 'a
     ; timestep : 'a
     ; integrator : 'a
+    ; cone : 'a
     ; disableflags : 'a
     ; iterations : 'a
     ; tolerance : 'a

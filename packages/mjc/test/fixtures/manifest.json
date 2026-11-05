@@ -102,7 +102,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "271f684952901083"
+      "xml_sha256": "492cba084793a9ca"
     },
     {
       "name": "blocks",
@@ -183,6 +183,16 @@
       "nv": 2,
       "nstates": 32,
       "xml_sha256": "70b663b4027fe3e7"
+    },
+    {
+      "name": "humanoid",
+      "nbody": 17,
+      "ngeom": 20,
+      "njnt": 22,
+      "nq": 28,
+      "nv": 27,
+      "nstates": 32,
+      "xml_sha256": "1b35a726a8184017"
     },
     {
       "name": "arm2",

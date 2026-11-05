@@ -732,6 +732,17 @@ let contact (m : Model.host) (d : Data.host) : Data.host =
      value. Requiring both edges of a pair to carry a non-negative force is
      what produces the cone, so the solver needs nothing new. *)
   let dim = Array.fold t.geom_condim ~init:1 ~f:Int.max in
+  (* The cone is a model option, and v1 has one of the two: a pyramidal cone is
+     a pair of one-sided rows per friction axis, which is what a box-constrained
+     solver can express exactly. An elliptic cone is a quadratic row constraint,
+     and running a model that asked for it as if it had the other would be a
+     different engine with the same name. *)
+  if Float.( > ) (Nx.item [] m.params.cone) 0.5
+  then
+    raise
+      (Invalid_argument
+         "contact friction: an elliptic friction cone (cone=\"elliptic\") is not \
+          implemented; v1 solves a pyramidal cone");
   let size = if dim <= 1 then 1 else 2 * (dim - 1) in
   if size > 4
   then raise (Invalid_argument "contact friction (condim > 3) is not implemented yet");

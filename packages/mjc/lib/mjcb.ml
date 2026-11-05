@@ -159,6 +159,7 @@ let fields =
   ; "gravity"
   ; "timestep"
   ; "integrator"
+  ; "cone"
   ; "disableflags"
   ; "iterations"
   ; "tolerance"
@@ -501,6 +502,7 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.gravity
       ; p.timestep
       ; p.integrator
+      ; p.cone
       ; p.disableflags
       ; p.iterations
       ; p.tolerance
@@ -760,6 +762,7 @@ let parse (c : cursor) : Model.host =
     ; gravity = tensor "gravity"
     ; timestep = tensor "timestep"
     ; integrator = tensor "integrator"
+    ; cone = tensor "cone"
     ; disableflags = tensor "disableflags"
     ; iterations = tensor "iterations"
     ; tolerance = tensor "tolerance"

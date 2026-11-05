@@ -568,6 +568,12 @@ MODELS = {
 </mujoco>
 """,
 
+    # MuJoCo's humanoid, the G4 gate's hardest model: a free joint, 21 motors,
+    # two limited tendons, and every geom colliding with every other one except
+    # the two excluded pairs. It lives in test/fixtures/humanoid.xml because it
+    # is long, and it is that copy, with the cone and solver set to the ones v1
+    # implements, that is recorded.
+    "humanoid": "@test/fixtures/humanoid.xml",
     # A two-link arm: two hinges in the xz plane, one motor each, gravity, no
     # contacts and no limits. It is the model the iLQR demo swings to a target,
     # and it is here rather than in the demo so that the dynamics it uses are
@@ -661,6 +667,14 @@ MODELS = {
 """,
 
 }
+
+
+def source_of(name, text):
+    """The MJCF text for a model: the string itself, or a file it names."""
+    if text.startswith("@"):
+        with open(text[1:], encoding="utf-8") as f:
+            return f.read()
+    return text
 
 
 def random_qpos(m, rng):
@@ -780,7 +794,10 @@ def control_range(m):
 
 
 def record(name, xml, outdir, rng):
-    m = mujoco.MjModel.from_xml_string(xml)
+    # Read the source once: a file-sourced model would otherwise be truncated by
+    # its own rewrite before it is copied to the corpus.
+    xml_text = source_of(name, xml)
+    m = mujoco.MjModel.from_xml_string(xml_text)
     # Actuator controls come from their own stream: adding them must not
     # renumber the poses and velocities the rest of the corpus is built from.
     crng = np.random.default_rng(SEED + 1 + len(MODELS))
@@ -791,7 +808,7 @@ def record(name, xml, outdir, rng):
     d = mujoco.MjData(m)
     xml_path = os.path.join(outdir, f"{name}.xml")
     with open(xml_path, "w") as f:
-        f.write(xml.lstrip() + "\n")
+        f.write(xml_text.lstrip() + "\n")
 
     states = []
     qvels = []

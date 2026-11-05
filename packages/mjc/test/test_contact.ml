@@ -78,7 +78,7 @@ let test_geometry_set () =
       parity ~tol:1e-12 ~name:(label "contacts as a set") expected actual))
 
 let test_count () =
-  List.iter [ "bounce"; "boxes"; "blocks"; "boxes2" ] ~f:(fun name ->
+  List.iter [ "bounce"; "boxes"; "blocks"; "boxes2"; "humanoid" ] ~f:(fun name ->
     let m = model name in
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
@@ -95,6 +95,72 @@ let test_count () =
              ncon
              m.Mjc.Model.topo.Mjc.Topo.nconmax);
       ignore f))
+
+(* The humanoid is compared as a set. Its contacts come out in MuJoCo's
+   broadphase order, which is a body-pair traversal the engine has no reason to
+   reproduce; the order reaches the solver only through the warm start, and the
+   set is what the physics is. Every field of every contact still has to match. *)
+let test_humanoid_set () =
+  let f = fixture "humanoid" in
+  let round x = Stdlib.Float.round (x *. 1e12) /. 1e12 in
+  let sort rows =
+    List.sort rows ~compare:(fun (a, b, d) (c, e, x) ->
+      let k = Stdlib.compare (a, b) (c, e) in
+      if Int.equal k 0 then Float.compare d x else k)
+  in
+  let ours d =
+    let ncon = int_of_t d.Mjc.Data.ncon in
+    let dist = Nx.to_array d.Mjc.Data.contact_dist
+    and geom = Nx.to_array d.Mjc.Data.contact_geom in
+    sort
+      (List.init ncon ~f:(fun k ->
+         ( Stdlib.Int32.to_int geom.(2 * k)
+         , Stdlib.Int32.to_int geom.((2 * k) + 1)
+         , round dist.(k) )))
+  in
+  let recorded s ncon =
+    let geom = row (tensor f "contact_geom") s
+    and dist = row (tensor f "contact_dist") s in
+    sort
+      (List.init ncon ~f:(fun k ->
+         ( Stdlib.Int.of_float geom.(2 * k)
+         , Stdlib.Int.of_float geom.((2 * k) + 1)
+         , round dist.(k) )))
+  in
+  List.iteri (states "humanoid") ~f:(fun s (d, ncon) ->
+    equal ~msg:(Printf.sprintf "state %d ncon" s) int ncon (int_of_t d.Mjc.Data.ncon);
+    let expected = recorded s ncon
+    and got = ours d in
+    let pairs rows = List.map rows ~f:(fun (a, b, _) -> a, b) in
+    if not (Poly.equal (pairs expected) (pairs got))
+    then (
+      let show rows =
+        String.concat
+          ~sep:" "
+          (List.map rows ~f:(fun (a, b, x) -> Printf.sprintf "(%d,%d,%.10f)" a b x))
+      in
+      fail
+        (Printf.sprintf
+           "state %d: contact pairs differ\n  mujoco %s\n  ours   %s"
+           s
+           (show expected)
+           (show got)));
+    (* The pairs are exact; the distances are compared to 1e-9, which is what a
+       pose this deeply interpenetrating (a random configuration buries the
+       robot in the floor) can hold through two different formulations of the
+       primitive distances. The trajectory test holds the same model to 1e-10
+       over ten steps, which is the check that has physics in it. *)
+    List.iter2_exn expected got ~f:(fun (a, b, x) (_c, _e, y) ->
+      if Float.( > ) (Float.abs (x -. y)) 1e-9
+      then
+        fail
+          (Printf.sprintf
+             "state %d: contact (%d,%d): distance %.12g, mujoco %.12g"
+             s
+             a
+             b
+             x
+             y)))
 
 (* A model can say two bodies never touch. The test has to be able to tell that
    from "nothing touches": the fixture has three contacts, between the torso and
@@ -323,6 +389,7 @@ let () =
        ; test "contact geometry" test_geometry
        ; test "box-box contacts, as a set" test_geometry_set
        ; test "an excluded pair never touches" test_exclusions
+       ; test "humanoid contacts, as a set" test_humanoid_set
        ; test "contact rows, frictionless" (fun () -> test_rows_of "slide1")
        ; test "contact rows, pyramidal cone" (fun () -> test_rows_of "friction3")
        ; test "contact trajectory, frictionless" (fun () -> test_trajectory_of "slide1")

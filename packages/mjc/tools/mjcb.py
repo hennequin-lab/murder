@@ -131,6 +131,10 @@ def fields(m):
         ("actuator_forcelimited", np.asarray(m.actuator_forcelimited, dtype=np.float64)),
         ("gravity", m.opt.gravity), ("timestep", np.asarray(m.opt.timestep)),
         ("integrator", np.asarray(m.opt.integrator, dtype=np.float64)),
+        # MuJoCo's friction cone: 0 pyramidal, 1 elliptic. Recorded so that a
+        # model asking for the one v1 does not implement is refused by name
+        # instead of being silently run with the other.
+        ("cone", np.asarray(m.opt.cone, dtype=np.float64)),
         ("disableflags", np.asarray(m.opt.disableflags, dtype=np.float64)),
         ("iterations", np.asarray(m.opt.iterations)),
         ("tolerance", np.asarray(m.opt.tolerance)),

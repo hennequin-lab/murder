@@ -1014,3 +1014,35 @@ contacts and not four" is a statement a filter cannot satisfy by filtering
 everything. At the recorded (random) poses the balls mostly miss each other,
 which would have made the check vacuous, so the test also asserts the reference
 pose's three contacts explicitly.
+
+## G4 — the humanoid runs, and it found a filter bug
+
+With tendon limits, exclusions and a cone field in place, MuJoCo's own
+`model/humanoid/humanoid.xml` — copied into the corpus unmodified, because its
+options *are* the ones v1 implements (pyramidal cone, Newton) — loads, steps,
+and matches: ten steps of `mj_step` at 1e-10 through the dynamics suite, and at
+every one of its 32 recorded poses the contact **set** matches, pairs exact and
+distances to 1e-9. Its options matter: the copy of the humanoid in MuJoCo's
+*test* data asks for an elliptic cone and PGS, and the first of those is now
+refused by name (`contact friction: an elliptic friction cone … is not
+implemented`) instead of being silently solved as a pyramid.
+
+Two things the model taught us.
+
+**`weldparent` was wrong**, and only a body with no joint can show it. A hand
+welded into its forearm is the forearm; the parent filter must therefore compare
+the *weld root* of each body, not the body itself. Our version asked for the
+parent of the original body, which returned the forearm for both sides of the
+comparison and let the pair through — the humanoid reported a contact between
+its upper arm and its own hand at 4.5 cm of penetration, 21 contacts where
+MuJoCo had 20. The fix is two lines and the difference is one contact that
+should never have existed.
+
+**Contact order is MuJoCo's broadphase order**, a body-pair traversal the engine
+has no reason to reproduce: the humanoid's contacts come out in a different
+sequence, and the same argument as box-box applies — the order reaches the solver
+only through the warm start, so the test compares the set. Pairs are exact;
+distances are compared to 1e-9 because a random pose buries the robot in the
+floor and two formulations of a primitive distance can differ in the eleventh
+digit under that much interpenetration. The trajectory test, which has physics in
+it, holds the same model to 1e-10.

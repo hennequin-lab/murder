@@ -526,7 +526,7 @@ written for MuJoCo loads and behaves.
 5. A full humanoid with position actuators tracks the C engine over 1000
    re-synchronised steps within `1e-8` relative.
 
-*Progress.* Tendon limits landed (format 13, `tendonlim` corpus model, a
+*Progress.* The humanoid runs and matches (see `doc/log.md`); tendon limits landed (format 13, `tendonlim` corpus model, a
 trajectory through the limit at 1e-10); the humanoid that refused on them now
 gets past the load, and the next two refusals are named in `doc/log.md`: the
 elliptic cone and `<exclude>` pairs.

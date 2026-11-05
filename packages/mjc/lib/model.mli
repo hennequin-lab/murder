@@ -87,6 +87,7 @@ module Params : sig
     ; gravity : 'a (** [[3]] *)
     ; timestep : 'a (** [[]], a 0-d tensor. *)
     ; integrator : 'a (** [[]], MuJoCo's code for the integration scheme. *)
+    ; cone : 'a (** [[]], MuJoCo's friction cone: [0] pyramidal, [1] elliptic. *)
     ; disableflags : 'a (** [[]], MuJoCo's [mjtDisableBit] mask. *)
     ; iterations : 'a (** [[]], the solver's iteration budget. *)
     ; tolerance : 'a (** [[]], and its tolerance. *)
