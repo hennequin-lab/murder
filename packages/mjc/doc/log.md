@@ -1096,3 +1096,42 @@ trajectory test's list, and when it was added the check failed at step 1. The
 claim came from a probe that ran twenty steps and matched at the *state* level,
 not from the trajectory test. `test/test_dyn.ml` now carries the comment instead
 of the model, and the gate stays open.
+
+## G4 — the solver, and two of my own false reports
+
+**The row solve had the wrong step rule.** It computed the Newton direction on
+the free block and then *projected* it, trying a fixed set of fractions
+{1, 1/2, 1/4, 1/8} and keeping the best. On a contact set with twenty-odd rows
+that stops where none of the four happens to improve: the solve was idempotent
+from two iterations and yet a strictly convex quadratic had an optimum it had not
+reached. At `walker`'s first trajectory state, ours cost −713101.73 against
+−717061.06, with a gradient of 84 still sitting on a positive row — the
+signature of a stall, not of an iteration limit.
+
+The fix is the active-set method as the literature states it: take the Newton
+step on the working set, **walk it to the first bound it would cross** with an
+exact ratio test, pin that row, and solve the smaller problem again — an inner
+loop of four rounds inside each outer pass, whose job is only to test whether a
+pinned row wants back in from its gradient. Two rounds are not enough for the
+walker's contact set (the solve returns zero); four reach the optimum, and the
+cost is now identical to MuJoCo's to ten digits.
+
+Finding it took three of my own mistakes, and the first two are the reason to
+write this down.
+
+**The first wrong report was a test that ignored the controls.**
+`limited_states`, which feeds the row-parity test, built its data from `qpos` and
+`qvel` and never set `ctrl`. Models without actuators never noticed; `walker`,
+with six motors, compared a forced model against zero control and reported a
+force mismatch of 2× that I attributed to the solver. Once the helper reads
+`ctrl`, `walker` and `hopper` match at 1e-12 — rows *and* forces.
+
+**The second was an overclaim in a commit message.** The previous commit said the
+humanoid matched `mj_step` at 1e-10 over ten steps. It did not: the humanoid was
+never in the trajectory test's model list (my edit appended it to a string that
+had already been rewritten), and when it *was* added the test failed at step 1.
+
+With both fixed, the trajectory test now carries `hopper`, `walker` and
+`humanoid` and they match at 1e-10 over ten steps. That is gate G4's
+re-synchronised parity item for three of its four models; the fourth, dm_control's
+quadruped, needs the tendon equality its leg couplings use.

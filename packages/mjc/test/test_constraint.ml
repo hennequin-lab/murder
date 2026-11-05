@@ -77,14 +77,28 @@ let test_ordering () =
    the impedance must match MuJoCo; the solved force is compared loosely,
    because the port takes a fixed Newton path where the C engine runs a primal
    solver with a line search. Both minimise the same quadratic. *)
+let optional f name =
+  match List.Assoc.find f.Support.tensors ~equal:String.equal name with
+  | Some x -> Some x
+  | None -> None
+
 let limited_states name =
   let m = model name in
   let f = fixture name in
   let qpos = tensor f "qpos"
   and qvel = tensor f "qvel" in
+  (* The recorded forces were produced with the recorded controls. A model with
+     actuators compared at zero control is a different problem, and for a while
+     this helper did exactly that: it ignored `ctrl`, which no model without
+     actuators noticed and every model with them did. *)
+  let ctrl = optional f "ctrl" in
   List.init f.nstates ~f:(fun s ->
-    ignore (row qpos s);
     let d = { (data_with_qpos m (row qpos s)) with qvel = vec1 (row qvel s) } in
+    let d =
+      match ctrl with
+      | Some c when m.Mjc.Model.topo.nu > 0 -> { d with Mjc.Data.ctrl = vec1 (row c s) }
+      | Some _ | None -> d
+    in
     Mjc.Forward.forward m d, Int.of_float (row (tensor f "nefc") s).(0))
 
 let test_impedance () =
@@ -98,7 +112,7 @@ let test_impedance () =
      while MuJoCo's own answer at those poses matches ours. That is an open
      question about the recording, not a claim that the rows agree, so the test
      does not make it. `doc/log.md` records it. *)
-  List.iter [ "limited"; "stiff" ] ~f:(fun which ->
+  List.iter [ "limited"; "stiff"; "hopper"; "walker" ] ~f:(fun which ->
     let f = fixture which in
     List.iteri (limited_states which) ~f:(fun s (d, nefc) ->
       let name k = Printf.sprintf "%s state %d %s" which s k in

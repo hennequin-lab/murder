@@ -93,6 +93,8 @@ let system (r : rows) (free : f) =
 
 (* The iteration itself: a Gauss-Seidel warm start when the rows are box
    constrained, then active-set Newton with a monotone line search. *)
+let inner_rounds = 4
+
 let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =
   let nb = (Nx.shape r.a).(0) in
   let rows_idx = Nx.arange_f Nx.float64 0.0 (Float.of_int nb) 1.0 in
@@ -136,26 +138,48 @@ let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =
           mask
           (Nx.logical_or bilateral (Nx.logical_or (Nx.logical_not at_bound) wants_in))
     in
-    let am = system { r with b = r.b } (Nx.where free (Nx.ones_like rows_idx) zero) in
-    let rhs = Nx.where free (Nx.neg grad) zero in
-    let step =
-      match linear with
-      | `Cholesky -> Mass.solve (Mass.factor am) rhs
-      | `Cg -> cg ~iters:nb am rhs
-    in
+    (* The inner loop is the active-set method proper: take the Newton step on
+       the free block, walk it to the first bound it would cross, pin that row,
+       and solve again with the smaller free set. A few rounds settle the
+       working set; the outer loop then tests whether a pinned row wants back
+       in from its gradient. *)
+    let free = ref free in
     let cost v = Nx.add (Nx.mul_s (Nx.dot v (Nx.matmul r.a v)) 0.5) (Nx.dot r.b v) in
-    let into_bounds v = Nx.where bilateral v (Nx.minimum (Nx.maximum v r.lo) r.hi) in
-    let chosen = ref !lambda in
-    let best = ref (cost !lambda) in
-    let taken = ref (Nx.scalar Nx.float64 0.0) in
-    List.iter [ 1.0; 0.5; 0.25; 0.125 ] ~f:(fun frac ->
-      let candidate = into_bounds (Nx.add !lambda (Nx.mul_s step frac)) in
-      let value = cost candidate in
-      let take = Nx.logical_and (Nx.less_s !taken 0.5) (Nx.less value !best) in
-      chosen := Nx.where take candidate !chosen;
-      best := Nx.where take value !best;
-      taken := Nx.where take (Nx.scalar Nx.float64 1.0) !taken);
-    lambda := !chosen
+    for _ = 1 to inner_rounds do
+      let grad = Nx.add (Nx.matmul r.a !lambda) r.b in
+      let am = system r (Nx.where !free (Nx.ones_like rows_idx) zero) in
+      let rhs = Nx.where !free (Nx.neg grad) zero in
+      let step =
+        match linear with
+        | `Cholesky -> Mass.solve (Mass.factor am) rhs
+        | `Cg -> cg ~iters:nb am rhs
+      in
+      let target = Nx.where (Nx.greater_s step 0.0) r.hi r.lo in
+      let pushing = Nx.logical_and (Nx.logical_not bilateral) !free in
+      let outside =
+        Nx.logical_or
+          (Nx.logical_and (Nx.greater_s step 0.0) (Nx.greater (Nx.add !lambda step) r.hi))
+          (Nx.logical_and (Nx.less_s step 0.0) (Nx.less (Nx.add !lambda step) r.lo))
+      in
+      let cross = Nx.logical_and pushing (Nx.logical_or outside (Nx.equal step zero)) in
+      let ratio =
+        Nx.where cross (Nx.div (Nx.sub target !lambda) step) (Nx.full_like rows_idx 1.0)
+      in
+      let alpha =
+        Nx.minimum_s
+          (Nx.maximum_s (Nx.min (Nx.minimum ratio (Nx.full_like rows_idx 1.0))) 0.0)
+          1.0
+      in
+      let candidate = Nx.add !lambda (Nx.mul step alpha) in
+      let candidate =
+        Nx.where bilateral candidate (Nx.minimum (Nx.maximum candidate r.lo) r.hi)
+      in
+      (* A step that does not lower the objective is a degenerate tie; keeping
+         the better side stops the working set from oscillating. *)
+      lambda := Nx.where (Nx.less (cost candidate) (cost !lambda)) candidate !lambda;
+      let blocked = Nx.logical_and cross (Nx.less_equal ratio (Nx.add_s alpha 1e-12)) in
+      free := Nx.logical_and !free (Nx.logical_not blocked)
+    done
   done;
   !lambda
 

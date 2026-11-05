@@ -526,10 +526,14 @@ written for MuJoCo loads and behaves.
 5. A full humanoid with position actuators tracks the C engine over 1000
    re-synchronised steps within `1e-8` relative.
 
-*Progress.* The four G4 models are in the corpus and their contact sets and rows
-match at 1e-12, but the **solved forces do not**: the row solve stops on a point
-that is not the quadratic's optimum, so trajectories diverge. That is the gate's
-one remaining blocker and it is a solver fix, described in `doc/log.md`. Tendon limits landed (format 13, `tendonlim` corpus model, a
+*Progress.* Gate G4 is all but claimed: `hopper`, `walker` and `humanoid` match
+`mj_step` at 1e-10 over ten steps, their contact sets match at every recorded
+pose, and their rows and forces match at 1e-12. Getting there needed the row
+solve's step rule rebuilt as an active set with an exact ratio test — the
+projected fraction search stalled short of the optimum — and it needed two of
+my own false reports to be found and withdrawn (`doc/log.md`). The fourth model,
+dm_control's quadruped, is blocked on the **tendon equality** its leg couplings
+use. Tendon limits landed (format 13, `tendonlim` corpus model, a
 trajectory through the limit at 1e-10); the humanoid that refused on them now
 gets past the load, and the next two refusals are named in `doc/log.md`: the
 elliptic cone and `<exclude>` pairs.

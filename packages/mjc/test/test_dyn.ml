@@ -23,6 +23,9 @@ let models =
   ; "arm2"
   ; "tendonlim"
   ; "exclude"
+  ; "hopper"
+  ; "walker"
+  ; "humanoid"
     (* The four G4 models are not here yet. Their contact *sets* match (see the
        contact suite) and their rows match at 1e-12 (see `doc/log.md`), but the
        solved forces do not: the row solve settles on a point that is not the
