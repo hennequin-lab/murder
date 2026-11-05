@@ -1135,3 +1135,46 @@ With both fixed, the trajectory test now carries `hopper`, `walker` and
 `humanoid` and they match at 1e-10 over ten steps. That is gate G4's
 re-synchronised parity item for three of its four models; the fourth, dm_control's
 quadruped, needs the tendon equality its leg couplings use.
+
+## G4 — tendon equalities, and what the quadruped actually needs
+
+**Tendon equality is one row, and its reference is a model constant.** MuJoCo's
+`mjEQ_TENDON` couples tendon *lengths* exactly as `mjEQ_JOINT` couples joint
+coordinates: a quartic in the second object's displacement from its reference,
+with `cpos = len1 - len1_0 - c0 - (c1·dif + c2·dif² + c3·dif³ + c4·dif⁴)` and
+`jac = J1 - deriv·J2`. The reference is `tendon_length0`, which is *not* a
+function of `qpos0` alone: it is the tendon geometry evaluated once at the
+reference pose. Format 14 therefore carries `ten_length0` rather than
+recomputing it, which is the same reason MuJoCo keeps it in the model.
+
+`tendoneq` is the corpus model for it — contacts off, so the rows are the
+equalities and nothing else: one tendon with an offset (no polynomial), a pair
+with a linear term, and a pair whose polynomial reaches the quartic, where the
+Jacobian's derivative stops being constant. Rows (`pos`, `J`, `R`, `D`, `aref`,
+`vel`, force) match at 1e-12 and the ten-step trajectory at 1e-10. The test
+bites: dropping `deriv·J2` from the Jacobian makes `efc_vel` fail at 0.8
+relative on the first state.
+
+**The quadruped was never blocked on tendons.** With the equality in place its
+rows build, and the next thing that fails is collision: `plane` against
+`cylinder` (its eye geoms), then `sphere`/`capsule` against `hfield`. It stands
+on an hfield *terrain*, so it needs the general convex path — `mjc_Convex`
+(GJK/EPA) and `mjc_ConvexHField` — not a row type. That is a different size of
+work from a tendon equality row and belongs with the geometry milestone, not
+with G4. G4 lands with three of its four models and the fourth named with its
+true reason (`test/test_dyn.ml`, `MILESTONES.md`).
+
+## An infrastructure mistake worth recording
+
+Re-recording the corpus at format 14 left `_build`'s copy of a fixture stale
+(dune had hardlinked the source, so rewriting the source in place broke the
+link without changing the recorded digest). I "fixed" it by deleting
+`_build/default/packages/mjc/test`, which was worse: dune's digest database
+still claimed those targets existed and would not regenerate them — every test
+in the directory failed with `execve ... No such file`, and a forced rebuild
+gave `Unbound module Dune__exe` because the generated directory was gone too.
+Touching sources and `dune build @all` do not repair that state. The repair was
+to drop dune's digest database (`_build/.db`, `_build/.digest-db`) and let it
+re-verify; no build output was deleted, and nothing about `@fmt`, `@lint` or
+the tests changed. Deleting a directory under `_build` is not a supported way
+to force a refresh — `dune build --force <alias>` is.

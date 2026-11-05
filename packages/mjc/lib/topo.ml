@@ -22,6 +22,7 @@ type eq_type =
   | Connect (** Ball joint: two anchor points coincide. *)
   | Weld (** Rigid: relative position and orientation. *)
   | Joint (** Scalar coupling between two joints, through a cubic. *)
+  | Tendon (** The same coupling between one or two tendon lengths. *)
 
 (** The type for the objects an equality constrains. *)
 type eq_objtype =

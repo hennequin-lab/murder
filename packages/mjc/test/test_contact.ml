@@ -287,10 +287,14 @@ let test_rows_of name =
   let nv = m.Mjc.Model.topo.Mjc.Topo.nv in
   let f = fixture name in
   let qpos = tensor f "qpos"
-  and qvel = tensor f "qvel" in
+  and qvel = tensor f "qvel"
+  and ctrl = tensor f "ctrl" in
   List.iteri
     (List.init f.nstates ~f:(fun s ->
        let d = { (data_with_qpos m (row qpos s)) with qvel = vec1 (row qvel s) } in
+       (* The recorded rows were solved with the recorded controls; a model
+          with actuators compared at zero control is a different problem. *)
+       let d = { d with Mjc.Data.ctrl = vec1 (row ctrl s) } in
        Mjc.Forward.forward m d, Int.of_float (row (tensor f "nefc") s).(0)))
     ~f:(fun s (d, nefc) ->
       let label tag = Printf.sprintf "%s state %d %s" name s tag in
@@ -394,6 +398,7 @@ let () =
        ; test "humanoid contacts, as a set" test_humanoid_set
        ; test "contact rows, frictionless" (fun () -> test_rows_of "slide1")
        ; test "contact rows, pyramidal cone" (fun () -> test_rows_of "friction3")
+       ; test "rows of a tendon equality" (fun () -> test_rows_of "tendoneq")
        ; test "contact trajectory, frictionless" (fun () -> test_trajectory_of "slide1")
        ; test "contact trajectory, pyramidal cone" (fun () ->
            test_trajectory_of "friction3")

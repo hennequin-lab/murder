@@ -634,6 +634,57 @@ MODELS = {
 </mujoco>
 """,
 
+    # Tendon equalities: one tendon with an offset, and a coupling between two
+    # tendon lengths through the quartic MuJoCo defines. The four cases that
+    # matter are all here — a single tendon (no polynomial at all), a pair with
+    # a linear term, and a pair whose polynomial reaches the cubic and quartic
+    # terms, which is where the derivative in the Jacobian stops being constant.
+    # Contacts are off: the rows are the equalities, and nothing else, so a
+    # mismatch cannot be blamed on the collision stage.
+    "tendoneq": """
+<mujoco model="tendoneq">
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="a" pos="0 0 0.6">
+      <joint name="j1" type="hinge" axis="0 0 1" damping="0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03"
+            contype="0" conaffinity="0"/>
+      <body name="b" pos="0.3 0 0">
+        <joint name="j2" type="hinge" axis="0 1 0" damping="0.2"/>
+        <geom type="capsule" fromto="0 0 0 0.25 0 0" size="0.025"
+              contype="0" conaffinity="0"/>
+        <body name="c" pos="0.25 0 0">
+          <joint name="j3" type="hinge" axis="0 1 0" damping="0.3"/>
+          <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02"
+                contype="0" conaffinity="0"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t1">
+      <joint joint="j1" coef="1"/>
+    </fixed>
+    <fixed name="t2">
+      <joint joint="j2" coef="1"/>
+      <joint joint="j3" coef="-2"/>
+    </fixed>
+  </tendon>
+  <equality>
+    <tendon name="e_off" tendon1="t1" polycoef="0.15 0 0 0 0"/>
+    <tendon name="e_linear" tendon1="t1" tendon2="t2" polycoef="0 1 0 0 0"/>
+    <tendon name="e_quartic" tendon1="t2" tendon2="t1"
+            polycoef="0.02 0.5 -0.3 0.1 -0.05"/>
+  </equality>
+  <actuator>
+    <motor name="m1" joint="j1" gear="0.4"/>
+    <motor name="m2" joint="j2" gear="0.3"/>
+    <motor name="m3" joint="j3" gear="0.2"/>
+  </actuator>
+</mujoco>
+""",
+
     # Two limbs that overlap and are told not to touch. Without the `<exclude>`
     # their spheres collide at every state; with it, the third body's sphere —
     # which is not excluded — is the only contact. The model exists so that a

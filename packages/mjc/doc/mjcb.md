@@ -1,6 +1,6 @@
 # The `.mjcb` model format
 
-Version 7. Little-endian throughout. Written by `tools/mjcb.py` from a MuJoCo
+Version 14. Little-endian throughout. Written by `tools/mjcb.py` from a MuJoCo
 `mjModel` that has been through `mj_setConst`, read by `Mjc.Mjcb`.
 
 The format exists so that the runtime never links MuJoCo: the compiler's
@@ -132,8 +132,51 @@ freedom.
 | `site_pos` | `[nsite;3]` | FK |
 | `site_quat` | `[nsite;4]` | FK |
 | `site_size` | `[nsite;3]` | M5 |
+| `body_invweight0` | `[nbody;2]` | M6 |
+| `jnt_margin` | `[njnt]` | M3 |
+| `jnt_solref` | `[njnt;2]` | M3 |
+| `jnt_solimp` | `[njnt;5]` | M3 |
+| `dof_solref` | `[nv;2]` | M3 |
+| `dof_solimp` | `[nv;5]` | M3 |
+| `dof_invweight0` | `[nv]` | M3 |
+| `geom_rbound` | `[ngeom]` | M4 |
+| `eq_obj1id` | `[neq]` | G4 |
+| `eq_obj2id` | `[neq]` | G4 |
+| `eq_data` | `[neq;11]` | G4 |
+| `eq_solref` | `[neq;2]` | G4 |
+| `eq_solimp` | `[neq;5]` | G4 |
+| `eq_active0` | `[neq]` | G4 |
+| `wrap_prm` | `[nwrap]` | M5 |
+| `ten_range` | `[ntendon;2]` | G4 |
+| `ten_margin` | `[ntendon]` | G4 |
+| `ten_length0` | `[ntendon]` | G4 |
+| `ten_invweight0` | `[ntendon]` | G4 |
+| `ten_solref` | `[ntendon;2]` | G4 |
+| `ten_solimp` | `[ntendon;5]` | G4 |
+| `actuator_gear` | `[nu;6]` | M5 |
+| `actuator_gainprm` | `[nu;3]` | M5 |
+| `actuator_biasprm` | `[nu;3]` | M5 |
+| `actuator_dynprm` | `[nu;3]` | M5 |
+| `actuator_ctrlrange` | `[nu;2]` | M5 |
+| `actuator_forcerange` | `[nu;2]` | M5 |
+| `actuator_ctrllimited` | `[nu]` | M5 |
+| `actuator_forcelimited` | `[nu]` | M5 |
 | `gravity` | `[3]` | M2 |
 | `timestep` | `[]` | M2, M3 |
+| `cone` | `[]` | G4 |
+| `integrator`, `disableflags`, `iterations`, `tolerance` | `[]` | M3 |
+| `exclude_body1`, `exclude_body2` | `[npair]` | G4 |
+
+`ten_length0` is the tendon length at the reference pose, which a tendon
+equality measures its error from. It is not `qpos0`'s image under a formula:
+it is the tendon geometry run once at `qpos0`, which is why MuJoCo stores it in
+the model and why the format carries it rather than recomputing it.
+
+The sensor tables are `sensor_type`, `sensor_objtype`, `sensor_objid`,
+`sensor_adr`, `sensor_dim` and `sensor_refid`, each `[nsensor]`. A stage that
+needs a model array a sensor would read is not carried here until a sensor kind
+reads it: v1's sensor list is positions, velocities and actuator forces, and
+each of those reads a tensor already in the table above.
 
 `jnt_limited` is written as `0.` or `1.` because every consumer multiplies or
 selects with it; MuJoCo stores it as a byte. `timestep` is a 0-d tensor so

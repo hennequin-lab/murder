@@ -23,15 +23,15 @@ let models =
   ; "arm2"
   ; "tendonlim"
   ; "exclude"
+  ; "tendoneq"
   ; "hopper"
   ; "walker"
   ; "humanoid"
-    (* The four G4 models are not here yet. Their contact *sets* match (see the
-       contact suite) and their rows match at 1e-12 (see `doc/log.md`), but the
-       solved forces do not: the row solve settles on a point that is not the
-       quadratic's optimum, so a trajectory diverges from `mj_step`. Naming the
-       reason in a comment is better than a test that passes or fails for reasons
-       nobody wrote down. *)
+    (* dm_control's quadruped is the fourth G4 model and is not here: it stands
+       on a height field, so running it needs the general convex collision path
+       (`mjc_Convex`, `mjc_ConvexHField`) that v1 does not have. Naming the
+       reason is better than a test that passes or fails for one nobody wrote
+       down. *)
   ]
 
 (* A fixture carries a tensor only for the stages its model has: a model with

@@ -44,6 +44,7 @@ type eq_type =
   | Connect (** Two anchor points coincide: a ball joint. *)
   | Weld (** Rigid attachment: relative position and orientation. *)
   | Joint (** A scalar coupling between two joints, through a cubic. *)
+  | Tendon (** The same coupling, between one or two tendon lengths. *)
 
 (** The type for the integration scheme. v1 integrates with [Euler] and
     [Implicit_fast]; the other MuJoCo schemes are rejected when a model

@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 13
+let version = 14
 
 (* Layout, in writing order:
 
@@ -145,6 +145,7 @@ let fields =
   ; "wrap_prm"
   ; "ten_range"
   ; "ten_margin"
+  ; "ten_length0"
   ; "ten_invweight0"
   ; "ten_solref"
   ; "ten_solimp"
@@ -304,6 +305,7 @@ let eq_type_code = function
   | Topo.Connect -> 0
   | Topo.Weld -> 1
   | Topo.Joint -> 2
+  | Topo.Tendon -> 3
 
 let eq_objtype_code = function
   | Topo.Eq_body -> 1
@@ -313,6 +315,7 @@ let eq_type_of_code = function
   | 0 -> Topo.Connect
   | 1 -> Topo.Weld
   | 2 -> Topo.Joint
+  | 3 -> Topo.Tendon
   | c -> raise (Invalid_argument (Printf.sprintf "unsupported equality type %d" c))
 
 (* A joint equality names joints, not bodies or sites, and MuJoCo leaves its
@@ -488,6 +491,7 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.wrap_prm
       ; p.ten_range
       ; p.ten_margin
+      ; p.ten_length0
       ; p.ten_invweight0
       ; p.ten_solref
       ; p.ten_solimp
@@ -748,6 +752,7 @@ let parse (c : cursor) : Model.host =
     ; wrap_prm = tensor "wrap_prm"
     ; ten_range = tensor "ten_range"
     ; ten_margin = tensor "ten_margin"
+    ; ten_length0 = tensor "ten_length0"
     ; ten_invweight0 = tensor "ten_invweight0"
     ; ten_solref = tensor "ten_solref"
     ; ten_solimp = tensor "ten_solimp"

@@ -20,7 +20,7 @@ MJCB_MAGIC = b"MJCB"
 MJCB_END = b"MJCE"
 MJBF_MAGIC = b"MJBF"
 MJBF_END = b"MJFE"
-VERSION = 13
+VERSION = 14
 
 # Topology arrays, in the order the format writes them.
 INT_ARRAYS = [
@@ -114,6 +114,10 @@ def fields(m):
         ("wrap_prm", np.asarray(m.wrap_prm).reshape(m.nwrap)),
         ("ten_range", np.asarray(m.tendon_range).reshape(m.ntendon, 2)),
         ("ten_margin", np.asarray(m.tendon_margin).reshape(m.ntendon)),
+        # The tendon length at [qpos0], which a tendon equality measures its
+        # error from. It is a model constant: the reference pose's kinematics,
+        # once, and MuJoCo stores it for the same reason.
+        ("ten_length0", np.asarray(m.tendon_length0).reshape(m.ntendon)),
         ("ten_invweight0", np.asarray(m.tendon_invweight0).reshape(m.ntendon)),
         ("ten_solref", np.asarray(m.tendon_solref_lim).reshape(m.ntendon, 2)),
         ("ten_solimp", np.asarray(m.tendon_solimp_lim).reshape(m.ntendon, 5)),

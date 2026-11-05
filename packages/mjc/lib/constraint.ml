@@ -136,6 +136,9 @@ let eq_object (m : Model.host) (d : Data.host) i which =
       | Weld, 0 -> 3
       | Weld, _ -> 0
       | Joint, _ -> 0
+      (* A tendon equality has no anchor: its objects are tendons, and the row
+         reads their lengths directly. *)
+      | Tendon, _ -> 0
     in
     let pos = Nx.add (body_xpos d obj) (matvec3 (body_xmat d obj) (slice3 at data)) in
     obj, pos, row obj d.xquat
@@ -153,7 +156,7 @@ let equality_jdotv (m : Model.host) (d : Data.host) kind ~body1 ~pos1 ~body2 ~po
     let j1 = Jacobian.jdotv m d ~body:body1 ~pos:pos1 in
     let j2 = Jacobian.jdotv m d ~body:body2 ~pos:pos2 in
     Some (Nx.sub j1 j2)
-  | Joint -> None
+  | Joint | Tendon -> None
 
 let equality (m : Model.host) (d : Data.host) : Data.host =
   let t = m.topo
@@ -345,6 +348,49 @@ let equality (m : Model.host) (d : Data.host) : Data.host =
              else Nx.scalar Nx.float64 0.0)
         in
         let pos = Nx.sub (Nx.sub (coord j1) (c 0)) poly in
+        add ~pos ~posnorm:(Nx.abs pos) ~diagA ~jdotv:(Nx.scalar Nx.float64 0.0) ~jac
+      | Tendon ->
+        (* The same cubic coupling, with tendon lengths in place of joint
+           coordinates. A tendon's length is measured from its value at the
+           reference pose, which is a model constant ([ten_length0]) rather than
+           something a configuration can supply: [qpos0] does not determine it
+           without running the tendon geometry, and MuJoCo stores it for exactly
+           that reason. *)
+        let obj1 = Int.of_float (Nx.item [ i ] p.eq_obj1id)
+        and obj2 = Int.of_float (Nx.item [ i ] p.eq_obj2id) in
+        let data = row i p.eq_data in
+        let c k = Nx.get [ k ] data in
+        let ten = Tendon.forward m d in
+        let len t_id =
+          Nx.sub (Nx.get [ t_id ] ten.Tendon.length) (Nx.get [ t_id ] p.ten_length0)
+        in
+        let jac_of t_id = Nx.slice [ I t_id; A ] ten.Tendon.jac in
+        let jac0 = jac_of obj1 in
+        let pos0 = len obj1 in
+        let inv obj = Nx.get [ obj ] p.ten_invweight0 in
+        let dif = if obj2 >= 0 then len obj2 else Nx.scalar Nx.float64 0.0 in
+        let sq = Nx.mul dif dif in
+        let sq_sq = Nx.mul sq sq in
+        let cube = Nx.mul sq dif in
+        let poly =
+          Nx.add
+            (Nx.mul (c 1) dif)
+            (Nx.add (Nx.mul (c 2) sq) (Nx.add (Nx.mul (c 3) cube) (Nx.mul (c 4) sq_sq)))
+        in
+        let deriv =
+          Nx.add
+            (c 1)
+            (Nx.add
+               (Nx.mul_s (Nx.mul (c 2) dif) 2.0)
+               (Nx.add
+                  (Nx.mul_s (Nx.mul (c 3) sq) 3.0)
+                  (Nx.mul_s (Nx.mul (c 4) cube) 4.0)))
+        in
+        let jac = if obj2 >= 0 then Nx.sub jac0 (Nx.mul (jac_of obj2) deriv) else jac0 in
+        let diagA = if obj2 >= 0 then Nx.add (inv obj1) (inv obj2) else inv obj1 in
+        let pos =
+          if obj2 >= 0 then Nx.sub (Nx.sub pos0 (c 0)) poly else Nx.sub pos0 (c 0)
+        in
         add ~pos ~posnorm:(Nx.abs pos) ~diagA ~jdotv:(Nx.scalar Nx.float64 0.0) ~jac)
   done;
   let d = keep_before m !out (Nx.scalar Nx.float64 (Float.of_int !rows)) in
@@ -674,7 +720,7 @@ let equality_row_count (m : Model.host) =
          match t.eq_type.(i) with
          | Connect -> 3
          | Weld -> 6
-         | Joint -> 1
+         | Joint | Tendon -> 1
   done;
   !n
 

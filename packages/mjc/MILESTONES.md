@@ -526,14 +526,24 @@ written for MuJoCo loads and behaves.
 5. A full humanoid with position actuators tracks the C engine over 1000
    re-synchronised steps within `1e-8` relative.
 
-*Progress.* Gate G4 is all but claimed: `hopper`, `walker` and `humanoid` match
-`mj_step` at 1e-10 over ten steps, their contact sets match at every recorded
-pose, and their rows and forces match at 1e-12. Getting there needed the row
-solve's step rule rebuilt as an active set with an exact ratio test — the
-projected fraction search stalled short of the optimum — and it needed two of
-my own false reports to be found and withdrawn (`doc/log.md`). The fourth model,
-dm_control's quadruped, is blocked on the **tendon equality** its leg couplings
-use. Tendon limits landed (format 13, `tendonlim` corpus model, a
+*Progress.* G4 is claimed for three of the four models: `hopper`, `walker` and
+`humanoid` match `mj_step` at 1e-10 over ten steps, their contact sets match at
+every recorded pose, and their rows and forces match at 1e-12. Getting there
+needed the row solve's step rule rebuilt as an active set with an exact ratio
+test — the projected fraction search stalled short of the optimum — and it
+needed two of my own false reports to be found and withdrawn (`doc/log.md`).
+
+Tendon equality rows landed too (`mjEQ_TENDON`, format 14's `ten_length0`), with
+the corpus model `tendoneq` covering the offset case, the linear coupling and
+the quartic where the Jacobian's derivative stops being constant: rows at 1e-12,
+trajectory at 1e-10.
+
+The fourth model, dm_control's **quadruped**, is not blocked on a row type after
+all — it is blocked on collision. It stands on an hfield terrain and its legs
+and toes are capsules and spheres against it, so running it needs the general
+convex path (`mjc_Convex` GJK/EPA, `mjc_ConvexHField`), plus `plane`–`cylinder`
+for its eye geoms. That is geometry work, sized for M7, and it is named in
+`test/test_dyn.ml` rather than left as a silent exclusion. Tendon limits landed (format 13, `tendonlim` corpus model, a
 trajectory through the limit at 1e-10); the humanoid that refused on them now
 gets past the load, and the next two refusals are named in `doc/log.md`: the
 elliptic cone and `<exclude>` pairs.

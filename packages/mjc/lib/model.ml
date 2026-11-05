@@ -56,6 +56,7 @@ module Params = struct
     ; wrap_prm : 'a
     ; ten_range : 'a
     ; ten_margin : 'a
+    ; ten_length0 : 'a
     ; ten_invweight0 : 'a
     ; ten_solref : 'a
     ; ten_solimp : 'a
@@ -223,6 +224,7 @@ let validate (m : host) : (unit, string) Result.t =
   want "wrap_prm" [| t.nwrap |] p.wrap_prm;
   want "ten_range" [| t.ntendon; 2 |] p.ten_range;
   want "ten_margin" [| t.ntendon |] p.ten_margin;
+  want "ten_length0" [| t.ntendon |] p.ten_length0;
   want "ten_invweight0" [| t.ntendon |] p.ten_invweight0;
   want "ten_solref" [| t.ntendon; 2 |] p.ten_solref;
   want "ten_solimp" [| t.ntendon; 5 |] p.ten_solimp;
