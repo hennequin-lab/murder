@@ -1,3 +1,19 @@
+## Where box-box stands, in one place
+
+Three artefacts, in the order they were built, each verified before the next:
+
+| Artefact | Verified against | Result |
+| --- | --- | --- |
+| `lib/collision_box.ml`, host port of `mjc_BoxBox` | the C engine, over the 32 states of `boxes2` | 151 pairs at 1e-12, 314 pairs correctly empty |
+| `lib/collision_box_tensor.ml`, stage 1 (15 axes) | the host port, over 400 random poses | same code and separation on all 400 |
+| the same, stage 2a (edge-edge) | the host port, same poses | 48 edge-code pairs at 1e-12 |
+| stage 2b (face clip) | — | **not written**: face pairs produce no live slot |
+
+Not wired into `Collision`: `slots` for a box pair has to become 12, the
+`nconmax`/`nefcmax` budget in `tools/mjcb.py` and `Topo` has to agree with it,
+and the narrow phase needs the per-pair gather. Until then the engine refuses
+box-box by name, so no model that needs it can run: the gap is loud.
+
 ## The tensor box-box: stage 1 and the edge path match, the face clip is next
 
 Ported so far, and checked against the host kernel on 400 random poses rather

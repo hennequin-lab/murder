@@ -1,6 +1,8 @@
 # mjc — milestones
 
-Status: **M0–M3 complete (M3 without tendons and motors)**; the number sheet for each is in
+Status: **M0–M3 complete (M3 without tendons and motors); M4 has contacts except
+box-box, which is ported in two verified pieces and not yet wired**; the number
+sheet for each is in
 [`doc/log.md`](doc/log.md). This document cuts the design note
 [`PLAN.md`](PLAN.md) into increments that can be built, tested and stopped one
 at a time. `PLAN.md` carries the measurements and the reasoning; this file
