@@ -121,7 +121,7 @@ let solve_inputs i = solve ~max_iter:100 ~conv_threshold:1e-10 i
 let () =
   let ins = inputs theta x0 in
   let taus = solve_inputs ins in
-  let xs, _us = Dilqr.split_taus problem taus in
+  let xs, us = Dilqr.split_taus problem taus in
   let xf = xs.(Array.length xs - 1) in
   Printf.printf
     "arm2: %d control steps of %d mjc steps each, %d mjc steps in all\n%!"
@@ -163,6 +163,21 @@ let () =
         (Float.abs (a -. b) /. Float.max 1e-12 (Float.max (Float.abs a) (Float.abs b))))
   in
   Printf.printf "worst relative difference: %.2e\n%!" worst;
+  (* The plan, one row per engine step, for the viewer's [--plan]. Writing it is
+     what turns the solve into something you can watch. *)
+  let plan =
+    if Array.length Stdlib.Sys.argv > 1
+    then Stdlib.Sys.argv.(1)
+    else if Stdlib.Sys.file_exists "packages/mjc/viz/demo"
+    then "packages/mjc/viz/demo/arm2-plan.txt"
+    else "viz/demo/arm2-plan.txt"
+  in
+  let us = Array.concat_map us ~f:(fun u -> Array.create ~len:sub u) in
+  Stdlib.Out_channel.with_open_text plan (fun oc ->
+    Array.iter us ~f:(fun u ->
+      let row = Array.to_list (Array.map (Nx.to_array u) ~f:(Printf.sprintf "%.9g")) in
+      Stdlib.Out_channel.output_string oc (String.concat ~sep:" " row ^ "\n")));
+  Printf.printf "wrote %s (%d rows)\n%!" plan (Array.length us);
   (* Is the objective smooth in x0 at this scale? A solve that stops at a
      different point for a perturbed start makes the reference noisy, and the
      implicit derivative is of the converged solution, not of the stopping

@@ -46,6 +46,7 @@ let () =
   and velocity = ref false
   and energy = ref false
   and drive = ref false
+  and plan = ref None
   and quiet = ref false
   and cam = ref Mjc_viz.Render.default_camera in
   let args =
@@ -89,6 +90,10 @@ let () =
     | "--frames" :: rest ->
       frames := true;
       go rest
+    | "--plan" :: file :: rest ->
+      plan := Some file;
+      go rest
+    | "--plan" :: [] -> die "--plan wants a file"
     | "--drive" :: rest ->
       drive := true;
       go rest
@@ -134,7 +139,21 @@ let () =
   in
   let d = ref (Data.create m) in
   let nu = m.Mjc.Model.topo.nu in
-  for _ = 1 to !steps do
+  (* A plan is one control row per engine step, as `mjc_ilqr` writes it: a
+     solved trajectory played back into the engine it was solved on. *)
+  let plan =
+    Option.map
+      (fun file ->
+         let rows = Stdlib.In_channel.with_open_text file Stdlib.In_channel.input_lines in
+         let parse line =
+           let toks = String.split_on_char ' ' (String.trim line) in
+           Array.of_list
+             (List.filter_map (fun tok -> Stdlib.float_of_string_opt tok) toks)
+         in
+         Array.of_list (List.map parse rows))
+      !plan
+  in
+  for i = 1 to !steps do
     (* A demo with actuators moves on its own: every step takes the scripted
        control for its own time. *)
     if !drive && nu > 0
@@ -142,6 +161,12 @@ let () =
       let t = Nx.item [] !d.Mjc.Data.time in
       let u = Mjc_viz.Drive.ctrl Mjc_viz.Drive.default ~nu ~time:t in
       d := { !d with Data.ctrl = Nx.create Nx.float64 [| nu |] u });
+    (match plan with
+     | Some rows when Array.length rows > 0 ->
+       let row = rows.((i - 1) mod Array.length rows) in
+       if Array.length row = nu
+       then d := { !d with Data.ctrl = Nx.create Nx.float64 [| nu |] row }
+     | _ -> ());
     d := Step.step m !d
   done;
   let d = Forward.forward m !d in

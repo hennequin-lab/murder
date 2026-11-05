@@ -102,3 +102,22 @@ not the two geoms are anywhere near each other (see `doc/log.md`).
       mjcb.write_model(m, 'viz/demo/demo.mjcb', name='demo')"
 
 (run from `packages/mjc`).
+
+## The iLQR arm
+
+`bench/mjc_ilqr.exe` solves an optimal-control problem with `dilqr` whose
+dynamics is `Mjc.Dynamics.run`, and writes the plan it found — one control row
+per engine step — to `viz/demo/arm2-plan.txt`. The still renderer plays a plan
+back into the engine it was solved on:
+
+```bash
+dune exec packages/mjc/viz/bin/mjc_view.exe -- \
+  --model packages/mjc/viz/demo/arm2.mjcb \
+  --plan packages/mjc/viz/demo/arm2-plan.txt --steps 80 \
+  --eye 0,-1.1,0.8 --target 0,0,0.55 --shot arm.png
+```
+
+The picture (`doc/figures/viewer-ilqr.png`) is the arm at the end of the plan,
+having swung from hanging to the target it was given. The gradient of that plan
+with respect to the initial state does not yet match finite differences for a
+reason that is open (`doc/log.md`); the plan itself is sound.
