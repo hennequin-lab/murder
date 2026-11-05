@@ -1,8 +1,9 @@
 # mjc — milestones
 
 Status: **M0–M4 complete (M3 without tendons and motors; M4's contact work is
-in the solver, its gate G4 — hopper, walker, ant, humanoid — is not)**; the number
-sheet for each is in
+in the solver, its gate G4 — hopper, walker, ant, humanoid — is not); M5's
+actuators, transmissions, fixed tendons and the verified sensor kinds are in,
+with the rest refused by name**; the number sheet for each is in
 [`doc/log.md`](doc/log.md). This document cuts the design note
 [`PLAN.md`](PLAN.md) into increments that can be built, tested and stopped one
 at a time. `PLAN.md` carries the measurements and the reasoning; this file

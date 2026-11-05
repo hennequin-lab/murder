@@ -740,3 +740,43 @@ guessed from the geom count cannot know that a box pair fills a manifold: the
 guess allowed twelve where `boxes2` needs nineteen, and the compaction would
 have sent the other seven to a sink slot without a word. The corpus test asserts
 `ncon ≤ nconmax` where the values are concrete, since the compiled path cannot.
+
+**M5 is in: actuators, transmissions, fixed tendons, sensors.** One expression
+covers the actuator kinds the lab's models use — `force = gain * input + bias`,
+both polynomials in the transmission's length and velocity, then
+`qfrc_actuator = momentᵀ force` — so a motor, a position or velocity servo, an
+integrated setpoint and a damper are the same kernel with different parameters.
+Fixed tendons are the same shape: `ten_length = Σ coef qpos`, a dense Jacobian,
+and a tendon actuator's moment arm is its gear times that row. Six findings,
+all from trajectories or from a fixture that disagreed by a percent:
+
+- **The implicit integrator needs the actuators' velocity derivative.** A
+  velocity servo's `kv` is damping by another name, and `implicitfast` puts
+  `mjd_actuator_vel`'s term in the matrix: `M + h diag(B) − h Σ k_a m_a m_aᵀ`.
+  Without it a servo with a forcerange rings instead of tracking, and the first
+  step is off by a milliradian.
+- **A saturated actuator contributes nothing to it.** Its force does not move
+  when its velocity does, to first order; the engine skips exactly the actuators
+  sitting on a forcerange bound.
+- **A body's velocity is measured at its inertial position.** `mj_objectVelocity`
+  transforms `cvel` to `xipos` from the subtree's centre of mass, not to `xpos`;
+  using `xpos` gave a pendulum's world momentum a component it does not have.
+- **Angular momentum accumulates twice per body** — once about its own subtree's
+  centre and once as the whole subtree's orbit about the parent's. Without the
+  second term every total is short by exactly the subtree mass ratio.
+- **`mjOBJ_BODY` is the inertial frame** (`xipos`, `ximat`) and `mjOBJ_XBODY` the
+  frame (`xpos`, `xquat`). Collapsing them made a body frame position a percent
+  and a half wrong on a chain — the kind of number that reads as a rounding bug.
+- **A quaternion is a representative.** `mju_mat2Quat` picks the branch by the
+  largest component, so a frame within rounding of the boundary can come back
+  negated. `Rigid.quat_of_mat` ports the same chain as four candidates and a
+  select (traceable, and the same representative), and the sensor test compares
+  quaternions up to sign, which is the same orientation.
+
+Refused by name rather than approximated: tendon transmissions need the fixed
+tendon's Jacobian (they have it) but a *limited* tendon is a constraint row v1
+does not have, and the sensor kinds that need the acceleration stage (gyro,
+accelerometer, velocimeter), a ray-geometry query (touch, rangefinder, contact,
+tactile), or a reference frame are refused where a model asks for them. Also
+refused: ball and free joints in actuators and joint sensors, site wraps, muscle
+gain and bias, PID and DC motors, and `actearly`.
