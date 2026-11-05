@@ -46,6 +46,7 @@ val open_
   -> ?joint_axes:bool
   -> ?velocity:bool
   -> ?energy:bool
+  -> ?drive:bool
   -> ?log_path:string
   -> ?follow_path:string
   -> Mjc.Model.host

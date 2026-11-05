@@ -29,3 +29,8 @@
  (deps
   (glob_files ../../test/fixtures/*.mjcb)
   (glob_files ../../test/fixtures/*.mjbf)))
+
+(test
+ (name test_drive)
+ (modules test_drive)
+ (libraries mjc mjc_viz nx base windtrap))

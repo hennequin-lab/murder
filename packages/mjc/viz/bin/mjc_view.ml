@@ -45,6 +45,7 @@ let () =
   and joint_axes = ref false
   and velocity = ref false
   and energy = ref false
+  and drive = ref false
   and quiet = ref false
   and cam = ref Mjc_viz.Render.default_camera in
   let args =
@@ -88,6 +89,9 @@ let () =
     | "--frames" :: rest ->
       frames := true;
       go rest
+    | "--drive" :: rest ->
+      drive := true;
+      go rest
     | "--contacts" :: rest ->
       contacts := true;
       go rest
@@ -129,7 +133,15 @@ let () =
     | Error e -> die "%s" e
   in
   let d = ref (Data.create m) in
+  let nu = m.Mjc.Model.topo.nu in
   for _ = 1 to !steps do
+    (* A demo with actuators moves on its own: every step takes the scripted
+       control for its own time. *)
+    if !drive && nu > 0
+    then (
+      let t = Nx.item [] !d.Mjc.Data.time in
+      let u = Mjc_viz.Drive.ctrl Mjc_viz.Drive.default ~nu ~time:t in
+      d := { !d with Data.ctrl = Nx.create Nx.float64 [| nu |] u });
     d := Step.step m !d
   done;
   let d = Forward.forward m !d in

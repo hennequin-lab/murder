@@ -39,6 +39,7 @@ type t =
   ; mutable joint_axes : bool
   ; mutable velocity : bool
   ; mutable energy : bool
+  ; drive : bool (** scripted controls, so a demo moves on its own *)
   ; joints : Mjc_viz.Controls.joint array
   ; mutable joint : int (** the selected joint index, [-1] for none. *)
   ; mutable scene_s : float (** seconds spent building scenes, for the bench. *)
@@ -73,6 +74,7 @@ let open_
       ?(joint_axes = false)
       ?(velocity = false)
       ?(energy = false)
+      ?(drive = false)
       ?log_path
       ?follow_path
       (model : Mjc.Model.host)
@@ -104,6 +106,7 @@ let open_
   { model
   ; data
   ; paused = false
+  ; drive
   ; frames
   ; contacts
   ; forces
@@ -368,6 +371,11 @@ let draw_geom (g : S.geom) =
     draw_patch ~normal ~offset ~half (RC.Color.create 206 206 212 255)
   | S.Unsupported _ -> ()
 
+(* Three decimals, which is the scale the numbers are interesting at. *)
+let floats xs =
+  let one = Stdlib.Printf.sprintf "%.2f" in
+  String.concat ~sep:" " (Stdlib.Array.to_list (Stdlib.Array.map one xs))
+
 let draw ?(fps = true) (t : t) =
   let t0 = Unix.gettimeofday () in
   let scene =
@@ -479,10 +487,21 @@ let draw ?(fps = true) (t : t) =
       16
       "space pause | . step | r reset | c camera | g grid | f frames | n contacts";
     line 74 16 "i inertia | m com | j joints | v velocity | e energy | h hud | esc quit";
+    let nu = t.model.Mjc.Model.topo.nu in
+    if Int.( > ) nu 0
+    then
+      line
+        94
+        16
+        (Stdlib.Printf.sprintf
+           "tendons %s | force %s | sensors %s"
+           (floats (Nx.to_array t.data.Mjc.Data.ten_length))
+           (floats (Nx.to_array t.data.Mjc.Data.actuator_force))
+           (floats (Nx.to_array t.data.Mjc.Data.sensordata)));
     (match scene.S.energy with
      | Some e ->
        line
-         94
+         (if Int.( > ) nu 0 then 112 else 94)
          16
          (Stdlib.Printf.sprintf
             "E %.3f J  (kinetic %.3f, potential %.3f)"
@@ -490,7 +509,15 @@ let draw ?(fps = true) (t : t) =
             e.kinetic
             e.potential)
      | None -> ());
-    if fps then RT.draw_fps 10 (if Option.is_some scene.S.energy then 114 else 96))
+    if fps
+    then
+      RT.draw_fps
+        10
+        (match scene.S.energy, Int.( > ) t.model.Mjc.Model.topo.nu 0 with
+         | Some _, true -> 130
+         | Some _, false -> 114
+         | None, true -> 114
+         | None, false -> 96))
 
 (* [c] puts the camera back where the run started: the framed view, which is
    in [t] because the model may have moved since. *)
@@ -580,6 +607,19 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
        if not t.paused
        then
          for _ = 1 to steps_per_frame do
+           if t.drive
+           then (
+             let time = Nx.item [] t.data.Mjc.Data.time in
+             let u =
+               Mjc_viz.Drive.ctrl
+                 Mjc_viz.Drive.default
+                 ~nu:t.model.Mjc.Model.topo.nu
+                 ~time
+             in
+             t.data
+             <- { t.data with
+                  Mjc.Data.ctrl = Nx.create Nx.float64 [| t.model.Mjc.Model.topo.nu |] u
+                });
            t.data <- Mjc.Step.step t.model t.data;
            match t.log with
            | Some w -> Mjc_viz.Log.append w ~step:(Stdlib.Int64.of_int !drawn) t.data

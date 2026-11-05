@@ -12,7 +12,7 @@ let usage =
   "mjc-window --model M.mjcb [--steps-per-frame N] [--frames N] [--shot out.png]\n\
   \  [--width W] [--height H] [--eye x,y,z] [--target x,y,z]\n\
   \  [--body-frames] [--contacts|--no-contacts] [--forces] [--no-grid] [--no-hud]\n\
-  \  [--inertia] [--com] [--joint-axes] [--velocity] [--energy]\n\
+  \  [--inertia] [--com] [--joint-axes] [--velocity] [--energy] [--drive]\n\
   \  [--log out.mjlog | --follow in.mjlog]\n\
   \  [--bench N] [--check]"
 
@@ -52,6 +52,7 @@ let () =
   and joint_axes = ref false
   and velocity = ref false
   and energy = ref false
+  and drive = ref false
   and log_path = ref None
   and follow_path = ref None in
   let rec go = function
@@ -114,6 +115,9 @@ let () =
     | "--energy" :: r ->
       energy := true;
       go r
+    | "--drive" :: r ->
+      drive := true;
+      go r
     | "--log" :: v :: r ->
       log_path := Some v;
       go r
@@ -161,6 +165,7 @@ let () =
       ~joint_axes:!joint_axes
       ~velocity:!velocity
       ~energy:!energy
+      ~drive:!drive
       ?log_path:!log_path
       ?follow_path:!follow_path
       ?eye:!eye
