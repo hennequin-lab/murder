@@ -1,4 +1,6 @@
 _build/
+__pycache__/
+*.pyc
 _opam/
 .litany-cache/
 .DS_Store
