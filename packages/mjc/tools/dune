@@ -1,0 +1,4 @@
+(executable
+ (name inspect)
+ (modules inspect)
+ (libraries base mjc nx))

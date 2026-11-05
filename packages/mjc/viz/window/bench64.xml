@@ -1,0 +1,200 @@
+<mujoco model="bench64">
+  <option timestep="0.001" gravity="0 0 -9.81">
+    <flag contact="disable"/>
+  </option>
+  <worldbody>
+    <geom name="floor" type="plane" size="4 4 0.05" rgba="0.9 0.9 0.92 1"/>
+    <body name="b0_0" pos="-1.225 -1.225 0.300">
+      <geom name="g0_0" type="sphere" size="0.12" rgba="0.30 0.30 0.75 1"/>
+    </body>
+    <body name="b0_1" pos="-1.225 -0.875 0.400">
+      <geom name="g0_1" type="sphere" size="0.12" rgba="0.30 0.38 0.75 1"/>
+    </body>
+    <body name="b0_2" pos="-1.225 -0.525 0.500">
+      <geom name="g0_2" type="sphere" size="0.12" rgba="0.30 0.46 0.75 1"/>
+    </body>
+    <body name="b0_3" pos="-1.225 -0.175 0.300">
+      <geom name="g0_3" type="sphere" size="0.12" rgba="0.30 0.54 0.75 1"/>
+    </body>
+    <body name="b0_4" pos="-1.225 0.175 0.400">
+      <geom name="g0_4" type="sphere" size="0.12" rgba="0.30 0.62 0.75 1"/>
+    </body>
+    <body name="b0_5" pos="-1.225 0.525 0.500">
+      <geom name="g0_5" type="sphere" size="0.12" rgba="0.30 0.70 0.75 1"/>
+    </body>
+    <body name="b0_6" pos="-1.225 0.875 0.300">
+      <geom name="g0_6" type="sphere" size="0.12" rgba="0.30 0.78 0.75 1"/>
+    </body>
+    <body name="b0_7" pos="-1.225 1.225 0.400">
+      <geom name="g0_7" type="sphere" size="0.12" rgba="0.30 0.86 0.75 1"/>
+    </body>
+    <body name="b1_0" pos="-0.875 -1.225 0.400">
+      <geom name="g1_0" type="sphere" size="0.12" rgba="0.38 0.30 0.75 1"/>
+    </body>
+    <body name="b1_1" pos="-0.875 -0.875 0.500">
+      <geom name="g1_1" type="sphere" size="0.12" rgba="0.38 0.38 0.75 1"/>
+    </body>
+    <body name="b1_2" pos="-0.875 -0.525 0.300">
+      <geom name="g1_2" type="sphere" size="0.12" rgba="0.38 0.46 0.75 1"/>
+    </body>
+    <body name="b1_3" pos="-0.875 -0.175 0.400">
+      <geom name="g1_3" type="sphere" size="0.12" rgba="0.38 0.54 0.75 1"/>
+    </body>
+    <body name="b1_4" pos="-0.875 0.175 0.500">
+      <geom name="g1_4" type="sphere" size="0.12" rgba="0.38 0.62 0.75 1"/>
+    </body>
+    <body name="b1_5" pos="-0.875 0.525 0.300">
+      <geom name="g1_5" type="sphere" size="0.12" rgba="0.38 0.70 0.75 1"/>
+    </body>
+    <body name="b1_6" pos="-0.875 0.875 0.400">
+      <geom name="g1_6" type="sphere" size="0.12" rgba="0.38 0.78 0.75 1"/>
+    </body>
+    <body name="b1_7" pos="-0.875 1.225 0.500">
+      <geom name="g1_7" type="sphere" size="0.12" rgba="0.38 0.86 0.75 1"/>
+    </body>
+    <body name="b2_0" pos="-0.525 -1.225 0.500">
+      <geom name="g2_0" type="sphere" size="0.12" rgba="0.46 0.30 0.75 1"/>
+    </body>
+    <body name="b2_1" pos="-0.525 -0.875 0.300">
+      <geom name="g2_1" type="sphere" size="0.12" rgba="0.46 0.38 0.75 1"/>
+    </body>
+    <body name="b2_2" pos="-0.525 -0.525 0.400">
+      <geom name="g2_2" type="sphere" size="0.12" rgba="0.46 0.46 0.75 1"/>
+    </body>
+    <body name="b2_3" pos="-0.525 -0.175 0.500">
+      <geom name="g2_3" type="sphere" size="0.12" rgba="0.46 0.54 0.75 1"/>
+    </body>
+    <body name="b2_4" pos="-0.525 0.175 0.300">
+      <geom name="g2_4" type="sphere" size="0.12" rgba="0.46 0.62 0.75 1"/>
+    </body>
+    <body name="b2_5" pos="-0.525 0.525 0.400">
+      <geom name="g2_5" type="sphere" size="0.12" rgba="0.46 0.70 0.75 1"/>
+    </body>
+    <body name="b2_6" pos="-0.525 0.875 0.500">
+      <geom name="g2_6" type="sphere" size="0.12" rgba="0.46 0.78 0.75 1"/>
+    </body>
+    <body name="b2_7" pos="-0.525 1.225 0.300">
+      <geom name="g2_7" type="sphere" size="0.12" rgba="0.46 0.86 0.75 1"/>
+    </body>
+    <body name="b3_0" pos="-0.175 -1.225 0.300">
+      <geom name="g3_0" type="sphere" size="0.12" rgba="0.54 0.30 0.75 1"/>
+    </body>
+    <body name="b3_1" pos="-0.175 -0.875 0.400">
+      <geom name="g3_1" type="sphere" size="0.12" rgba="0.54 0.38 0.75 1"/>
+    </body>
+    <body name="b3_2" pos="-0.175 -0.525 0.500">
+      <geom name="g3_2" type="sphere" size="0.12" rgba="0.54 0.46 0.75 1"/>
+    </body>
+    <body name="b3_3" pos="-0.175 -0.175 0.300">
+      <geom name="g3_3" type="sphere" size="0.12" rgba="0.54 0.54 0.75 1"/>
+    </body>
+    <body name="b3_4" pos="-0.175 0.175 0.400">
+      <geom name="g3_4" type="sphere" size="0.12" rgba="0.54 0.62 0.75 1"/>
+    </body>
+    <body name="b3_5" pos="-0.175 0.525 0.500">
+      <geom name="g3_5" type="sphere" size="0.12" rgba="0.54 0.70 0.75 1"/>
+    </body>
+    <body name="b3_6" pos="-0.175 0.875 0.300">
+      <geom name="g3_6" type="sphere" size="0.12" rgba="0.54 0.78 0.75 1"/>
+    </body>
+    <body name="b3_7" pos="-0.175 1.225 0.400">
+      <geom name="g3_7" type="sphere" size="0.12" rgba="0.54 0.86 0.75 1"/>
+    </body>
+    <body name="b4_0" pos="0.175 -1.225 0.400">
+      <geom name="g4_0" type="sphere" size="0.12" rgba="0.62 0.30 0.75 1"/>
+    </body>
+    <body name="b4_1" pos="0.175 -0.875 0.500">
+      <geom name="g4_1" type="sphere" size="0.12" rgba="0.62 0.38 0.75 1"/>
+    </body>
+    <body name="b4_2" pos="0.175 -0.525 0.300">
+      <geom name="g4_2" type="sphere" size="0.12" rgba="0.62 0.46 0.75 1"/>
+    </body>
+    <body name="b4_3" pos="0.175 -0.175 0.400">
+      <geom name="g4_3" type="sphere" size="0.12" rgba="0.62 0.54 0.75 1"/>
+    </body>
+    <body name="b4_4" pos="0.175 0.175 0.500">
+      <geom name="g4_4" type="sphere" size="0.12" rgba="0.62 0.62 0.75 1"/>
+    </body>
+    <body name="b4_5" pos="0.175 0.525 0.300">
+      <geom name="g4_5" type="sphere" size="0.12" rgba="0.62 0.70 0.75 1"/>
+    </body>
+    <body name="b4_6" pos="0.175 0.875 0.400">
+      <geom name="g4_6" type="sphere" size="0.12" rgba="0.62 0.78 0.75 1"/>
+    </body>
+    <body name="b4_7" pos="0.175 1.225 0.500">
+      <geom name="g4_7" type="sphere" size="0.12" rgba="0.62 0.86 0.75 1"/>
+    </body>
+    <body name="b5_0" pos="0.525 -1.225 0.500">
+      <geom name="g5_0" type="sphere" size="0.12" rgba="0.70 0.30 0.75 1"/>
+    </body>
+    <body name="b5_1" pos="0.525 -0.875 0.300">
+      <geom name="g5_1" type="sphere" size="0.12" rgba="0.70 0.38 0.75 1"/>
+    </body>
+    <body name="b5_2" pos="0.525 -0.525 0.400">
+      <geom name="g5_2" type="sphere" size="0.12" rgba="0.70 0.46 0.75 1"/>
+    </body>
+    <body name="b5_3" pos="0.525 -0.175 0.500">
+      <geom name="g5_3" type="sphere" size="0.12" rgba="0.70 0.54 0.75 1"/>
+    </body>
+    <body name="b5_4" pos="0.525 0.175 0.300">
+      <geom name="g5_4" type="sphere" size="0.12" rgba="0.70 0.62 0.75 1"/>
+    </body>
+    <body name="b5_5" pos="0.525 0.525 0.400">
+      <geom name="g5_5" type="sphere" size="0.12" rgba="0.70 0.70 0.75 1"/>
+    </body>
+    <body name="b5_6" pos="0.525 0.875 0.500">
+      <geom name="g5_6" type="sphere" size="0.12" rgba="0.70 0.78 0.75 1"/>
+    </body>
+    <body name="b5_7" pos="0.525 1.225 0.300">
+      <geom name="g5_7" type="sphere" size="0.12" rgba="0.70 0.86 0.75 1"/>
+    </body>
+    <body name="b6_0" pos="0.875 -1.225 0.300">
+      <geom name="g6_0" type="sphere" size="0.12" rgba="0.78 0.30 0.75 1"/>
+    </body>
+    <body name="b6_1" pos="0.875 -0.875 0.400">
+      <geom name="g6_1" type="sphere" size="0.12" rgba="0.78 0.38 0.75 1"/>
+    </body>
+    <body name="b6_2" pos="0.875 -0.525 0.500">
+      <geom name="g6_2" type="sphere" size="0.12" rgba="0.78 0.46 0.75 1"/>
+    </body>
+    <body name="b6_3" pos="0.875 -0.175 0.300">
+      <geom name="g6_3" type="sphere" size="0.12" rgba="0.78 0.54 0.75 1"/>
+    </body>
+    <body name="b6_4" pos="0.875 0.175 0.400">
+      <geom name="g6_4" type="sphere" size="0.12" rgba="0.78 0.62 0.75 1"/>
+    </body>
+    <body name="b6_5" pos="0.875 0.525 0.500">
+      <geom name="g6_5" type="sphere" size="0.12" rgba="0.78 0.70 0.75 1"/>
+    </body>
+    <body name="b6_6" pos="0.875 0.875 0.300">
+      <geom name="g6_6" type="sphere" size="0.12" rgba="0.78 0.78 0.75 1"/>
+    </body>
+    <body name="b6_7" pos="0.875 1.225 0.400">
+      <geom name="g6_7" type="sphere" size="0.12" rgba="0.78 0.86 0.75 1"/>
+    </body>
+    <body name="b7_0" pos="1.225 -1.225 0.400">
+      <geom name="g7_0" type="sphere" size="0.12" rgba="0.86 0.30 0.75 1"/>
+    </body>
+    <body name="b7_1" pos="1.225 -0.875 0.500">
+      <geom name="g7_1" type="sphere" size="0.12" rgba="0.86 0.38 0.75 1"/>
+    </body>
+    <body name="b7_2" pos="1.225 -0.525 0.300">
+      <geom name="g7_2" type="sphere" size="0.12" rgba="0.86 0.46 0.75 1"/>
+    </body>
+    <body name="b7_3" pos="1.225 -0.175 0.400">
+      <geom name="g7_3" type="sphere" size="0.12" rgba="0.86 0.54 0.75 1"/>
+    </body>
+    <body name="b7_4" pos="1.225 0.175 0.500">
+      <geom name="g7_4" type="sphere" size="0.12" rgba="0.86 0.62 0.75 1"/>
+    </body>
+    <body name="b7_5" pos="1.225 0.525 0.300">
+      <geom name="g7_5" type="sphere" size="0.12" rgba="0.86 0.70 0.75 1"/>
+    </body>
+    <body name="b7_6" pos="1.225 0.875 0.400">
+      <geom name="g7_6" type="sphere" size="0.12" rgba="0.86 0.78 0.75 1"/>
+    </body>
+    <body name="b7_7" pos="1.225 1.225 0.500">
+      <geom name="g7_7" type="sphere" size="0.12" rgba="0.86 0.86 0.75 1"/>
+    </body>
+  </worldbody>
+</mujoco>

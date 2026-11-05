@@ -1,0 +1,15 @@
+<mujoco model="friction3">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="3"/>
+    <body name="ball" pos="0 0 0.1">
+      <freejoint/>
+      <geom name="ball" type="sphere" size="0.12" condim="3" friction="0.7 0.005 0.0001"/>
+    </body>
+    <body name="rod" pos="-0.5 0.1 0.16" quat="0.9238795 0.3826834 0 0">
+      <freejoint/>
+      <geom name="rod" type="capsule" fromto="0 0 -0.18 0 0 0.18" size="0.05"
+            condim="3" friction="0.4 0.005 0.0001"/>
+    </body>
+  </worldbody>
+</mujoco>

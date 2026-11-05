@@ -1,0 +1,3 @@
+(library
+ (name mjc_viz)
+ (libraries mjc base nx geom_viz hugin.gg unix))

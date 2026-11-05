@@ -1,0 +1,3 @@
+(executable
+ (name mjc_view)
+ (libraries mjc mjc_viz nx geom_viz hugin.gg base unix))

@@ -1,0 +1,45 @@
+<mujoco model="actuators">
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="base" pos="0 0 0.6">
+      <body name="l1" pos="0 0 0">
+        <joint name="j_motor" type="hinge" axis="0 0 1"/>
+        <geom name="g1" type="capsule" size="0.02 0.15" pos="0.15 0 0"
+              quat="0.7071068 0 0.7071068 0"/>
+        <body name="l2" pos="0.3 0 0">
+          <joint name="j_position" type="hinge" axis="0 0 1" armature="0.01"/>
+          <geom name="g2" type="capsule" size="0.02 0.15" pos="0.15 0 0"
+                quat="0.7071068 0 0.7071068 0"/>
+          <body name="l3" pos="0.3 0 0">
+            <joint name="j_velocity" type="hinge" axis="0 0 1" damping="0.02"/>
+            <geom name="g3" type="capsule" size="0.02 0.15" pos="0.15 0 0"
+                  quat="0.7071068 0 0 0.7071068"/>
+            <body name="l4" pos="0.3 0 0">
+              <joint name="j_intvelocity" type="slide" axis="1 0 0" armature="0.02"/>
+              <geom name="g4" type="sphere" size="0.05"/>
+              <body name="l5" pos="0 0 -0.15">
+                <joint name="j_damper" type="hinge" axis="0 1 0"/>
+                <geom name="g5" type="capsule" size="0.015 0.1" pos="0 0 -0.1"/>
+                <body name="l6" pos="0 0 -0.22">
+                  <joint name="j_general" type="hinge" axis="0 1 0"/>
+                  <geom name="g6" type="sphere" size="0.04"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="a_motor" joint="j_motor" gear="1.5"/>
+    <position name="a_position" joint="j_position" kp="40" kv="1.5" ctrlrange="-0.8 0.8"/>
+    <velocity name="a_velocity" joint="j_velocity" kv="3" forcerange="-2 2" forcelimited="true"/>
+    <intvelocity name="a_intvelocity" joint="j_intvelocity" kp="60" kv="2" ctrlrange="-0.5 0.5"/>
+    <general name="a_damper" joint="j_damper" gainprm="0" biasprm="0 0 -0.8" ctrlrange="-1 1"/>
+    <general name="a_general" joint="j_general" gainprm="2.5 -1 -0.4"
+             biasprm="0.3 -0.5 -0.2" ctrlrange="-1 1" forcerange="-1.5 1.5"
+             forcelimited="true"/>
+  </actuator>
+</mujoco>
+

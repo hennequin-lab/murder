@@ -1,0 +1,5 @@
+(library
+ (name mjc)
+ (libraries base nx rune)
+ (preprocess
+  (pps ppx_ptree)))

@@ -1,0 +1,198 @@
+{
+  "generator": "tools/record_fixture.py",
+  "mujoco": "3.17.0",
+  "seed": 20261103,
+  "dt": 0.001,
+  "models": [
+    {
+      "name": "pendulum",
+      "nbody": 2,
+      "ngeom": 1,
+      "njnt": 1,
+      "nq": 1,
+      "nv": 1,
+      "nstates": 32,
+      "xml_sha256": "51c8757adc75c84e"
+    },
+    {
+      "name": "chain6",
+      "nbody": 7,
+      "ngeom": 6,
+      "njnt": 6,
+      "nq": 6,
+      "nv": 6,
+      "nstates": 32,
+      "xml_sha256": "84fe3a0adb627c86"
+    },
+    {
+      "name": "floating",
+      "nbody": 2,
+      "ngeom": 1,
+      "njnt": 1,
+      "nq": 7,
+      "nv": 6,
+      "nstates": 32,
+      "xml_sha256": "da8cfc05828940af"
+    },
+    {
+      "name": "ball",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 5,
+      "nv": 4,
+      "nstates": 32,
+      "xml_sha256": "83163fecd62cb628"
+    },
+    {
+      "name": "fast",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "beaa1538a7afc7bb"
+    },
+    {
+      "name": "slide1",
+      "nbody": 4,
+      "ngeom": 4,
+      "njnt": 3,
+      "nq": 21,
+      "nv": 18,
+      "nstates": 32,
+      "xml_sha256": "b5f6311c35c0ac8b"
+    },
+    {
+      "name": "bounce",
+      "nbody": 4,
+      "ngeom": 4,
+      "njnt": 3,
+      "nq": 21,
+      "nv": 18,
+      "nstates": 32,
+      "xml_sha256": "d96e1afc0824485a"
+    },
+    {
+      "name": "drag",
+      "nbody": 2,
+      "ngeom": 1,
+      "njnt": 1,
+      "nq": 1,
+      "nv": 1,
+      "nstates": 32,
+      "xml_sha256": "e78c38b8c8ba92aa"
+    },
+    {
+      "name": "limited",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "5dbeda1279949772"
+    },
+    {
+      "name": "looped",
+      "nbody": 6,
+      "ngeom": 5,
+      "njnt": 5,
+      "nq": 17,
+      "nv": 15,
+      "nstates": 32,
+      "xml_sha256": "c098e30a6527bc79"
+    },
+    {
+      "name": "blocks",
+      "nbody": 3,
+      "ngeom": 3,
+      "njnt": 2,
+      "nq": 14,
+      "nv": 12,
+      "nstates": 32,
+      "xml_sha256": "dfb9422d5c5e3484"
+    },
+    {
+      "name": "friction3",
+      "nbody": 3,
+      "ngeom": 3,
+      "njnt": 2,
+      "nq": 14,
+      "nv": 12,
+      "nstates": 32,
+      "xml_sha256": "9f2dc98398de4c4c"
+    },
+    {
+      "name": "boxes2",
+      "nbody": 6,
+      "ngeom": 6,
+      "njnt": 5,
+      "nq": 35,
+      "nv": 30,
+      "nstates": 32,
+      "xml_sha256": "7dd7a99322eb9047"
+    },
+    {
+      "name": "boxes",
+      "nbody": 2,
+      "ngeom": 2,
+      "njnt": 1,
+      "nq": 7,
+      "nv": 6,
+      "nstates": 32,
+      "xml_sha256": "56b1cc5a5a489a14"
+    },
+    {
+      "name": "actuators",
+      "nbody": 8,
+      "ngeom": 6,
+      "njnt": 6,
+      "nq": 6,
+      "nv": 6,
+      "nstates": 32,
+      "xml_sha256": "680d5555f01575bf"
+    },
+    {
+      "name": "finger",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "019d3582b56e13f9"
+    },
+    {
+      "name": "sensors",
+      "nbody": 19,
+      "ngeom": 17,
+      "njnt": 17,
+      "nq": 17,
+      "nv": 17,
+      "nstates": 32,
+      "xml_sha256": "2d1b7fb790990904"
+    },
+    {
+      "name": "stiff",
+      "nbody": 3,
+      "ngeom": 2,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "70b663b4027fe3e7"
+    },
+    {
+      "name": "arm2",
+      "nbody": 4,
+      "ngeom": 3,
+      "njnt": 2,
+      "nq": 2,
+      "nv": 2,
+      "nstates": 32,
+      "xml_sha256": "eec5ef9c15eda068"
+    }
+  ]
+}

@@ -184,4 +184,16 @@
   rig
   vega))
 
+; The engine is not published yet (MILESTONES.md: private until M7), but its
+; package has to exist for the lock to resolve what the viewer needs: dune pkg
+; only resolves what some package depends on, and raylib is the viewer's only
+; dependency that is not already in the tree.
+(package
+ (name mjc)
+ (synopsis "A MuJoCo-compatible differentiable physics engine on Nx")
+ (depends
+  base
+  nx
+  raylib))
+
 (executables_implicit_empty_intf false)

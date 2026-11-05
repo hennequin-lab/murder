@@ -1,0 +1,69 @@
+<mujoco model="demo">
+  <!-- What the viewer looks like with something to watch: a hanging chain
+       that swings, three spheres dropped from different heights, and a box
+       resting on the floor.
+
+       The chain hangs from a body tilted by about 0.9 rad, not from a [ref]
+       on its joints: a hinge rotates by qpos - qpos0, so a reference angle is
+       the one thing that cannot bend a model at rest.
+
+       The pairs that touch are plane-box, plane-sphere, sphere-sphere and
+       sphere-box, all implemented. The chain is taken out of collision
+       altogether with contype="0" conaffinity="0": capsule-box is not
+       implemented yet, and the engine's unimplemented-pair guard fires on any
+       pair the masks allow, whether or not the two geoms are anywhere near
+       each other (doc/log.md, "A demo found a sharp edge"). -->
+  <compiler angle="radian"/>
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+  </visual>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="6 6 0.1" rgba="0.85 0.86 0.9 1"/>
+
+    <!-- a box resting on the floor: plane-box and the inertia overlay -->
+    <body name="crate" pos="0.9 0.5 0.15">
+      <freejoint name="crate_free"/>
+      <geom name="crate" type="box" size="0.15 0.15 0.15" rgba="0.75 0.55 0.3 1"/>
+    </body>
+
+    <!-- three spheres, dropped from three heights -->
+    <body name="ball_high" pos="-0.9 0.5 1.6">
+      <freejoint/>
+      <geom name="ball_high" type="sphere" size="0.1" rgba="0.85 0.25 0.25 1"/>
+    </body>
+    <body name="ball_mid" pos="-0.9 -0.1 1.1">
+      <freejoint/>
+      <geom name="ball_mid" type="sphere" size="0.1" rgba="0.25 0.7 0.35 1"/>
+    </body>
+    <body name="ball_low" pos="-0.9 -0.7 0.6">
+      <freejoint/>
+      <geom name="ball_low" type="sphere" size="0.1" rgba="0.3 0.45 0.85 1"/>
+    </body>
+
+    <!-- a five-link chain hanging from the ceiling: hinges only, no contacts
+         between the links, and a good place to use the joint keys -->
+    <body name="l0" pos="0.1 0 2.2" quat="0.9 0.435 0 0">
+      <joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom name="l0" type="capsule" size="0.035 0.16" pos="0 0 -0.16" contype="0" conaffinity="0" rgba="0.4 0.4 0.45 1"/>
+      <body name="l1" pos="0 0 -0.32">
+        <joint name="j1" type="hinge" axis="1 0 0"/>
+        <geom name="l1" type="capsule" size="0.035 0.16" pos="0 0 -0.16" contype="0" conaffinity="0" rgba="0.45 0.45 0.5 1"/>
+        <body name="l2" pos="0 0 -0.32">
+          <joint name="j2" type="hinge" axis="0 1 0"/>
+          <geom name="l2" type="capsule" size="0.035 0.16" pos="0 0 -0.16" contype="0" conaffinity="0" rgba="0.5 0.5 0.55 1"/>
+          <body name="l3" pos="0 0 -0.32">
+            <joint name="j3" type="hinge" axis="1 0 0"/>
+            <geom name="l3" type="capsule" size="0.035 0.16" pos="0 0 -0.16" contype="0" conaffinity="0" rgba="0.55 0.55 0.6 1"/>
+            <body name="l4" pos="0 0 -0.32">
+              <joint name="j4" type="hinge" axis="0 1 0"/>
+              <geom name="l4" type="capsule" size="0.035 0.16" pos="0 0 -0.16" contype="0" conaffinity="0" rgba="0.6 0.6 0.65 1"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

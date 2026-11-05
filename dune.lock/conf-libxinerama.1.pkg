@@ -1,0 +1,47 @@
+(version 1)
+
+(build
+ (choice
+  ((((arch x86_64)
+     (os linux))
+    ((arch arm64)
+     (os linux)))
+   ((action
+     (run pkg-config xinerama))))))
+
+(depends
+ (choice
+  ((((arch x86_64)
+     (os linux))
+    ((arch arm64)
+     (os linux)))
+   (conf-pkg-config))))
+
+(depexts
+ ((libxinerama-dev)
+  (or_absorb_undefined_var
+   (= %{os_family} debian)
+   (= %{os_family} ubuntu)))
+ ((libXinerama-devel)
+  (or_absorb_undefined_var
+   (= %{os_family} fedora)
+   (= %{os_family} rhel)
+   (= %{os_family} suse)
+   (= %{os_family} opensuse)))
+ ((libxinerama-dev)
+  (= %{os_distribution} alpine))
+ ((libxinerama)
+  (= %{os_distribution} arch))
+ ((libXinerama)
+  (= %{os_distribution} freebsd))
+ ((libxinerama)
+  (and_absorb_undefined_var
+   (= %{os} macos)
+   (= %{os_distribution} homebrew))))
+
+(enabled_on_platforms
+ (only
+  ((arch x86_64)
+   (os linux))
+  ((arch arm64)
+   (os linux))))

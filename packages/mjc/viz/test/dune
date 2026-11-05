@@ -1,0 +1,36 @@
+(test
+ (name test_scene)
+ (modules test_scene)
+ (libraries mjc mjc_viz nx base windtrap geom_viz hugin.gg)
+ (deps
+  (glob_files ../../test/fixtures/*.mjcb)
+  (glob_files ../../test/fixtures/*.mjbf)))
+
+(test
+ (name test_controls)
+ (modules test_controls)
+ (libraries mjc mjc_viz nx base windtrap)
+ (deps
+  (glob_files ../../test/fixtures/*.mjcb)
+  (glob_files ../../test/fixtures/*.mjbf)))
+
+(test
+ (name test_overlays)
+ (modules test_overlays)
+ (libraries mjc mjc_viz nx base windtrap)
+ (deps
+  (glob_files ../../test/fixtures/*.mjcb)
+  (glob_files ../../test/fixtures/*.mjbf)))
+
+(test
+ (name test_log)
+ (modules test_log)
+ (libraries mjc mjc_viz nx base windtrap unix)
+ (deps
+  (glob_files ../../test/fixtures/*.mjcb)
+  (glob_files ../../test/fixtures/*.mjbf)))
+
+(test
+ (name test_drive)
+ (modules test_drive)
+ (libraries mjc mjc_viz nx base windtrap))

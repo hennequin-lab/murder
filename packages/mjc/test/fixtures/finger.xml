@@ -1,0 +1,23 @@
+<mujoco model="finger">
+  <option timestep="0.001" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="prox" pos="0 0 0.3">
+      <joint name="j1" type="hinge" axis="0 1 0" damping="0.005"/>
+      <geom name="g1" type="capsule" size="0.012 0.05" pos="0 0 0.05"/>
+      <body name="dist" pos="0 0 0.1">
+        <joint name="j2" type="hinge" axis="0 1 0" damping="0.008"/>
+        <geom name="g2" type="capsule" size="0.012 0.04" pos="0 0 0.04"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t1">
+      <joint joint="j1" coef="1"/>
+      <joint joint="j2" coef="0.5"/>
+    </fixed>
+  </tendon>
+  <actuator>
+    <motor name="a_tendon" tendon="t1" gear="2"/>
+  </actuator>
+</mujoco>
+

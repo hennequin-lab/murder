@@ -1,0 +1,105 @@
+<mujoco model="looped">
+  <!-- Three equality constraints, each in its own subtree, so that the rows
+       of one never hide a bug in another: a ball tether on a free body, a
+       weld on a free body, and a joint coupling two hinges. One hinge has a
+       range so limit rows share the buffer with equality rows. -->
+  <!-- Contacts are M4's corpus: disabling them keeps [nefc] a function of the
+       equality and limit rows alone, which is what this model measures. -->
+  <option timestep="0.002" integrator="Euler">
+    <flag contact="disable"/>
+  </option>
+  <worldbody>
+    <body name="tether" pos="0.3 0 1">
+      <freejoint name="tether_free"/>
+      <geom type="sphere" size="0.05"/>
+    </body>
+    <body name="bolt" pos="-0.3 0 1">
+      <freejoint name="bolt_free"/>
+      <geom type="sphere" size="0.05"/>
+    </body>
+    <body name="l" pos="0 -0.4 1">
+      <joint name="jl" type="hinge" axis="0 1 0" range="-0.8 0.8" limited="true"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
+    </body>
+    <body name="r" pos="0 0.4 1">
+      <joint name="jr" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
+    </body>
+    <body name="spring" pos="0.5 0 0.8">
+      <joint name="js" type="hinge" axis="0 1 0" range="-0.3 0.3" limited="true"
+             stiffness="5" springref="0.5"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.2" size="0.02"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect name="ball" body1="tether" body2="world" anchor="-0.3 0 -1" solref="0.01 1"/>
+    <weld name="glue" body1="bolt" body2="world" solref="0.01 1"/>
+    <joint name="couple" joint1="jl" joint2="jr" polycoef="0 -0.5 0 0 0"/>
+  </equality>
+</mujoco>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
