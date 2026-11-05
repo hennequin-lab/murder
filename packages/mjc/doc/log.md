@@ -697,3 +697,46 @@ a reflex.
 carries `dof_invweight0`, `iterations`, `tolerance`, the equality tables, the
 body inverse weights and `dof_solref`/`dof_solimp`, and the converter sizes
 `nefcmax` from the model's joints, equalities and dofs.
+
+**M4's contacts are complete: box-box is in the solver.** The face branch of
+`mjc_BoxBox` is written as a candidate set rather than as the engine's
+Sutherland-Hodgman clip — the intersection of two convex polygons has its
+vertices among the incident corners inside the reference rectangle, the
+reference corners inside the incident rectangle, and the crossings of an
+incident edge with a reference side plane — twenty-four candidates, filtered,
+deduped and compacted into twelve slots. Four things it took to get right, all
+of them caught by comparing against the host port rather than by reading:
+
+- **The reference corners are not optional.** Without them a large box resting
+  on a small one has no vertices at all, because every incident corner is
+  outside the reference face and no incident edge crosses a side plane. That
+  was the "four contacts expected, none produced" of the two failed attempts.
+- **The depth test is one-sided.** A contact sits *below* the margin, so the
+  absolute value that the four side planes want drops every penetration. The
+  geometry was already exact when this was still emptying the manifold: the
+  corners' depths were −0.03…−0.06 and the filter asked for |depth| ≤ 0.
+- **A crossing lies exactly on the plane that made it,** and rounding can put it
+  a few ulps outside; the engine never notices because it does not re-test a
+  vertex against its own plane. The boundary needs a guard of 1e-12 of the face
+  size, or the vertex that *is* the contact vanishes.
+- **Two frames, one permutation.** The candidates live in [(ax, ay, a)]; the
+  position has to go back into the parent box's slots before the rotation. And
+  the edge branch's dead-slot filler has to be masked by the branch, not added:
+  a face pair's slots 1..11 came out at −1e30.
+
+Measured: `test/test_boxbox_tensor.ml` compares against the host port on 800
+random poses, with and without a margin — 477 touching pairs, 278 of them
+face-code, 1206 contacts, at most eight per pair, every contact equal as a set
+at 1e-12. `test/test_contact.ml`'s `box-box contacts, as a set` takes `boxes2`
+through `Collision.contacts`: nineteen contacts at one state, count, distance,
+point, normal and frame equal to the fixture at 1e-12.
+
+Two decisions recorded with the code. **Row order differs from MuJoCo's** for a
+face pair: the engine emits vertices in clip order, the kernel takes the set.
+That reaches the solver only through the warm start, so the parity test matches
+box rows as a set and says so. **The contact budget is now taken from the
+recording** — twice the largest `ncon` a corpus saw — because a static budget
+guessed from the geom count cannot know that a box pair fills a manifold: the
+guess allowed twelve where `boxes2` needs nineteen, and the compaction would
+have sent the other seven to a sink slot without a word. The corpus test asserts
+`ncon ≤ nconmax` where the values are concrete, since the compiled path cannot.

@@ -1,7 +1,7 @@
 # mjc — milestones
 
-Status: **M0–M3 complete (M3 without tendons and motors); M4 has contacts except
-box-box, which is ported in two verified pieces and not yet wired**; the number
+Status: **M0–M4 complete (M3 without tendons and motors; M4's contact work is
+in the solver, its gate G4 — hopper, walker, ant, humanoid — is not)**; the number
 sheet for each is in
 [`doc/log.md`](doc/log.md). This document cuts the design note
 [`PLAN.md`](PLAN.md) into increments that can be built, tested and stopped one

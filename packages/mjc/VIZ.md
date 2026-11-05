@@ -599,8 +599,14 @@ the ball's one contact carries **29.96 N** at 0.37 mm — which is the crate's a
 the ball's weight to three figures, so the overlay is showing the solver's
 numbers and not a plausible-looking rescaling of them.
 
-Still not met: the `two-box` acceptance ("right count, position and normal
-sign"), which needs box-box collision from M4. Per-row `λ` *bars* are also not
+The `two-box` acceptance ("right count, position and normal sign") is met by
+`test/test_contact.ml`'s `box-box contacts, as a set`: every recorded state of
+`boxes2` — nineteen contacts at one of them — agrees with the fixture's count,
+distance, point, normal and frame at 1e-12, matched as a set because a face
+pair's row order is the kernel's candidate order rather than the engine's clip
+order. Looked at in the window rather than in the numbers: the crate stack of
+`test/fixtures/boxes2.xml` settles on four contacts per interface, the arrows
+along the stacked faces. Per-row `λ` *bars* are also not
 drawn: the arrows carry the same information in the normal and tangential
 directions, and a bar per row would be four lines per contact saying what one
 arrow already says. That is a judgement, not an oversight, and it changes when
