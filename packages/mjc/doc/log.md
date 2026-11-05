@@ -876,3 +876,23 @@ next to a loss of order one, a `1e-6` step resolves the difference only to
 `8e-6` relative, and a test that blamed that on the gradient would be lying in
 the other direction. The reference is `O(h^4)`, so a disagreement is the reverse
 mode's.
+
+**How many solver iterations a model actually needs.** The gradient question
+turned into a forward question, and the forward answer is reassuring. Measured
+on states the engine itself reaches (step from rest with a velocity, twelve
+steps, so the quaternions are the integrator's), the row solve settles in **one
+iteration** on every corpus model but `looped` (two: `8.9e-15` at one, zero at
+two) and `blocks` (two: `6.5` at one, `1.4e-13` at two, zero at three). That is
+the expected shape: the rows minimise a *quadratic* over a box, and a Newton
+step over the free block is exact once the active set is right.
+
+Two consequences. `max_iterations = 8` is not a close call for v1's row counts,
+which is what makes its unroll affordable. And the unrolled gradient equals the
+implicit one *on a converged solve* — the corpus's budget-invariance test passes
+because the answers are the same answer, not because the unroll is secretly
+implicit. The measurement that will drive the implicit rule is therefore **cost,
+not accuracy**: a reverse pass through eight unrolled iterations does eight
+iterations' worth of work where one linear solve at the fixed active set would
+do. `blocks` at budget one is the case where accuracy *would* matter: its force
+is off by `6.5`, so a caller who sets the budget to one gets a gradient of an
+iterate rather than of a solution, and cannot know it.

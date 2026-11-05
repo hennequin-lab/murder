@@ -551,8 +551,10 @@ an infinite cotangent to a masked-out branch, and `0 * inf` is a NaN — and the
 are fixed without moving a single value (`doc/log.md`). Gradients with respect
 to model parameters work through `Dynamics`, where structure is compiled once
 and parameters flow as tensors; that also settled the design, so the remaining
-work is the implicit rule for the solver, `remat`, the cost sheet and the
-demo.
+work is the implicit rule for the solver — which the measurements say is a
+*cost* question rather than an accuracy one, since the row solve settles in one
+or two iterations and the unrolled gradient is already the implicit gradient
+there — then `remat`, the cost sheet and the demo.
 
 **Goal.** A gradient of the step, of the answer rather than of the last
 iterate, at a cost independent of the solver iteration count.
