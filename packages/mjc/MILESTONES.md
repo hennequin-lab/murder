@@ -533,6 +533,23 @@ needed the row solve's step rule rebuilt as an active set with an exact ratio
 test — the projected fraction search stalled short of the optimum — and it
 needed two of my own false reports to be found and withdrawn (`doc/log.md`).
 
+Gate G4 now has a measurement rather than a claim: `bench/g4.exe` runs the
+recorded thousand steps twice — once resynchronised from each state, once free —
+and reports the fraction inside 1e-8, the error distribution, whether row and
+contact counts match at every state, and the free run's shadowing horizon.
+
+| Model | Rows and contacts | Steps within 1e-8 | Shadow |
+| --- | --- | --- | --- |
+| hopper | match everywhere | 1000/1000 | 980 |
+| walker | match everywhere | 1000/1000 | 507 |
+| humanoid | match everywhere | 986/1000 | 68 |
+
+The humanoid is short of the gate's 99%, and the reason is named: six states
+where the row solve lands off the two-row limit optimum on poses with
+accelerations above a thousand. A projected-gradient fallback that fixes them
+(99.4%) was measured and left out because it doubles the contact stage's graph;
+it is the first thing to revisit in M7 alongside performance.
+
 Tendon equality rows landed too (`mjEQ_TENDON`, format 14's `ten_length0`), with
 the corpus model `tendoneq` covering the offset case, the linear coupling and
 the quartic where the Jacobian's derivative stops being constant: rows at 1e-12,
