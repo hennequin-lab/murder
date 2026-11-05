@@ -21,11 +21,6 @@
     alternative when a model's row count makes the factor the bottleneck
     (`doc/adr/0010`). *)
 
-(** {1:solve Solve} *)
-
-(** [max_iterations] is the largest budget a compiled step will unroll. *)
-val max_iterations : int
-
 (** The type for how the free block is solved: by a Cholesky factor, or by
     conjugate gradients, which needs no factor of the reduced system. *)
 type linear =
@@ -33,9 +28,68 @@ type linear =
   | `Cg
   ]
 
-(** [forward ?linear ?iters m d] is [d] with [efc_force], [qfrc_constraint] and the
-    final [qacc]. It reads [d.qacc] as the smooth acceleration, [d.efc_J],
-    [d.efc_R], [d.efc_D], [d.efc_aref] and [d.nefc], and warmstarts from
-    [d.efc_force]. [`Cg] takes one conjugate-gradient iteration per row, which
-    is exact for the row counts v1 supports and needs no factorisation. *)
-val forward : ?linear:linear -> ?iters:int -> Model.host -> Data.host -> Data.host
+(** {1:rows The row solve}
+
+    The rows minimise a convex quadratic over a box. This is the piece the
+    implicit derivative is attached to, so it is exposed: a caller can build a
+    small row set and check the rule against finite differences of a solve it
+    knows the answer to. *)
+
+(** The type for row arrays on the host at [float64]. *)
+type f = Nx.host Nx.float64_t
+
+(** The type for a row set: the quadratic, the box, and the warm start.
+    Polymorphic in its arrays, as {!Model.Params} is, so the same description
+    serves every dtype. *)
+type ('a, 'd) rows_ =
+  { a : 'a (** [[nb;nb]], the free block's matrix, symmetric positive definite. *)
+  ; b : 'a (** [[nb]], the linear term. *)
+  ; lo : 'a (** [[nb]], the lower bound of each row's force. *)
+  ; hi : 'a (** [[nb]], the upper bound. *)
+  ; mask : 'a (** [[nb]], [1] on the rows that exist. *)
+  ; bilateral : 'a (** [[nb]], [1] on the rows that pull as well as push. *)
+  ; lambda0 : 'a (** [[nb]], the warm start. *)
+  }
+
+(** The type for a float64 row set on the host. *)
+type rows = (Nx.host Nx.float64_t, Nx.host) rows_
+
+(** [rows_ptree] describes a row set to the transformations: its arrays are
+    leaves at [float64] on the host. *)
+val rows_ptree : (rows, Nx.host) Nx.Ptree.t
+
+(** [solve_rows ?implicit ~linear ~iters ~boxed r] is the minimiser over [r]'s
+    box.
+
+    [implicit] selects the derivative only. It defaults to [true], which
+    differentiates the minimiser as the solution of its KKT conditions with the
+    active set frozen where it converged to: [dλ_F = -A_FF⁻¹ (dA λ + db)_F] on
+    the free rows, zero on the pinned ones. [false] differentiates through the
+    iteration instead, which is what the cost sheet measures the rule against
+    and what a caller must not use to learn anything but cost. *)
+val solve_rows : ?implicit:bool -> linear:linear -> iters:int -> boxed:bool -> rows -> f
+
+(** {1:solve Solve} *)
+
+(** [max_iterations] is the largest budget a compiled step will unroll. *)
+val max_iterations : int
+
+(** [forward ?linear ?implicit ?iters m d] is [d] with [efc_force],
+    [qfrc_constraint] and the final [qacc]. It reads [d.qacc] as the smooth
+    acceleration, [d.efc_J], [d.efc_R], [d.efc_D], [d.efc_aref] and [d.nefc],
+    and warmstarts from [d.efc_force]. [`Cg] takes one conjugate-gradient
+    iteration per row, which is exact for the row counts v1 supports and needs
+    no factorisation.
+
+    [implicit] selects the derivative, not the value: [true] (the default)
+    differentiates the row solve as the fixed point of its KKT conditions, so
+    the gradient does not depend on [iters]; [false] differentiates through the
+    iteration, which is what {!solve_rows}'s cost sheet measures the rule
+    against. *)
+val forward
+  :  ?linear:linear
+  -> ?implicit:bool
+  -> ?iters:int
+  -> Model.host
+  -> Data.host
+  -> Data.host

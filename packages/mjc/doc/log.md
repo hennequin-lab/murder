@@ -896,3 +896,26 @@ iterations' worth of work where one linear solve at the fixed active set would
 do. `blocks` at budget one is the case where accuracy *would* matter: its force
 is off by `6.5`, so a caller who sets the budget to one gets a gradient of an
 iterate rather than of a solution, and cannot know it.
+
+**The implicit rule for the solver, and two wrong references.** The row solve is
+now wrapped in a `custom_jvp` whose tangent map freezes the active set at the
+KKT point: `dλ_F = -A_FF⁻¹ (dA λ + db)_F` on the free rows, zero on the pinned
+ones, with a `custom_transpose` carrying the reverse direction. Its value is
+byte-identical to before — the rule only changes the derivative.
+
+Three tests, and two of them caught the author rather than the code. The
+hand-checked 3-row QP minimiser was wrong *twice*: the first expected vector put
+a row at the upper bound when the solver had correctly pinned it at the lower
+one, the second had the same mistake from the other side. Both times the solver
+was right. And the transpose identity `<w, Jv> = <Jᵀw, v>` first passed for the
+wrong reason: the perturbation scaled the matrix and the linear term together,
+and at the optimum a free row's gradient is zero, so the solution does not move
+and the identity holds for the empty map. Perturbing `a`, `b` and `lo`
+independently is what makes it a test.
+
+The measurements (`doc/grad-report.md`) put the whole-step reverse pass at
+**2.0–2.7×** a forward step, and the solver's backward pass 1.1–2.2× cheaper
+with the rule than without. The same pass also surfaced a number that is not a
+gradient result at all and belongs to M7: `boxes2`'s forward step costs 20 ms
+against `chain6`'s 0.7 ms, which is the box-box tensor path running over every
+candidate pair.

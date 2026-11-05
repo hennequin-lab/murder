@@ -5,12 +5,14 @@
   spike_grad
   spike_contact_grad
   spike_param_grad
-  spike_solver_iter)
+  spike_solver_iter
+  bench_grad)
  (modules
   spike_la
   bench_step
   spike_grad
   spike_contact_grad
   spike_param_grad
-  spike_solver_iter)
+  spike_solver_iter
+  bench_grad)
  (libraries base mjc nx rune unix))

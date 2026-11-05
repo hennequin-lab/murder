@@ -274,7 +274,112 @@ let test_parameters () =
     ~set:(fun m x ->
       { m with Model.params = { m.Model.params with actuator_gainprm = x } })
 
-(* {1 The budget} *)
+(* {1 The implicit rule for the solver} *)
+
+(* A row set small enough that the answer is known: two free rows and a third
+   pinned at its bound by the quadratic's own pull. The gradient of a solve like
+   this is not observable from the outside through a whole model — the model's
+   answer agrees with the unrolled one — so it is tested where it lives. *)
+let qp_rows ?(b = [| 1.0; -2.0; -3.5 |]) () =
+  let a = [| 4.0; 1.0; 0.0; 1.0; 3.0; 0.5; 0.0; 0.5; 2.0 |] in
+  { Mjc.Solver.a = Nx.create f64 [| 3; 3 |] a
+  ; b = Nx.create f64 [| 3 |] b
+  ; lo = Nx.create f64 [| 3 |] [| 0.0; 0.0; 0.0 |]
+  ; hi = Nx.create f64 [| 3 |] [| 1e300; 1e300; 0.25 |]
+  ; mask = Nx.create f64 [| 3 |] [| 1.0; 1.0; 1.0 |]
+  ; bilateral = Nx.create f64 [| 3 |] [| 0.0; 0.0; 0.0 |]
+  ; lambda0 = Nx.create f64 [| 3 |] [| 0.0; 0.0; 0.0 |]
+  }
+
+let solve_qp ?(iters = 8) (r : Mjc.Solver.rows) =
+  Mjc.Solver.solve_rows ~linear:`Cholesky ~iters ~boxed:false r
+
+(* The minimiser of the quadratic, from the solve itself at a generous budget:
+   the reference the derivative is taken of. *)
+let test_qp_solution () =
+  let r = qp_rows () in
+  let solved = solve_qp ~iters:20 r in
+  let l = Nx.to_array solved in
+  (* Worked out by hand, because that is the point of a small case: both bounds
+     bind. Unconstrained the rows would be -0.381, 0.524 and 1.619, so row 0
+     stops at its lower bound and row 2 at its upper one, and row 1 follows from
+     3 λ₁ + 0.5 (0.25) - 2 = 0. The KKT conditions hold at both pinned rows:
+     the gradient at row 0 is +1.625 (lower would be better, and it cannot) and
+     at row 2 is -2.6875 (higher would be better, and it cannot). This is the
+     case that makes the test worth writing: one bound per side. *)
+  let expected = [| 0.0; 0.625; 0.25 |] in
+  Array.iteri expected ~f:(fun i e ->
+    if Float.( > ) (Float.abs (l.(i) -. e)) 1e-8
+    then fail (Printf.sprintf "mjc grad: QP row %d: %.12g, expected %.12g" i l.(i) e))
+
+(* Finite differences of the *converged* solve, taken row by row along [b], with
+   the implicit rule in the way. *)
+let test_qp_gradient () =
+  let r = qp_rows () in
+  let f (r : Mjc.Solver.rows) = Nx.sum (solve_qp ~iters:20 r) in
+  let _, pullback = Rune.vjp Mjc.Solver.rows_ptree Nx.Ptree.tensor f r in
+  let grad = pullback (Nx.scalar f64 1.0) in
+  let base = Nx.to_array r.b in
+  Array.iteri (Nx.to_array grad.Mjc.Solver.b) ~f:(fun i g ->
+    let at delta =
+      let a = Array.copy base in
+      a.(i) <- a.(i) +. delta;
+      float_of_t (f { r with Mjc.Solver.b = Nx.create f64 [| 3 |] a })
+    in
+    let h = 1e-5 in
+    let fd =
+      ((4.0 *. ((at (h /. 2.0) -. at (-.h /. 2.0)) /. h))
+       -. ((at h -. at (-.h)) /. (2.0 *. h)))
+      /. 3.0
+    in
+    if Float.( > ) (Float.abs (g -. fd)) (Float.max (1e-6 *. Float.abs fd) 1e-10)
+    then
+      fail
+        (Printf.sprintf
+           "mjc grad: QP gradient entry %d: implicit %.12g, Richardson %.12g"
+           i
+           g
+           fd))
+
+(* The paired rule: forward mode applies the tangent map, reverse mode applies
+   its transpose, and the two must agree on <w, J v> = <Jᵀ w, v>. This is the
+   only check that the transpose is the transpose of the map and not merely a
+   plausible-looking solve. *)
+let test_qp_transpose () =
+  let r = qp_rows () in
+  let f = solve_qp ~iters:20 in
+  let dot (x : Mjc.Solver.rows) (y : Mjc.Solver.rows) =
+    Nx.add
+      (Nx.sum (Nx.mul x.Mjc.Solver.a y.Mjc.Solver.a))
+      (Nx.add
+         (Nx.sum (Nx.mul x.Mjc.Solver.b y.Mjc.Solver.b))
+         (Nx.sum (Nx.mul x.Mjc.Solver.lo y.Mjc.Solver.lo)))
+  in
+  (* Not a uniform scaling: at the optimum a free row's gradient is zero, so
+     scaling the matrix and the linear term together leaves the minimiser where
+     it was and the identity would hold for the empty map. *)
+  let v =
+    { r with
+      Mjc.Solver.a = Nx.mul_s r.Mjc.Solver.a 0.7
+    ; b = Nx.create f64 [| 3 |] [| 0.3; -0.1; 0.2 |]
+    ; lo = Nx.zeros f64 [| 3 |]
+    }
+  and w = Nx.create f64 [| 3 |] [| 1.3; -0.9; 2.2 |] in
+  let _, jv = Rune.jvp Mjc.Solver.rows_ptree Nx.Ptree.tensor f r v in
+  let _, pullback = Rune.vjp Mjc.Solver.rows_ptree Nx.Ptree.tensor f r in
+  let jtw = pullback w in
+  let lhs = Nx.dot w jv
+  and rhs = dot jtw v in
+  let scale =
+    Float.max 1e-9 (Float.max (Float.abs (float_of_t lhs)) (Float.abs (float_of_t rhs)))
+  in
+  if Float.( > ) (Float.abs (float_of_t (Nx.sub lhs rhs)) /. scale) 1e-8
+  then
+    fail
+      (Printf.sprintf
+         "mjc grad: the rule's transpose: <w, Jv> = %.12g, <Jᵀw, v> = %.12g"
+         (float_of_t lhs)
+         (float_of_t rhs))
 
 (* {1 The budget} *)
 
@@ -326,5 +431,8 @@ let () =
     ; test "gradient matches central differences" test_against_finite_differences
     ; test "gradient does not depend on the iteration budget" test_budget_invariance
     ; test "gradient with respect to model parameters" test_parameters
+    ; test "the row solve's minimiser" test_qp_solution
+    ; test "the implicit rule's gradient" test_qp_gradient
+    ; test "the implicit rule's transpose" test_qp_transpose
     ]
   |> ignore

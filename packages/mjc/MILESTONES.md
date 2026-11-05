@@ -551,10 +551,11 @@ an infinite cotangent to a masked-out branch, and `0 * inf` is a NaN — and the
 are fixed without moving a single value (`doc/log.md`). Gradients with respect
 to model parameters work through `Dynamics`, where structure is compiled once
 and parameters flow as tensors; that also settled the design, so the remaining
-work is the implicit rule for the solver — which the measurements say is a
-*cost* question rather than an accuracy one, since the row solve settles in one
-or two iterations and the unrolled gradient is already the implicit gradient
-there — then `remat`, the cost sheet and the demo.
+work is `remat`, the `dilqr` demonstration, and the bounded-magnitude sweep
+across a contact sequence. The implicit rule for the solver has landed: the row
+solve carries a `custom_jvp` with its transpose, checking out at
+`<w, Jv> = <Jᵀw, v>` and at Richardson differences of a hand-checked QP, and the
+whole-step reverse pass is 2.0–2.7× a forward step (`doc/grad-report.md`).
 
 **Goal.** A gradient of the step, of the answer rather than of the last
 iterate, at a cost independent of the solver iteration count.
