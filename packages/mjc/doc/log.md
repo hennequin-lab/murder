@@ -919,3 +919,15 @@ with the rule than without. The same pass also surfaced a number that is not a
 gradient result at all and belongs to M7: `boxes2`'s forward step costs 20 ms
 against `chain6`'s 0.7 ms, which is the box-box tensor path running over every
 candidate pair.
+
+**Rematerialization does nothing in a loop, and the fix is the loop.** The
+milestone asked for `remat` "on the stage boundaries so a long horizon does not
+keep every intermediate". Measured, that is wrong: at 1000 steps `chain6` peaks
+at 15.5 MB plain, **35.3 MB** with the step rematerialized inside a `for` loop,
+and **0.21 MB** with the horizon written as a `Rune.scan` whose body is
+rematerialized. A `for` loop *is* the graph — every step's data is an argument of
+a call in the unrolled program, and `remat` keeps its arguments alive, so
+annotating the body buys a recomputation and pays for it with retention. The
+scan form also runs 30% faster (32.4 s against 46.3 s): the reverse pass walks
+the steps one at a time instead of a thousand-node-wide graph. `Dynamics.horizon_scan`
+is that form.

@@ -551,8 +551,10 @@ an infinite cotangent to a masked-out branch, and `0 * inf` is a NaN — and the
 are fixed without moving a single value (`doc/log.md`). Gradients with respect
 to model parameters work through `Dynamics`, where structure is compiled once
 and parameters flow as tensors; that also settled the design, so the remaining
-work is `remat`, the `dilqr` demonstration, and the bounded-magnitude sweep
-across a contact sequence. The implicit rule for the solver has landed: the row
+work is the `dilqr` demonstration. The memory item is done and did not need what
+it asked for: rematerializing a step inside a `for` loop makes peak memory 2.3×
+*worse*, while expressing the horizon as `Rune.scan` with a rematerialized body
+gives 74× less (`Dynamics.horizon_scan`, `doc/grad-report.md`). The implicit rule for the solver has landed: the row
 solve carries a `custom_jvp` with its transpose, checking out at
 `<w, Jv> = <Jᵀw, v>` and at Richardson differences of a hand-checked QP, and the
 whole-step reverse pass is 2.0–2.7× a forward step (`doc/grad-report.md`).

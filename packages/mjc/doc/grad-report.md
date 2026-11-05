@@ -103,10 +103,34 @@ implicit rule is a *cost* and *robustness* decision rather than an accuracy one.
 At budget one, `blocks`'s force is off by `6.5`, and a caller who sets that gets
 the gradient of an iterate — with the rule, of a KKT point.
 
+## Memory over a long horizon
+
+The gate asks for a 1000-step horizon's peak reverse-pass memory with
+rematerialization to be at most a third of the un-rematerialized peak. Measured
+with `bench/bench_grad.exe memory <mode> chain6 <steps>`, one process per row,
+peak resident bytes from the kernel's high-water mark:
+
+| steps | plain | `remat` in a `for` loop | `scan` + `remat` |
+| --- | --- | --- | --- |
+| 200 | 3.1 MB, — | 7.1 MB, — | **0.15 MB, —** |
+| 1000 | 15.5 MB, 46.3 s | 35.3 MB, 102.4 s | **0.21 MB, 32.4 s** |
+| 2000 | 30.1 MB, — | 49.1 MB, — | **0.33 MB, —** |
+
+Two things here are worth more than the number. The first is that the plan's
+item — "`remat` annotations on the stage boundaries so a long horizon does not
+keep every intermediate" — is **wrong as written**. A plain `for` loop *is* the
+graph: every step's data is an argument of a call in the unrolled program, and
+`remat` keeps its arguments, so annotating the body made peak memory 2.3× worse,
+not better. The second is that the fix is free: expressing the horizon as
+`Rune.scan` with a rematerialized body gives **74×** less memory than plain at
+1000 steps *and* runs 30% faster, because the reverse pass walks the steps one at
+a time instead of a thousand-node-wide graph. `Dynamics.horizon_scan` is that
+form, and it is what a long horizon should use.
+
 ## Not yet measured
 
-- `remat`: the peak reverse-pass memory with and without it, at a long horizon.
-  Not implemented yet, so the third acceptance item is open.
 - The `dilqr` demonstration. Not written yet.
-- A contact *transition*: the numbers above are at states, not across a
-  sequence of them, so "bounded across 1000 random states" is still to be run.
+- A contact *transition*: the bounded-magnitude sweep runs 1000 states
+  (`test/test_grad.ml`, "a thousand contact states stay finite") and reports a
+  worst case of order one, but it steps *through* no event deliberately — it
+  kicks and steps, so transitions happen, they are not sampled at a boundary.

@@ -143,6 +143,57 @@ let test_finite () =
            name
            w))
 
+(* {1 A contact sequence} *)
+
+(* The gate asks for a thousand states, not a hundred: a gradient that is finite
+   at the states a fixture happened to record can still blow up at the one a
+   box lands on. The states here are the engine's own — step, push the
+   velocities around a little, step again — so they are all reachable, and the
+   largest gradient is reported rather than only bounded. *)
+let test_contact_sweep () =
+  List.iter [ "bounce"; "blocks" ] ~f:(fun name ->
+    let m = Support.model name in
+    let q0, v0 = (trajectory name).(0) in
+    let d = ref (data_at m q0 v0) in
+    (* Compiled once: a thousand eager traces would measure the interpreter.
+       The step comes from {!Dynamics}, whose program reads no parameter with
+       [Nx.item] — a traced model cannot carry a structural read. *)
+    let dyn = Dynamics.compile m in
+    let one d = Dynamics.run dyn m d in
+    let grad =
+      Rune.jit
+        Nx.Ptree.(Data.ptree @-> returns Data.ptree)
+        (fun d ->
+           snd
+             (Rune.value_and_grad
+                Data.ptree
+                (fun d ->
+                   let d = one d in
+                   Nx.sum (Nx.mul d.qpos d.qpos))
+                d))
+    in
+    let worst_seen = ref 0.0 in
+    let nv = Array.fold (Nx.shape !d.qvel) ~init:1 ~f:( * ) in
+    for k = 1 to 1000 do
+      let kick =
+        Nx.create
+          f64
+          [| nv |]
+          (Array.init nv ~f:(fun i -> 0.4 *. Float.sin (Float.of_int ((7 * k) + i))))
+      in
+      let seed = { !d with qvel = Nx.add !d.qvel kick } in
+      let g = (grad seed).Data.qpos in
+      if not (all_finite (Nx.to_array g))
+      then fail (Printf.sprintf "mjc grad: %s: not finite at step %d of the sweep" name k);
+      worst_seen := Float.max !worst_seen (worst (Nx.to_array g));
+      d := one seed
+    done;
+    Stdlib.Printf.printf "  %-8s 1000 states, worst |dq| %.4g\n%!" name !worst_seen;
+    if Float.( > ) !worst_seen 1e12
+    then
+      fail
+        (Printf.sprintf "mjc grad: %s: |grad| = %.3e across the sweep" name !worst_seen))
+
 (* {1 Gradients against finite differences} *)
 
 (* Away from contact and from an active limit the step is smooth, and the
@@ -434,5 +485,6 @@ let () =
     ; test "the row solve's minimiser" test_qp_solution
     ; test "the implicit rule's gradient" test_qp_gradient
     ; test "the implicit rule's transpose" test_qp_transpose
+    ; test "a thousand contact states stay finite" test_contact_sweep
     ]
   |> ignore

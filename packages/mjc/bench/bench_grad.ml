@@ -67,7 +67,47 @@ let loss m ~n d =
 
 let ms x = x *. 1e3
 
-let () =
+(* Peak resident memory of the process, from the kernel's high-water mark. The
+   only honest way to compare two memory behaviours is to run each in its own
+   process, so this program does one mode per invocation:
+   bench_grad.exe memory plain|remat [steps] *)
+let peak_kb () =
+  let ic = Stdlib.open_in "/proc/self/status" in
+  let rec loop () =
+    match Stdlib.input_line ic with
+    | line ->
+      if String.is_prefix line ~prefix:"VmHWM:"
+      then (
+        Stdlib.close_in ic;
+        let digits = String.filter line ~f:(fun c -> Char.is_digit c) in
+        Stdlib.int_of_string digits)
+      else loop ()
+    | exception End_of_file ->
+      Stdlib.close_in ic;
+      0
+  in
+  loop ()
+
+let memory mode name steps =
+  let m = load name in
+  let d = reached m in
+  let dyn = Mjc.Dynamics.compile m in
+  let t0 = Unix.gettimeofday () in
+  ignore
+    (Rune.value_and_grad
+       Mjc.Model.ptree
+       (fun (params : Mjc.Model.host) ->
+          let d =
+            match mode with
+            | "remat" -> Mjc.Dynamics.horizon_remat dyn params d steps
+            | "scan" -> Mjc.Dynamics.horizon_scan dyn params d steps
+            | _ -> Mjc.Dynamics.horizon dyn params d steps
+          in
+          Nx.sum (Nx.mul d.Mjc.Data.qpos d.Mjc.Data.qpos))
+       m);
+  Unix.gettimeofday () -. t0
+
+let table () =
   Printf.printf
     "%-9s %5s %8s %8s %7s %8s | %9s %9s %7s\n%!"
     "model"
@@ -138,3 +178,10 @@ let () =
       (ms s_imp)
       (ms s_unr)
       (s_unr /. s_imp))
+
+let () =
+  match Array.to_list Stdlib.Sys.argv with
+  | _ :: "memory" :: mode :: name :: steps :: _ ->
+    let seconds = memory mode name (Stdlib.int_of_string steps) in
+    Printf.printf "%s %s %s %d kb %.2f s\n%!" mode name steps (peak_kb ()) seconds
+  | _ -> table ()

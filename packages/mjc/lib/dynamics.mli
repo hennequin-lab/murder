@@ -51,6 +51,22 @@ val dt : t -> float
 (** [horizon t m d n] is [d] after [n] steps. *)
 val horizon : t -> Model.host -> Data.host -> int -> Data.host
 
+(** [horizon_scan t m d n] is the same value again, with the horizon expressed
+    as {!Rune.scan} whose body is rematerialized. This is the form that makes a
+    long horizon's peak reverse-pass memory independent of its length: a plain
+    OCaml loop leaves every step's data alive in the graph however the body is
+    annotated, because the graph is the loop.
+
+    Raises if [n] is negative. *)
+val horizon_scan : t -> Model.host -> Data.host -> int -> Data.host
+
+(** [horizon_remat t m d n] is the same value, with every step rematerialized:
+    the reverse pass keeps each step's input and recomputes its intermediates
+    instead of storing them. A long horizon's peak memory is then the peak of
+    one step rather than of the horizon. It costs a forward pass per step in
+    reverse; see [doc/grad-report.md] for the measured trade. *)
+val horizon_remat : t -> Model.host -> Data.host -> int -> Data.host
+
 (** {1:metric The metric} *)
 
 (** [mass t m d] is the joint-space mass matrix at [d], [[nv; nv]], which is the

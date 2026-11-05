@@ -7,6 +7,7 @@ type t = { config : Step.config }
 
 let compile m = { config = Step.config m }
 let run t m d = Step.step_with t.config m d
+let step_fn t m = Step.step_with t.config m
 let dt t = Step.config_dt t.config
 
 let horizon t m d n =
@@ -15,6 +16,30 @@ let horizon t m d n =
     d := run t m !d
   done;
   !d
+
+let horizon_remat t m d n =
+  let step = Rune.remat Nx.Ptree.(Data.ptree @-> returns Data.ptree) (step_fn t m) in
+  let d = ref d in
+  for _ = 1 to n do
+    d := step !d
+  done;
+  !d
+
+let horizon_scan t m d n =
+  let step = Rune.remat Nx.Ptree.(Data.ptree @-> returns Data.ptree) (step_fn t m) in
+  let seeds = Nx.zeros Nx.float64 [| n |] in
+  let carry, _ =
+    Rune.scan
+      Data.ptree
+      Nx.Ptree.tensor
+      Nx.Ptree.tensor
+      (fun d (_ : Nx.host Nx.float64_t) ->
+         let d = step d in
+         d, Nx.reshape [| 1 |] (Nx.sum d.qpos))
+      ~init:d
+      seeds
+  in
+  carry
 
 (* The mass matrix at [d]. [Mass.forward] reads no parameter with [Nx.item], so
    the same argument applies to it as to [run]. *)
