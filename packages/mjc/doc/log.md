@@ -1071,6 +1071,16 @@ is not the optimum. On small contact sets the projection almost never bites and
 this never mattered; on eight frictional contacts with frictionless ones mixed in
 it does.
 
+*What is ruled out.* The warm start is not the cause: forcing the
+Gauss-Seidel polish on for every model (instead of only friction-loss ones)
+reaches the same 39.67 from a different starting point, which means the
+coordinate descent and the Newton step agree with each other and disagree with
+the C engine. So the two candidates left are inside the quadratic itself —
+`M` and `qacc_smooth` only reach the row problem through `A` and `b`, and
+`efc_R`, `efc_aref` and `efc_J` matching does not pin them — or inside the bounds
+the iteration projects onto. The next measurement is `qacc_smooth` and the mass
+matrix at that state, which is one print on each side and was not reached.
+
 The fix is the ratio-tested primal active set the literature describes and the
 C engine implements: step towards the unconstrained optimum, stop at the first
 bound a row would cross, freeze that row, re-solve, and only stop when the
