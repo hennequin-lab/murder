@@ -93,6 +93,14 @@ let system (r : rows) (free : f) =
 
 (* The iteration itself: a Gauss-Seidel warm start when the rows are box
    constrained, then active-set Newton with a monotone line search. *)
+(* Rounds of the inner active-set loop, per outer iteration. The loop is
+   unrolled into the traced graph, so this number is also a compile-time cost:
+   eight rounds solve every state of the corpus exactly, and the compiled-step
+   test that compiles one of them went from eight seconds to nearly seven
+   minutes. Four rounds cost one state in a thousand — a two-row limit solve at
+   an acceleration above a thousand — and pass the gate. M7 can afford eight by
+   making the loop a scan instead of a sequence; until then the budget is the
+   one the tests can pay for. *)
 let inner_rounds = 4
 
 let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =

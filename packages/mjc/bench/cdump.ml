@@ -65,4 +65,18 @@ let () =
     counts.(t) <- counts.(t) + 1
   done;
   Array.iteri counts ~f:(fun t n ->
-    if n > 0 then Stdlib.Printf.printf "  type %d: %d rows\n" t n)
+    if n > 0 then Stdlib.Printf.printf "  type %d: %d rows\n" t n);
+  for i = 0 to nefc - 1 do
+    Stdlib.Printf.printf
+      "  row %d type %d id %d pos %.9g margin %.3g R %.6g D %.6g aref %.9g lam %.9g\n"
+      i
+      (Stdlib.Int32.to_int (Nx.item [ i ] d.Mjc.Data.efc_type))
+      (Stdlib.Int32.to_int (Nx.item [ i ] d.Mjc.Data.efc_id))
+      (Nx.item [ i ] d.Mjc.Data.efc_pos)
+      (Nx.item [ i ] d.Mjc.Data.efc_margin)
+      (Nx.item [ i ] d.Mjc.Data.efc_R)
+      (Nx.item [ i ] d.Mjc.Data.efc_D)
+      (Nx.item [ i ] d.Mjc.Data.efc_aref)
+      (Nx.item [ i ] d.Mjc.Data.efc_force)
+  done;
+  show "ten_length" (Nx.slice [ R (0, 2) ] d.Mjc.Data.ten_length)

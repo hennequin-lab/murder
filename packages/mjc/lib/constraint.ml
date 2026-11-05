@@ -567,7 +567,13 @@ let tendon_limits (m : Model.host) (d : Data.host) : Data.host =
       efc_type = put types d.efc_type
     ; efc_id = put ids d.efc_id
     ; efc_pos = put !dists d.efc_pos
-    ; efc_margin = put !margins d.efc_margin
+    ; efc_margin =
+        put !margins d.efc_margin
+        (* The impedance reads this, not [efc_pos]: the saturation branch of
+           [getimpedance] turns on how far inside the margin the row is, and a slot
+           left at its old value reads as zero — which saturates at the minimum
+           impedance and makes a stiff tendon limit soft. *)
+    ; efc_posnorm = put !dists d.efc_posnorm
     ; efc_diagA = put (take ids p.ten_invweight0) d.efc_diagA
     ; efc_solref = put_cols (take ids p.ten_solref) d.efc_solref
     ; efc_solimp = put_cols (take ids p.ten_solimp) d.efc_solimp
