@@ -20,22 +20,30 @@ let take (x : Nx.host Nx.float64_t) (idx : int array) =
 let zeros n = Nx.zeros Nx.float64 [| n |]
 let zeros2 n k = Nx.zeros Nx.float64 [| n; k |]
 
-(* [rows_for] scatters rows into a [nu;nv] tensor: MuJoCo's moment matrix has
-   one row per actuator, dense here, and a tendon row is the tendon's Jacobian
-   scaled by the gear. *)
+(* [rows_for] scatters whole rows into a [nu;nv] tensor: MuJoCo's moment matrix
+   has one row per actuator, dense here, and a tendon row is the tendon's
+   Jacobian scaled by the gear. Flat, because the rows are not contiguous. *)
 let rows_for ~nu ~nv (idx : int array) (rows : Nx.host Nx.float64_t) =
-  if Int.equal (Array.length idx) 0
+  let k = Array.length idx in
+  if Int.equal k 0
   then zeros2 nu nv
   else (
-    let k = Array.length idx in
-    let p =
-      Nx.broadcast_to
-        [| k; nv |]
-        (Nx.reshape
-           [| k; 1 |]
-           (Nx.init Nx.int64 [| k |] (fun i -> Int64.of_int idx.(i.(0)))))
+    let elem =
+      Nx.init
+        Nx.int64
+        [| k * nv |]
+        (fun i ->
+           let row = i.(0) / nv in
+           Int64.of_int ((idx.(row) * nv) + (i.(0) - (nv * row))))
     in
-    Nx.scatter ~combine:Add ~axis:0 p rows (zeros2 nu nv))
+    Nx.reshape
+      [| nu; nv |]
+      (Nx.scatter
+         ~combine:Add
+         ~axis:0
+         elem
+         (Nx.reshape [| k * nv |] rows)
+         (Nx.zeros Nx.float64 [| nu * nv |])))
 
 let forward (m : Model.host) (d : Data.host) =
   let t = m.topo in
@@ -78,20 +86,21 @@ let forward (m : Model.host) (d : Data.host) =
       if Int.equal (Array.length joint_ids) 0
       then zeros2 nu nv
       else (
-        let idx =
-          Nx.reshape
-            [| Array.length joint_ids; 1 |]
-            (Nx.init
-               Nx.int64
-               [| Array.length joint_ids |]
-               (fun i -> Int64.of_int joint_of.(i.(0))))
+        (* one nonzero per row, at the dof the transmission reaches *)
+        let lin =
+          Nx.init
+            Nx.int64
+            [| Array.length joint_ids |]
+            (fun i -> Int64.of_int ((joint_ids.(i.(0)) * nv) + joint_of.(i.(0))))
         in
-        Nx.scatter
-          ~combine:Add
-          ~axis:1
-          idx
-          (Nx.reshape [| Array.length joint_ids; 1 |] (take gear joint_ids))
-          (zeros2 nu nv))
+        Nx.reshape
+          [| nu; nv |]
+          (Nx.scatter
+             ~combine:Add
+             ~axis:0
+             lin
+             (take gear joint_ids)
+             (Nx.zeros Nx.float64 [| nu * nv |])))
     in
     let tendon_rows =
       if Int.equal (Array.length tendon_ids) 0

@@ -28,6 +28,24 @@ type eq_objtype =
   | Eq_body
   | Eq_site
 
+type sensor_type =
+  | Sens_jointpos
+  | Sens_jointvel
+  | Sens_framepos
+  | Sens_actuatorfrc
+  | Sens_tendonpos
+  | Sens_tendonvel
+  | Sens_subtreecom
+  | Sens_subtreelinvel
+  | Sens_subtreeangmom
+
+type obj_type =
+  | Obj_body
+  | Obj_site
+  | Obj_joint
+  | Obj_actuator
+  | Obj_tendon
+
 type wrap_type =
   | Wrap_joint
   | Wrap_site
@@ -72,6 +90,7 @@ type t =
   ; nu : int
   ; na : int
   ; nsensor : int
+  ; nsensordata : int
   ; nmesh : int
   ; nq : int
   ; nv : int
@@ -102,6 +121,12 @@ type t =
   ; integrator : integrator
   ; geom_condim : int array (** [[ngeom]] *)
   ; contacts_enabled : bool
+  ; sensor_type : sensor_type array
+  ; sensor_objtype : obj_type array
+  ; sensor_objid : int array
+  ; sensor_adr : int array
+  ; sensor_dim : int array
+  ; sensor_refid : int array
   ; tendon_adr : int array
   ; tendon_num : int array
   ; wrap_type : wrap_type array
@@ -221,6 +246,18 @@ let validate (t : t) : (unit, string) Result.t =
   then add "eq_type has length %d, expected %d" (Array.length t.eq_type) t.neq;
   if Array.length t.eq_objtype <> t.neq
   then add "eq_objtype has length %d, expected %d" (Array.length t.eq_objtype) t.neq;
+  if Array.length t.sensor_type <> t.nsensor
+  then add "sensor_type has length %d, expected %d" (Array.length t.sensor_type) t.nsensor;
+  if Array.length t.sensor_objtype <> t.nsensor
+  then
+    add
+      "sensor_objtype has length %d, expected %d"
+      (Array.length t.sensor_objtype)
+      t.nsensor;
+  length_ok problems "sensor_objid" t.nsensor t.sensor_objid;
+  length_ok problems "sensor_adr" t.nsensor t.sensor_adr;
+  length_ok problems "sensor_dim" t.nsensor t.sensor_dim;
+  length_ok problems "sensor_refid" t.nsensor t.sensor_refid;
   length_ok problems "tendon_adr" t.ntendon t.tendon_adr;
   length_ok problems "tendon_num" t.ntendon t.tendon_num;
   if Array.length t.wrap_type <> t.nwrap

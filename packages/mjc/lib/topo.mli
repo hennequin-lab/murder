@@ -52,6 +52,28 @@ type integrator =
   | Euler (** Semi-implicit, damping integrated implicitly. *)
   | Implicit_fast (** Semi-implicit, velocity solved in [M + h diag(B)]. *)
 
+(** The type for a sensor. v1 has the state-projection and subtree families;
+    the ones that need the acceleration stage (gyro, accelerometer) or a
+    ray-geometry query (touch) are refused when a model loads. *)
+type sensor_type =
+  | Sens_jointpos
+  | Sens_jointvel
+  | Sens_framepos
+  | Sens_actuatorfrc
+  | Sens_tendonpos
+  | Sens_tendonvel
+  | Sens_subtreecom
+  | Sens_subtreelinvel
+  | Sens_subtreeangmom
+
+(** The type for what a sensor measures. *)
+type obj_type =
+  | Obj_body
+  | Obj_site
+  | Obj_joint
+  | Obj_actuator
+  | Obj_tendon
+
 (** The type for what a tendon wraps. v1 has fixed tendons over joints; a site
     or a geometric wrap needs the spatial-tendon path, which is not v1. *)
 type wrap_type =
@@ -103,6 +125,7 @@ type t =
   ; nu : int (** Actuators. *)
   ; na : int (** Activation states, summed over actuators. *)
   ; nsensor : int
+  ; nsensordata : int (** The width of the sensor block. *)
   ; nmesh : int
   ; nq : int (** Position coordinates. *)
   ; nv : int (** Velocity coordinates, also the number of degrees of freedom. *)
@@ -143,6 +166,16 @@ type t =
   ; contacts_enabled : bool
     (** Whether MuJoCo's contact-disable flag is set. A model that disables
         contacts produces no rows and no contact array. *)
+  ; sensor_type : sensor_type array (** [[nsensor]] *)
+  ; sensor_objtype : obj_type array (** [[nsensor]] *)
+  ; sensor_objid : int array
+    (** [[nsensor]], the joint, site, body, actuator or tendon it measures,
+        depending on its kind. *)
+  ; sensor_adr : int array (** [[nsensor]], its first slot in the block. *)
+  ; sensor_dim : int array (** [[nsensor]] *)
+  ; sensor_refid : int array
+    (** [[nsensor]], the reference object, [-1] for none. v1 has no reference
+        frames and refuses one. *)
   ; tendon_adr : int array (** [[ntendon]], first wrap of each tendon. *)
   ; tendon_num : int array (** [[ntendon]], how many wraps it has. *)
   ; wrap_type : wrap_type array (** [[nwrap]] *)
