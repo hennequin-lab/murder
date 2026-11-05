@@ -6,7 +6,8 @@
   spike_contact_grad
   spike_param_grad
   spike_solver_iter
-  bench_grad)
+  bench_grad
+  spike_root)
  (modules
   spike_la
   bench_step
@@ -14,5 +15,6 @@
   spike_contact_grad
   spike_param_grad
   spike_solver_iter
-  bench_grad)
+  bench_grad
+  spike_root)
  (libraries base mjc nx rune unix))

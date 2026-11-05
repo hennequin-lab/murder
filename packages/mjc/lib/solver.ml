@@ -198,8 +198,12 @@ let implicit_transpose (r : rows) ~lambda (w : f) : rows =
 let solve_rows ?(implicit = true) ~(linear : linear) ~iters ~boxed (r : rows) : f =
   if not implicit
   then iterate ~linear ~iters ~boxed r
-  else (
-    ignore (iterate ~linear ~iters ~boxed r);
+  else
+    (* The rule computes the value and the tangent map in one visit: the
+       iteration runs once, and the [λ] the tangent is taken at is the one the
+       rule returns, which is what keeps it legal — a [λ] computed outside and
+       closed over would be a value the differentiation tracks, used by a rule
+       that does not know it. *)
     Rune.custom_jvp
       rows_ptree
       Nx.Ptree.tensor
@@ -213,7 +217,7 @@ let solve_rows ?(implicit = true) ~(linear : linear) ~iters ~boxed (r : rows) : 
                (fun d -> implicit_tangent r ~lambda d)
                ~transpose:(fun w -> implicit_transpose r ~lambda w)
                d ))
-      r)
+      r
 
 (* [iters] is the iteration budget the model's option asks for, capped at
    [max_iterations]. It is read from the model when the caller does not say,

@@ -74,11 +74,11 @@ by stepping from rest:
 
 ```
 model      rows   fwd/ms  grad/ms     g/f   max|g| | solve_i/ms solve_u/ms     u/i
-chain6        0    0.724    1.642    2.27    0.012 |     3.045     5.115    1.68
-looped       11    0.164    0.437    2.67      1.9 |     1.966     2.103    1.07
-finger        0    0.312    0.639    2.05   0.0013 |     2.327     4.453    1.91
-blocks        5    0.132    0.277    2.10     0.53 |     1.894     2.097    1.11
-boxes2        0   19.941   47.794    2.40      3.8 |    34.490    74.943    2.17
+chain6        0    0.738    1.638    2.22    0.012 |     0.678     7.046    10.4
+looped       11    0.170    0.455    2.68      1.9 |     0.592     2.254    3.81
+finger        0    0.318    0.654    2.05   0.0013 |     0.640     5.063    7.91
+blocks        5    0.154    0.282    1.83     0.53 |     0.573     2.240    3.91
+boxes2        0   20.236   47.731    2.36      3.8 |    19.000    75.900    3.99
 ```
 
 - **`g/f`, the number the gate is about, is 2.0–2.7×.** The budget is a reverse
@@ -87,10 +87,13 @@ boxes2        0   19.941   47.794    2.40      3.8 |    34.490    74.943    2.17
   large a contact model's derivative gets at a state the engine reached. It is
   finite and O(1), which is the second thing the gate asks.
 - `solve_i` and `solve_u` time the *solver's* backward pass alone with the
-  implicit rule and with the unrolled derivative, both eager: `u/i` is 1.1–2.2×,
-  so the rule never loses and saves up to a factor of two. The spread is honest
-  — the eager path is dominated by tracing, not by arithmetic, which is why the
-  whole-step column is the one to quote.
+  implicit rule and with the unrolled derivative, both eager: `u/i` is
+  **3.9–10.4×**, so the rule pays for itself in the solver's own backward pass.
+  An earlier version of this sheet said 1.1–2.2×, and the gap was a defect in
+  the rule's implementation rather than a property of the rule: a stray
+  `ignore (iterate …)` left in to silence an unused-value warning ran the
+  iteration *twice* in the forward pass. The rule computes the value and the
+  tangent map in one visit; it must not also be run for its value outside.
 
 The entry that is not a performance result: `boxes2`'s forward step costs 20 ms
 against `chain6`'s 0.7 ms for a five-box model with no contacts at this state.
@@ -107,6 +110,35 @@ unrolled gradient equals the implicit one on a converged solve, which is why the
 implicit rule is a *cost* and *robustness* decision rather than an accuracy one.
 At budget one, `blocks`'s force is off by `6.5`, and a caller who sets that gets
 the gradient of an iterate — with the rule, of a KKT point.
+
+## Why the hand rule and not `Rune.root`
+
+`Rune.root` expresses an implicit derivative by stating a square residual and
+letting the library apply the implicit function theorem. It works here: with the
+residual "the gradient on the free rows and the distance from its bound on a
+pinned one" — ten lines, with the active set as comparisons, whose derivatives
+are zero — it reproduces the row solve's value *and* its gradient exactly on the
+3-row QP, against the hand-written rule.
+
+It is also slower, and the reason is structural. The hand rule already holds the
+active-set matrix `A_FF`, so the tangent costs one factorization and one solve.
+`root` does not have the matrix; its default path builds the Jacobian by
+applying the residual to every basis vector, which is `nb` residual evaluations
+where the hand rule does one factorization. Measured on synthetic row sets,
+`value_and_grad` through `root` costs 2.3–3.1× the hand rule (2.71–3.48 ms
+against 0.87–1.53 ms from 3 to 60 rows), and those numbers are
+tracing-dominated, so the arithmetic gap is wider than they show.
+
+`root`'s `linear_solve` hook exists to avoid exactly that — it is given an
+abstract operator instead of a matrix. Passing conjugate gradients over that
+operator did not reproduce the gradient in this comparison: the answer wandered
+with the iteration count (`-0.2986`, `-0.3633`, `-0.3038`, `-0.3925` at 3, 6, 12
+and 30 iterations where the answer is `-0.3333`). That is either a limitation of
+how the hook is meant to be used or a bug somewhere; either way it is not a path
+to put the engine's only derivative on. The hand rule stays, with
+`bench/spike_root.ml` as the evidence, and it is worth revisiting if the hook
+turns out to be usable: ten lines of residual are easier to defend than fifty
+lines of transpose.
 
 ## Memory over a long horizon
 

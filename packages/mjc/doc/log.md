@@ -931,3 +931,24 @@ annotating the body buys a recomputation and pays for it with retention. The
 scan form also runs 30% faster (32.4 s against 46.3 s): the reverse pass walks
 the steps one at a time instead of a thousand-node-wide graph. `Dynamics.horizon_scan`
 is that form.
+
+**`Rune.root` works, and the hand rule is still the right call.** The library's
+implicit-function construct reproduces the row solve's value *and* gradient
+exactly from a ten-line residual ("the gradient on the free rows, the distance
+from its bound on a pinned one", with the active set as comparisons — whose
+derivatives are zero, so the Jacobian `root` builds is the active-set matrix).
+That is genuinely simpler than the fifty lines of tangent and transpose. It is
+also 2.3–3.1× slower on synthetic row sets, for a structural reason: the hand
+rule already *has* `A_FF` and factorizes it once, while `root` does not and
+builds the Jacobian by applying the residual to every basis vector. Its
+`linear_solve` hook would avoid that, but the hook did not reproduce the
+gradient in this comparison — the answer wandered with the CG iteration count
+where the true value is `-1/3`. Whichever side that fault is on, it is not
+somewhere to put the engine's only derivative. The spike is kept as the
+evidence.
+
+Asking the question also found a defect in the hand rule: a stray
+`ignore (iterate …)`, put in to silence an unused-value warning, ran the
+iteration **twice** in the forward pass. Removing it took the rule's advantage
+in the solver's own backward pass from 1.1–2.2× to **3.9–10.4×** — the defect
+had been hiding most of the benefit it was written for.
