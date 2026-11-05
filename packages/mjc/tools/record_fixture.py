@@ -780,8 +780,9 @@ POSE_FIELDS = [
 
 # Constraint rows, which the C engine sizes at run time; the fixture pads them
 # to the widest state and records the count separately.
-EFC_FIELDS = ["efc_type", "efc_id", "efc_pos", "efc_margin", "efc_J",
-              "efc_vel", "efc_R", "efc_D", "efc_aref", "efc_b", "efc_force"]
+EFC_FIELDS = ["efc_type", "efc_id", "efc_pos", "efc_margin", "efc_frictionloss",
+              "efc_J", "efc_vel", "efc_R", "efc_D", "efc_aref", "efc_b",
+              "efc_force"]
 
 # Contacts, padded to the widest state like the rows are. The normal is the
 # first three components of the contact frame.

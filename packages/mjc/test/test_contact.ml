@@ -302,6 +302,7 @@ let test_rows_of name =
       let rows x = Nx.slice [ R (0, nefc); A ] x in
       List.iter
         [ "efc_pos", d.Mjc.Data.efc_pos, 1e-12
+        ; "efc_frictionloss", d.Mjc.Data.efc_frictionloss, 1e-12
         ; "efc_margin", d.Mjc.Data.efc_margin, 1e-12
         ; "efc_vel", d.Mjc.Data.efc_vel, 1e-12
         ; "efc_R", d.Mjc.Data.efc_R, 1e-12

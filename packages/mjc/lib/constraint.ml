@@ -574,6 +574,7 @@ let tendon_limits (m : Model.host) (d : Data.host) : Data.host =
            left at its old value reads as zero — which saturates at the minimum
            impedance and makes a stiff tendon limit soft. *)
     ; efc_posnorm = put !dists d.efc_posnorm
+    ; efc_frictionloss = put zero d.efc_frictionloss
     ; efc_diagA = put (take ids p.ten_invweight0) d.efc_diagA
     ; efc_solref = put_cols (take ids p.ten_solref) d.efc_solref
     ; efc_solimp = put_cols (take ids p.ten_solimp) d.efc_solimp
