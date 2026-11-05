@@ -17,7 +17,7 @@ MJCB_MAGIC = b"MJCB"
 MJCB_END = b"MJCE"
 MJBF_MAGIC = b"MJBF"
 MJBF_END = b"MJFE"
-VERSION = 9
+VERSION = 10
 
 # Topology arrays, in the order the format writes them.
 INT_ARRAYS = [
@@ -26,6 +26,11 @@ INT_ARRAYS = [
     "dof_bodyid", "dof_jntid", "dof_parentid", "geom_bodyid", "geom_type",
     "geom_contype", "geom_conaffinity", "geom_priority", "site_bodyid",
     "eq_type", "eq_objtype",
+    # v1 actuator surface: what each actuator drives and how, plus the codes
+    # for the three gain/bias/dynamics kinds it supports.
+    "actuator_trntype", "actuator_trnid", "actuator_gaintype",
+    "actuator_biastype", "actuator_dyntype", "actuator_actadr",
+    "actuator_actearly",
 ]
 
 # MuJoCo joint codes to ours: free 0, ball 1, slide 2, hinge 3 becomes
@@ -64,6 +69,18 @@ def fields(m):
         ("eq_data", m.eq_data), ("eq_solref", m.eq_solref),
         ("eq_solimp", m.eq_solimp),
         ("eq_active0", np.asarray(m.eq_active0, dtype=np.float64)),
+        ("actuator_gear", m.actuator_gear),
+        # MuJoCo 3.17 keeps ten coefficients per actuator for DC motors and
+        # LuGre friction; v1's gain, bias and dynamics polynomials are the
+        # first three of each, which is the part that has been stable across
+        # releases and the part this engine reads.
+        ("actuator_gainprm", np.asarray(m.actuator_gainprm)[:, :3]),
+        ("actuator_biasprm", np.asarray(m.actuator_biasprm)[:, :3]),
+        ("actuator_dynprm", np.asarray(m.actuator_dynprm)[:, :3]),
+        ("actuator_ctrlrange", m.actuator_ctrlrange),
+        ("actuator_forcerange", m.actuator_forcerange),
+        ("actuator_ctrllimited", np.asarray(m.actuator_ctrllimited, dtype=np.float64)),
+        ("actuator_forcelimited", np.asarray(m.actuator_forcelimited, dtype=np.float64)),
         ("gravity", m.opt.gravity), ("timestep", np.asarray(m.opt.timestep)),
         ("integrator", np.asarray(m.opt.integrator, dtype=np.float64)),
         ("disableflags", np.asarray(m.opt.disableflags, dtype=np.float64)),

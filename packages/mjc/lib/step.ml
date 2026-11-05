@@ -15,22 +15,24 @@ open Base
    acceleration, which the model's own acceleration already is.
 
    [implicitfast] ([mj_implicitSkip]) always solves that same damped system,
-   with or without damping, and adds the velocity derivative of the passive
-   forces to the matrix. v1 has no fluid and no actuator damping, so for the
-   models it supports the two schemes solve the same system and differ only
-   in whether the solve is skipped. *)
+   with or without damping, and puts the whole velocity derivative of the
+   smooth forces in the matrix: the dof damping, and the actuators' own
+   velocity derivative, which is what makes a velocity servo's [kv] a damping
+   term rather than a force the step has to chase. v1 has no fluid and no
+   muscle, so those are the two terms. *)
 
-let advance_with ~topo ~dt ~solve ~diag (d : Data.host) : Data.host =
+let advance_with ~topo ~dt ~solve ~(h : Nx.host Nx.float64_t) (d : Data.host) : Data.host =
   let qacc =
     if not solve
     then d.qacc
-    else (
-      let h = Nx.add d.mass_matrix (Nx.mul_s diag dt) in
-      Mass.solve (Mass.factor h) (Nx.add d.qfrc_smooth d.qfrc_constraint))
+    else Mass.solve (Mass.factor h) (Nx.add d.qfrc_smooth d.qfrc_constraint)
   in
   let qvel = Nx.add d.qvel (Nx.mul_s qacc dt) in
   let qpos = Pose.integrate_pos topo ~qpos:d.qpos ~qvel ~dt in
-  { d with time = Nx.add_s d.time dt; qvel; qpos }
+  (* MuJoCo advances the activation states with the same explicit Euler step,
+     whatever the integrator: [act += h act'] ([mj_Euler]). *)
+  let act = Nx.add d.act (Nx.mul_s d.act_dot dt) in
+  { d with time = Nx.add_s d.time dt; qvel; qpos; act }
 
 (* The model's host values, read once per model. [solve] is whether the
    velocity update goes through the damped matrix: Euler only when some dof is
@@ -46,9 +48,26 @@ let config (m : Model.host) =
   let diag = Nx.diag m.params.dof_damping in
   dt, solve, diag
 
+(* [M - dt * (d qfrc_smooth / d qvel)]: the matrix the implicit step solves.
+   The actuator term is a sum of rank-one updates, one per actuator, and it is
+   skipped entirely when no actuator has a velocity derivative — which is most
+   models, and keeps their step on the same graph. *)
+let step_matrix (m : Model.host) (d : Data.host) ~dt ~diag =
+  let h = Nx.add d.mass_matrix (Nx.mul_s diag dt) in
+  let k = Actuator.damping m d in
+  let any = Stdlib.Array.exists (fun x -> not (Float.equal x 0.0)) (Nx.to_array k) in
+  if not any
+  then h
+  else (
+    let tr = Transmission.forward m d in
+    let weighted = Nx.mul (Nx.reshape [| m.topo.nu; 1 |] k) tr.Transmission.moment in
+    let update = Nx.matmul (Nx.matrix_transpose tr.Transmission.moment) weighted in
+    Nx.sub h (Nx.mul_s update dt))
+
 let advance (m : Model.host) (d : Data.host) : Data.host =
   let dt, solve, diag = config m in
-  advance_with ~topo:m.topo ~dt ~solve ~diag d
+  let h = if solve then step_matrix m d ~dt ~diag else d.mass_matrix in
+  advance_with ~topo:m.topo ~dt ~solve ~h d
 
 let step m d = advance m (Forward.forward m d)
 
@@ -59,7 +78,11 @@ type t =
 
 let compile (m : Model.host) : t =
   let dt, solve, diag = config m in
-  let f d = advance_with ~topo:m.topo ~dt ~solve ~diag (Forward.forward m d) in
+  let f d =
+    let d = Forward.forward m d in
+    let h = if solve then step_matrix m d ~dt ~diag else d.mass_matrix in
+    advance_with ~topo:m.topo ~dt ~solve ~h d
+  in
   { dt; run = Rune.jit Nx.Ptree.(Data.ptree @-> returns Data.ptree) f }
 
 let run (t : t) d = t.run d

@@ -28,6 +28,23 @@ type eq_objtype =
   | Eq_body
   | Eq_site
 
+type trn_type =
+  | Trn_joint
+  | Trn_tendon
+
+type gain_type =
+  | Gain_fixed
+  | Gain_affine
+
+type bias_type =
+  | Bias_none
+  | Bias_affine
+
+type dyn_type =
+  | Dyn_none
+  | Dyn_integrator
+  | Dyn_filter
+
 type geom_type =
   | Plane
   | Hfield
@@ -80,6 +97,13 @@ type t =
   ; integrator : integrator
   ; geom_condim : int array (** [[ngeom]] *)
   ; contacts_enabled : bool
+  ; actuator_trntype : trn_type array
+  ; actuator_trnid : int array
+  ; actuator_gaintype : gain_type array
+  ; actuator_biastype : bias_type array
+  ; actuator_dyntype : dyn_type array
+  ; actuator_actadr : int array
+  ; actuator_actearly : bool array
   ; eq_type : eq_type array (** [[neq]] *)
   ; eq_objtype : eq_objtype array (** [[neq]] *)
   ; body_names : string array
@@ -187,6 +211,37 @@ let validate (t : t) : (unit, string) Result.t =
   then add "eq_type has length %d, expected %d" (Array.length t.eq_type) t.neq;
   if Array.length t.eq_objtype <> t.neq
   then add "eq_objtype has length %d, expected %d" (Array.length t.eq_objtype) t.neq;
+  if Array.length t.actuator_trntype <> t.nu
+  then
+    add
+      "actuator_trntype has length %d, expected %d"
+      (Array.length t.actuator_trntype)
+      t.nu;
+  length_ok problems "actuator_trnid" (2 * t.nu) t.actuator_trnid;
+  if Array.length t.actuator_gaintype <> t.nu
+  then
+    add
+      "actuator_gaintype has length %d, expected %d"
+      (Array.length t.actuator_gaintype)
+      t.nu;
+  if Array.length t.actuator_biastype <> t.nu
+  then
+    add
+      "actuator_biastype has length %d, expected %d"
+      (Array.length t.actuator_biastype)
+      t.nu;
+  if Array.length t.actuator_dyntype <> t.nu
+  then
+    add
+      "actuator_dyntype has length %d, expected %d"
+      (Array.length t.actuator_dyntype)
+      t.nu;
+  length_ok problems "actuator_actadr" t.nu t.actuator_actadr;
+  length_ok
+    problems
+    "actuator_actearly"
+    t.nu
+    (Array.map t.actuator_actearly ~f:Bool.to_int);
   len "geom_contype" t.ngeom t.geom_contype;
   len "geom_conaffinity" t.ngeom t.geom_conaffinity;
   len "geom_priority" t.ngeom t.geom_priority;

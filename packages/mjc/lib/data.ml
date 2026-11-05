@@ -12,6 +12,7 @@ type ('a, 'd) t =
   ; qvel : 'a
   ; qacc : 'a
   ; act : 'a
+  ; act_dot : 'a
   ; ctrl : 'a
   ; qfrc_applied : 'a
   ; xpos : 'a
@@ -33,6 +34,9 @@ type ('a, 'd) t =
   ; qfrc_bias : 'a
   ; qfrc_passive : 'a
   ; qfrc_actuator : 'a
+  ; actuator_length : 'a
+  ; actuator_velocity : 'a
+  ; actuator_force : 'a
   ; qfrc_constraint : 'a
   ; qfrc_smooth : 'a
   ; mass_matrix : 'a
@@ -91,6 +95,7 @@ let create (m : Model.host) : host =
   ; qvel = zeros [| t.nv |]
   ; qacc = zeros [| t.nv |]
   ; act = zeros [| t.na |]
+  ; act_dot = zeros [| t.na |]
   ; ctrl = zeros [| t.nu |]
   ; qfrc_applied = zeros [| t.nv |]
   ; xpos = zeros [| t.nbody; 3 |]
@@ -112,6 +117,9 @@ let create (m : Model.host) : host =
   ; qfrc_bias = zeros [| t.nv |]
   ; qfrc_passive = zeros [| t.nv |]
   ; qfrc_actuator = zeros [| t.nv |]
+  ; actuator_length = zeros [| t.nu |]
+  ; actuator_velocity = zeros [| t.nu |]
+  ; actuator_force = zeros [| t.nu |]
   ; qfrc_constraint = zeros [| t.nv |]
   ; qfrc_smooth = zeros [| t.nv |]
   ; mass_matrix = zeros [| t.nv; t.nv |]
@@ -167,6 +175,7 @@ let validate (m : Model.host) (d : host) : (unit, string) Result.t =
   want "qvel" [| t.nv |] d.qvel;
   want "qacc" [| t.nv |] d.qacc;
   want "act" [| t.na |] d.act;
+  want "act_dot" [| t.na |] d.act_dot;
   want "ctrl" [| t.nu |] d.ctrl;
   want "qfrc_applied" [| t.nv |] d.qfrc_applied;
   want "xpos" [| t.nbody; 3 |] d.xpos;
@@ -188,6 +197,9 @@ let validate (m : Model.host) (d : host) : (unit, string) Result.t =
   want "qfrc_bias" [| t.nv |] d.qfrc_bias;
   want "qfrc_passive" [| t.nv |] d.qfrc_passive;
   want "qfrc_actuator" [| t.nv |] d.qfrc_actuator;
+  want "actuator_length" [| t.nu |] d.actuator_length;
+  want "actuator_velocity" [| t.nu |] d.actuator_velocity;
+  want "actuator_force" [| t.nu |] d.actuator_force;
   want "qfrc_constraint" [| t.nv |] d.qfrc_constraint;
   want "qfrc_smooth" [| t.nv |] d.qfrc_smooth;
   want "mass_matrix" [| t.nv; t.nv |] d.mass_matrix;

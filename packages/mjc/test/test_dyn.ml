@@ -13,14 +13,27 @@ open Support
 module F = Mjc.Forward
 module S = Mjc.Step
 
-let models = [ "pendulum"; "chain6"; "floating"; "ball" ]
+let models = [ "pendulum"; "chain6"; "floating"; "ball"; "actuators" ]
 
 let staged m s =
   let f = fixture m in
   let qpos = tensor f "qpos"
   and qvel = tensor f "qvel" in
   let d = data_with_qpos (model m) (row qpos s) in
-  F.forward (model m) { d with qvel = vec1 (row qvel s) }
+  let d = { d with Mjc.Data.qvel = vec1 (row qvel s) } in
+  (* A model with actuators is asked about the state it was recorded at, which
+     includes the control and the activation. *)
+  let d =
+    match tensor f "ctrl" with
+    | exception _ -> d
+    | c -> { d with Mjc.Data.ctrl = vec1 (row c s) }
+  in
+  let d =
+    match tensor f "act" with
+    | exception _ -> d
+    | a -> { d with Mjc.Data.act = vec1 (row a s) }
+  in
+  F.forward (model m) d
 
 let test_velocity () =
   List.iter models ~f:(fun name ->
@@ -50,10 +63,26 @@ let test_trajectory () =
     and qvel = tensor f "traj_qvel" in
     let qacc = tensor f "traj_qacc" in
     let states = f.nstates in
+    let optional name =
+      try Some (tensor f name) with
+      | _ -> None
+    in
+    (* An actuator model's step reads the control and the activation, and the
+       recorded trajectory was driven with them. *)
+    let ctrls = optional "traj_ctrl"
+    and acts = optional "traj_act" in
+    let set_ctrl d k =
+      match ctrls with
+      | None -> d
+      | Some c -> { d with Mjc.Data.ctrl = vec1 (row c k) }
+    in
     let d = ref { (data_with_qpos m (row qpos 0)) with qvel = vec1 (row qvel 0) } in
-    (* A composed step accumulates the stages' rounding, so its tolerance is
-       the design note's for a composed stage, not the 1e-12 of one stage. *)
+    d := set_ctrl !d 0;
+    (match acts with
+     | None -> ()
+     | Some a -> d := { !d with Mjc.Data.act = vec1 (row a 0) });
     for k = 0 to states - 2 do
+      d := set_ctrl !d k;
       let fwd = F.forward m !d in
       parity
         ~tol:1e-10

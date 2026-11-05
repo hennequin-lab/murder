@@ -292,6 +292,57 @@ MODELS = {
     </body>
   </worldbody>
 </mujoco>""",
+    # The actuator surface: one joint per actuator kind v1 has, so that a
+    # single model exercises a fixed gain, an affine bias through a position
+    # and a velocity servo, an integrated setpoint, a damper and a general
+    # gain/bias polynomial, plus the control and force ranges.
+    "actuators": """
+<mujoco model="actuators">
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="base" pos="0 0 0.6">
+      <body name="l1" pos="0 0 0">
+        <joint name="j_motor" type="hinge" axis="0 0 1"/>
+        <geom name="g1" type="capsule" size="0.02 0.15" pos="0.15 0 0"
+              quat="0.7071068 0 0.7071068 0"/>
+        <body name="l2" pos="0.3 0 0">
+          <joint name="j_position" type="hinge" axis="0 0 1" armature="0.01"/>
+          <geom name="g2" type="capsule" size="0.02 0.15" pos="0.15 0 0"
+                quat="0.7071068 0 0.7071068 0"/>
+          <body name="l3" pos="0.3 0 0">
+            <joint name="j_velocity" type="hinge" axis="0 0 1" damping="0.02"/>
+            <geom name="g3" type="capsule" size="0.02 0.15" pos="0.15 0 0"
+                  quat="0.7071068 0 0 0.7071068"/>
+            <body name="l4" pos="0.3 0 0">
+              <joint name="j_intvelocity" type="slide" axis="1 0 0" armature="0.02"/>
+              <geom name="g4" type="sphere" size="0.05"/>
+              <body name="l5" pos="0 0 -0.15">
+                <joint name="j_damper" type="hinge" axis="0 1 0"/>
+                <geom name="g5" type="capsule" size="0.015 0.1" pos="0 0 -0.1"/>
+                <body name="l6" pos="0 0 -0.22">
+                  <joint name="j_general" type="hinge" axis="0 1 0"/>
+                  <geom name="g6" type="sphere" size="0.04"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="a_motor" joint="j_motor" gear="1.5"/>
+    <position name="a_position" joint="j_position" kp="40" kv="1.5" ctrlrange="-0.8 0.8"/>
+    <velocity name="a_velocity" joint="j_velocity" kv="3" forcerange="-2 2" forcelimited="true"/>
+    <intvelocity name="a_intvelocity" joint="j_intvelocity" kp="60" kv="2" ctrlrange="-0.5 0.5"/>
+    <general name="a_damper" joint="j_damper" gainprm="0" biasprm="0 0 -0.8" ctrlrange="-1 1"/>
+    <general name="a_general" joint="j_general" gainprm="2.5 -1 -0.4"
+             biasprm="0.3 -0.5 -0.2" ctrlrange="-1 1" forcerange="-1.5 1.5"
+             forcelimited="true"/>
+  </actuator>
+</mujoco>
+""",
+
 }
 
 
@@ -380,13 +431,28 @@ def contact_state(m, d):
 STAGE_FIELDS = [
     "subtree_com", "cinert", "cdof", "cvel", "cdof_dot",
     "qfrc_bias", "qfrc_passive", "qfrc_smooth",
+    # the actuator surface: what the transmissions measure and what the
+    # actuators make of it
+    "qfrc_actuator", "actuator_length", "actuator_velocity", "actuator_force",
+    "act_dot",
 ]
 
 TRAJ_STEPS = 10
 
 
+def control_range(m):
+    """A control box per actuator: the declared range, or [-1, 1]."""
+    lo = np.where(m.actuator_ctrllimited, m.actuator_ctrlrange[:, 0], -1.0)
+    hi = np.where(m.actuator_ctrllimited, m.actuator_ctrlrange[:, 1], 1.0)
+    return lo, hi
+
+
 def record(name, xml, outdir, rng):
     m = mujoco.MjModel.from_xml_string(xml)
+    # Actuator controls come from their own stream: adding them must not
+    # renumber the poses and velocities the rest of the corpus is built from.
+    crng = np.random.default_rng(SEED + 1 + len(MODELS))
+    lo, hi = control_range(m)
     # The port is dense; record the rows in the layout the port uses, whatever
     # the model's own auto choice would be at this size.
     m.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
@@ -403,10 +469,14 @@ def record(name, xml, outdir, rng):
         qvel = rng.uniform(-2.0, 2.0, size=m.nv)
         d.qpos[:] = qpos
         d.qvel[:] = qvel
+        if m.nu:
+            d.ctrl[:] = crng.uniform(lo, hi)
         mujoco.mj_forward(m, d)
         full = np.zeros((m.nv, m.nv))
         mujoco.mj_fullM(m, d, full)
         fields = {f: np.array(getattr(d, f)) for f in POSE_FIELDS + STAGE_FIELDS}
+        fields["ctrl"] = np.array(d.ctrl)
+        fields["act"] = np.array(d.act)
         fields["mass_matrix"] = full
         nefc = int(d.nefc)
         efc = {"nefc": nefc}
@@ -422,7 +492,7 @@ def record(name, xml, outdir, rng):
 
     tensors = {"qpos": np.stack([s[0] for s in states])}
     tensors["qvel"] = np.stack(qvels)
-    for f in POSE_FIELDS + STAGE_FIELDS + ["mass_matrix"]:
+    for f in POSE_FIELDS + STAGE_FIELDS + ["mass_matrix", "ctrl", "act"]:
         tensors[f] = np.stack([s[1][f] for s in states])
     width = max(1, max(s[2]["nefc"] for s in states))
     tensors["nefc"] = np.array([s[2]["nefc"] for s in states], dtype=float)
@@ -457,24 +527,42 @@ def record(name, xml, outdir, rng):
     tensors["integ_qvel"] = tensors["qvel"]
     tensors["integ_qpos_next"] = np.stack(qpos_next)
 
-    # A short trajectory through mj_step, from the first state, with no
-    # controls: this is the end-to-end test of forward plus the Euler
-    # integrator.
+    # A short trajectory through mj_step, from the first state: this is the
+    # end-to-end test of forward plus the integrator, and for a stateful
+    # actuator of the activation dynamics as well.
     d.qpos[:] = states[0][0]
     d.qvel[:] = qvels[0]
+    d.act[:] = 0.0
+    if m.nu:
+        d.ctrl[:] = crng.uniform(lo, hi)
     mujoco.mj_forward(m, d)
     traj_qpos = [np.array(d.qpos)]
     traj_qvel = [np.array(d.qvel)]
     traj_qacc = []
+    traj_act = [np.array(d.act)]
+    traj_ctrl = []
     for _ in range(TRAJ_STEPS):
+        # The control of a step is chosen before both halves of it:
+        # [mj_step] is a forward pass, which reads [ctrl] for the activation
+        # derivative, and an advance, which uses it. Choosing it in between
+        # would make the recorded force describe a control the step did not
+        # use.
+        if m.nu:
+            d.ctrl[:] = crng.uniform(lo, hi)
+        traj_ctrl.append(np.array(d.ctrl))
         # mj_step leaves qacc as it was before the step, so recompute it at
         # the state it belongs to.
         mujoco.mj_forward(m, d)
         traj_qacc.append(np.array(d.qacc))
         mujoco.mj_step(m, d)
+        traj_act.append(np.array(d.act))
         traj_qpos.append(np.array(d.qpos))
         traj_qvel.append(np.array(d.qvel))
     traj_qacc.append(np.array(d.qacc))
+    # The fixture's tensors share a state axis, so the schedule carries the
+    # control that would drive one more step: index k is the control of step k,
+    # and the last is the one no step used.
+    traj_ctrl.append(np.array(d.ctrl) if m.nu else np.zeros(0))
     mjcb.write_fixture(
         os.path.join(outdir, f"{name}.traj.mjbf"),
         name,
@@ -482,6 +570,8 @@ def record(name, xml, outdir, rng):
             "traj_qpos": np.stack(traj_qpos),
             "traj_qvel": np.stack(traj_qvel),
             "traj_qacc": np.stack(traj_qacc),
+            "traj_act": np.stack(traj_act),
+            "traj_ctrl": np.stack(traj_ctrl),
         },
     )
 

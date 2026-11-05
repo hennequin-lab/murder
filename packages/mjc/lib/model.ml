@@ -53,6 +53,14 @@ module Params = struct
     ; eq_solref : 'a
     ; eq_solimp : 'a
     ; eq_active0 : 'a
+    ; actuator_gear : 'a
+    ; actuator_gainprm : 'a
+    ; actuator_biasprm : 'a
+    ; actuator_dynprm : 'a
+    ; actuator_ctrlrange : 'a
+    ; actuator_forcerange : 'a
+    ; actuator_ctrllimited : 'a
+    ; actuator_forcelimited : 'a
     ; gravity : 'a
     ; timestep : 'a
     ; integrator : 'a
@@ -205,6 +213,14 @@ let validate (m : host) : (unit, string) Result.t =
   want "eq_solref" [| t.neq; 2 |] p.eq_solref;
   want "eq_solimp" [| t.neq; 5 |] p.eq_solimp;
   want "eq_active0" [| t.neq |] p.eq_active0;
+  want "actuator_gear" [| t.nu; 6 |] p.actuator_gear;
+  want "actuator_gainprm" [| t.nu; 3 |] p.actuator_gainprm;
+  want "actuator_biasprm" [| t.nu; 3 |] p.actuator_biasprm;
+  want "actuator_dynprm" [| t.nu; 3 |] p.actuator_dynprm;
+  want "actuator_ctrlrange" [| t.nu; 2 |] p.actuator_ctrlrange;
+  want "actuator_forcerange" [| t.nu; 2 |] p.actuator_forcerange;
+  want "actuator_ctrllimited" [| t.nu |] p.actuator_ctrllimited;
+  want "actuator_forcelimited" [| t.nu |] p.actuator_forcelimited;
   want "gravity" [| 3 |] p.gravity;
   want "timestep" [||] p.timestep;
   want "integrator" [||] p.integrator;

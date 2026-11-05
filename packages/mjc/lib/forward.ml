@@ -11,6 +11,7 @@ let forward ?linear (m : Model.host) (d : Data.host) : Data.host =
   let d = Collision.contacts m d in
   let d = Passive.forward m d in
   let d = Bias.forward m d in
+  let d = Actuator.forward m d in
   let qfrc_smooth =
     Nx.add (Nx.sub (Nx.add d.qfrc_passive d.qfrc_applied) d.qfrc_bias) d.qfrc_actuator
   in

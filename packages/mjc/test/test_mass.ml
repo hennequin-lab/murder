@@ -13,7 +13,7 @@ open Support
 module K = Mjc.Kinematics
 module M = Mjc.Mass
 
-let models = [ "pendulum"; "chain6"; "floating"; "ball" ]
+let models = [ "pendulum"; "chain6"; "floating"; "ball"; "actuators" ]
 
 let field (d : Mjc.Data.host) name =
   match name with

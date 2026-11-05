@@ -52,6 +52,31 @@ type integrator =
   | Euler (** Semi-implicit, damping integrated implicitly. *)
   | Implicit_fast (** Semi-implicit, velocity solved in [M + h diag(B)]. *)
 
+(** The type for what an actuator drives. v1 supports a joint's single
+    degree of freedom and a fixed tendon; a site and a ball joint's three
+    degrees of freedom are rejected when a model loads. *)
+type trn_type =
+  | Trn_joint (** A hinge or slide joint, through [gear.[0]]. *)
+  | Trn_tendon (** A fixed tendon, through [gear.[0]]. *)
+
+(** The type for how an actuator's gain depends on its own length and
+    velocity. MuJoCo's muscle and DC-motor gains are not v1. *)
+type gain_type =
+  | Gain_fixed (** [gain = gainprm.[0]] *)
+  | Gain_affine (** [gain = gainprm . (1, length, velocity)] *)
+
+(** The type for the same, for the bias. *)
+type bias_type =
+  | Bias_none (** [bias = 0] *)
+  | Bias_affine (** [bias = biasprm . (1, length, velocity)] *)
+
+(** The type for an actuator's internal dynamics. A muscle or a PID is not
+    v1. *)
+type dyn_type =
+  | Dyn_none (** The input is the control. *)
+  | Dyn_integrator (** [act' = ctrl], so the input is the integrated setpoint. *)
+  | Dyn_filter (** [act' = (ctrl - act) / max(dynprm.[0], minval)] *)
+
 (** The type for what an equality constrains. *)
 type eq_objtype =
   | Eq_body
@@ -111,6 +136,22 @@ type t =
   ; contacts_enabled : bool
     (** Whether MuJoCo's contact-disable flag is set. A model that disables
         contacts produces no rows and no contact array. *)
+  ; actuator_trntype : trn_type array (** [[nu]], what each actuator drives. *)
+  ; actuator_trnid : int array
+    (** [[nu;2]], flattened: the joint or tendon index, and MuJoCo's second
+        id, which v1 requires to be zero. Host data, because which moment
+        arm to build is decided when the program is built. *)
+  ; actuator_gaintype : gain_type array (** [[nu]] *)
+  ; actuator_biastype : bias_type array (** [[nu]] *)
+  ; actuator_dyntype : dyn_type array (** [[nu]] *)
+  ; actuator_actadr : int array
+    (** [[nu]], the first activation state of each actuator, [-1] when it has
+        none. *)
+  ; actuator_actearly : bool array
+    (** [[nu]], whether the actuator reads the next activation instead of the
+        current one. v1 does not have it; the loader carries it so the kernel
+        can refuse a model that asks, rather than quietly using the wrong
+        state. *)
   ; eq_type : eq_type array (** [[neq]] *)
   ; eq_objtype : eq_objtype array
     (** [[neq]], what [eq_obj1id] and [eq_obj2id] index in the model. *)

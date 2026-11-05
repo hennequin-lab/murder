@@ -102,7 +102,7 @@
       "nq": 17,
       "nv": 15,
       "nstates": 32,
-      "xml_sha256": "1a2d5cd921008c62"
+      "xml_sha256": "7fc335aebb655e43"
     },
     {
       "name": "blocks",
@@ -143,6 +143,16 @@
       "nv": 6,
       "nstates": 32,
       "xml_sha256": "56b1cc5a5a489a14"
+    },
+    {
+      "name": "actuators",
+      "nbody": 8,
+      "ngeom": 6,
+      "njnt": 6,
+      "nq": 6,
+      "nv": 6,
+      "nstates": 32,
+      "xml_sha256": "680d5555f01575bf"
     }
   ]
 }

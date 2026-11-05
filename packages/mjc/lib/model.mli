@@ -67,6 +67,17 @@ module Params : sig
     ; eq_solref : 'a (** [[neq;2]] *)
     ; eq_solimp : 'a (** [[neq;5]] *)
     ; eq_active0 : 'a (** [[neq]], [1] where the constraint is on. *)
+    ; actuator_gear : 'a
+      (** [[nu;6]], the transmission gear. Element 0 scales the joint's or the
+          tendon's scalar transmission; the rest belong to site transmissions,
+          which v1 does not have, and are carried so the file round-trips. *)
+    ; actuator_gainprm : 'a (** [[nu;3]] *)
+    ; actuator_biasprm : 'a (** [[nu;3]] *)
+    ; actuator_dynprm : 'a (** [[nu;3]] *)
+    ; actuator_ctrlrange : 'a (** [[nu;2]] *)
+    ; actuator_forcerange : 'a (** [[nu;2]] *)
+    ; actuator_ctrllimited : 'a (** [[nu]], [1] where the control is clamped. *)
+    ; actuator_forcelimited : 'a (** [[nu]], [1] where the force is clamped. *)
     ; gravity : 'a (** [[3]] *)
     ; timestep : 'a (** [[]], a 0-d tensor. *)
     ; integrator : 'a (** [[]], MuJoCo's code for the integration scheme. *)

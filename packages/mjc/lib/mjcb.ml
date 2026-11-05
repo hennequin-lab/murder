@@ -11,7 +11,7 @@ module Int64 = Stdlib.Int64
 
 let magic = "MJCB"
 let magic_end = "MJCE"
-let version = 9
+let version = 10
 
 (* Layout, in writing order:
 
@@ -69,6 +69,13 @@ let int_arrays =
   ; "site_bodyid"
   ; "eq_type"
   ; "eq_objtype"
+  ; "actuator_trntype"
+  ; "actuator_trnid"
+  ; "actuator_gaintype"
+  ; "actuator_biastype"
+  ; "actuator_dyntype"
+  ; "actuator_actadr"
+  ; "actuator_actearly"
   ]
 
 let name_tables = [ "body_names"; "jnt_names"; "geom_names"; "site_names" ]
@@ -120,6 +127,14 @@ let fields =
   ; "eq_solref"
   ; "eq_solimp"
   ; "eq_active0"
+  ; "actuator_gear"
+  ; "actuator_gainprm"
+  ; "actuator_biasprm"
+  ; "actuator_dynprm"
+  ; "actuator_ctrlrange"
+  ; "actuator_forcerange"
+  ; "actuator_ctrllimited"
+  ; "actuator_forcelimited"
   ; "gravity"
   ; "timestep"
   ; "integrator"
@@ -168,6 +183,45 @@ let integrator_of_code = function
   | 0 -> Topo.Euler
   | 3 -> Topo.Implicit_fast
   | c -> raise (Invalid_argument (Printf.sprintf "unsupported integrator %d" c))
+
+let trn_type_code = function
+  | Topo.Trn_joint -> 0
+  | Topo.Trn_tendon -> 1
+
+let trn_type_of_code = function
+  | 0 -> Topo.Trn_joint
+  | 1 -> Topo.Trn_tendon
+  | c ->
+    raise (Invalid_argument (Printf.sprintf "unsupported actuator transmission %d" c))
+
+let gain_type_code = function
+  | Topo.Gain_fixed -> 0
+  | Topo.Gain_affine -> 1
+
+let gain_type_of_code = function
+  | 0 -> Topo.Gain_fixed
+  | 1 -> Topo.Gain_affine
+  | c -> raise (Invalid_argument (Printf.sprintf "unsupported actuator gain type %d" c))
+
+let bias_type_code = function
+  | Topo.Bias_none -> 0
+  | Topo.Bias_affine -> 1
+
+let bias_type_of_code = function
+  | 0 -> Topo.Bias_none
+  | 1 -> Topo.Bias_affine
+  | c -> raise (Invalid_argument (Printf.sprintf "unsupported actuator bias type %d" c))
+
+let dyn_type_code = function
+  | Topo.Dyn_none -> 0
+  | Topo.Dyn_integrator -> 1
+  | Topo.Dyn_filter -> 2
+
+let dyn_type_of_code = function
+  | 0 -> Topo.Dyn_none
+  | 1 -> Topo.Dyn_integrator
+  | 2 -> Topo.Dyn_filter
+  | c -> raise (Invalid_argument (Printf.sprintf "unsupported actuator dynamics %d" c))
 
 let eq_type_code = function
   | Topo.Connect -> 0
@@ -280,6 +334,13 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; t.site_bodyid
       ; Array.map t.eq_type ~f:eq_type_code
       ; Array.map t.eq_objtype ~f:eq_objtype_code
+      ; Array.map t.actuator_trntype ~f:trn_type_code
+      ; t.actuator_trnid
+      ; Array.map t.actuator_gaintype ~f:gain_type_code
+      ; Array.map t.actuator_biastype ~f:bias_type_code
+      ; Array.map t.actuator_dyntype ~f:dyn_type_code
+      ; t.actuator_actadr
+      ; Array.map t.actuator_actearly ~f:Bool.to_int
       ]
       ~f:(put_ints buf);
     put_i32 buf (List.length name_tables);
@@ -332,6 +393,14 @@ let to_string (m : Model.host) : (string, string) Result.t =
       ; p.eq_solref
       ; p.eq_solimp
       ; p.eq_active0
+      ; p.actuator_gear
+      ; p.actuator_gainprm
+      ; p.actuator_biasprm
+      ; p.actuator_dynprm
+      ; p.actuator_ctrlrange
+      ; p.actuator_forcerange
+      ; p.actuator_ctrllimited
+      ; p.actuator_forcelimited
       ; p.gravity
       ; p.timestep
       ; p.integrator
@@ -496,6 +565,13 @@ let parse (c : cursor) : Model.host =
     ; contacts_enabled = Int.( land ) disable (1 lsl 4) = 0
     ; jnt_limited = Array.map limited ~f:(fun x -> Stdlib.( > ) x 0.5)
     ; dof_frictionloss = frictionloss
+    ; actuator_trntype = Array.map (i "actuator_trntype") ~f:trn_type_of_code
+    ; actuator_trnid = i "actuator_trnid"
+    ; actuator_gaintype = Array.map (i "actuator_gaintype") ~f:gain_type_of_code
+    ; actuator_biastype = Array.map (i "actuator_biastype") ~f:bias_type_of_code
+    ; actuator_dyntype = Array.map (i "actuator_dyntype") ~f:dyn_type_of_code
+    ; actuator_actadr = i "actuator_actadr"
+    ; actuator_actearly = Array.map (i "actuator_actearly") ~f:(fun x -> Stdlib.( > ) x 0)
     ; eq_type = Array.map (i "eq_type") ~f:eq_type_of_code
     ; eq_objtype = Array.map (i "eq_objtype") ~f:eq_objtype_of_code
     ; body_names = field "body_names" names
@@ -550,6 +626,14 @@ let parse (c : cursor) : Model.host =
     ; eq_solref = tensor "eq_solref"
     ; eq_solimp = tensor "eq_solimp"
     ; eq_active0 = tensor "eq_active0"
+    ; actuator_gear = tensor "actuator_gear"
+    ; actuator_gainprm = tensor "actuator_gainprm"
+    ; actuator_biasprm = tensor "actuator_biasprm"
+    ; actuator_dynprm = tensor "actuator_dynprm"
+    ; actuator_ctrlrange = tensor "actuator_ctrlrange"
+    ; actuator_forcerange = tensor "actuator_forcerange"
+    ; actuator_ctrllimited = tensor "actuator_ctrllimited"
+    ; actuator_forcelimited = tensor "actuator_forcelimited"
     ; gravity = tensor "gravity"
     ; timestep = tensor "timestep"
     ; integrator = tensor "integrator"
