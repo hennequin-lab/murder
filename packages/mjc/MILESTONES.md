@@ -542,13 +542,14 @@ contact counts match at every state, and the free run's shadowing horizon.
 | --- | --- | --- | --- |
 | hopper | match everywhere | 1000/1000 | 980 |
 | walker | match everywhere | 1000/1000 | 507 |
-| humanoid | match everywhere | 986/1000 | 68 |
+| humanoid | match everywhere | 999/1000 | 275 |
 
-The humanoid is short of the gate's 99%, and the reason is named: six states
-where the row solve lands off the two-row limit optimum on poses with
-accelerations above a thousand. A projected-gradient fallback that fixes them
-(99.4%) was measured and left out because it doubles the contact stage's graph;
-it is the first thing to revisit in M7 alongside performance.
+The gate's criterion — 99% of a thousand steps inside 1e-8 — is met by all three.
+The humanoid's single remaining state is a working-set question, not a physics
+one: it needs more active-set rounds than the compile budget affords, because
+the inner loop unrolls into the traced graph. Eight rounds solve it exactly and
+make the compiled-step test take seven minutes; four rounds cost that one state.
+Turning the loop into a scan is what buys both, and it is M7's.
 
 Tendon equality rows landed too (`mjEQ_TENDON`, format 14's `ten_length0`), with
 the corpus model `tendoneq` covering the offset case, the linear coupling and

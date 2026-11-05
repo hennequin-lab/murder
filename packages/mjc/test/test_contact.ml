@@ -401,6 +401,9 @@ let () =
        ; test "rows of a tendon equality" (fun () -> test_rows_of "tendoneq")
        ; test "rows of a tendon limit" (fun () -> test_rows_of "tendonlim")
        ; test "rows of a mixed-condim humanoid" (fun () -> test_rows_of "humanoid")
+       ; test "rows of the hopping and walking models" (fun () ->
+           test_rows_of "hopper";
+           test_rows_of "walker")
        ; test "contact trajectory, frictionless" (fun () -> test_trajectory_of "slide1")
        ; test "contact trajectory, pyramidal cone" (fun () ->
            test_trajectory_of "friction3")
