@@ -161,7 +161,10 @@ let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =
           (Nx.logical_and (Nx.greater_s step 0.0) (Nx.greater (Nx.add !lambda step) r.hi))
           (Nx.logical_and (Nx.less_s step 0.0) (Nx.less (Nx.add !lambda step) r.lo))
       in
-      let cross = Nx.logical_and pushing (Nx.logical_or outside (Nx.equal step zero)) in
+      (* A row whose step is zero is not blocking anything: it is either pinned
+         or it has nothing to move. Letting it into the ratio would divide zero
+         by zero, and a NaN alpha leaves the iterate exactly where it was. *)
+      let cross = Nx.logical_and pushing outside in
       let ratio =
         Nx.where cross (Nx.div (Nx.sub target !lambda) step) (Nx.full_like rows_idx 1.0)
       in
@@ -174,8 +177,6 @@ let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =
       let candidate =
         Nx.where bilateral candidate (Nx.minimum (Nx.maximum candidate r.lo) r.hi)
       in
-      (* A step that does not lower the objective is a degenerate tie; keeping
-         the better side stops the working set from oscillating. *)
       lambda := Nx.where (Nx.less (cost candidate) (cost !lambda)) candidate !lambda;
       let blocked = Nx.logical_and cross (Nx.less_equal ratio (Nx.add_s alpha 1e-12)) in
       free := Nx.logical_and !free (Nx.logical_not blocked)

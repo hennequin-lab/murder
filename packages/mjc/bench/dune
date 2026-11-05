@@ -7,7 +7,10 @@
   spike_param_grad
   spike_solver_iter
   bench_grad
-  spike_root)
+  spike_root
+  g4lib
+  g4
+  cdump)
  (modules
   spike_la
   bench_step
@@ -16,7 +19,10 @@
   spike_param_grad
   spike_solver_iter
   bench_grad
-  spike_root)
+  spike_root
+  g4lib
+  g4
+  cdump)
  (libraries base mjc nx rune unix))
 
 ; The iLQR demo is the one executable that links dilqr, so the rest of the

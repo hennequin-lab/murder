@@ -854,12 +854,91 @@ STAGE_FIELDS = [
 
 TRAJ_STEPS = 10
 
+# Gate G4's criterion is about a thousand steps, not ten: a ten-step fixture
+# says the engine takes the same steps, and a thousand says whether it stays on
+# the trajectory. `--long` records the same run at this length for the physical
+# models, in a separate fixture so the ordinary one stays small.
+G4_STEPS = 1000
+
 
 def control_range(m):
     """A control box per actuator: the declared range, or [-1, 1]."""
     lo = np.where(m.actuator_ctrllimited, m.actuator_ctrlrange[:, 0], -1.0)
     hi = np.where(m.actuator_ctrllimited, m.actuator_ctrlrange[:, 1], 1.0)
     return lo, hi
+
+
+def trajectory(m, d, qpos0, qvel0, crng, lo, hi, steps):
+    """[steps] of [mj_step] from [qpos0], [qvel0], with fresh controls.
+
+    The control of a step is chosen before both halves of it: [mj_step] is a
+    forward pass, which reads [ctrl] for the activation derivative, and an
+    advance, which uses it. Choosing it in between would make the recorded
+    force describe a control the step did not use. [mj_step] also leaves qacc
+    as it was before the step, so the acceleration is recomputed at the state it
+    belongs to.
+    """
+    d.qpos[:] = qpos0
+    d.qvel[:] = qvel0
+    d.act[:] = 0.0
+    if m.nu:
+        d.ctrl[:] = crng.uniform(lo, hi)
+    mujoco.mj_forward(m, d)
+    traj_qpos = [np.array(d.qpos)]
+    traj_qvel = [np.array(d.qvel)]
+    traj_qacc = []
+    traj_act = [np.array(d.act)]
+    traj_ctrl = []
+    traj_nefc = []
+    traj_contacts = []
+    for _ in range(steps):
+        if m.nu:
+            d.ctrl[:] = crng.uniform(lo, hi)
+        traj_ctrl.append(np.array(d.ctrl))
+        mujoco.mj_forward(m, d)
+        traj_qacc.append(np.array(d.qacc))
+        traj_nefc.append(int(d.nefc))
+        traj_contacts.append(contact_state(m, d))
+        mujoco.mj_step(m, d)
+        traj_act.append(np.array(d.act))
+        traj_qpos.append(np.array(d.qpos))
+        traj_qvel.append(np.array(d.qvel))
+    # The last state needs its own forward pass: the loop leaves [qacc] as it
+    # was before the last step, and the row and contact counts of the final
+    # state are otherwise never computed. Aligning the per-state lists with
+    # [traj_qpos] is what lets a diagnostic ask "what did MuJoCo see here?".
+    mujoco.mj_forward(m, d)
+    traj_qacc.append(np.array(d.qacc))
+    traj_nefc.append(int(d.nefc))
+    traj_contacts.append(contact_state(m, d))
+    # The fixture's tensors share a state axis, so the schedule carries the
+    # control that would drive one more step: index k is the control of step k,
+    # and the last is the one no step used.
+    traj_ctrl.append(np.array(d.ctrl) if m.nu else np.zeros(0))
+    # How many contacts and rows each state had, plus the contact pairs and
+    # their distances. Without these a trajectory that diverges says only *that*
+    # it diverged; with them the first state whose contact set was modelled
+    # differently is a lookup. A wide-enough pair table comes from the run
+    # itself, so it is padded to its own maximum.
+    width = max(1, max(len(c["contact_dist"]) for c in traj_contacts))
+    traj_ncon = np.array([len(c["contact_dist"]) for c in traj_contacts], dtype=float)
+    traj_pair = np.zeros((len(traj_contacts), width, 2))
+    traj_dist = np.zeros((len(traj_contacts), width))
+    for i, c in enumerate(traj_contacts):
+        n = len(c["contact_dist"])
+        traj_pair[i, :n] = c["contact_geom"]
+        traj_dist[i, :n] = np.asarray(c["contact_dist"]).reshape(-1)
+    return {
+        "traj_qpos": np.stack(traj_qpos),
+        "traj_qvel": np.stack(traj_qvel),
+        "traj_qacc": np.stack(traj_qacc),
+        "traj_act": np.stack(traj_act),
+        "traj_ctrl": np.stack(traj_ctrl),
+        "traj_nefc": np.array(traj_nefc, dtype=float),
+        "traj_ncon": traj_ncon,
+        "traj_pair": traj_pair,
+        "traj_dist": traj_dist,
+    }
 
 
 def record(name, xml, outdir, rng):
@@ -958,53 +1037,19 @@ def record(name, xml, outdir, rng):
     tensors["integ_qvel"] = tensors["qvel"]
     tensors["integ_qpos_next"] = np.stack(qpos_next)
 
-    # A short trajectory through mj_step, from the first state: this is the
+    # A trajectory through mj_step, from the first state: this is the
     # end-to-end test of forward plus the integrator, and for a stateful
-    # actuator of the activation dynamics as well.
-    d.qpos[:] = states[0][0]
-    d.qvel[:] = qvels[0]
-    d.act[:] = 0.0
-    if m.nu:
-        d.ctrl[:] = crng.uniform(lo, hi)
-    mujoco.mj_forward(m, d)
-    traj_qpos = [np.array(d.qpos)]
-    traj_qvel = [np.array(d.qvel)]
-    traj_qacc = []
-    traj_act = [np.array(d.act)]
-    traj_ctrl = []
-    for _ in range(TRAJ_STEPS):
-        # The control of a step is chosen before both halves of it:
-        # [mj_step] is a forward pass, which reads [ctrl] for the activation
-        # derivative, and an advance, which uses it. Choosing it in between
-        # would make the recorded force describe a control the step did not
-        # use.
-        if m.nu:
-            d.ctrl[:] = crng.uniform(lo, hi)
-        traj_ctrl.append(np.array(d.ctrl))
-        # mj_step leaves qacc as it was before the step, so recompute it at
-        # the state it belongs to.
-        mujoco.mj_forward(m, d)
-        traj_qacc.append(np.array(d.qacc))
-        mujoco.mj_step(m, d)
-        traj_act.append(np.array(d.act))
-        traj_qpos.append(np.array(d.qpos))
-        traj_qvel.append(np.array(d.qvel))
-    traj_qacc.append(np.array(d.qacc))
-    # The fixture's tensors share a state axis, so the schedule carries the
-    # control that would drive one more step: index k is the control of step k,
-    # and the last is the one no step used.
-    traj_ctrl.append(np.array(d.ctrl) if m.nu else np.zeros(0))
-    mjcb.write_fixture(
-        os.path.join(outdir, f"{name}.traj.mjbf"),
-        name,
-        {
-            "traj_qpos": np.stack(traj_qpos),
-            "traj_qvel": np.stack(traj_qvel),
-            "traj_qacc": np.stack(traj_qacc),
-            "traj_act": np.stack(traj_act),
-            "traj_ctrl": np.stack(traj_ctrl),
-        },
-    )
+    # actuator of the activation dynamics as well. Gate G4's criterion is about
+    # a thousand steps rather than ten, so the physical models are recorded
+    # once at each length.
+    traj = trajectory(m, d, states[0][0], qvels[0], crng, lo, hi, TRAJ_STEPS)
+    mjcb.write_fixture(os.path.join(outdir, f"{name}.traj.mjbf"), name, traj)
+    if long and name in PHYSICAL:
+        mjcb.write_fixture(
+            os.path.join(outdir, f"{name}.g4.mjbf"),
+            name,
+            trajectory(m, d, states[0][0], qvels[0], crng, lo, hi, G4_STEPS),
+        )
 
     # The engine's contact budget is static, and a box pair fills a manifold
     # rather than a slot: the contacts this model actually made are the only
@@ -1027,8 +1072,14 @@ def record(name, xml, outdir, rng):
     }
 
 
+long = False
+
+
 def main():
-    outdir = sys.argv[1] if len(sys.argv) > 1 else "test/fixtures"
+    global long
+    argv = [a for a in sys.argv[1:] if a != "--long"]
+    long = "--long" in sys.argv[1:]
+    outdir = argv[0] if argv else "test/fixtures"
     os.makedirs(outdir, exist_ok=True)
     rng = np.random.default_rng(SEED)
     entries = [record(name, xml, outdir, rng) for name, xml in MODELS.items()]

@@ -768,7 +768,12 @@ let friction (m : Model.host) (d : Data.host) : Data.host =
    A model whose geoms ask for a frictional contact is refused here rather than
    solved with rows that do not match MuJoCo's. *)
 
-let contact (m : Model.host) (d : Data.host) : Data.host =
+(* The uniform path: every geom has the same condim, so every contact owns the
+   same number of rows and the row index is a stride. This is the shape the
+   compiled step keeps small — a per-contact prefix sum in the graph is correct
+   and much slower to compile — and it is what every model but the humanoid
+   corpus exercises. *)
+let contact_uniform (m : Model.host) (d : Data.host) : Data.host =
   let t = m.topo
   and p = m.params in
   (* A contact contributes one row when it is frictionless and 2*(dim-1) rows
@@ -873,3 +878,139 @@ let contact (m : Model.host) (d : Data.host) : Data.host =
   { !out with
     nefc = Nx.add d.nefc (Nx.mul d.ncon (Nx.scalar Nx.int32 (Int32.of_int size)))
   }
+
+(* The mixed path: a contact's row count follows its own condim. MuJoCo's rule
+   is one row for a frictionless contact and [2*(dim-1)] for a pyramidal one, so
+   a model that mixes condim-1 and condim-3 geoms — a humanoid against its
+   floor — needs a running sum over the blocks, not a stride. *)
+let contact_mixed (m : Model.host) (d : Data.host) : Data.host =
+  let t = m.topo
+  and p = m.params in
+  (* A contact contributes one row when it is frictionless and [2*(dim-1)] rows
+     as a pyramidal cone, one pair of opposing edges per friction axis. [dim] is
+     the *contact's* own dimensionality — the larger of its two geoms' condims —
+     not the model's: a humanoid has condim-1 geoms and condim-3 ones at once,
+     and the row count has to follow MuJoCo's. So the block of rows a contact
+     owns is [needed c] long, and a row's index is the running sum of the blocks
+     before it. Both are tensors, because which contacts exist is data.
+     Requiring both edges of a pair to carry a non-negative force is what
+     produces the cone, so the solver needs nothing new. *)
+  let max_dim = Array.fold t.geom_condim ~init:1 ~f:Int.max in
+  (* The cone is a model option, and v1 has one of the two: a pyramidal cone is
+     a pair of one-sided rows per friction axis, which is what a box-constrained
+     solver can express exactly. An elliptic cone is a quadratic row constraint,
+     and running a model that asked for it as if it had the other would be a
+     different engine with the same name. *)
+  if Float.( > ) (Nx.item [] m.params.cone) 0.5
+  then
+    raise
+      (Invalid_argument
+         "contact friction: an elliptic friction cone (cone=\"elliptic\") is not \
+          implemented; v1 solves a pyramidal cone");
+  if 2 * (max_dim - 1) > 4
+  then raise (Invalid_argument "contact friction (condim > 3) is not implemented yet");
+  let nb = t.nconmax in
+  let start = Nx.cast Nx.float64 d.nefc in
+  let slots = Nx.arange_f Nx.float64 0.0 (Float.of_int nb) 1.0 in
+  let live = Nx.less slots (Nx.cast Nx.float64 d.ncon) in
+  let far = Nx.full_like slots (Float.of_int t.nefcmax) in
+  let dims = Nx.cast Nx.float64 d.contact_dim in
+  let frictionless = Nx.equal_s dims 1.0 in
+  let needed =
+    Nx.where
+      live
+      (Nx.where
+         frictionless
+         (Nx.ones_like dims)
+         (Nx.maximum (Nx.mul_s (Nx.sub_s dims 1.0) 2.0) (Nx.zeros_like dims)))
+      (Nx.zeros_like dims)
+  in
+  (* The running sum, as a matrix product with the strictly lower triangle: the
+     per-slot counts times an [nb;nb] mask. *)
+  let lower =
+    Nx.cast
+      Nx.float64
+      (Nx.greater (Nx.reshape [| nb; 1 |] slots) (Nx.reshape [| 1; nb |] slots))
+  in
+  let offset =
+    Nx.add start (Nx.reshape [| nb |] (Nx.matmul lower (Nx.reshape [| nb; 1 |] needed)))
+  in
+  let row_index k exists =
+    Nx.cast
+      Nx.int64
+      (Nx.where exists (Nx.add offset (Nx.scalar Nx.float64 (Float.of_int k))) far)
+  in
+  let put idx v x = Nx.scatter ~combine:Set ~axis:0 idx v x in
+  let put_cols idx v x =
+    let cols = (Nx.shape v).(1) in
+    let idx_rows = Nx.broadcast_to [| nb; cols |] (Nx.reshape [| nb; 1 |] idx) in
+    Nx.scatter ~combine:Set ~axis:0 idx_rows v x
+  in
+  let block k = Nx.slice [ A; R (k * t.nv, (k + 1) * t.nv) ] d.contact_jac in
+  let normal_jac = block 0 in
+  let mu = Nx.slice [ A; I 0 ] d.contact_friction in
+  let weight side column =
+    let ids = Nx.cast Nx.int64 (Nx.slice [ A; I side ] d.contact_body) in
+    Nx.slice [ A; I column ] (Nx.take ~axis:0 ids p.body_invweight0)
+  in
+  let tran_weight = Nx.add (weight 0 0) (weight 1 0) in
+  let ids = Nx.init Nx.int32 [| nb |] (fun i -> Int32.of_int i.(0)) in
+  let zero = Nx.zeros Nx.float64 [| nb |] in
+  let base = keep_before m d start in
+  let write (out : Data.host ref) idx kind diagA jac =
+    { !out with
+      efc_type = put idx kind !out.efc_type
+    ; efc_id = put idx ids !out.efc_id
+    ; efc_pos = put idx d.contact_dist !out.efc_pos
+    ; efc_margin = put idx d.contact_includemargin !out.efc_margin
+    ; efc_posnorm = put idx d.contact_dist !out.efc_posnorm
+    ; efc_frictionloss = put idx zero !out.efc_frictionloss
+    ; efc_diagA = put idx diagA !out.efc_diagA
+    ; efc_solref = put_cols idx d.contact_solref !out.efc_solref
+    ; efc_solimp = put_cols idx d.contact_solimp !out.efc_solimp
+    ; efc_jdotv = put idx zero !out.efc_jdotv
+    ; efc_J = put_cols idx jac !out.efc_J
+    }
+  in
+  let mu2 = Nx.mul mu mu in
+  (* MuJoCo's diagonal for a pyramid edge is not the row's own compliance:
+     measured against the C engine over six friction coefficients it is
+     [tran * 2 mu^2 (1 + mu^2)], where [tran] is the two bodies' summed
+     translational inverse weight and [(1+mu^2)] is the edge row's squared
+     norm. The source's per-axis expression could not be reconciled with that
+     result, so the port reproduces the result. *)
+  let pyramid_diagA =
+    Nx.mul tran_weight (Nx.mul (Nx.mul_s mu2 2.0) (Nx.add (Nx.scalar Nx.float64 1.0) mu2))
+  in
+  let out = ref base in
+  (* One host iteration per possible slot: a tangent block is a slice, so the
+     friction axis the slot belongs to has to be known here. Whether the row
+     exists does not, and stays a tensor mask. *)
+  let max_slots = if max_dim <= 1 then 1 else 2 * (max_dim - 1) in
+  for k = 0 to max_slots - 1 do
+    let axis = (k / 2) + 1 in
+    let sign = if Int.equal (Int.rem k 2) 0 then 1.0 else -1.0 in
+    (* Slot [k] exists for a contact that owns more than [k] rows. A single-row
+       contact owns one, so slot zero exists and slot one does not. *)
+    let exists = Nx.greater needed (Nx.full_like needed (Float.of_int k)) in
+    let scale = Nx.reshape [| nb; 1 |] (Nx.mul_s mu sign) in
+    let jac_pyramid = Nx.add normal_jac (Nx.mul (block axis) scale) in
+    let as_normal = if Int.equal k 0 then frictionless else Nx.zeros_like frictionless in
+    let jac = Nx.where (Nx.reshape [| nb; 1 |] as_normal) normal_jac jac_pyramid in
+    let diagA = Nx.where as_normal tran_weight pyramid_diagA in
+    let kind =
+      Nx.where
+        as_normal
+        (Nx.full Nx.int32 [| nb |] (Int32.of_int type_contact_frictionless))
+        (Nx.full Nx.int32 [| nb |] (Int32.of_int type_contact_pyramidal))
+    in
+    out := write out (row_index k exists) kind diagA jac
+  done;
+  { !out with nefc = Nx.add d.nefc (Nx.cast Nx.int32 (Nx.sum needed)) }
+
+let all_same_condim t =
+  let first = t.geom_condim.(0) in
+  Array.for_all t.geom_condim ~f:(Int.equal first)
+
+let contact (m : Model.host) (d : Data.host) : Data.host =
+  if all_same_condim m.topo then contact_uniform m d else contact_mixed m d
