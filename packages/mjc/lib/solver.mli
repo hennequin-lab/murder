@@ -42,8 +42,9 @@ type linear =
     small row set and check the rule against finite differences of a solve it
     knows the answer to. *)
 
-(** The type for row arrays on the host at [float64]. *)
-type f = Nx.host Nx.float64_t
+(** The type for row arrays at [float64] on the device ['d] a row set lives
+    on. *)
+type 'd f = 'd Nx.float64_t
 
 (** The type for a row set: the quadratic, the box, and the warm start.
     Polymorphic in its arrays, as {!Model.Params} is, so the same description
@@ -58,12 +59,12 @@ type ('a, 'd) rows_ =
   ; lambda0 : 'a (** [[nb]], the warm start. *)
   }
 
-(** The type for a float64 row set on the host. *)
-type rows = (Nx.host Nx.float64_t, Nx.host) rows_
+(** The type for a float64 row set on the device ['d]. *)
+type 'd rows = ('d Nx.float64_t, 'd) rows_
 
 (** [rows_ptree] describes a row set to the transformations: its arrays are
     leaves at [float64] on the host. *)
-val rows_ptree : (rows, Nx.host) Nx.Ptree.t
+val rows_ptree : unit -> ('d rows, 'd) Nx.Ptree.t
 
 (** [solve_rows ?implicit ~linear ~iters ~boxed r] is the minimiser over [r]'s
     box.
@@ -74,7 +75,13 @@ val rows_ptree : (rows, Nx.host) Nx.Ptree.t
     the free rows, zero on the pinned ones. [false] differentiates through the
     iteration instead, which is what the cost sheet measures the rule against
     and what a caller must not use to learn anything but cost. *)
-val solve_rows : ?implicit:bool -> linear:linear -> iters:int -> boxed:bool -> rows -> f
+val solve_rows
+  :  ?implicit:bool
+  -> linear:linear
+  -> iters:int
+  -> boxed:bool
+  -> 'd rows
+  -> 'd f
 
 (** {1:solve Solve} *)
 
@@ -97,6 +104,6 @@ val forward
   :  ?linear:linear
   -> ?implicit:bool
   -> ?iters:int
-  -> Model.host
-  -> Data.host
-  -> Data.host
+  -> 'a Model.model
+  -> 'a Data.data
+  -> 'a Data.data

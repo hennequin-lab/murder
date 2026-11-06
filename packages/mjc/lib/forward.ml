@@ -3,7 +3,15 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-let forward ?linear ?iters ?dt (m : Model.host) (d : Data.host) : Data.host =
+let forward
+      (type d)
+      ?linear
+      ?iters
+      ?dt
+      (m : (d Nx.float64_t, d) Model.t)
+      (d : d Data.data)
+  : d Data.data
+  =
   let d = Kinematics.forward m d in
   let d = Mass.forward m d in
   (* The contact row's Jacobian is a dof-chain walk, so contact detection needs

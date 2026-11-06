@@ -29,7 +29,14 @@ let test_limits () =
       (* MuJoCo's row order: equality, friction, limit. The model has no
          equalities, so the rows here are the friction rows and then the
          limits. *)
-      let d = C.limits m (C.friction m (C.equality m (data_with_qpos m (row qpos s)))) in
+      let d =
+        C.limits
+          m
+          (C.friction
+             (C.config m)
+             m
+             (C.equality (C.config m) m (data_with_qpos m (row qpos s))))
+      in
       let nefc = int_of_t d.nefc in
       let expected = Int.of_float (row (tensor f "nefc") s).(0) in
       equal ~msg:(Printf.sprintf "state %d nefc" s) int expected nefc;

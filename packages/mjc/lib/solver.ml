@@ -51,7 +51,7 @@ let cg ~iters a b =
    {!solve_rows} attaches an implicit rule to it, and the rule's tangents are a
    value of the same shape. *)
 
-type f = Nx.host Nx.float64_t
+type 'd f = 'd Nx.float64_t
 
 (* Polymorphic in its arrays, as the model's parameter record is, so the ptree
    derivation has a dtype to be polymorphic over. *)
@@ -66,7 +66,7 @@ type ('a, 'd) rows_ =
   }
 [@@deriving ptree]
 
-type rows = (Nx.host Nx.float64_t, Nx.host) rows_
+type 'd rows = ('d Nx.float64_t, 'd) rows_
 
 (* The derived walk, instantiated at the model's dtype and place, as
    [Model.ptree] is. *)
@@ -76,14 +76,17 @@ module Rows_desc = struct
   let walk = walk_rows_
 end
 
-let rows_ptree : (rows, Nx.host) Nx.Ptree.t = Nx.Ptree.instantiate (module Rows_desc)
+(* A function, not a value: a description is polymorphic in the device only
+   until the value restriction fixes it, and a compiled program may run on any
+   device. Each call instantiates it afresh at the brand in use. *)
+let rows_ptree () = Nx.Ptree.instantiate (module Rows_desc)
 
 (* The active set at a solution: a row is free when it is strictly inside its
    box, and an equality row is always free. This is the KKT active set, and it
    is what the implicit derivative freezes — not the iteration's last mask,
    which at a converged solve is the same thing, and at an unconverged one is
    the very thing that would make the derivative depend on the budget. *)
-let free_at (r : rows) (lambda : f) =
+let free_at (r : 'a rows) (lambda : 'a f) =
   let big = 1e300 in
   let one = Nx.ones_like lambda in
   let at_hi = Nx.greater_equal lambda (Nx.sub r.hi (Nx.mul_s (Nx.abs r.hi) 1e-12)) in
@@ -95,7 +98,7 @@ let free_at (r : rows) (lambda : f) =
 
 (* The matrix the free block solves, kept square and positive definite by an
    identity block on the pinned rows. *)
-let system (r : rows) (free : f) =
+let system (r : 'a rows) (free : 'a f) =
   let nb = (Nx.shape r.a).(0) in
   let outer = Nx.matmul (Nx.reshape [| nb; 1 |] free) (Nx.reshape [| 1; nb |] free) in
   Nx.add (Nx.mul r.a outer) (Nx.diag (Nx.sub (Nx.ones_like free) free))
@@ -121,9 +124,13 @@ let system (r : rows) (free : f) =
 
 let inner_rounds = 8
 
-let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =
+(** A row set and its brand, named so that the scan's traced body can annotate
+    the values it carries: an annotation inside the body would otherwise have to
+    name a concrete device. *)
+let iterate (type d) ~(linear : linear) ~iters ~boxed (r : d rows) : d f =
   let nb = (Nx.shape r.a).(0) in
-  let rows_idx = Nx.arange_f Nx.float64 0.0 (Float.of_int nb) 1.0 in
+  let at = Nx.placement r.a in
+  let rows_idx = Nx.arange_f_at at Nx.float64 0.0 (Float.of_int nb) 1.0 in
   let zero = Nx.zeros_like rows_idx in
   let mask = Nx.greater_s r.mask 0.5 in
   let bilateral = Nx.greater_s r.bilateral 0.5 in
@@ -153,19 +160,21 @@ let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =
   (* The scan folds over the rows of this array; each row is the phase of one
      round, as a [1]-shaped value. *)
   let phases =
-    Nx.create
-      Nx.float64
-      [| length; 1 |]
-      (Array.init length ~f:(fun i ->
-         if Int.equal i 0
-         then 0.0
-         else if Int.equal (Int.rem i inner_rounds) 0
-         then 1.0
-         else 2.0))
+    Nx.place
+      at
+      (Nx.create
+         Nx.float64
+         [| length; 1 |]
+         (Array.init length ~f:(fun i ->
+            if Int.equal i 0
+            then 0.0
+            else if Int.equal (Int.rem i inner_rounds) 0
+            then 1.0
+            else 2.0)))
   in
   let mask_f = Nx.where mask (Nx.ones_like rows_idx) zero in
   let cost v = Nx.add (Nx.mul_s (Nx.dot v (Nx.matmul r.a v)) 0.5) (Nx.dot r.b v) in
-  let round (lambda, free) (phase : Nx.host Nx.float64_t) : _ * _ =
+  let round (lambda, free) (phase : d Nx.float64_t) : _ * _ =
     (* The working set this round starts from. *)
     let grad = Nx.add (Nx.matmul r.a lambda) r.b in
     let at_hi = Nx.greater_equal lambda (Nx.sub r.hi (slack 1.0 r.hi)) in
@@ -258,14 +267,14 @@ let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =
    the implicit function theorem at the KKT point, not the derivative of the
    iteration. That is what makes the gradient independent of how many
    iterations the caller asked for. *)
-let implicit_tangent (r : rows) ~lambda (d : rows) : f =
+let implicit_tangent (r : 'a rows) ~lambda (d : 'a rows) : 'a f =
   let free = free_at r lambda in
   let am = system r free in
   let solve v = Mass.solve (Mass.factor am) v in
   let rhs = Nx.neg (Nx.add (Nx.matmul d.a lambda) d.b) in
   Nx.where (Nx.greater_s free 0.5) (solve rhs) (Nx.zeros_like lambda)
 
-let implicit_transpose (r : rows) ~lambda (w : f) : rows =
+let implicit_transpose (r : 'a rows) ~lambda (w : 'a f) : 'a rows =
   let free = free_at r lambda in
   let am = system r free in
   (* [A] is symmetric, so the transpose of the free block is its own solve. *)
@@ -288,7 +297,9 @@ let implicit_transpose (r : rows) ~lambda (w : f) : rows =
 (* [solve_rows ?implicit ~linear ~iters ~boxed r] is the minimiser. Its
    derivative is the implicit rule; [~implicit:false] differentiates through the
    iteration instead, which is what the cost sheet measures the rule against. *)
-let solve_rows ?(implicit = true) ~(linear : linear) ~iters ~boxed (r : rows) : f =
+let solve_rows (type d) ?(implicit = true) ~(linear : linear) ~iters ~boxed (r : d rows)
+  : d f
+  =
   if not implicit
   then iterate ~linear ~iters ~boxed r
   else
@@ -298,14 +309,14 @@ let solve_rows ?(implicit = true) ~(linear : linear) ~iters ~boxed (r : rows) : 
        closed over would be a value the differentiation tracks, used by a rule
        that does not know it. *)
     Rune.custom_jvp
-      rows_ptree
+      (rows_ptree ())
       Nx.Ptree.tensor
       (fun r ->
          let lambda = iterate ~linear ~iters ~boxed r in
          ( lambda
          , fun d ->
              Rune.custom_transpose
-               rows_ptree
+               (rows_ptree ())
                Nx.Ptree.tensor
                (fun d -> implicit_tangent r ~lambda d)
                ~transpose:(fun w -> implicit_transpose r ~lambda w)
@@ -321,14 +332,15 @@ let forward
       ?(linear = `Cholesky)
       ?(implicit = true)
       ?iters
-      (m : Model.host)
-      (d : Data.host)
-  : Data.host
+      (m : 'a Model.model)
+      (d : 'a Data.data)
+  : 'a Data.data
   =
   let t = m.topo
   and p = m.params in
   let nb = t.nefcmax in
-  let rows_idx = Nx.arange_f Nx.float64 0.0 (Float.of_int nb) 1.0 in
+  let at = Nx.placement d.efc_J in
+  let rows_idx = Nx.arange_f_at at Nx.float64 0.0 (Float.of_int nb) 1.0 in
   let mask = Nx.less rows_idx (Nx.cast Nx.float64 d.nefc) in
   let zero = Nx.zeros_like rows_idx in
   let select x = Nx.where mask x zero in
@@ -341,7 +353,9 @@ let forward
   let a = Nx.add a0 (Nx.diag weight) in
   (* b = J qacc_smooth - aref, zero on the rows that do not exist. *)
   let b = select (Nx.sub (Nx.matmul d.efc_J d.qacc) d.efc_aref) in
-  let of_type k = Nx.equal d.efc_type (Nx.scalar Nx.int32 (Stdlib.Int32.of_int k)) in
+  let of_type k =
+    Nx.equal d.efc_type (Nx.scalar_at at Nx.int32 (Stdlib.Int32.of_int k))
+  in
   let bilateral = of_type Constraint.type_equality in
   let friction =
     Nx.logical_or

@@ -372,7 +372,7 @@ let qp_rows ?(b = [| 1.0; -2.0; -3.5 |]) () =
   ; lambda0 = Nx.create f64 [| 3 |] [| 0.0; 0.0; 0.0 |]
   }
 
-let solve_qp ?(iters = 8) (r : Mjc.Solver.rows) =
+let solve_qp ?(iters = 8) (r : Nx.host Mjc.Solver.rows) =
   Mjc.Solver.solve_rows ~linear:`Cholesky ~iters ~boxed:false r
 
 (* The minimiser of the quadratic, from the solve itself at a generous budget:
@@ -397,8 +397,8 @@ let test_qp_solution () =
    the implicit rule in the way. *)
 let test_qp_gradient () =
   let r = qp_rows () in
-  let f (r : Mjc.Solver.rows) = Nx.sum (solve_qp ~iters:20 r) in
-  let _, pullback = Rune.vjp Mjc.Solver.rows_ptree Nx.Ptree.tensor f r in
+  let f (r : Nx.host Mjc.Solver.rows) = Nx.sum (solve_qp ~iters:20 r) in
+  let _, pullback = Rune.vjp (Mjc.Solver.rows_ptree ()) Nx.Ptree.tensor f r in
   let grad = pullback (Nx.scalar f64 1.0) in
   let base = Nx.to_array r.b in
   Array.iteri (Nx.to_array grad.Mjc.Solver.b) ~f:(fun i g ->
@@ -429,7 +429,7 @@ let test_qp_gradient () =
 let test_qp_transpose () =
   let r = qp_rows () in
   let f = solve_qp ~iters:20 in
-  let dot (x : Mjc.Solver.rows) (y : Mjc.Solver.rows) =
+  let dot (x : Nx.host Mjc.Solver.rows) (y : Nx.host Mjc.Solver.rows) =
     Nx.add
       (Nx.sum (Nx.mul x.Mjc.Solver.a y.Mjc.Solver.a))
       (Nx.add
@@ -446,8 +446,8 @@ let test_qp_transpose () =
     ; lo = Nx.zeros f64 [| 3 |]
     }
   and w = Nx.create f64 [| 3 |] [| 1.3; -0.9; 2.2 |] in
-  let _, jv = Rune.jvp Mjc.Solver.rows_ptree Nx.Ptree.tensor f r v in
-  let _, pullback = Rune.vjp Mjc.Solver.rows_ptree Nx.Ptree.tensor f r in
+  let _, jv = Rune.jvp (Mjc.Solver.rows_ptree ()) Nx.Ptree.tensor f r v in
+  let _, pullback = Rune.vjp (Mjc.Solver.rows_ptree ()) Nx.Ptree.tensor f r in
   let jtw = pullback w in
   let lhs = Nx.dot w jv
   and rhs = dot jtw v in

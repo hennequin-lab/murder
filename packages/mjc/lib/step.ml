@@ -54,7 +54,7 @@ type config =
   ; actuator_damped : bool
   }
 
-let config (m : 'a Model.model) : config =
+let config (m : Nx.host Model.model) : config =
   let p = m.params in
   let dt = Nx.item [] p.timestep in
   let damping = Nx.to_array p.dof_damping in
@@ -110,14 +110,15 @@ let step_with (c : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.dat
 
 (* [advance m d] advances [d] from a forward pass that has already run, which is
    what a caller comparing accelerations before and positions after wants. *)
-let advance m d =
+let advance (m : Nx.host Model.model) (d : Nx.host Data.data) =
   let c = config m in
   let h = if c.solve then step_matrix c m d else d.mass_matrix in
   advance_with ~topo:m.topo ~dt:c.dt ~solve:c.solve ~h d
 
 (* The eager step: the structural decisions are read here, per call, which is
    fine because an eager caller's parameters are values. *)
-let step m d = advance m (Forward.forward m d)
+let step (m : Nx.host Model.model) (d : Nx.host Data.data) =
+  advance m (Forward.forward m d)
 
 type t =
   { dt : float
