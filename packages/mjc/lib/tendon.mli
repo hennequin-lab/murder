@@ -30,4 +30,4 @@ type 'a t =
     wrap, and a tendon whose range is a limit row (that arrives with the
     tendon constraint, and until it does a model that asks for it must not be
     run as if it had no limit). *)
-val forward : Nx.host Model.model -> Nx.host Data.data -> Nx.host t
+val forward : 'a Model.model -> 'a Data.data -> 'a t

@@ -30,7 +30,7 @@ type 'a t =
     Raises [Invalid_argument] for a transmission v1 does not have: a tendon
     (the moment needs [ten_J], which arrives with {!Tendon}) and anything the
     loader did not already reject. *)
-val forward : Nx.host Model.model -> Nx.host Data.data -> Nx.host t
+val forward : 'a Model.model -> 'a Data.data -> 'a t
 
 (** [pretty t] is the transmission, for a log line or a test failure. *)
 val pp : Stdlib.Format.formatter -> 'a t -> unit

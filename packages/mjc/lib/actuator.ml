@@ -14,7 +14,9 @@ let column (x : 'a Nx.float64_t) j = Nx.slice [ A; I j ] x
 let flag (x : 'a Nx.float64_t) =
   Nx.where (Nx.greater_s x 0.5) (Nx.ones_like x) (Nx.zeros_like x)
 
-let const (m : 'a Model.model) f = Nx.init f64 [| m.topo.nu |] (fun i -> f i.(0))
+let const at (m : 'a Model.model) f =
+  Nx.place at (Nx.init f64 [| m.topo.nu |] (fun i -> f i.(0)))
+
 let clamp x lo hi = Nx.minimum (Nx.maximum x lo) hi
 
 (* [select mask a b] is [a] where the mask is one and [b] elsewhere. *)
@@ -57,18 +59,19 @@ let check (m : 'a Model.model) =
    recorded, or zero when it has none. A stateful actuator is identified by a
    non-negative address, which is the same thing MuJoCo's [actnum > 0] says. *)
 let activation (m : 'a Model.model) (d : 'a Data.data) =
+  let at = Nx.placement d.act in
   let t = m.topo in
   if Int.equal t.na 0
-  then Nx.zeros f64 [| t.nu |]
+  then Nx.zeros_at at f64 [| t.nu |]
   else (
     let idx = Array.init t.nu ~f:(fun i -> max 0 t.actuator_actadr.(i)) in
     let values =
       Nx.take
         ~axis:0
-        (Nx.init Nx.int64 [| t.nu |] (fun i -> Int64.of_int idx.(i.(0))))
+        (Nx.place at (Nx.init Nx.int64 [| t.nu |] (fun i -> Int64.of_int idx.(i.(0)))))
         d.act
     in
-    let has = const m (fun i -> if t.actuator_actadr.(i) >= 0 then 1. else 0.) in
+    let has = const at m (fun i -> if t.actuator_actadr.(i) >= 0 then 1. else 0.) in
     Nx.mul values has)
 
 type 'a parts =
@@ -98,6 +101,7 @@ let affine (s : 'a parts) prm =
     (Nx.add (Nx.mul (column prm 1) s.length) (Nx.mul (column prm 2) s.velocity))
 
 let force (m : 'a Model.model) (s : 'a parts) =
+  let at = Nx.placement s.ctrl in
   let p = m.params in
   let g =
     let k0 = column p.actuator_gainprm 0 in
@@ -108,7 +112,7 @@ let force (m : 'a Model.model) (s : 'a parts) =
     then k0
     else (
       let mask =
-        const m (fun i ->
+        const at m (fun i ->
           match m.topo.actuator_gaintype.(i) with
           | Topo.Gain_affine -> 1.
           | Topo.Gain_fixed -> 0.)
@@ -120,22 +124,24 @@ let force (m : 'a Model.model) (s : 'a parts) =
       Array.for_all m.topo.actuator_biastype ~f:(function
         | Topo.Bias_none -> true
         | Topo.Bias_affine -> false)
-    then Nx.zeros f64 [| m.topo.nu |]
+    then Nx.zeros_at at f64 [| m.topo.nu |]
     else (
       let mask =
-        const m (fun i ->
+        const at m (fun i ->
           match m.topo.actuator_biastype.(i) with
           | Topo.Bias_affine -> 1.
           | Topo.Bias_none -> 0.)
       in
-      select mask (affine s p.actuator_biasprm) (Nx.zeros f64 [| m.topo.nu |]))
+      select mask (affine s p.actuator_biasprm) (Nx.zeros_at at f64 [| m.topo.nu |]))
   in
   let stateful = Array.exists m.topo.actuator_actadr ~f:(fun a -> a >= 0) in
   let input =
     if not stateful
     then s.ctrl
     else (
-      let mask = const m (fun i -> if m.topo.actuator_actadr.(i) >= 0 then 1. else 0.) in
+      let mask =
+        const at m (fun i -> if m.topo.actuator_actadr.(i) >= 0 then 1. else 0.)
+      in
       select mask s.act s.ctrl)
   in
   let raw = Nx.add (Nx.mul g input) b in
@@ -145,6 +151,7 @@ let force (m : 'a Model.model) (s : 'a parts) =
     raw
 
 let act_dot (m : 'a Model.model) (d : 'a Data.data) (s : 'a parts) =
+  let at = Nx.placement s.ctrl in
   let t = m.topo in
   if Int.equal t.na 0
   then d.act_dot
@@ -152,12 +159,12 @@ let act_dot (m : 'a Model.model) (d : 'a Data.data) (s : 'a parts) =
     let tau = Nx.maximum_s (column m.params.actuator_dynprm 0) minval in
     let filtered = Nx.div (Nx.sub s.ctrl s.act) tau in
     let integrator =
-      const m (fun i ->
+      const at m (fun i ->
         match t.actuator_dyntype.(i) with
         | Topo.Dyn_integrator -> 1.
         | Topo.Dyn_none | Topo.Dyn_filter -> 0.)
     and filter =
-      const m (fun i ->
+      const at m (fun i ->
         match t.actuator_dyntype.(i) with
         | Topo.Dyn_filter -> 1.
         | Topo.Dyn_none | Topo.Dyn_integrator -> 0.)
@@ -166,13 +173,20 @@ let act_dot (m : 'a Model.model) (d : 'a Data.data) (s : 'a parts) =
     (* a stateless actuator has no slot: it writes to a sink past the end, or
        the last actuator's zero would overwrite a stateful one's derivative *)
     let idx =
-      Nx.init Nx.int64 [| t.nu |] (fun i ->
-        let a = t.actuator_actadr.(i.(0)) in
-        Int64.of_int (if a >= 0 then a else t.na))
+      Nx.place
+        at
+        (Nx.init Nx.int64 [| t.nu |] (fun i ->
+           let a = t.actuator_actadr.(i.(0)) in
+           Int64.of_int (if a >= 0 then a else t.na)))
     in
     Nx.slice
       [ R (0, t.na) ]
-      (Nx.scatter ~combine:Set ~axis:0 idx per_actuator (Nx.zeros f64 [| t.na + 1 |])))
+      (Nx.scatter
+         ~combine:Set
+         ~axis:0
+         idx
+         per_actuator
+         (Nx.zeros_at at f64 [| t.na + 1 |])))
 
 (* The velocity derivative of each actuator's force:
    [biasprm.[2] + gainprm.[2] * input], MuJoCo's [mjd_actuatorVelDeriv] for the
@@ -184,6 +198,7 @@ let act_dot (m : 'a Model.model) (d : 'a Data.data) (s : 'a parts) =
    tensor, which the differentiable entry point cannot do inside its program;
    so it is an argument, defaulting to the read. *)
 let damping ?force_limited (m : 'a Model.model) (d : 'a Data.data) =
+  let at = Nx.placement d.qvel in
   let tr = Transmission.forward m d in
   let s = parts m d tr in
   let p = m.params in
@@ -192,10 +207,10 @@ let damping ?force_limited (m : 'a Model.model) (d : 'a Data.data) =
       Array.for_all m.topo.actuator_biastype ~f:(function
         | Topo.Bias_none -> true
         | Topo.Bias_affine -> false)
-    then Nx.zeros f64 [| m.topo.nu |]
+    then Nx.zeros_at at f64 [| m.topo.nu |]
     else (
       let mask =
-        const m (fun i ->
+        const at m (fun i ->
           match m.topo.actuator_biastype.(i) with
           | Topo.Bias_affine -> 1.
           | Topo.Bias_none -> 0.)
@@ -207,10 +222,10 @@ let damping ?force_limited (m : 'a Model.model) (d : 'a Data.data) =
       Array.for_all m.topo.actuator_gaintype ~f:(function
         | Topo.Gain_fixed -> true
         | Topo.Gain_affine -> false)
-    then Nx.zeros f64 [| m.topo.nu |]
+    then Nx.zeros_at at f64 [| m.topo.nu |]
     else (
       let mask =
-        const m (fun i ->
+        const at m (fun i ->
           match m.topo.actuator_gaintype.(i) with
           | Topo.Gain_affine -> 1.
           | Topo.Gain_fixed -> 0.)
@@ -220,7 +235,7 @@ let damping ?force_limited (m : 'a Model.model) (d : 'a Data.data) =
         then s.ctrl
         else (
           let m_act =
-            const m (fun i -> if m.topo.actuator_actadr.(i) >= 0 then 1. else 0.)
+            const at m (fun i -> if m.topo.actuator_actadr.(i) >= 0 then 1. else 0.)
           in
           select m_act s.act s.ctrl)
       in
@@ -264,7 +279,7 @@ let qfrc (m : 'a Model.model) (d : 'a Data.data) =
   let tr = Transmission.forward m d in
   qfrc_of m tr.Transmission.moment (force m (parts m d tr))
 
-let forward (m : Nx.host Model.model) (d : Nx.host Data.data) =
+let forward (m : 'a Model.model) (d : 'a Data.data) =
   check m;
   let tr = Transmission.forward m d in
   let s = parts m d tr in

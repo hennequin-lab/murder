@@ -15,7 +15,12 @@ type 'a t =
    graph. *)
 let take (x : 'a Nx.float64_t) (idx : int array) =
   let n = Array.length idx in
-  Nx.take ~axis:0 (Nx.init Nx.int64 [| n |] (fun i -> Int64.of_int idx.(i.(0)))) x
+  Nx.take
+    ~axis:0
+    (Nx.place
+       (Nx.placement x)
+       (Nx.init Nx.int64 [| n |] (fun i -> Int64.of_int idx.(i.(0)))))
+    x
 
 let zeros at n = Nx.zeros_at at Nx.float64 [| n |]
 let zeros2 at n k = Nx.zeros_at at Nx.float64 [| n; k |]
@@ -29,12 +34,14 @@ let rows_for ~at ~nu ~nv (idx : int array) (rows : 'a Nx.float64_t) =
   then zeros2 at nu nv
   else (
     let elem =
-      Nx.init
-        Nx.int64
-        [| k * nv |]
-        (fun i ->
-           let row = i.(0) / nv in
-           Int64.of_int ((idx.(row) * nv) + (i.(0) - (nv * row))))
+      Nx.place
+        at
+        (Nx.init
+           Nx.int64
+           [| k * nv |]
+           (fun i ->
+              let row = i.(0) / nv in
+              Int64.of_int ((idx.(row) * nv) + (i.(0) - (nv * row)))))
     in
     Nx.reshape
       [| nu; nv |]
@@ -45,7 +52,7 @@ let rows_for ~at ~nu ~nv (idx : int array) (rows : 'a Nx.float64_t) =
          (Nx.reshape [| k * nv |] rows)
          (Nx.zeros_at at Nx.float64 [| nu * nv |])))
 
-let forward (m : Nx.host Model.model) (d : Nx.host Data.data) =
+let forward (m : 'a Model.model) (d : 'a Data.data) =
   let at = Nx.placement d.qpos in
   let t = m.topo in
   let nu = t.nu
@@ -89,10 +96,12 @@ let forward (m : Nx.host Model.model) (d : Nx.host Data.data) =
       else (
         (* one nonzero per row, at the dof the transmission reaches *)
         let lin =
-          Nx.init
-            Nx.int64
-            [| Array.length joint_ids |]
-            (fun i -> Int64.of_int ((joint_ids.(i.(0)) * nv) + joint_of.(i.(0))))
+          Nx.place
+            at
+            (Nx.init
+               Nx.int64
+               [| Array.length joint_ids |]
+               (fun i -> Int64.of_int ((joint_ids.(i.(0)) * nv) + joint_of.(i.(0)))))
         in
         Nx.reshape
           [| nu; nv |]
@@ -133,10 +142,12 @@ let forward (m : Nx.host Model.model) (d : Nx.host Data.data) =
         Nx.mul (take gear tendon_ids) (take (Lazy.force tendon).Tendon.length ids))
     in
     let mask =
-      Nx.init Nx.float64 [| nu |] (fun i ->
-        match t.actuator_trntype.(i.(0)) with
-        | Topo.Trn_joint -> 0.
-        | Topo.Trn_tendon -> 1.)
+      Nx.place
+        at
+        (Nx.init Nx.float64 [| nu |] (fun i ->
+           match t.actuator_trntype.(i.(0)) with
+           | Topo.Trn_joint -> 0.
+           | Topo.Trn_tendon -> 1.))
     in
     let length =
       Nx.add (Nx.mul mask by_tendon) (Nx.mul (Nx.sub (Nx.ones_like mask) mask) by_joint)
