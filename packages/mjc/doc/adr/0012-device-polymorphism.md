@@ -3,8 +3,14 @@
 Status: accepted, gate met (38x on the solver's round). Implementation: generic
 so far — `Model`, `Data` (`create_at`), `Linalg`, `Jacobian`, `Mass`,
 `Kinematics`, `Bias`, `Passive`, `Sensor`, `Actuator`, `Transmission`, `Tendon`,
-`Constraint` (with its `config`). Host still: `Collision.contacts`, `Solver`,
-`Dynamics`, `Step`.
+`Constraint` (with its `config`), `Collision` (with the box-box batch), `Solver`,
+`Step.step_with`, `Forward`, and `Model.place`/`Data.place` for moving a value.
+Host by design: `Step.config`/`advance`/`step` (structure is read with
+`Nx.item`), and `Dynamics`' jit'd wrappers.
+
+**Met.** A whole step runs on the iGPU: 100 hopper steps to 4.4e-15 of the host,
+50 walker steps to 3.6e-16 (`doc/perf.md` §10). Throughput on device is not yet
+measured, and `humanoid` is slow enough that measuring it is the next question.
 Date: 2026-02-14
 
 ## Context

@@ -88,7 +88,13 @@ module Desc = struct
   let walk = walk
 end
 
-let ptree = Nx.Ptree.instantiate (module Desc)
+(* A function: a description is polymorphic in the device until value
+   restriction fixes it, and a program compiled from it may run on any device. *)
+let ptree () = Nx.Ptree.instantiate (module Desc)
+
+let place : type e d. e Nx.Placement.t -> d data -> e data =
+  fun p x -> Nx.Ptree.place (module Desc) p x
+
 let nq (m : 'a Model.model) = m.topo.nq
 let nv (m : 'a Model.model) = m.topo.nv
 

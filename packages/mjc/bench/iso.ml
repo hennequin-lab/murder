@@ -54,7 +54,7 @@ let problem : (Nx.float64_elt, Mjc.Model.host, Nx.host) Dilqr.Problem.t =
   ; m
   ; horizon
   ; verbose = false
-  ; params = Mjc.Model.ptree
+  ; params = Mjc.Model.ptree ()
   ; dynamics
   ; running_loss
   ; final_loss

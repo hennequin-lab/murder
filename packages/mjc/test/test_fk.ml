@@ -68,7 +68,7 @@ let test_vmap () =
     let states = List.init f.nstates ~f:(fun s -> data_with_qpos m (row qpos s)) in
     let out =
       Rune.vmap
-        Nx.Ptree.(Mjc.Data.ptree @-> returns Mjc.Data.ptree)
+        (Nx.Ptree.( @-> ) (Mjc.Data.ptree ()) (Nx.Ptree.returns (Mjc.Data.ptree ())))
         (K.forward m)
         (batch_data states)
     in
@@ -93,7 +93,9 @@ let test_jit () =
     let qpos = tensor f "qpos" in
     let data = data_with_qpos m (row qpos 0) in
     let compiled =
-      Rune.jit Nx.Ptree.(Mjc.Data.ptree @-> returns Mjc.Data.ptree) (K.forward m)
+      Rune.jit
+        (Nx.Ptree.( @-> ) (Mjc.Data.ptree ()) (Nx.Ptree.returns (Mjc.Data.ptree ())))
+        (K.forward m)
     in
     let eager = K.forward m data in
     let jitted = compiled data in

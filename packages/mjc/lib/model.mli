@@ -117,7 +117,12 @@ type host = Nx.host model
 
 (** [ptree] describes a {!t} to the transformations: its parameters are
     leaves, its topology is a constant. *)
-val ptree : (Nx.host model, Nx.host) Nx.Ptree.t
+val ptree : unit -> ('d model, 'd) Nx.Ptree.t
+
+(** [place p x] is [x] with every array, its topology's fixed ones included, at
+    [p]; the whole value moves in one walk. This is how a state built on the
+    host is put on a device, and how a result comes back. *)
+val place : 'e Nx.Placement.t -> 'd model -> 'e model
 
 (** {1:accessors Accessors} *)
 

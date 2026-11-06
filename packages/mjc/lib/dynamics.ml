@@ -18,7 +18,11 @@ let horizon t m d n =
   !d
 
 let horizon_remat t m d n =
-  let step = Rune.remat Nx.Ptree.(Data.ptree @-> returns Data.ptree) (step_fn t m) in
+  let step =
+    Rune.remat
+      (Nx.Ptree.( @-> ) (Data.ptree ()) (Nx.Ptree.returns (Data.ptree ())))
+      (step_fn t m)
+  in
   let d = ref d in
   for _ = 1 to n do
     d := step !d
@@ -26,11 +30,15 @@ let horizon_remat t m d n =
   !d
 
 let horizon_scan t m d n =
-  let step = Rune.remat Nx.Ptree.(Data.ptree @-> returns Data.ptree) (step_fn t m) in
+  let step =
+    Rune.remat
+      (Nx.Ptree.( @-> ) (Data.ptree ()) (Nx.Ptree.returns (Data.ptree ())))
+      (step_fn t m)
+  in
   let seeds = Nx.zeros Nx.float64 [| n |] in
   let carry, _ =
     Rune.scan
-      Data.ptree
+      (Data.ptree ())
       Nx.Ptree.tensor
       Nx.Ptree.tensor
       (fun d (_ : Nx.host Nx.float64_t) ->

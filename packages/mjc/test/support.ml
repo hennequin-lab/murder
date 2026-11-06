@@ -175,10 +175,12 @@ let batch_data ds =
   | [] -> invalid_arg "batch_data"
   | [ d ] -> d
   | d0 :: d1 :: rest ->
-    let both = Nx.Ptree.map2 Data.ptree (fun _ a b -> Nx.stack ~axis:0 [ a; b ]) d0 d1 in
+    let both =
+      Nx.Ptree.map2 (Data.ptree ()) (fun _ a b -> Nx.stack ~axis:0 [ a; b ]) d0 d1
+    in
     List.fold rest ~init:both ~f:(fun acc x ->
       Nx.Ptree.map2
-        Data.ptree
+        (Data.ptree ())
         (fun _ a b -> Nx.concatenate ~axis:0 [ a; Nx.unsqueeze ~axes:[ 0 ] b ])
         acc
         x)

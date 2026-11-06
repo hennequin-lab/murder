@@ -359,3 +359,32 @@ the engine refactor will meet them again:
   field can no longer generalise over the device (`less general than 'd0. ...`).
 
 
+
+## 10. A whole step on the GPU
+
+`bench/device.ml` runs `Step.step_with` on a placed model and placed data, jit'd
+for the device, and compares against the same program on the host:
+
+| model | steps | worst difference from the host |
+| --- | ---: | ---: |
+| hopper | 100 | 4.4e-15 |
+| walker | 50 | 3.6e-16 |
+
+So the engine's own step -- contacts, equalities, the active-set solve, the
+integrator -- now executes on the iGPU with answers the host reproduces to
+rounding. That is the refactor's purpose met, and it is a *parity* result, not a
+throughput one: the loop is 100 steps with one copy in and one out, which is too
+short to measure against MuJoCo's microseconds and is not attempted here.
+
+What it costs to get there, which the same bench shows: `humanoid` did not finish
+in the time a person will wait for 20 steps, so the compiled program's cost on
+this class of model is a real question and the next thing to measure. The
+schedule is still 64 rounds regardless of the problem (§6), so a device program
+carries that same fixed cost -- now on a device.
+
+The pieces it needed, all of them in the library rather than the bench:
+`Model.place`/`Data.place` (a whole pytree at a placement, `Nx.Ptree.place`), a
+description as a function (`Model.ptree ()`) because value restriction would
+otherwise fix it to one device, and `Step.config` taken from a **host** model --
+structure is host data, identical on every device, which is why `Step.step_with`
+is the device entry point and `Step.step` stays a host convenience.

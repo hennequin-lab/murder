@@ -39,10 +39,12 @@ let batch ds =
   | [] -> invalid_arg "batch"
   | [ d ] -> d
   | d0 :: d1 :: rest ->
-    let both = Nx.Ptree.map2 Data.ptree (fun _ a b -> Nx.stack ~axis:0 [ a; b ]) d0 d1 in
+    let both =
+      Nx.Ptree.map2 (Data.ptree ()) (fun _ a b -> Nx.stack ~axis:0 [ a; b ]) d0 d1
+    in
     List.fold rest ~init:both ~f:(fun acc x ->
       Nx.Ptree.map2
-        Data.ptree
+        (Data.ptree ())
         (fun _ a b -> Nx.concatenate ~axis:0 [ a; Nx.unsqueeze ~axes:[ 0 ] b ])
         acc
         x)
@@ -71,7 +73,11 @@ let () =
       let _ = one d in
       let compiled_time = time ~steps:2000 one d in
       let batched = batch (List.init lanes ~f:(fun _ -> Data.create m)) in
-      let vec = Rune.vmap Nx.Ptree.(Data.ptree @-> returns Data.ptree) one in
+      let vec =
+        Rune.vmap
+          (Nx.Ptree.( @-> ) (Data.ptree ()) (Nx.Ptree.returns (Data.ptree ())))
+          one
+      in
       let _ = vec batched in
       let per_env = time ~steps:10 vec batched /. Float.of_int lanes in
       Printf.printf

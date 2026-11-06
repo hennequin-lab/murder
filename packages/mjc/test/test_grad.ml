@@ -192,11 +192,11 @@ let test_contact_sweep () =
     let one d = Dynamics.run dyn m d in
     let grad =
       Rune.jit
-        Nx.Ptree.(Data.ptree @-> returns Data.ptree)
+        (Nx.Ptree.( @-> ) (Data.ptree ()) (Nx.Ptree.returns (Data.ptree ())))
         (fun d ->
            snd
              (Rune.value_and_grad
-                Data.ptree
+                (Data.ptree ())
                 (fun d ->
                    let d = one d in
                    Nx.sum (Nx.mul d.qpos d.qpos))
@@ -295,7 +295,7 @@ let test_parameters () =
       let d = Dynamics.horizon dyn m d0 10 in
       Nx.sum (Nx.mul d.qpos d.qpos)
     in
-    let _, pullback = Rune.vjp Model.ptree Nx.Ptree.tensor loss m in
+    let _, pullback = Rune.vjp (Model.ptree ()) Nx.Ptree.tensor loss m in
     let grad = pullback (Nx.scalar f64 1.0) in
     let base = field m.Model.params in
     let shape = Nx.shape base in

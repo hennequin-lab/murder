@@ -128,7 +128,10 @@ type t =
 let compile (m : 'a Model.model) : t =
   let c = config m in
   { dt = c.dt
-  ; run = Rune.jit Nx.Ptree.(Data.ptree @-> returns Data.ptree) (step_with c m)
+  ; run =
+      Rune.jit
+        (Nx.Ptree.( @-> ) (Data.ptree ()) (Nx.Ptree.returns (Data.ptree ())))
+        (step_with c m)
   }
 
 let run (t : t) d = t.run d

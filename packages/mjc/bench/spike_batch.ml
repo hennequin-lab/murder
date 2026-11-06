@@ -130,11 +130,13 @@ let stages name =
   in
   let d = { (Mjc.Data.create m) with qpos = m.Mjc.Model.params.Mjc.Model.Params.qpos0 } in
   let d = Mjc.Forward.forward m d in
-  let ptree = Nx.Ptree.(Mjc.Data.ptree @-> returns Mjc.Data.ptree) in
+  let ptree =
+    Nx.Ptree.( @-> ) (Mjc.Data.ptree ()) (Nx.Ptree.returns (Mjc.Data.ptree ()))
+  in
   let lanes = 8 in
   let batched_input =
     Nx.Ptree.map
-      Mjc.Data.ptree
+      (Mjc.Data.ptree ())
       (fun _ x ->
          Nx.concatenate ~axis:0 (List.init lanes ~f:(fun _ -> Nx.unsqueeze ~axes:[ 0 ] x)))
       d
@@ -160,7 +162,7 @@ let stages name =
   List.iter [ 8; 32 ] ~f:(fun lanes ->
     let batched_input =
       Nx.Ptree.map
-        Mjc.Data.ptree
+        (Mjc.Data.ptree ())
         (fun _ x ->
            Nx.concatenate
              ~axis:0

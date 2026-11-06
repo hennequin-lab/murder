@@ -95,7 +95,7 @@ let memory mode name steps =
   let t0 = Unix.gettimeofday () in
   ignore
     (Rune.value_and_grad
-       Mjc.Model.ptree
+       (Mjc.Model.ptree ())
        (fun (params : Mjc.Model.host) ->
           let d =
             match mode with
@@ -128,14 +128,18 @@ let table () =
        a compiled forward would measure the interpreter. *)
     let dyn = Mjc.Dynamics.compile m in
     let one d = Mjc.Dynamics.run dyn m d in
-    let step = Rune.jit Nx.Ptree.(Mjc.Data.ptree @-> returns Mjc.Data.ptree) one in
+    let step =
+      Rune.jit
+        (Nx.Ptree.( @-> ) (Mjc.Data.ptree ()) (Nx.Ptree.returns (Mjc.Data.ptree ())))
+        one
+    in
     let grad =
       Rune.jit
-        Nx.Ptree.(Mjc.Data.ptree @-> returns Mjc.Data.ptree)
+        (Nx.Ptree.( @-> ) (Mjc.Data.ptree ()) (Nx.Ptree.returns (Mjc.Data.ptree ())))
         (fun d ->
            let v, g =
              Rune.value_and_grad
-               Mjc.Data.ptree
+               (Mjc.Data.ptree ())
                (fun d -> Nx.sum (Nx.mul (one d).Mjc.Data.qpos (one d).Mjc.Data.qpos))
                d
            in
@@ -156,7 +160,7 @@ let table () =
       let f d =
         let v, g =
           Rune.value_and_grad
-            Mjc.Data.ptree
+            (Mjc.Data.ptree ())
             (fun d -> Nx.sum (Mjc.Solver.forward ?implicit ~iters:8 m d).qacc)
             d
         in

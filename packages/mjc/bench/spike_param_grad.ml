@@ -35,7 +35,7 @@ let () =
     done;
     Nx.sum (Nx.mul !d.qpos !d.qpos)
   in
-  match Rune.vjp Mjc.Model.ptree Nx.Ptree.tensor loss m0 with
+  match Rune.vjp (Mjc.Model.ptree ()) Nx.Ptree.tensor loss m0 with
   | exception exn -> Printf.printf "%s: vjp raised: %s\n%!" name (Exn.to_string exn)
   | value, pullback ->
     let g = pullback (Nx.scalar f64 1.0) in
