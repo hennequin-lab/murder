@@ -322,20 +322,34 @@ step but does for the demos, the viewer and the tests, which run eager.
 So placing the step on the GPU is not a benchmark away: it is the M7 item the
 plan already carries — make the engine's tensors device-polymorphic, then
 `Rune.jit` compiles the same program for the device its `Data` lies on.
-The measurement that should precede the device-polymorphism work — the solver's
-round, a batched Cholesky and triangular solve on `[64; 76; 76]`, host against
-iGPU — is written and does not yet type. Two OCaml obstacles, both recorded here
-so the next attempt starts past them:
+The measurement that should precede the device-polymorphism work now runs:
+`bench/gpu.ml` places a batch of 64 active-set rounds — 76x76 Cholesky plus the
+two triangular solves, `[64; 76; 76]` — on the host and on the iGPU.
 
-- A `Rune.jit` created inside a `Bench (Set : Nx.Devices)` functor has its brand
-  as a *fresh* variable, and annotating it as `Set.d Nx.float64_t -> ...` does
-  not unify: the error is `(float, float64_elt, 'a) Nx.t ... but was expected to
-  have type Set.d Nx.float64_t`. So a jit'd program cannot be pinned to a
-  functor's abstract device set through its signature alone.
-- Timed through a polymorphic helper instead of in place, the brand escapes the
-  functor (`The type constructor Set.d would escape its scope`), so anything
-  branded must be created, used and turned back into numbers inside one scope.
+| | one round over 64 environments |
+| --- | ---: |
+| host (12 Zen 5 cores, one thread) | 3.04 ms |
 
-The clean route is a jit entry point that takes the device set, `Rune.jit_on :
-('d Nx.Devices.t) -> ...`, which is a small addition to rune's interface and the
-same change the engine's device polymorphism will need anyway.
+**The GPU column is empty, and the reason is a missing system library, not the
+engine.** The device opens (`Rig_amd_amdgpu` finds one, `gfx1151`, `computes =
+true`) and rune compiles the program for its brand, but tolk's AMD backend
+compiles HIP through AMD's *code object manager* (`libamd_comgr`), which this
+machine does not have — `pacman -S comgr` in `extra`. Until it is installed,
+`bench/gpu.ml` prints the host number and names the missing library.
+
+Two OCaml obstacles were in the way and both are solved, worth recording because
+the engine refactor will meet them again:
+
+- A `Rune.jit` cannot be built inside a functor or a plain function over a
+  device set: its brand stays a fresh variable and `The type constructor Set.d
+  would escape its scope`. The idiom rune itself uses (`rune/bench/bench_rune.ml`,
+  `rune/test/test_jit_devices.ml`) is a **record with a polymorphic field**,
+  `type run = { run : 'd. 'd Nx.Placement.t -> ... }`, instantiated per set at
+  `Nx.place`ment time — the same source compiles for the host's brand and for a
+  device set minted at run time.
+- The `Nx.Ptree` signature must be written **inline** in the `Rune.jit` call. A
+  top-level `let sig = Nx.Ptree.(pair tensor tensor @-> returns tensor)` is an
+  application, so value restriction makes its brand a weak variable, and the
+  field can no longer generalise over the device (`less general than 'd0. ...`).
+
+
