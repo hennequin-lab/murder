@@ -1178,3 +1178,44 @@ to drop dune's digest database (`_build/.db`, `_build/.digest-db`) and let it
 re-verify; no build output was deleted, and nothing about `@fmt`, `@lint` or
 the tests changed. Deleting a directory under `_build` is not a supported way
 to force a refresh — `dune build --force <alias>` is.
+
+## The row solve's round became a scan
+
+The gate's last blocker was a budget question wearing a physics costume. Four
+active-set rounds left one state of the humanoid thousand (a two-row limit
+solve at an acceleration above a thousand) a factor off; eight solved it
+exactly, and the unrolled graph doubled with the budget — four rounds compiled
+the test in eight seconds, eight took nearly seven minutes, because the loop
+*is* the graph.
+
+`lib/solver.ml`'s search is now one `Rune.scan` of `iters × inner_rounds`
+steps, whose traced body is one round. The schedule is arithmetic, not data:
+the scan's input carries a phase per step — 0 the first boundary (take every
+live row), 1 a later boundary (rebuild the working set from the gradient), 2
+a round inside a block (keep the carried set) — and the comparisons that
+decode it are broadcast elementwise ops, not branches on scalar values, which
+a traced step cannot take. The active-set mechanics are unchanged: Newton on
+the free block, exact ratio test, pin, one round at a time; lambda and the
+working set are the carry. What it buys: the compile cost is flat in both
+budgets, eight rounds are the standing budget, and the compiled step test
+that compiles a solver with eight rounds runs in nine seconds.
+
+`bench/spike_scan.ml` is the evidence that the round's operations — Cholesky
+factorisation, triangular solves, reductions — are legal inside a scan body on
+this machine, which is the claim the whole thing rests on.
+
+Two honest costs, measured on the same sheet as before:
+
+- Run time grows with the schedule (each scan step costs about what one
+  unrolled round cost, and the schedule is 64 rounds where 32 were run): the
+  sheet's solver columns grew by roughly that factor. Converging early —
+  `Rune.iterate`, which stops when the KKT test holds and traces its body once
+  too — would pay the schedule its honest due instead of the worst case, and it
+  belongs to M7.
+- The rule's backward-pass saving narrowed from 3.9–10.4× to 2.46–6.80× on the
+  same measurement, because the scan step's overhead shares the rule's savings.
+  The rule itself is untouched.
+
+With the scan in, all three G4 models measure 1000/1000 steps inside 1e-8 on
+the gate's recording, rows and contacts matching MuJoCo's at every state, and
+the free run lasts 980 (hopper), 507 (walker) and 266 (humanoid) steps.

@@ -74,29 +74,42 @@ by stepping from rest:
 
 ```
 model      rows   fwd/ms  grad/ms     g/f   max|g| | solve_i/ms solve_u/ms     u/i
-chain6        0    0.738    1.638    2.22    0.012 |     0.678     7.046    10.4
-looped       11    0.170    0.455    2.68      1.9 |     0.592     2.254    3.81
-finger        0    0.318    0.654    2.05   0.0013 |     0.640     5.063    7.91
-blocks        5    0.154    0.282    1.83     0.53 |     0.573     2.240    3.91
-boxes2        0   20.236   47.731    2.36      3.8 |    19.000    75.900    3.99
+chain6        0    4.922    9.966    2.02    0.012 |     4.007    18.105    4.52
+looped       11    0.539    1.202    2.23      1.9 |     3.361     8.284    2.46
+finger        0    1.923    3.791    1.97   0.0013 |     3.432    11.135    3.24
+blocks        5    0.383    0.756    1.98     0.53 |     3.157     8.640    2.74
+boxes2        0  153.223  312.307    2.04      3.8 |   111.077   755.536    6.80
 ```
 
-- **`g/f`, the number the gate is about, is 2.0–2.7×.** The budget is a reverse
+The solver's search became one `Rune.scan` (see `doc/log.md`): the traced body
+is one round, so a model with any budget compiles once. The price shows here:
+each scan step costs about what one unrolled round cost, and the schedule now
+runs `iters * inner_rounds = 64` rounds per solve, where the unrolled graph
+ran 32 — so the solver's part of the step grew by roughly the factor the
+budget grew, on models great and small (`chain6` forward 0.74 → 4.9 ms). The
+excuses are exhausted in M7: `Rune.iterate` stops when the KKT test holds, its
+body traces once, and most solves would stop after two outer iterations
+instead of running all eight.
+
+- **`g/f`, the number the gate is about, is 1.97–2.23× on the models with contacts.** The budget is a reverse
   pass for a forward step and a bit; the engine is inside it.
 - `max|g|` is the largest entry of the gradient of one step's `Σ q²`, i.e. how
   large a contact model's derivative gets at a state the engine reached. It is
   finite and O(1), which is the second thing the gate asks.
 - `solve_i` and `solve_u` time the *solver's* backward pass alone with the
   implicit rule and with the unrolled derivative, both eager: `u/i` is
-  **3.9–10.4×**, so the rule pays for itself in the solver's own backward pass.
+  **2.46–6.80×**, so the rule pays for itself in the solver's own backward
+  pass, with less headroom than the unrolled graph had (3.9–10.4× on the
+  sheet below) because the scan step's own overhead shares the rule's
+  savings.
   An earlier version of this sheet said 1.1–2.2×, and the gap was a defect in
   the rule's implementation rather than a property of the rule: a stray
   `ignore (iterate …)` left in to silence an unused-value warning ran the
   iteration *twice* in the forward pass. The rule computes the value and the
   tangent map in one visit; it must not also be run for its value outside.
 
-The entry that is not a performance result: `boxes2`'s forward step costs 20 ms
-against `chain6`'s 0.7 ms for a five-box model with no contacts at this state.
+The entry that is not a performance result: `boxes2`'s forward step costs 153 ms
+against `chain6`'s 4.9 ms for a five-box model with no contacts at this state.
 That is the box-box tensor path being evaluated for every candidate pair, and it
 belongs to M7.
 

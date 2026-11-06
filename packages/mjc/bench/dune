@@ -10,7 +10,8 @@
   spike_root
   g4lib
   g4
-  cdump)
+  cdump
+  spike_scan)
  (modules
   spike_la
   bench_step
@@ -22,7 +23,8 @@
   spike_root
   g4lib
   g4
-  cdump)
+  cdump
+  spike_scan)
  (libraries base mjc nx rune unix))
 
 ; The iLQR demo is the one executable that links dilqr, so the rest of the

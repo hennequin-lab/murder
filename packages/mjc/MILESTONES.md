@@ -542,14 +542,14 @@ contact counts match at every state, and the free run's shadowing horizon.
 | --- | --- | --- | --- |
 | hopper | match everywhere | 1000/1000 | 980 |
 | walker | match everywhere | 1000/1000 | 507 |
-| humanoid | match everywhere | 999/1000 | 275 |
+| humanoid | match everywhere | 1000/1000 | 266 |
 
-The gate's criterion — 99% of a thousand steps inside 1e-8 — is met by all three.
-The humanoid's single remaining state is a working-set question, not a physics
-one: it needs more active-set rounds than the compile budget affords, because
-the inner loop unrolls into the traced graph. Eight rounds solve it exactly and
-make the compiled-step test take seven minutes; four rounds cost that one state.
-Turning the loop into a scan is what buys both, and it is M7's.
+The gate's criterion — 99% of a thousand steps inside 1e-8 — is met by all
+three, and the humanoid's last state was bought by making the row solve's
+rounds a `Rune.scan` (`doc/log.md`): one traced body, flat compile cost in the
+budget, eight exact rounds standing. The scan's honest price is run time
+proportional to the schedule, and `Rune.iterate` — stop when the KKT test
+holds, trace the body once — is the M7 lever for it.
 
 Tendon equality rows landed too (`mjEQ_TENDON`, format 14's `ten_length0`), with
 the corpus model `tendoneq` covering the offset case, the linear coupling and
