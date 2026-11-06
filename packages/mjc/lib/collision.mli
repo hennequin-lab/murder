@@ -28,4 +28,4 @@ val candidates : 'a Model.model -> cand array
     v1 computes plane-sphere, plane-capsule, sphere-sphere and sphere-capsule.
     Any other pair a model can produce is a port bug, not a silent omission:
     the candidate list is only built from those four. *)
-val contacts : Nx.host Model.model -> Nx.host Data.data -> Nx.host Data.data
+val contacts : 'a Model.model -> 'a Data.data -> 'a Data.data

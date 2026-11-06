@@ -15,27 +15,27 @@ let sgn_eps = Collision_box.sgn_eps
 let edge_bias = Collision_box.edge_bias
 let max_contacts = Collision_box.max_verts
 
-type batch =
-  { pos1 : Nx.host Nx.float64_t
-  ; mat1 : Nx.host Nx.float64_t
-  ; size1 : Nx.host Nx.float64_t
-  ; pos2 : Nx.host Nx.float64_t
-  ; mat2 : Nx.host Nx.float64_t
-  ; size2 : Nx.host Nx.float64_t
-  ; margin : Nx.host Nx.float64_t
+type 'a batch =
+  { pos1 : 'a Nx.float64_t
+  ; mat1 : 'a Nx.float64_t
+  ; size1 : 'a Nx.float64_t
+  ; pos2 : 'a Nx.float64_t
+  ; mat2 : 'a Nx.float64_t
+  ; size2 : 'a Nx.float64_t
+  ; margin : 'a Nx.float64_t
   }
 
-type sat =
-  { code : Nx.host Nx.float64_t
-  ; sep : Nx.host Nx.float64_t
-  ; separated : Nx.host Nx.float64_t
+type 'a sat =
+  { code : 'a Nx.float64_t
+  ; sep : 'a Nx.float64_t
+  ; separated : 'a Nx.float64_t
   }
 
-type manifold =
-  { dist : Nx.host Nx.float64_t
-  ; pos : Nx.host Nx.float64_t
-  ; normal : Nx.host Nx.float64_t
-  ; live : Nx.host Nx.float64_t
+type 'a manifold =
+  { dist : 'a Nx.float64_t
+  ; pos : 'a Nx.float64_t
+  ; normal : 'a Nx.float64_t
+  ; live : 'a Nx.float64_t
   }
 
 (* {1 Shape helpers}
@@ -49,9 +49,9 @@ let m3 i =
   let r = i - (3 * (i / 3)) in
   if r < 0 then r + 3 else r
 
-let _sc x = Nx.scalar f64 x
+let _sc at x = Nx.scalar_at at f64 x
 let big = 1e30
-let n_of (b : batch) = (Nx.shape b.pos1).(0)
+let n_of (b : 'a batch) = (Nx.shape b.pos1).(0)
 let mat3 (m : _ Nx.t) = Nx.reshape [| (Nx.shape m).(0); 3; 3 |] m
 let row m i = Nx.slice [ A; I i ] m
 
@@ -67,21 +67,23 @@ let dot (a : _ Nx.t) (b : _ Nx.t) = Nx.sum ~axes:[ 1 ] (Nx.mul a b)
 let first_of (x : _ Nx.t) (best : _ Nx.t) =
   let n = (Nx.shape x).(0)
   and k = (Nx.shape x).(1) in
-  let idx = Nx.init f64 [| k |] (fun i -> Float.of_int i.(0)) in
+  let idx =
+    Nx.place (Nx.placement x) (Nx.init f64 [| k |] (fun i -> Float.of_int i.(0)))
+  in
   let idx = Nx.broadcast_to [| n; k |] (Nx.reshape [| 1; k |] idx) in
   let hit = Nx.equal x (Nx.broadcast_to [| n; k |] (Nx.reshape [| n; 1 |] best)) in
   Nx.min ~axes:[ 1 ] (Nx.where hit idx (Nx.full_like idx big))
 
 (* {1 Stage 1: separating axes} *)
 
-type frame =
-  { rot : Nx.host Nx.float64_t (** [[n;3;3]]: box 2's axes in box 1's frame. *)
-  ; rotabs : Nx.host Nx.float64_t
-  ; pos21 : Nx.host Nx.float64_t (** [[n;3]]: box 2 in box 1's frame. *)
-  ; pos12 : Nx.host Nx.float64_t
+type 'a frame =
+  { rot : 'a Nx.float64_t (** [[n;3;3]]: box 2's axes in box 1's frame. *)
+  ; rotabs : 'a Nx.float64_t
+  ; pos21 : 'a Nx.float64_t (** [[n;3]]: box 2 in box 1's frame. *)
+  ; pos12 : 'a Nx.float64_t
   }
 
-let frame (b : batch) =
+let frame (b : 'a batch) =
   let rot = Nx.matmul (Nx.matrix_transpose (mat3 b.mat1)) (mat3 b.mat2) in
   let rotabs = Nx.abs rot in
   let to_local mat d =
@@ -95,13 +97,13 @@ let frame (b : batch) =
   ; pos12 = to_local b.mat2 (Nx.sub b.pos1 b.pos2)
   }
 
-let septol (b : batch) =
+let septol (b : 'a batch) =
   Nx.add b.margin (Nx.mul_s (Nx.sum ~axes:[ 1 ] (Nx.add b.size1 b.size2)) sep_eps)
 
 (* The fifteen candidate separations, [n;15]: six face axes then nine edge
    crosses. A parallel edge cross is rounding noise and gets [-inf], so it can
    never win and never separates. *)
-let separations (b : batch) (fr : frame) =
+let separations (b : 'a batch) (fr : 'a frame) =
   let n = n_of b in
   let face1 i =
     let radius2 = dot (row fr.rotabs i) b.size2 in
@@ -150,7 +152,7 @@ let separations (b : batch) (fr : frame) =
         radius2
     in
     (* the axis direction, which stage 2 needs when this one wins *)
-    let axis = Nx.zeros f64 [| n; 3 |] in
+    let axis = Nx.zeros_at (Nx.placement ax1) f64 [| n; 3 |] in
     let axis = Nx.set [ A; I i1 ] ax1 axis in
     let axis = Nx.set [ A; I i2 ] ax2 axis in
     sep, Nx.where safe sep (Nx.full_like sep (-.big)), axis
@@ -167,7 +169,7 @@ let separations (b : batch) (fr : frame) =
   , Nx.stack ~axis:1 edge_masked
   , Nx.stack ~axis:1 edge_axes )
 
-let sat (b : batch) =
+let sat (b : 'a batch) =
   let fr = frame b in
   let tol = septol b in
   let faces, edge_seps, edge_masked, edge_axes = separations b fr in
@@ -215,8 +217,8 @@ let sat (b : batch) =
   (* |axis . face normal|: the normal of the winning face, in box 1's frame, is
      a coordinate axis for codes 0..2 and a column of rot for codes 3..5 *)
   let unit_vec i =
-    let v = Nx.zeros f64 [| n_of b; 3 |] in
-    Nx.set [ A; I i ] (Nx.ones f64 [| n_of b |]) v
+    let v = Nx.zeros_at (Nx.placement b.pos1) f64 [| n_of b; 3 |] in
+    Nx.set [ A; I i ] (Nx.ones_at (Nx.placement v) f64 [| n_of b |]) v
   in
   let normals =
     Nx.stack
@@ -241,7 +243,7 @@ let sat (b : batch) =
          sep
          (Nx.add
             (Nx.add sep_face (Nx.mul_s (Nx.abs sep_face) 0.05))
-            (Nx.scalar f64 1e-15)))
+            (Nx.scalar_at (Nx.placement sep_face) f64 1e-15)))
   in
   let substitute = Nx.logical_and substitute has_edge in
   let code = Nx.where substitute code_face code
@@ -250,7 +252,7 @@ let sat (b : batch) =
 
 (* Temporary: the intermediate quantities, so a failing pair can be looked at
    without guessing. *)
-let debug (b : batch) =
+let debug (b : 'a batch) =
   let fr = frame b in
   let tol = septol b in
   let faces, edge_seps, _, _ = separations b fr in
@@ -279,14 +281,14 @@ let take_col (m : _ Nx.t) (idx : _ Nx.t) =
        (Nx.broadcast_to [| n; 1; 3 |] (Nx.reshape [| n; 1; 1 |] idx))
        m)
 
-type triple =
-  { dist : Nx.host Nx.float64_t
-  ; pos : Nx.host Nx.float64_t
-  ; normal : Nx.host Nx.float64_t
+type 'a triple =
+  { dist : 'a Nx.float64_t
+  ; pos : 'a Nx.float64_t
+  ; normal : 'a Nx.float64_t
   }
 
 (* [edges b fr axes]: for each of the nine edge axes, the contact it makes. *)
-let edges (b : batch) (fr : frame) (axes : _ Nx.t) =
+let edges (b : 'a batch) (fr : 'a frame) (axes : _ Nx.t) =
   let n = n_of b in
   (* d2: box 2's edge direction for axis (i, j), which is column j of rot *)
   let column j =
@@ -298,11 +300,12 @@ let edges (b : batch) (fr : frame) (axes : _ Nx.t) =
       ]
   in
   let one k (i, j) =
+    let at = Nx.placement fr.pos21 in
     let i1 = m3 (i + 1)
     and i2 = m3 (i + 2)
     and j1 = m3 (j + 1)
     and j2 = m3 (j + 2) in
-    let axis = take_col axes (Nx.full Nx.int64 [| n |] (Int64.of_int k)) in
+    let axis = take_col axes (Nx.place at (Nx.full Nx.int64 [| n |] (Int64.of_int k))) in
     (* oriented from box 1 towards box 2 *)
     let towards = Nx.sum ~axes:[ 1 ] (Nx.mul axis fr.pos21) in
     let orient =
@@ -315,12 +318,12 @@ let edges (b : batch) (fr : frame) (axes : _ Nx.t) =
         (Nx.matmul (Nx.matrix_transpose fr.rot) (Nx.reshape [| n; 3; 1 |] axis))
     in
     let d2 = column j in
-    let bdot = take_comp d2 (Nx.full Nx.int64 [| n |] (Int64.of_int i)) in
+    let bdot = take_comp d2 (Nx.place at (Nx.full Nx.int64 [| n |] (Int64.of_int i))) in
     let denom = Nx.sub (Nx.ones_like bdot) (Nx.mul bdot bdot) in
-    let x1 = take_comp axis (Nx.full Nx.int64 [| n |] (Int64.of_int i1))
-    and x2 = take_comp axis (Nx.full Nx.int64 [| n |] (Int64.of_int i2))
-    and y1 = take_comp a2 (Nx.full Nx.int64 [| n |] (Int64.of_int j1))
-    and y2 = take_comp a2 (Nx.full Nx.int64 [| n |] (Int64.of_int j2)) in
+    let x1 = take_comp axis (Nx.place at (Nx.full Nx.int64 [| n |] (Int64.of_int i1)))
+    and x2 = take_comp axis (Nx.place at (Nx.full Nx.int64 [| n |] (Int64.of_int i2)))
+    and y1 = take_comp a2 (Nx.place at (Nx.full Nx.int64 [| n |] (Int64.of_int j1)))
+    and y2 = take_comp a2 (Nx.place at (Nx.full Nx.int64 [| n |] (Int64.of_int j2))) in
     (* which component, if any, is ambiguous *)
     let nothing = Nx.full_like x1 (-1.)
     and is_i1 = Nx.full_like x1 (Float.of_int i1)
@@ -338,15 +341,18 @@ let edges (b : batch) (fr : frame) (axes : _ Nx.t) =
         is_j1
         (Nx.where (Nx.less_s (Nx.abs y2) sgn_eps) is_j2 nothing)
     in
-    let size1 comp = take_comp b.size1 (Nx.full Nx.int64 [| n |] (Int64.of_int comp))
-    and size2 comp = take_comp b.size2 (Nx.full Nx.int64 [| n |] (Int64.of_int comp)) in
+    let size1 comp =
+      take_comp b.size1 (Nx.place at (Nx.full Nx.int64 [| n |] (Int64.of_int comp)))
+    and size2 comp =
+      take_comp b.size2 (Nx.place at (Nx.full Nx.int64 [| n |] (Int64.of_int comp)))
+    in
     let s1_i1 = size1 i1
     and s1_i2 = size1 i2
     and s2_j1 = size2 j1
     and s2_j2 = size2 j2 in
     let corner1 flip =
       (* support along +axis; [flip] negates a component chosen by amb1 *)
-      let c = Nx.zeros f64 [| n; 3 |] in
+      let c = Nx.zeros_at (Nx.placement b.pos1) f64 [| n; 3 |] in
       let supp v s =
         Nx.mul
           (Nx.where (Nx.greater_equal_s v 0.) (Nx.ones_like v) (Nx.full_like v (-1.)))
@@ -365,7 +371,7 @@ let edges (b : batch) (fr : frame) (axes : _ Nx.t) =
         Nx.where (cond i1) c_i1 (Nx.where (cond i2) c_i2 c))
     in
     let corner2 flip =
-      let cc = Nx.zeros f64 [| n; 3 |] in
+      let cc = Nx.zeros_at (Nx.placement b.pos1) f64 [| n; 3 |] in
       let supp v s =
         Nx.mul
           (Nx.where (Nx.greater_equal_s v 0.) (Nx.full_like v (-1.)) (Nx.ones_like v))
@@ -392,7 +398,7 @@ let edges (b : batch) (fr : frame) (axes : _ Nx.t) =
           fr.pos21
       in
       let e = Nx.sub c2 c1 in
-      let d1e = take_comp e (Nx.full Nx.int64 [| n |] (Int64.of_int i))
+      let d1e = take_comp e (Nx.place at (Nx.full Nx.int64 [| n |] (Int64.of_int i)))
       and d2e = Nx.sum ~axes:[ 1 ] (Nx.mul d2 e) in
       let s =
         Nx.where
@@ -477,16 +483,16 @@ let edges (b : batch) (fr : frame) (axes : _ Nx.t) =
    Six times the arithmetic buys constant indices: inside an iteration the
    reference axis is a host number, and only the incident axis is data. *)
 
-type cand =
-  { p : Nx.host Nx.float64_t array
+type 'a cand =
+  { p : 'a Nx.float64_t array
     (** the three coordinates in the reference face's rearranged frame:
         [(ax, ay, a)], the last one the signed height above the face. *)
-  ; ok : Nx.host Nx.float64_t (** [[n]], 1. where this candidate is a vertex. *)
+  ; ok : 'a Nx.float64_t (** [[n]], 1. where this candidate is a vertex. *)
   }
 
 (* [one_case b fr margin ref1 a] is the manifold of the face [a] of box [ref1]'s
    box, for every pair. *)
-let one_case (b : batch) (fr : frame) (margin : _ Nx.t) ref1 a =
+let one_case (b : 'a batch) (fr : 'a frame) (margin : _ Nx.t) ref1 a =
   let n = n_of b in
   let matref = if ref1 then mat3 b.mat1 else mat3 b.mat2
   and posref = if ref1 then b.pos1 else b.pos2
@@ -497,7 +503,7 @@ let one_case (b : batch) (fr : frame) (margin : _ Nx.t) ref1 a =
   let ax = m3 (a + 1)
   and ay = m3 (a + 2) in
   let axis_of = [| ax; ay; a |] in
-  let zero = Nx.zeros f64 [| n |] in
+  let zero = Nx.zeros_at (Nx.placement b.pos1) f64 [| n |] in
   let one = Nx.add_s zero 1.
   and two = Nx.add_s zero 2. in
   let sgn =
@@ -661,7 +667,9 @@ let one_case (b : batch) (fr : frame) (margin : _ Nx.t) ref1 a =
       [| n; ncand; ncand |]
       (Nx.reshape
          [| 1; ncand; ncand |]
-         (Nx.init f64 [| ncand; ncand |] (fun i -> if i.(1) < i.(0) then 1. else 0.)))
+         (Nx.place
+            (Nx.placement b.pos1)
+            (Nx.init f64 [| ncand; ncand |] (fun i -> if i.(1) < i.(0) then 1. else 0.))))
   in
   let close =
     Nx.mul
@@ -695,7 +703,12 @@ let one_case (b : batch) (fr : frame) (margin : _ Nx.t) ref1 a =
   in
   let all = Nx.stack ~axis:2 [ px; py; pz ] in
   let scattered =
-    Nx.scatter ~combine:Set ~axis:1 idx3 all (Nx.zeros f64 [| n; max_contacts + 1; 3 |])
+    Nx.scatter
+      ~combine:Set
+      ~axis:1
+      idx3
+      all
+      (Nx.zeros_at (Nx.placement b.pos1) f64 [| n; max_contacts + 1; 3 |])
   in
   let posc = Nx.slice [ A; R (0, max_contacts); A ] scattered in
   let vx = Nx.slice [ A; A; I 0 ] posc
@@ -737,7 +750,9 @@ let one_case (b : batch) (fr : frame) (margin : _ Nx.t) ref1 a =
       [| n; max_contacts |]
       (Nx.reshape
          [| 1; max_contacts |]
-         (Nx.init f64 [| max_contacts |] (fun i -> Float.of_int i.(0))))
+         (Nx.place
+            (Nx.placement b.pos1)
+            (Nx.init f64 [| max_contacts |] (fun i -> Float.of_int i.(0)))))
   in
   let live =
     Nx.where
@@ -747,13 +762,14 @@ let one_case (b : batch) (fr : frame) (margin : _ Nx.t) ref1 a =
   in
   { dist = vz; pos; normal; live }
 
-let faces (b : batch) (fr : frame) (code : _ Nx.t) (margin : _ Nx.t) =
+let faces (b : 'a batch) (fr : 'a frame) (code : _ Nx.t) (margin : _ Nx.t) =
   let n = n_of b in
+  let at = Nx.placement b.pos1 in
   let zeros =
-    { dist = Nx.zeros f64 [| n; max_contacts |]
-    ; pos = Nx.zeros f64 [| n; max_contacts; 3 |]
-    ; normal = Nx.zeros f64 [| n; max_contacts; 3 |]
-    ; live = Nx.zeros f64 [| n; max_contacts |]
+    { dist = Nx.zeros_at at f64 [| n; max_contacts |]
+    ; pos = Nx.zeros_at at f64 [| n; max_contacts; 3 |]
+    ; normal = Nx.zeros_at at f64 [| n; max_contacts; 3 |]
+    ; live = Nx.zeros_at at f64 [| n; max_contacts |]
     }
   in
   let merged =
@@ -780,13 +796,14 @@ let faces (b : batch) (fr : frame) (code : _ Nx.t) (margin : _ Nx.t) =
    fills the rest of the twelve slots with [d]. *)
 let slot0 (v : _ Nx.t) rank d =
   let n = (Nx.shape v).(0) in
+  let at = Nx.placement v in
   if Int.equal rank 1
   then (
     let v = Nx.reshape [| n; 1 |] v in
-    Nx.concatenate ~axis:1 [ v; Nx.full f64 [| n; max_contacts - 1 |] d ])
+    Nx.concatenate ~axis:1 [ v; Nx.full_at at f64 [| n; max_contacts - 1 |] d ])
   else (
     let v = Nx.reshape [| n; 1; 3 |] v in
-    Nx.concatenate ~axis:1 [ v; Nx.full f64 [| n; max_contacts - 1; 3 |] d ])
+    Nx.concatenate ~axis:1 [ v; Nx.full_at at f64 [| n; max_contacts - 1; 3 |] d ])
 
 (* {1 Manifold}
 
@@ -794,7 +811,7 @@ let slot0 (v : _ Nx.t) rank d =
    of the winning edge cross, face codes take the clipped polygon. The two are
    disjoint, so the edge contact is written into slot 0 and the face manifold
    over all twelve. *)
-let manifold (b : batch) =
+let manifold (b : 'a batch) =
   let fr = frame b in
   let s = sat b in
   let _, _, _, axes = separations b fr in

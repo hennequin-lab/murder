@@ -166,9 +166,12 @@ let len_clamped v = Nx.maximum_s (len v) 1e-300
 (* The two z axes coincide, so no direction is defined: MuJoCo takes their
    cross product and falls back to x when even that is zero. *)
 let fallback_normal axis1 axis2 =
+  let at = Nx.placement axis1 in
   let cross = Nx.cross axis1 axis2 in
   let norm = len cross in
-  let x = Nx.set [ I 0 ] (Nx.scalar Nx.float64 1.0) (Nx.zeros Nx.float64 [| 3 |]) in
+  let x =
+    Nx.set [ I 0 ] (Nx.scalar_at at Nx.float64 1.0) (Nx.zeros_at at Nx.float64 [| 3 |])
+  in
   let v = Nx.where (Nx.greater_s norm 1e-15) cross x in
   Nx.div v (len_clamped v)
 
@@ -196,7 +199,8 @@ let plane_sphere ~pos1 ~normal ~pos2 ~size =
 (* [mju_makeFrame]: the contact's third row from its normal and whatever
    tangent the pair supplied, orthonormalised. *)
 let make_frame ~normal ~tangent =
-  let sc = Nx.scalar Nx.float64 in
+  let at = Nx.placement normal in
+  let sc = Nx.scalar_at at Nx.float64 in
   let norm v = len_clamped v in
   let n = Nx.div normal (norm normal) in
   let degenerate = Nx.less_s (Nx.dot tangent tangent) 0.25 in
@@ -215,6 +219,7 @@ let make_frame ~normal ~tangent =
   Nx.stack ~axis:0 [ n; y; z ]
 
 let geometry (m : 'a Model.model) (d : 'a Data.data) (c : cand) =
+  let at = Nx.placement d.qpos in
   let p = m.params in
   let t = m.topo in
   let size g k = Nx.get [ g; k ] p.geom_size in
@@ -268,7 +273,7 @@ let geometry (m : 'a Model.model) (d : 'a Data.data) (c : cand) =
     let centre = Nx.dot (Nx.sub (geom_pos d c.g2) (geom_pos d c.g1)) normal in
     let dist = Nx.add centre ldist in
     let up = Nx.greater_s ldist 0.0 in
-    let far = Nx.scalar Nx.float64 1e10 in
+    let far = Nx.scalar_at at Nx.float64 1e10 in
     let dist = Nx.where up far dist in
     let pos = Nx.add corner (Nx.mul normal (Nx.neg (Nx.mul_s dist 0.5))) in
     dist, pos, normal
@@ -276,7 +281,7 @@ let geometry (m : 'a Model.model) (d : 'a Data.data) (c : cand) =
     (* [mjraw_CapsuleCapsule]: the closest pair of points on the two axial
        segments, then a sphere-sphere test on them. Nearly parallel segments
        have two candidate pairs and one slot carries each. *)
-    let sc x = Nx.scalar Nx.float64 x in
+    let sc x = Nx.scalar_at at Nx.float64 x in
     let axis1 = geom_zaxis d c.g1
     and axis2 = geom_zaxis d c.g2 in
     let r1 = size c.g1 0
@@ -373,7 +378,7 @@ let geometry (m : 'a Model.model) (d : 'a Data.data) (c : cand) =
     let g0 = Nx.get [ 0 ] gap
     and g1 = Nx.get [ 1 ] gap
     and g2 = Nx.get [ 2 ] gap in
-    let axis i v = Nx.set [ I i ] v (Nx.zeros Nx.float64 [| 3 |]) in
+    let axis i v = Nx.set [ I i ] v (Nx.zeros_at at Nx.float64 [| 3 |]) in
     let nearest =
       Nx.where
         (Nx.logical_and (Nx.less_equal g0 g1) (Nx.less_equal g0 g2))
@@ -388,7 +393,7 @@ let geometry (m : 'a Model.model) (d : 'a Data.data) (c : cand) =
       Nx.add centre (Nx.mul nearest (Nx.mul_s (Nx.sub radius closest) 0.5))
     in
     let inside_normal = world nearest in
-    let inside = Nx.less_equal away (Nx.scalar Nx.float64 1e-15) in
+    let inside = Nx.less_equal away (Nx.scalar_at at Nx.float64 1e-15) in
     let pos_local = Nx.where inside inside_pos outside_pos in
     let normal = Nx.where inside inside_normal outside_normal in
     let dist = Nx.where inside (Nx.sub (Nx.neg closest) radius) outside_dist in
@@ -407,7 +412,7 @@ let geometry (m : 'a Model.model) (d : 'a Data.data) (c : cand) =
       ~size2:(size c.g2 0)
       ~axis1:(geom_zaxis d c.g1)
       ~axis2:(geom_zaxis d c.g2)
-  | _ -> Nx.scalar Nx.float64 0.0, geom_pos d c.g1, geom_pos d c.g1
+  | _ -> Nx.scalar_at at Nx.float64 0.0, geom_pos d c.g1, geom_pos d c.g1
 
 (* {1 Contact parameters}
 
@@ -422,7 +427,7 @@ let geometry (m : 'a Model.model) (d : 'a Data.data) (c : cand) =
    gathers and [where]s, one row per candidate contact. *)
 
 type 'a mixed =
-  { dim : Nx.host Nx.int32_t (** [[ncand]] *)
+  { dim : 'a Nx.int32_t (** [[ncand]] *)
   ; friction : 'a Nx.float64_t (** [[ncand;5]] *)
   ; solref : 'a Nx.float64_t (** [[ncand;2]] *)
   ; solimp : 'a Nx.float64_t (** [[ncand;5]] *)
@@ -431,22 +436,26 @@ type 'a mixed =
     (** [[ncand]], the bounding radius: the margin plus the two bounds. *)
   }
 
-let mixed_params (m : 'a Model.model) (cands : cand array) : 'a mixed =
+let mixed_params ~at (m : 'a Model.model) (cands : cand array) : 'a mixed =
   let p = m.params in
   let n = Array.length cands in
   let minval = 1e-15 in
-  let sc x = Nx.scalar Nx.float64 x in
+  let sc x = Nx.scalar_at at Nx.float64 x in
   let g side =
-    Nx.init Nx.int64 [| n |] (fun i ->
-      Int64.of_int (if Int.equal side 0 then cands.(i.(0)).g1 else cands.(i.(0)).g2))
+    Nx.place
+      at
+      (Nx.init Nx.int64 [| n |] (fun i ->
+         Int64.of_int (if Int.equal side 0 then cands.(i.(0)).g1 else cands.(i.(0)).g2)))
   in
   let g1 = g 0
   and g2 = g 1 in
   let take g x = Nx.take ~axis:0 g x in
   let prio side =
-    Nx.init Nx.float64 [| n |] (fun i ->
-      let c = cands.(i.(0)) in
-      Float.of_int m.topo.geom_priority.(if Int.equal side 0 then c.g1 else c.g2))
+    Nx.place
+      at
+      (Nx.init Nx.float64 [| n |] (fun i ->
+         let c = cands.(i.(0)) in
+         Float.of_int m.topo.geom_priority.(if Int.equal side 0 then c.g1 else c.g2)))
   in
   let prio1 = prio 0
   and prio2 = prio 1 in
@@ -527,9 +536,9 @@ let mixed_params (m : 'a Model.model) (cands : cand array) : 'a mixed =
    the candidate list: {!Collision_box_tensor} wants a batch, so every box pair
    in the list is gathered once, solved once, and read back slot by slot. *)
 
-type box_manifold =
+type 'a box_manifold =
   { row : (int, int) Hashtbl.t (** [g1 * ngeom + g2] to the pair's row in the batch *)
-  ; manifold : Collision_box_tensor.manifold
+  ; manifold : 'a Collision_box_tensor.manifold
   }
 
 let is_box_pair (t : Topo.t) g1 g2 =
@@ -546,11 +555,14 @@ let box_box (m : 'a Model.model) (d : 'a Data.data) (cands : cand array) =
   if Int.equal n 0
   then None
   else (
+    let at = Nx.placement d.qpos in
     let p = m.params in
     let g1 i = pairs.(i).g1
     and g2 i = pairs.(i).g2 in
     let gather (x : _ Nx.t) f =
-      let idx = Nx.init Nx.int64 [| n |] (fun i -> Int64.of_int (f i.(0))) in
+      let idx =
+        Nx.place at (Nx.init Nx.int64 [| n |] (fun i -> Int64.of_int (f i.(0))))
+      in
       Nx.take ~axis:0 idx x
     in
     let batch =
@@ -576,14 +588,19 @@ let box_box (m : 'a Model.model) (d : 'a Data.data) (cands : cand array) =
 
 (* [box_slot bm row slot] is one contact of a pair's manifold, or an infinite
    distance for a dead slot, which the inclusion test then drops. *)
-let box_slot (bm : box_manifold) row slot =
+let box_slot (bm : 'a box_manifold) row slot =
   let m = bm.manifold in
+  let at = Nx.placement m.Collision_box_tensor.dist in
   let dead = Nx.equal_s (Nx.slice [ I row; I slot ] m.Collision_box_tensor.live) 0. in
-  ( Nx.where dead (Nx.scalar Nx.float64 1e30) (Nx.slice [ I row; I slot ] m.dist)
-  , Nx.where dead (Nx.zeros Nx.float64 [| 3 |]) (Nx.slice [ I row; I slot; A ] m.pos)
+  ( Nx.where dead (Nx.scalar_at at Nx.float64 1e30) (Nx.slice [ I row; I slot ] m.dist)
+  , Nx.where
+      dead
+      (Nx.zeros_at at Nx.float64 [| 3 |])
+      (Nx.slice [ I row; I slot; A ] m.pos)
   , Nx.slice [ I row; I slot; A ] m.normal )
 
 let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+  let at = Nx.placement d.qpos in
   let t = m.topo in
   let cands = candidates m in
   let ncand = Array.length cands in
@@ -592,24 +609,24 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   if Int.equal ncand 0
   then { d with ncon = Nx.zeros_at (Nx.placement d.ncon) Nx.int32 [||] }
   else (
-    let mix = mixed_params m cands in
+    let mix = mixed_params ~at m cands in
     let boxes = box_box m d cands in
     let row_of k x = Nx.slice [ I k ] x in
     let tangent (t : Topo.t) d (c : cand) =
       match t.geom_type.(c.g1), t.geom_type.(c.g2) with
       | Plane, Capsule -> geom_zaxis d c.g2
-      | _ -> Nx.zeros Nx.float64 [| 3 |]
+      | _ -> Nx.zeros_at at Nx.float64 [| 3 |]
     in
-    let dist = ref (Nx.zeros Nx.float64 [| ncand |])
-    and pos = ref (Nx.zeros Nx.float64 [| ncand; 3 |])
-    and normal = ref (Nx.zeros Nx.float64 [| ncand; 3 |])
-    and frames = ref (Nx.zeros Nx.float64 [| ncand; 9 |])
-    and live = ref (Nx.zeros Nx.float64 [| ncand |])
-    and jac = ref (Nx.zeros Nx.float64 [| ncand; 3 * t.nv |]) in
+    let dist = ref (Nx.zeros_at at Nx.float64 [| ncand |])
+    and pos = ref (Nx.zeros_at at Nx.float64 [| ncand; 3 |])
+    and normal = ref (Nx.zeros_at at Nx.float64 [| ncand; 3 |])
+    and frames = ref (Nx.zeros_at at Nx.float64 [| ncand; 9 |])
+    and live = ref (Nx.zeros_at at Nx.float64 [| ncand |])
+    and jac = ref (Nx.zeros_at at Nx.float64 [| ncand; 3 * t.nv |]) in
     (* MuJoCo keeps at most four contacts per pair, taking them in corner
        order. The candidate loop runs in that order, so a running count per
        pair does the same cut. *)
-    let seen = ref (Nx.scalar Nx.float64 0.0)
+    let seen = ref (Nx.scalar_at at Nx.float64 0.0)
     and pair = ref (-1, -1) in
     Array.iteri cands ~f:(fun i c ->
       let dist_i, pos_i, normal_i =
@@ -630,29 +647,32 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
       in
       let bound =
         if plane
-        then Nx.scalar Nx.float64 1.0
+        then Nx.scalar_at at Nx.float64 1.0
         else (
           let dif = Nx.sub (geom_pos d c.g1) (geom_pos d c.g2) in
           Nx.where
             (Nx.less_equal (Nx.dot dif dif) (Nx.mul reach reach))
-            (Nx.scalar Nx.float64 1.0)
-            (Nx.scalar Nx.float64 0.0))
+            (Nx.scalar_at at Nx.float64 1.0)
+            (Nx.scalar_at at Nx.float64 0.0))
       in
       let near = Nx.less_equal dist_i includemargin in
       if not (Int.equal (fst !pair) c.g1 && Int.equal (snd !pair) c.g2)
       then (
         pair := c.g1, c.g2;
-        seen := Nx.scalar Nx.float64 0.0);
+        seen := Nx.scalar_at at Nx.float64 0.0);
       let room =
         Nx.where
           (Nx.less_s !seen (Float.of_int (pair_limit t c.g1 c.g2)))
-          (Nx.scalar Nx.float64 1.0)
-          (Nx.scalar Nx.float64 0.0)
+          (Nx.scalar_at at Nx.float64 1.0)
+          (Nx.scalar_at at Nx.float64 0.0)
       in
       let on =
         Nx.mul
           (Nx.mul bound room)
-          (Nx.where near (Nx.scalar Nx.float64 1.0) (Nx.scalar Nx.float64 0.0))
+          (Nx.where
+             near
+             (Nx.scalar_at at Nx.float64 1.0)
+             (Nx.scalar_at at Nx.float64 0.0))
       in
       seen := Nx.add !seen on;
       (* The frame's three rows, each dotted with the Jacobian difference:
@@ -684,15 +704,19 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
       Nx.scatter ~combine:Set ~axis:0 idx_rows v x
     in
     let geom =
-      Nx.init Nx.int32 [| ncand; 2 |] (fun i ->
-        let c = cands.(i.(0)) in
-        Int32.of_int (if Int.equal i.(1) 0 then c.g1 else c.g2))
+      Nx.place
+        at
+        (Nx.init Nx.int32 [| ncand; 2 |] (fun i ->
+           let c = cands.(i.(0)) in
+           Int32.of_int (if Int.equal i.(1) 0 then c.g1 else c.g2)))
     in
     let body =
-      Nx.init Nx.int32 [| ncand; 2 |] (fun i ->
-        let c = cands.(i.(0)) in
-        Int32.of_int
-          (if Int.equal i.(1) 0 then t.geom_bodyid.(c.g1) else t.geom_bodyid.(c.g2)))
+      Nx.place
+        at
+        (Nx.init Nx.int32 [| ncand; 2 |] (fun i ->
+           let c = cands.(i.(0)) in
+           Int32.of_int
+             (if Int.equal i.(1) 0 then t.geom_bodyid.(c.g1) else t.geom_bodyid.(c.g2))))
     in
     let dim = mix.dim
     and friction = mix.friction
