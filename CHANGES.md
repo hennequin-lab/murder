@@ -83,10 +83,42 @@ changes do not need an entry.
   `(float, 'w, 'd) Lqr.tape`), `inputs problem` describes the inputs at that
   set, and `Lqr.Rows`, `Lqr.Tangent_rows` and `Lqr.Tangent_roll_rows` are
   `('a, _) t` structures, as a parameter record now is.
+- `solve_fixed` (and `Solver.solve_fixed`) take `~max_iters` instead of
+  `~iters`: the budget is an upper bound, and the solve stops when the batch
+  has converged. Because it stops on its own test now, a solve that used to run
+  a given number of iterations converges a little less far than the same count
+  did; raise the budget or lower `~conv_threshold` where that matters. `Solver.t` gains `iters`, the number of iterations the solve
+  ran; a batch spends its slowest member's.
+- The fixed solve's line search is recursive: it tries the trial steps in
+  order and stops at the first the batch accepts, each level a `Rune.cond`
+  branch, so a level nobody reaches computes nothing. It selects the largest
+  accepted step, as the adaptive solve does, where it used to take the argmin
+  of the accepted trials' costs (and its Armijo test applied `c1` twice).
+- Batched fixed solves take one step and one damping schedule for the whole
+  batch: a trial is accepted when every member that has not converged
+  satisfies Armijo at it, so the batch moves at the step its slowest member
+  can take. A converged member is frozen and does not vote, so it cannot veto
+  the others. The implicit derivative is still taken member by member.
+- The fixed solve damps adaptively by default (Levenberg-Marquardt), from
+  `~reg` (`Regularisation.init` unless given) or a fixed `~mu`; `~mu:0.` turns
+  damping off. An adaptive strength is a fraction of each member's own
+  value-Hessian scale, so members whose curvature differs are damped alike. The
+  schedule is carried through the traced loops as tensors, and `~conv_threshold`
+  sets the stopping test.
+- `Lqr.backward_common` shifts the damping into the value Hessian
+  (`V + μ I`) instead of adding Tassa's three terms one by one: expanding the
+  shift gives exactly those terms, so a damped pass costs one diagonal
+  addition per step. `mu` may hold one strength per batch member.
+  `Regularisation.floor` names the floor of a schedule.
 
 ### ilqr-vae
 
 - Imported from `hennequin-lab/ilqr-vae-raven`.
+- The fixed inner solve runs at most the recognition's iteration count and
+  stops earlier when it has converged, so a fixed recognition is a budget
+  rather than an exact count. `Recognition.fixed` takes `?conv_threshold` for
+  how tightly it should converge, and its `~mu` is now optional with adaptive
+  damping the default.
 - Mini-batches are tensors: `Elbo.batch_loss_fixed` takes
   `[batch…; n_steps; n_output]` instead of an array, and the recognitions and
   the bound accept the matching leading trial axes, so a JIT-compiled step can

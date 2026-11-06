@@ -138,14 +138,23 @@ type solve
     Raises [Invalid_argument] if [max_iter] is not positive. *)
 val adaptive : ?max_iter:int -> ?conv_threshold:float -> unit -> solve
 
-(** [fixed ?alphas ?mu ?c1 ~iters ()] runs exactly [iters] iterations with
-    tensor-only control flow: traceable and compilable together with its
-    implicit gradient. [alphas] is the line-search step list, [mu] the
-    Levenberg-Marquardt damping and [c1] the line-search constant; each
-    defaults to the solver's own.
+(** [fixed ?alphas ?mu ?c1 ?conv_threshold ~iters ()] runs at most [iters]
+    iterations with tensor-only control flow: traceable and compilable together
+    with its implicit gradient. The inner solve stops earlier when it has
+    converged, as tightly as [conv_threshold] asks, and a batch of trials stops
+    when its last member has. [alphas] is the line-search step list, [mu] the
+    Levenberg-Marquardt damping (adaptive when omitted) and [c1] the line-search
+    constant; each defaults to the solver's own.
 
     Raises [Invalid_argument] if [iters] is not positive. *)
-val fixed : ?alphas:float list -> ?mu:float -> ?c1:float -> iters:int -> unit -> solve
+val fixed
+  :  ?alphas:float list
+  -> ?mu:float
+  -> ?c1:float
+  -> ?conv_threshold:float
+  -> iters:int
+  -> unit
+  -> solve
 
 (** [default] is {!adaptive} with every default: the solver a recognition uses
     when the caller passes no [~solve]. *)

@@ -14,14 +14,18 @@ type t =
   ; mu : float
   }
 
+(** [floor] is the smallest [mu] the schedule keeps: below it a factorization
+    is as good as undamped, and a schedule would take too long to grow back. *)
+let floor = 1e-6
+
 (** Start at [mu = 1]: mild enough not to slow convergence on easy problems,
     regularized enough that the first gains are sane on hard ones. *)
 let init = { delta = 1.0; mu = 1.0 }
 
 let increase { delta; mu } =
   let delta = Float.max 2.0 (2.0 *. delta) in
-  { delta; mu = Float.max 1e-6 (mu *. delta) }
+  { delta; mu = Float.max floor (mu *. delta) }
 
 let decrease { delta; mu } =
   let delta = Float.min 0.5 (delta /. 2.0) in
-  { delta; mu = Float.max 1e-6 (mu *. delta) }
+  { delta; mu = Float.max floor (mu *. delta) }

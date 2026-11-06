@@ -144,12 +144,17 @@ type ('a, 'b, 'd) common =
     carry of the recursion, which is [∂²/∂x_0²] of the optimal cost-to-go from
     the initial state.
 
-    [mu] is Levenberg-Marquardt damping, a scalar tensor: [Q_uu + μ BᵀB] and
-    [Q_ux + μ BᵀA] are factorized instead, which is what makes the pass stable
-    when the loss curvature alone is not positive definite. It is a tensor and
-    not a [float] so that a schedule can be carried through a traced loop;
-    omit it for exactly no damping (omitting it skips the terms, while passing
-    a zero costs three products per step).
+    [mu] is Levenberg-Marquardt damping, a scalar tensor: the value Hessian
+    is shifted to [V + μ I] before every step's [Q] blocks are formed, which
+    is [Q_uu + μ BᵀB], [Q_ux + μ BᵀA] and [Q_xx + μ AᵀA] at once, and is what
+    makes the pass stable when the loss curvature alone is not positive
+    definite. It costs one diagonal addition per step, not three products.
+    [mu] may instead hold one scale per batch member, broadcast against the
+    state dimension: the members are then damped apart, which is what a batch
+    whose members have different curvature needs. It is a tensor and not a
+    [float] so that a schedule can be carried through a traced loop; omit it
+    for exactly no damping (omitting it skips the shift, while passing a zero
+    adds it, for one diagonal addition per step).
 
     The result does not depend on the linear terms of the problem, which is
     the whole point: the primal solve and every tangent of it share it. A

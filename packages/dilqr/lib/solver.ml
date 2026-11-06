@@ -10,12 +10,13 @@
      All control flow is host-side, so it runs eagerly only — do not place it
      inside Rune.jit. Its time loops are scans, which run as loops when eager.
 
-   - [solve_fixed] runs a fixed number of iterations with a fixed
-     regularization, and its line search is a masked argmin over a fixed trial
-     schedule. There is no data-dependent control flow and no host read of a
-     traced tensor, and every time loop is a [Rune.scan], so the whole solve
-     is a pure tensor computation that Rune.jit can trace and compile into
-     loops: one step is traced whatever the horizon.
+   - [solve_fixed] runs at most [max_iters] iterations, stopping when the
+     batch has converged, with a recursive backtracking line search and an
+     optional adaptive damping. Its control flow is data-dependent but stays in
+     the graph: every loop is a [Rune.iterate] with a tensor test and every
+     branch a [Rune.cond], so there is no host read of a traced tensor, the
+     whole solve is a pure tensor computation that Rune.jit traces and compiles
+     into loops, and it runs a batch under one step.
 
    Every function takes the problem as a value, and works at any dtype: the
    dtype phantom is a type parameter, never a module member. *)
@@ -27,6 +28,11 @@ type 'a t =
   { xs : 'a array (** states, length [horizon + 1] *)
   ; us : 'a array (** controls, length [horizon] *)
   ; cost : 'a (** scalar tensor: running + final loss *)
+  ; iters : 'a
+    (** the number of iterations the solve ran, as a scalar of the problem's
+        dtype. A batch runs the iterations of its slowest member, so this is
+        how much of a [max_iters] budget it spent; the adaptive solve reports
+        the updates it applied. *)
   }
 
 (* [stack ts] is the array [ts] as one tensor with its length leading. *)
@@ -499,14 +505,534 @@ let tangent_solve
   let v = concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] (zeros_like dx0); v_next ] in
   { Lqr.xs = Infix.(g + v); us = du }
 
-(* [pick ~w ~batched] selects one slice along axis 0 of a batched trajectory
-   with a one-hot weight vector [w]. Pure tensor ops. *)
-let pick ~w ~(batched : ('a, 'b, 'd) Nx.t) : ('a, 'b, 'd) Nx.t =
-  let extra =
-    Array.create ~len:(Array.length (shape batched) - Array.length (shape w)) 1
+(* ---------------------------------------------------------------------------
+   The fixed-iteration solve
+
+   One iteration is a Riccati pass at the current damping strength, then a
+   backtracking line search that tries the trial steps in order and stops at
+   the first the batch accepts. It costs the levels its slowest member needs:
+   each level is a [Rune.cond] branch, and a branch not taken computes nothing,
+   eagerly or compiled.
+
+   The batch moves at one step, so it is limited by the member that has to
+   backtrack furthest. A member whose modelled decrease has become negligible
+   has converged: it is frozen and does not vote, so it cannot veto the steps
+   of the others. When no step is accepted the damping is raised and the pass
+   retried; a full step accepted lowers it again. The iteration loop stops once
+   every member has converged, or once an iteration could not buy a step at any
+   damping: the batch spends the iterations of its slowest member out of
+   [max_iters], and {!t.iters} says how many.
+
+   All of it is traced: every loop is a [Rune.iterate] with a tensor test,
+   every branch a [Rune.cond], and everything carried between iterations is a
+   tensor.
+   --------------------------------------------------------------------------- *)
+
+(* A trial's rollout. *)
+module Fixed_step = struct
+  type ('a, _) t =
+    { xs : 'a
+    ; us : 'a
+    ; cost : 'a
+    }
+  [@@deriving ptree]
+end
+
+let fixed_step () = Nx.Ptree.instantiate (module Fixed_step)
+
+type ('w, 'd) fixed_step = (('w, 'd) Problem.value, 'd) Fixed_step.t
+
+(* What a line search returns: the step it accepted — zero when it accepted
+   none — and the trajectory and cost that go with it, the nominal ones when it
+   accepted none. *)
+module Fixed_search = struct
+  type ('a, _) t =
+    { alpha : 'a
+    ; xs : 'a
+    ; us : 'a
+    ; cost : 'a
+    }
+  [@@deriving ptree]
+end
+
+let fixed_search () = Nx.Ptree.instantiate (module Fixed_search)
+
+type ('w, 'd) fixed_search = (('w, 'd) Problem.value, 'd) Fixed_search.t
+
+(* What one Riccati pass gives the control flow, beside the trajectory it was
+   run at. [d1], [d2] and [scale] hold one scalar per member. *)
+module Fixed_gains = struct
+  type ('a, _) t =
+    { ff : 'a (** the feedforward gain [k_k], [horizon; m] *)
+    ; fb : 'a (** the feedback gain [K_k], [horizon; m; n] *)
+    ; d1 : 'a (** the modelled first-order decrease, per member *)
+    ; d2 : 'a (** the curvature the gains used, per member *)
+    ; scale : 'a (** the value-Hessian scale of the pass, per member *)
+    }
+  [@@deriving ptree]
+end
+
+let fixed_gains () = Nx.Ptree.instantiate (module Fixed_gains)
+
+type ('w, 'd) fixed_gains = (('w, 'd) Problem.value, 'd) Fixed_gains.t
+
+(* One attempt at an iteration: a damping strength and the line search it
+   bought. The retry loop carries one of these and raises the strength until
+   the search accepts or the retries run out. [scale] is zero until a pass has
+   measured one, and [attempts] counts the passes of this iteration. *)
+module Fixed_attempt = struct
+  type ('a, _) t =
+    { beta : 'a
+    ; delta : 'a
+    ; scale : 'a
+    ; alpha : 'a
+    ; xs : 'a
+    ; us : 'a
+    ; cost : 'a
+    ; d1 : 'a
+    ; attempts : 'a
+    }
+  [@@deriving ptree]
+end
+
+let fixed_attempt () = Nx.Ptree.instantiate (module Fixed_attempt)
+
+type ('w, 'd) fixed_attempt = (('w, 'd) Problem.value, 'd) Fixed_attempt.t
+
+(* The solve's state between iterations. *)
+module Fixed_iter = struct
+  type ('a, _) t =
+    { xs : 'a
+    ; us : 'a
+    ; cost : 'a
+    ; d1 : 'a
+    ; alpha : 'a
+    ; beta : 'a
+    ; delta : 'a
+    ; scale : 'a
+    ; count : 'a
+    }
+  [@@deriving ptree]
+end
+
+let fixed_iter () = Nx.Ptree.instantiate (module Fixed_iter)
+
+type ('w, 'd) fixed_iter = (('w, 'd) Problem.value, 'd) Fixed_iter.t
+
+(* What a batch changes about the control flow, and nothing else: a reduction
+   over members, and putting a per-member quantity beside the axes it meets. A
+   single member is the degenerate case of both, and the code below is the same
+   for either. *)
+type 'd layout =
+  { members : 'd Nx.bool_t -> 'd Nx.bool_t
+    (** one flag per member, or none, reduced to one for the whole batch *)
+  ; tape_like : 'v 's. ('v, 's, 'd) Nx.t -> ('v, 's, 'd) Nx.t
+    (** a per-member scalar, shaped for the tape's rows ([B; m; m]) *)
+  ; state_like : 'd Nx.bool_t -> 'd Nx.bool_t
+    (** a per-member mask, shaped for a stacked trajectory ([B; K; n]) *)
+  }
+
+let single_layout (type d) : d layout =
+  let tape_like : 'v 's. ('v, 's, d) Nx.t -> ('v, 's, d) Nx.t = fun x -> x in
+  let state_like : d Nx.bool_t -> d Nx.bool_t = fun flags -> flags in
+  { members = (fun flags -> flags); tape_like; state_like }
+
+let batch_layout (type d) (b : int) : d layout =
+  let tape_like : 'v 's. ('v, 's, d) Nx.t -> ('v, 's, d) Nx.t =
+    fun x -> reshape [| b; 1; 1 |] x
   in
-  let w = reshape (Array.append (shape w) extra) w in
-  sum ~axes:[ 0 ] Infix.(batched * w)
+  let state_like : d Nx.bool_t -> d Nx.bool_t =
+    fun flags -> reshape [| b; 1; 1 |] flags
+  in
+  { members = (fun flags -> Nx.all ~axes:[ 0 ] flags); tape_like; state_like }
+
+(* The per-member tensor work: one member's rollout, Riccati pass and trial.
+   The dynamics and the losses are the problem's own, written for one member. *)
+
+let fixed_rollout_lane p theta x0 us =
+  let xs = states p theta x0 us in
+  xs, cost_of p theta xs us
+
+(* [fixed_scale common] is the scale of the value Hessian a pass left: the
+   largest magnitude on its diagonal, per member. Damping is a fraction of it,
+   so members whose curvature differs by orders of magnitude are damped alike,
+   and the scale costs one reduction of an [n; n] block the pass computed
+   anyway. *)
+let fixed_scale (common : (float, 'w, 'd) Lqr.common) =
+  Nx.max (Nx.abs (Nx.diagonal common.Lqr.value_hessian))
+
+let fixed_backward_lane p theta xs us mu =
+  let tape = blocks_t p theta xs us in
+  let common = Lqr.backward_common ~mu tape in
+  let gains, d1, d2, _ = Lqr.backward_lin ~common ~tape ~lin:(Lqr.lin_of_tape tape) in
+  { Fixed_gains.ff = gains.Lqr.feedforward
+  ; fb = gains.Lqr.feedback
+  ; d1
+  ; d2
+  ; scale = fixed_scale common
+  }
+
+let fixed_trial_lane p theta x0 xs us ff fb alpha =
+  let xs_t, us_t =
+    Lqr.rollout_tensor
+      ~dyn:(dyn p theta)
+      ~x0
+      ~xs
+      ~us
+      ~gains:{ Lqr.feedback = fb; feedforward = ff }
+      ~alpha
+  in
+  { Fixed_step.xs = xs_t; us = us_t; cost = cost_of p theta xs_t us_t }
+
+(* The kernels, as one record: one call per pass or per trial, over the stacked
+   trajectory, never one per step. *)
+type ('w, 'p, 'd) fixed_kernels =
+  { rollout :
+      'p
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value * ('w, 'd) Problem.value
+  ; backward :
+      'p
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) fixed_gains
+  ; trial :
+      'p
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) Problem.value
+      -> ('w, 'd) fixed_step
+  }
+
+let single_fixed_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) fixed_kernels =
+  { rollout = (fun theta x0 us -> fixed_rollout_lane p theta x0 us)
+  ; backward = (fun theta xs us mu -> fixed_backward_lane p theta xs us mu)
+  ; trial =
+      (fun theta x0 xs us ff fb alpha -> fixed_trial_lane p theta x0 xs us ff fb alpha)
+  }
+
+let batched_fixed_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) fixed_kernels =
+  let rollout =
+    Rune.vmap
+      Nx.Ptree.(
+        pair p.Problem.params (pair tensor tensor) @-> returns (pair tensor tensor))
+      (fun (theta, (x0, us)) -> fixed_rollout_lane p theta x0 us)
+  in
+  let backward =
+    Rune.vmap
+      Nx.Ptree.(
+        pair p.Problem.params (pair tensor (pair tensor tensor))
+        @-> returns (fixed_gains ()))
+      (fun (theta, (xs, (us, mu))) -> fixed_backward_lane p theta xs us mu)
+  in
+  let trial =
+    Rune.vmap
+      Nx.Ptree.(
+        pair
+          p.Problem.params
+          (pair tensor (pair tensor (pair tensor (pair tensor (pair tensor tensor)))))
+        @-> returns (fixed_step ()))
+      (fun (theta, (x0, (xs, (us, (ff, (fb, alpha)))))) ->
+         fixed_trial_lane p theta x0 xs us ff fb alpha)
+  in
+  { rollout = (fun theta x0 us -> rollout (theta, (x0, us)))
+  ; backward = (fun theta xs us mu -> backward (theta, (xs, (us, mu))))
+  ; trial =
+      (fun theta x0 xs us ff fb alpha ->
+        trial (theta, (x0, (xs, (us, (ff, (fb, alpha)))))))
+  }
+
+(* [unstack_horizon len t] is [t]'s horizon sliced into [len] per-step
+   tensors, batch axes kept: [t]'s last two axes are the horizon and the step
+   dimension. *)
+let unstack_horizon len (t : ('a, 'b, 'd) Nx.t) =
+  let axis = Array.length (shape t) - 2 in
+  Array.init len ~f:(fun k ->
+    let spec = Array.create ~len:(axis + 1) Nx.A in
+    spec.(axis) <- Nx.I k;
+    slice (Array.to_list spec) t)
+
+(* The solve. [us] is the stacked initial controls, batch axes leading
+   ([B; K; m]) for a batch and [K; m] for one member. *)
+let solve_fixed_with
+      (type w p d)
+      (p : (w, p, d) Problem.t)
+      (layout : d layout)
+      (kernels : (w, p, d) fixed_kernels)
+      ?(alphas = Linesearch.schedule ~n:8 ())
+      ?mu
+      ?reg
+      ?(c1 = 1e-2)
+      ?(conv_threshold = 1e-6)
+      ~(max_iters : int)
+      (theta : p)
+      (x0 : (w, d) Problem.value)
+      (us : (w, d) Problem.value)
+  : (w, d) Problem.value t
+  =
+  let scalar v = scalar_like x0 v in
+  let zero = scalar 0.0 in
+  let xs, cost0 = kernels.rollout theta x0 us in
+  (* A per-member zero: a stacked quantity's batch axis is the shape of the
+     members' costs, and is empty for one member. *)
+  let member_zero = zeros_like cost0 in
+  let member v = broadcast_to (shape cost0) (scalar v) in
+  (* Damping. [mu] pins a fixed absolute strength, and [~mu:0.] turns damping
+     off; otherwise the solve damps adaptively, from [reg] or, by default, from
+     [Regularisation.init]. *)
+  (match mu, reg with
+   | Some _, Some _ ->
+     invalid_arg
+       "dilqr: Solver.solve_fixed: give ~mu (a fixed damping) or ~reg (an adaptive one), \
+        not both"
+   | _ -> ());
+  let fixed_mu =
+    match mu with
+    | Some m when not (Float.equal m 0.0) -> Some (scalar m)
+    | _ -> None
+  in
+  let reg =
+    match mu with
+    | Some _ -> None
+    | None -> Some (Option.value reg ~default:Regularisation.init)
+  in
+  (* An adaptive schedule has to be able to raise the damping, so it is the
+     only mode that retries a failed line search; a fixed strength that bought
+     no step buys none at a retry either. *)
+  let max_retries =
+    match reg with
+    | None -> 1
+    | Some _ -> 12
+  in
+  let beta0, delta0 =
+    match reg with
+    | None -> member_zero, member 1.0
+    | Some r -> member r.Regularisation.mu, member r.Regularisation.delta
+  in
+  (* The strength a pass is run at: a fixed one is one scalar for the batch; an
+     adaptive one is a fraction of the member's own value-Hessian scale, and is
+     the raw fraction until a pass has measured one (the first pass uses the
+     schedule's own units, as the adaptive solve does). *)
+  let damping beta scale =
+    match fixed_mu with
+    | Some mu -> mu
+    | None ->
+      (match reg with
+       | None -> zero
+       | Some _ ->
+         let known = Nx.greater_s scale 0.0 in
+         layout.tape_like (Nx.where known Infix.(beta * scale) beta))
+  in
+  (* A member has converged when its model's first-order decrease is negligible
+     against its own cost, the adaptive solve's test: it is second order in the
+     control gradient, so it fires well before the gradient itself vanishes. *)
+  let converged d1 cost =
+    let scale = Nx.maximum_s (Nx.abs cost) 1.0 in
+    Nx.less_equal (Nx.abs d1) Infix.(scale *$ conv_threshold)
+  in
+  (* The Levenberg-Marquardt schedule, in tensor arithmetic so that it rides
+     through the traced loops: [increase] at least doubles the growth factor,
+     [decrease] at most halves it, and the strength floors at [floor]. *)
+  let increase beta delta =
+    let delta' = Nx.maximum_s Infix.(delta *$ 2.0) 2.0 in
+    delta', Nx.maximum_s Infix.(beta * delta') Regularisation.floor
+  in
+  let decrease beta delta =
+    let delta' = Nx.minimum_s Infix.(delta /$ 2.0) 0.5 in
+    delta', Nx.maximum_s Infix.(beta * delta') Regularisation.floor
+  in
+  (* Recursive backtracking. A level rolls a trial out and tests every member
+     that is still active at it; a member that has converged takes no step and
+     does not vote, so it cannot veto the others. The batch accepts a level
+     when every active member satisfies Armijo there, and only then does the
+     recursion stop: the batch moves at the step its slowest member can take. *)
+  let rec search
+            ~active
+            ~(nominal : (w, d) fixed_step)
+            ~(gains : (w, d) fixed_gains)
+            ~cost
+            ~d1
+            ~d2
+    = function
+    | [] ->
+      { Fixed_search.alpha = zero
+      ; xs = nominal.Fixed_step.xs
+      ; us = nominal.us
+      ; cost = nominal.cost
+      }
+    | alpha :: tl ->
+      let alpha_t = broadcast_to (shape cost) (scalar alpha) in
+      let trial =
+        kernels.trial theta x0 nominal.xs nominal.us gains.ff gains.fb alpha_t
+      in
+      let model = Infix.((alpha_t * d1) + (alpha_t * alpha_t * d2 *$ 0.5)) in
+      let armijo = Nx.less_equal trial.Fixed_step.cost Infix.(cost + (model *$ c1)) in
+      let ok = layout.members (Nx.logical_or (Nx.logical_not active) armijo) in
+      Rune.cond
+        (fixed_search ())
+        ok
+        (fun () ->
+           { Fixed_search.alpha = scalar alpha
+           ; xs = trial.xs
+           ; us = trial.us
+           ; cost = trial.cost
+           })
+        (fun () -> search ~active ~nominal ~gains ~cost ~d1 ~d2 tl)
+  in
+  (* One pass and the line search it buys. The scale is the pass's own, kept
+     from the last finite one; the first finite scale converts the strength to
+     relative units without moving the damping — [beta] was the strength, and
+     [beta / scale] times the scale is that same strength. *)
+  let attempt ~(nominal : (w, d) fixed_step) ~beta ~delta ~scale ~attempts =
+    let gains = kernels.backward theta nominal.xs nominal.us (damping beta scale) in
+    let active = Nx.logical_not (converged gains.Fixed_gains.d1 nominal.cost) in
+    let found =
+      search ~active ~nominal ~gains ~cost:nominal.cost ~d1:gains.d1 ~d2:gains.d2 alphas
+    in
+    let valid = Nx.logical_and (Nx.isfinite gains.scale) (Nx.greater_s gains.scale 0.0) in
+    let fresh = Nx.logical_and valid (Nx.less_equal_s scale 0.0) in
+    let scale' = Nx.where valid gains.scale scale in
+    let beta = Nx.where fresh Infix.(beta / gains.scale) beta in
+    (* Raise the damping when no step was bought, lower it after a full step,
+       keep it after a backtracked one. *)
+    let delta', beta' =
+      match reg with
+      | None -> delta, beta
+      | Some _ ->
+        let accepted = Nx.greater_s found.Fixed_search.alpha 0.0 in
+        let full = Nx.greater_equal_s found.alpha 1.0 in
+        let delta_up, beta_up = increase beta delta in
+        let delta_dn, beta_dn = decrease beta delta in
+        ( Nx.where accepted (Nx.where full delta_dn delta) delta_up
+        , Nx.where accepted (Nx.where full beta_dn beta) beta_up )
+    in
+    (* A member that has converged keeps its trajectory: it takes no step,
+       whatever the batch's. *)
+    let state_like = layout.state_like active in
+    { Fixed_attempt.beta = beta'
+    ; delta = delta'
+    ; scale = scale'
+    ; alpha = found.alpha
+    ; xs = Nx.where state_like found.xs nominal.xs
+    ; us = Nx.where state_like found.us nominal.us
+    ; cost = Nx.where active found.cost nominal.cost
+    ; d1 = gains.d1
+    ; attempts = Infix.(attempts +$ 1.0)
+    }
+  in
+  (* The retry loop of one iteration: damping is raised until the line search
+     accepts, or the retries run out. *)
+  let retry ~(nominal : (w, d) fixed_step) ~beta ~delta ~scale =
+    let until (a : (w, d) fixed_attempt) =
+      Nx.logical_or
+        (Nx.greater_s a.Fixed_attempt.alpha 0.0)
+        (Nx.greater_equal_s a.attempts (Float.of_int max_retries))
+    in
+    Rune.iterate
+      (fixed_attempt ())
+      ~max:max_retries
+      ~until
+      (fun a ->
+         attempt ~nominal ~beta:a.beta ~delta:a.delta ~scale:a.scale ~attempts:a.attempts)
+      { Fixed_attempt.beta
+      ; delta
+      ; scale
+      ; alpha = zero
+      ; xs = nominal.Fixed_step.xs
+      ; us = nominal.us
+      ; cost = nominal.cost
+      ; d1 = member_zero
+      ; attempts = zero
+      }
+  in
+  let step (s : (w, d) fixed_iter) =
+    let nominal = { Fixed_step.xs = s.xs; us = s.us; cost = s.cost } in
+    let a = retry ~nominal ~beta:s.beta ~delta:s.delta ~scale:s.scale in
+    { Fixed_iter.xs = a.xs
+    ; us = a.us
+    ; cost = a.cost
+    ; d1 = a.d1
+    ; alpha = a.alpha
+    ; beta = a.beta
+    ; delta = a.delta
+    ; scale = a.scale
+    ; count = Infix.(s.count +$ 1.0)
+    }
+  in
+  let until (s : (w, d) fixed_iter) =
+    let finished =
+      Nx.logical_or (layout.members (converged s.d1 s.cost)) (Nx.less_equal_s s.alpha 0.0)
+    in
+    Nx.logical_or
+      (Nx.logical_and (Nx.greater_s s.count 0.0) finished)
+      (Nx.greater_equal_s s.count (Float.of_int max_iters))
+  in
+  let state =
+    Rune.iterate
+      (fixed_iter ())
+      ~max:max_iters
+      ~until
+      step
+      { Fixed_iter.xs
+      ; us
+      ; cost = cost0
+      ; d1 = member_zero
+      ; alpha = zero
+      ; beta = beta0
+      ; delta = delta0
+      ; scale = member_zero
+      ; count = zero
+      }
+  in
+  { xs = unstack_horizon (p.Problem.horizon + 1) state.xs
+  ; us = unstack_horizon p.Problem.horizon state.us
+  ; cost = state.cost
+  ; iters = state.count
+  }
+
+(* The fixed-iteration solve. Batched inputs — a leading batch axis on the
+   parameters, the initial state and every initial control — are solved as one
+   batch: the members share the step and the damping schedule, the batch stops
+   when the last of them has converged or could not be moved, and the dynamics
+   and the losses stay written for one member. *)
+let solve_fixed p ?alphas ?mu ?reg ?c1 ?conv_threshold ~max_iters theta x0 us0 =
+  if not (is_batched x0 us0)
+  then (
+    let us = stack us0 in
+    solve_fixed_with
+      p
+      single_layout
+      (single_fixed_kernels p)
+      ?alphas
+      ?mu
+      ?reg
+      ?c1
+      ?conv_threshold
+      ~max_iters
+      theta
+      x0
+      us)
+  else (
+    let b = (shape x0).(0) in
+    let us = Nx.stack ~axis:1 (Array.to_list us0) in
+    solve_fixed_with
+      p
+      (batch_layout b)
+      (batched_fixed_kernels p)
+      ?alphas
+      ?mu
+      ?reg
+      ?c1
+      ?conv_threshold
+      ~max_iters
+      theta
+      x0
+      us)
 
 (* Scalar-read helper for the adaptive solver. *)
 let item_f t = item [] t
@@ -515,121 +1041,6 @@ let log p (fmt : ('a, Stdlib.Format.formatter, unit) format) : 'a =
   if p.Problem.verbose
   then Stdlib.Format.printf (Stdlib.( ^^ ) (Stdlib.( ^^ ) "dilqr: " fmt) "\n%!")
   else Stdlib.Format.ifprintf Stdlib.Format.err_formatter fmt
-
-(* The traceable, fixed-iteration solve. [alphas] is the host-side trial
-   schedule (e.g. [1.; 0.5; ...]); the acceptance test over trials is
-   realized with tensor ops, so the result never depends on host reads.
-   A non-PD regularized [Quu] surfaces as NaNs, which the acceptance mask
-   rejects. *)
-let solve_fixed_unbatched
-      p
-      ?(alphas = Linesearch.schedule ~n:8 ())
-      ?(mu = 0.0)
-      ?(c1 = 1e-2)
-      ~(iters : int)
-      (theta : 'p)
-      (x0 : ('w, 'd) Problem.value)
-      (us0 : ('w, 'd) Problem.value array)
-  : ('w, 'd) Problem.value t
-  =
-  let alphas = Array.of_list alphas in
-  (* A host float becomes a scalar tensor for the LQR core; zero means no
-     damping terms at all, which is cheaper than regularizing by zero. *)
-  let mu = if Float.equal mu 0.0 then None else Some (scalar_like x0 mu) in
-  let us = ref (stack us0) in
-  let xs = ref (states p theta x0 !us) in
-  let cost = ref (cost_of p theta !xs !us) in
-  for _ = 1 to iters do
-    let tape = blocks_t p theta !xs !us in
-    let gains, d1, d2, _ = Lqr.backward ?mu tape ~lin:(Lqr.lin_of_tape tape) in
-    let n_alpha = Array.length alphas in
-    (* Placeholders, every element is written below. *)
-    let us_trials = Array.create ~len:n_alpha x0 in
-    let xs_trials = Array.create ~len:n_alpha x0 in
-    let costs = Array.create ~len:n_alpha !cost in
-    for i = 0 to n_alpha - 1 do
-      let xs_t, us_t =
-        Lqr.rollout ~dyn:(dyn p theta) ~x0 ~xs:!xs ~us:!us ~gains ~alpha:alphas.(i)
-      in
-      us_trials.(i) <- us_t;
-      xs_trials.(i) <- xs_t;
-      costs.(i) <- cost_of p theta xs_t us_t
-    done;
-    let us_all = Nx.stack ~axis:0 (Array.to_list us_trials) in
-    let xs_all = Nx.stack ~axis:0 (Array.to_list xs_trials) in
-    let costs = Nx.stack ~axis:0 (Array.to_list costs) in
-    (* Modelled cost change: alpha*d1 + 0.5*alpha^2*d2, <= 0 for useful
-       trials. Accept trials that beat [cost + c1 * model]. *)
-    let alphas_t =
-      Nx.stack ~axis:0 (Array.to_list (Array.map ~f:(scalar_like !cost) alphas))
-    in
-    let pred = Infix.((alphas_t * d1) + (alphas_t * alphas_t *$ (0.5 *. c1) * d2)) in
-    let accept = less_equal costs Infix.(!cost + (pred *$ c1)) in
-    (* [any] is true only when a trial was accepted. The argmin of an
-       all-infinity score vector returns 0, so testing [sum w] instead would
-       select trial 0 — possibly a non-finite rejected rollout — whenever no
-       trial is accepted. Mask the rejected trials' costs and trajectories
-       before any weighted sum: a NaN rejected trial must not reach the
-       result, nor the backward pass through [pick]. *)
-    let any = Nx.any accept in
-    let costs = where accept costs (full_like costs 0.0) in
-    let scores = where accept costs (full_like costs Float.infinity) in
-    let best = cast int32 (argmin ~axis:0 scores) in
-    let w =
-      cast (Nx.dtype !cost) (Nx.equal (arange_at (beside best) int32 0 n_alpha 1) best)
-    in
-    let mask =
-      reshape
-        (Array.append
-           [| n_alpha |]
-           (Array.create ~len:(Array.length (shape us_all) - 1) 1))
-        accept
-    in
-    let us_all = where mask us_all (broadcast_to (shape us_all) !us) in
-    let xs_all = where mask xs_all (broadcast_to (shape xs_all) !xs) in
-    let us_sel = pick ~w ~batched:us_all in
-    let xs_sel = pick ~w ~batched:xs_all in
-    let cost_sel = sum Infix.(costs * w) in
-    let us' = where any us_sel !us in
-    let xs' = where any xs_sel !xs in
-    let cost' = where any cost_sel !cost in
-    us := us';
-    xs := xs';
-    cost := cost'
-  done;
-  { xs = unstack (p.Problem.horizon + 1) !xs
-  ; us = unstack p.Problem.horizon !us
-  ; cost = !cost
-  }
-
-(* The structure of a solution: the states, the controls and the cost, the
-   states and controls as lists, for the [Rune.vmap] that turns the unbatched
-   solve into a batched one. *)
-let solution_structure () = Nx.Ptree.(pair (list tensor) (pair (list tensor) tensor))
-
-(* The fixed-iteration solve. Batched inputs (a leading batch axis on the
-   parameters, the initial state and every initial control) are solved by
-   [Rune.vmap]-ing the unbatched solve over the batch: every member gets its
-   own line search and its own trajectory, and the dynamics and losses are
-   written for one member. *)
-let solve_fixed p ?alphas ?mu ?c1 ~iters theta x0 us0 =
-  if not (is_batched x0 us0)
-  then solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters theta x0 us0
-  else (
-    let inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t =
-      { Problem.Inputs.theta; x0; us0 }
-    in
-    let xs, (us, cost) =
-      Rune.vmap
-        Nx.Ptree.(Problem.inputs p @-> returns (solution_structure ()))
-        (fun (i : ('p, ('w, 'd) Problem.value) Problem.Inputs.t) ->
-           let { xs; us; cost } =
-             solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters i.theta i.x0 i.us0
-           in
-           Array.to_list xs, (Array.to_list us, cost))
-        inputs
-    in
-    { xs = Array.of_list xs; us = Array.of_list us; cost })
 
 (* The traceable kernels of the adaptive solve, as one record. The eager and
    the compiled implementations differ only in these three functions: the
@@ -809,6 +1220,8 @@ let solve_with
   let converged c c' =
     Float.(Float.abs ((c -. c') /. Float.max (Float.abs c) 1.0) < conv_threshold)
   in
+  (* How many updates the solve applied, for the result's [iters]. *)
+  let updates = ref 0 in
   let rec loop (iter : int) (c : float) (attempts : int) =
     if iter >= max_iter
     then ()
@@ -864,6 +1277,7 @@ let solve_with
           xs := xs_t;
           us := us_t;
           cost_t := cost_t';
+          Int.incr updates;
           if converged c fv
           then (
             log p "converged after %d iterations: %g -> %g" iter c fv;
@@ -874,6 +1288,7 @@ let solve_with
   { xs = unstack (p.Problem.horizon + 1) !xs
   ; us = unstack p.Problem.horizon !us
   ; cost = !cost_t
+  ; iters = scalar_like x0 (Float.of_int !updates)
   }
 
 let solve p = solve_with p (eager_kernels p)

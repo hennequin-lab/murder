@@ -37,12 +37,14 @@
     A problem is a value ({!Problem.t}): its dtype, dimensions, horizon,
     dynamics and losses are record fields, and its parameter structure is an
     [Nx.Ptree.t]. Everything below the solve level is a pure tensor
-    computation with static control flow, and every time loop is a
-    {!Rune.scan}: one traced step stands for the whole horizon, which
-    [Rune.jit] compiles as a loop. A fixed-iteration solve, its implicit
-    derivative in either mode, and the tangent sweeps of a forward-mode batch
-    therefore trace and compile with [Rune.jit] on CPU or GPU into programs
-    whose size grows with the iteration count, not with the horizon. The
+    computation, and every time loop is a {!Rune.scan}: one traced step stands
+    for the whole horizon, which [Rune.jit] compiles as a loop. The fixed
+    solve's control flow is data-dependent but stays in the graph — its
+    iteration budget and damping retries are {!Rune.iterate}s and its line
+    search {!Rune.cond} branches — so a solve, its implicit derivative in
+    either mode, and the tangent sweeps of a forward-mode batch all trace and
+    compile with [Rune.jit] on CPU or GPU into programs whose size grows with
+    neither the horizon nor the budget. The
     adaptive solve ({!solve_adaptive}) uses host-side control flow
     (regularization retries, Armijo backtracking) and is not itself traceable;
     with a JIT option, its tensor kernels are compiled by [Rune.jit] while
@@ -51,9 +53,14 @@
 
     {b Batches.} {!solve_fixed} solves a batch of problems at once: give every
     leaf of the parameters, the initial state and every initial control a
-    leading batch axis, and each member gets its own trajectory, line search
-    and derivative. The dynamics and the losses stay written for one member;
-    the solver maps them over the batch. {!solve_adaptive} is deliberately
+    leading batch axis, and each member gets its own trajectory, cost and
+    derivative. The dynamics and the losses stay written for one member; the
+    solver maps them over the batch. Two things are the batch's: the step —
+    a trial is accepted when every member that has not converged satisfies
+    Armijo at it, so the batch moves at the step its slowest member can take —
+    and the iteration budget, which is spent until the last member has
+    converged. Damping is one schedule for the batch, of a strength relative to
+    each member's own value-Hessian scale. {!solve_adaptive} is deliberately
     unbatched: its control flow is host-side, and a batch would need one of
     each per member.
 
@@ -61,13 +68,15 @@
     {!module:Solver} for advanced use.
 
     {b Batched forward mode.} A batch of {e tangents} is a different axis from
-    a batch of problems, and it composes with it: map over the tangents with
-    [Rune.vmap] and [Rune.jvp], and the primal solve — with the factors every
-    tangent reuses — is computed once, outside the lanes.
+    a batch of problems. Map over the tangents with [Rune.vmap] and [Rune.jvp]
+    around one problem's solve, and the primal — with the factors every tangent
+    reuses — is computed once, outside the lanes. A batched problem's
+    derivative is already taken member by member, so a direction axis belongs
+    around a single problem: both would be leading axes.
 
     {[
       let solve = Dilqr.solve_fixed problem in
-      let taus = solve ~iters:5 inputs in
+      let taus = solve ~max_iters:5 inputs in
       let dtaus =
         Rune.vmap
           Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
@@ -76,7 +85,7 @@
                (Rune.jvp
                   (inputs problem)
                   Nx.Ptree.tensor
-                  (fun i -> solve ~iters:5 i)
+                  (fun i -> solve ~max_iters:5 i)
                   inputs
                   dinputs))
           dirs
@@ -152,6 +161,10 @@ module Solver : sig
     { xs : 'a array (** states, length [horizon + 1] *)
     ; us : 'a array (** controls, length [horizon] *)
     ; cost : 'a (** scalar tensor: running + final loss *)
+    ; iters : 'a
+      (** the number of iterations the solve ran, as a scalar of the problem's
+          dtype. A batch runs the iterations its slowest member needs, so this
+          is how much of a [max_iters] budget it spent. *)
     }
 
   (** [rollout problem theta x0 us] integrates the dynamics from [x0] under
@@ -276,22 +289,46 @@ module Solver : sig
     -> ('w, 'p, 'd) compiled
 
   (** Fixed-iteration iLQR with tensor-only control flow: traceable and
-      JIT-compilable. Every time loop is a [Rune.scan], compiled as a loop,
-      so a program costs its iterations, not its horizon times its
-      iterations. [alphas] is the trial schedule (default [1; 1/2; …], 8
-      trials); the line search is a masked argmin over the trials, evaluated
-      in-graph. [mu] fixes the regularization (default none).
+      JIT-compilable. Every time loop is a [Rune.iterate] with a tensor test,
+      compiled as a loop, so a program costs its code, not its horizon or its
+      iteration budget.
+
+      One iteration is a Riccati pass, then a backtracking line search that
+      tries [alphas] in order (default [1; 1/2; …], 8 trials) and stops at the
+      first trial the batch accepts: [alphas] is a host-side schedule, and
+      each level is a branch, so a level the batch never reaches computes
+      nothing. A trial is accepted when every member that has not converged
+      satisfies Armijo at it, so the batch moves at the step its slowest
+      member can take. A member whose modelled decrease has become negligible
+      is converged: it is frozen and does not vote, so it cannot veto the
+      others. The loop stops once every member has converged, or once an
+      iteration could not buy a step at any damping — so the batch spends the
+      iterations of its slowest member out of [max_iters], and [iters] reports
+      how many.
+
+      Damping is adaptive by default: the strength is raised when no step is
+      bought and lowered after a full one, from [reg] ([Regularisation.init]
+      unless given). An adaptive strength is a fraction of each member's own
+      value-Hessian scale, measured by the pass, so members whose curvature
+      differs are damped alike; the first pass uses the schedule's units.
+      [mu] pins a fixed absolute strength instead, and [~mu:0.] turns damping
+      off; give one of [mu] and [reg], not both.
 
       Batched inputs — a leading batch axis on the parameters, the initial
-      state and every initial control — are solved member by member (the
-      single-member solve is mapped over the batch): [cost] is then [B] and
-      every state and control is [B; n] or [B; m]. *)
+      state and every initial control — are solved as one batch: [cost] is
+      then [B] and every state and control is [B; n] or [B; m]. The members
+      share the step and the damping schedule.
+
+      [alphas] must be positive (a rejected batch is reported as a zero step),
+      and [max_iters] not negative ([Rune.iterate] does not take one). *)
   val solve_fixed
     :  ('w, 'p, 'd) Problem.t
     -> ?alphas:float list
     -> ?mu:float
+    -> ?reg:Regularisation.t
     -> ?c1:float
-    -> iters:int
+    -> ?conv_threshold:float
+    -> max_iters:int
     -> 'p
     -> ('w, 'd) Problem.value
     -> ('w, 'd) Problem.value array
@@ -354,10 +391,14 @@ val solve_adaptive
     derivative in both modes. The returned function takes the fixed-solve
     options and the solve inputs, and returns the stacked trajectory.
 
-    Batched inputs (a leading batch axis on every leaf) are solved member by
-    member, the implicit derivative included; the stacked trajectory is then
-    [B; K+1; n+m]. The solve is traceable, so put the returned function inside
-    [Rune.jit] with a [Rune.grad] or a [Rune.jvp] inside:
+    Batched inputs (a leading batch axis on every leaf) are solved as one
+    batch — the step and the damping schedule are the batch's, and the solve
+    stops when its slowest member has converged — and the implicit derivative
+    is taken member by member, which is what the implicit function theorem
+    says: one member's solution does not depend on the others. The stacked
+    trajectory is then [B; K+1; n+m]. The solve is traceable, so put the
+    returned function inside [Rune.jit] with a [Rune.grad] or a [Rune.jvp]
+    inside:
 
     {[
     let solve = solve_fixed problem in
@@ -367,18 +408,22 @@ val solve_adaptive
         (fun inputs ->
            Rune.grad
              (inputs problem)
-             (fun inputs -> loss (solve ~iters:3 inputs))
+             (fun inputs -> loss (solve ~max_iters:3 inputs))
              inputs)
     ]}
 
     The derivative is taken at the undamped KKT system, as in
-    {!solve_adaptive}. [Rune.grad] and [Rune.jvp] both apply to the same
-    returned function; the forward tangent map is pure tensor code whose time
-    loops are scans, so the solve and its JVP compile together. *)
+    {!solve_adaptive}: the damping (adaptive by default, or pinned by [mu]),
+    the step and the iteration count are devices that find the trajectory, not
+    part of the map being differentiated. [Rune.grad] and [Rune.jvp] both apply to the same returned
+    function; the forward tangent map is pure tensor code whose time loops are
+    scans, so the solve and its JVP compile together. *)
 val solve_fixed
   :  ('w, 'p, 'd) Problem.t
   -> ?alphas:float list
   -> ?mu:float
+  -> ?reg:Regularisation.t
   -> ?c1:float
-  -> iters:int
+  -> ?conv_threshold:float
+  -> max_iters:int
   -> ('w, 'p, 'd) solve

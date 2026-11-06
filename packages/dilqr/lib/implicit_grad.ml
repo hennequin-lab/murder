@@ -277,10 +277,12 @@ let solve_adaptive (p : ('w, 'p, 'd) Problem.t) ?beam ?parallel =
    inside it) to compile the solve and its derivative together. *)
 let solve_fixed_unbatched
       p
-      ~(iters : int)
+      ~(max_iters : int)
       ?alphas
       ?mu
+      ?reg
       ?c1
+      ?conv_threshold
       (inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t)
   : ('w, 'd) Problem.value
   =
@@ -288,20 +290,95 @@ let solve_fixed_unbatched
     (Problem.inputs p)
     Nx.Ptree.tensor
     (fun { Problem.Inputs.theta; x0; us0 } ->
-       let sol = Solver.solve_fixed_unbatched p ?alphas ?mu ?c1 ~iters theta x0 us0 in
+       let sol =
+         Solver.solve_fixed p ?alphas ?mu ?reg ?c1 ?conv_threshold ~max_iters theta x0 us0
+       in
        ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
        , tangent_rule p ~theta ~x0 ~us0 ~sol ))
     inputs
 
-(* Batched inputs (a leading batch axis on the parameters, the initial state
-   and every initial control) are solved by vmapping the unbatched solve, its
-   implicit derivative included, over the batch: each member gets its own
-   trajectory and its own gradient. *)
-let solve_fixed p ?alphas ?mu ?c1 ~iters inputs =
-  if not (Solver.is_batched inputs.Problem.Inputs.x0 inputs.us0)
-  then solve_fixed_unbatched p ~iters ?alphas ?mu ?c1 inputs
-  else
+(* A batch's solve is one solve over the batch, so its derivative is taken
+   member by member: the tangent map maps each member's tangent solve over the
+   batch, and the transpose each member's implicit VJP. The batch axis is a map
+   axis like any other, and the primal — with the shared step and damping the
+   batch's members took — is outside both.
+
+   The derivative is still the implicit one at the trajectory the solve
+   returned, per member: the step and the damping are devices that find the
+   trajectory, not part of the map being differentiated. *)
+let batched_tangent p ~(theta : 'p) ~(sol : ('w, 'd) Problem.value Solver.t) =
+  let taus = Problem.taus_of p sol.xs sol.us in
+  let signature =
+    Nx.Ptree.(
+      pair p.Problem.params (pair p.Problem.params (pair tensor tensor))
+      @-> returns tensor)
+  in
+  fun (dinputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t) ->
     Rune.vmap
-      Nx.Ptree.(Problem.inputs p @-> returns Nx.Ptree.tensor)
-      (fun i -> solve_fixed_unbatched p ~iters ?alphas ?mu ?c1 i)
+      signature
+      (fun (theta_i, (dtheta_i, (dx0_i, taus_i))) ->
+         let xs_i, us_i = Problem.split_taus p taus_i in
+         let dsol =
+           Solver.tangent_solve p theta_i ~dtheta:dtheta_i ~dx0:dx0_i xs_i us_i
+         in
+         taus_of_stacked p dsol.Lqr.xs dsol.Lqr.us)
+      (theta, (dinputs.theta, (dinputs.x0, taus)))
+
+let batched_transpose
+      p
+      ~(sol : ('w, 'd) Problem.value Solver.t)
+      (inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t)
+  =
+  let taus = Problem.taus_of p sol.xs sol.us in
+  fun (ybar : ('w, 'd) Problem.value) ->
+    Rune.vmap
+      Nx.Ptree.(
+        pair (Problem.inputs p) (pair tensor tensor) @-> returns (Problem.inputs p))
+      (fun ((i : ('p, ('w, 'd) Problem.value) Problem.Inputs.t), (taus_i, ybar_i)) ->
+         let xs_i, us_i = Problem.split_taus p taus_i in
+         bwd p { theta = i.theta; x0 = i.x0; us0 = i.us0; xs = xs_i; us = us_i } ybar_i)
+      (inputs, (taus, ybar))
+
+(* Batched inputs — a leading batch axis on the parameters, the initial state
+   and every initial control — are solved as one batch, so the batch's step and
+   damping schedule are the solve's, and the batch stops when its slowest
+   member has converged. The derivative is taken member by member, which is
+   what the implicit function theorem says: each member's solution does not
+   depend on the others. *)
+let solve_fixed p ?alphas ?mu ?reg ?c1 ?conv_threshold ~max_iters inputs =
+  if not (Solver.is_batched inputs.Problem.Inputs.x0 inputs.us0)
+  then solve_fixed_unbatched p ~max_iters ?alphas ?mu ?reg ?c1 ?conv_threshold inputs
+  else
+    Rune.custom_jvp
+      (Problem.inputs p)
+      Nx.Ptree.tensor
+      (fun { Problem.Inputs.theta; x0; us0 } ->
+         (* The rule's own inputs, built from its arguments: the closure below
+            must not hold the caller's tracked leaves. *)
+         let inputs = { Problem.Inputs.theta; x0; us0 } in
+         let sol =
+           Solver.solve_fixed
+             p
+             ?alphas
+             ?mu
+             ?reg
+             ?c1
+             ?conv_threshold
+             ~max_iters
+             theta
+             x0
+             us0
+         in
+         let taus = Problem.taus_of p sol.xs sol.us in
+         (* Built per tangent, as {!tangent_rule} is: the rule's own result
+            must not be traced while the primal is. *)
+         let tangent dinputs =
+           Rune.custom_transpose
+             (Problem.inputs p)
+             Nx.Ptree.tensor
+             (fun dinputs -> batched_tangent p ~theta ~sol dinputs)
+             ~transpose:(fun ybar -> batched_transpose p ~sol inputs ybar)
+             dinputs
+         in
+         taus, tangent)
       inputs

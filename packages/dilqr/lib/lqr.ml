@@ -109,29 +109,29 @@ type ('a, 'b, 'd) common =
         linearization point, and {!backward_lin} returns [Vx_0]. *)
   }
 
-(* [regularize ~mu ...] adds Tassa's damping. All three terms are needed for the
-   recursion to stay stable as mu grows. *)
-let regularize ~mu ~at ~bt ~a ~b ~quu ~qux ~qxx =
-  match mu with
-  | None -> quu, qux, qxx
-  | Some mu ->
-    ( Infix.(quu + (bt *@ b * mu))
-    , Infix.(qux + (bt *@ a * mu))
-    , Infix.(qxx + (at *@ a * mu)) )
+(* [shift ~damping vxx] is the value Hessian with Levenberg-Marquardt damping
+   shifted into it, [vxx + mu I]. Expanding the shift through the recursion
+   gives exactly the three terms Tassa's damping adds, [mu AᵀA], [mu BᵀA] and
+   [mu BᵀB], so damping here costs one diagonal addition per step and nothing
+   else. [mu] is a scalar tensor, or one per member broadcast against [eye]. *)
+let shift ~damping vxx =
+  match damping with
+  | None -> vxx
+  | Some (mu, eye) -> Infix.(vxx + (mu * eye))
 
 (* One step of the Hessian recursion: the value Hessian at step [k] from its
    successor, the regularized [Q_uu] factor, and the feedback gain. A
    regularized [Q_uu] that is not positive definite gives a NaN Cholesky
    factor, and every quantity computed from it is NaN. *)
-let common_step ~mu ~(row : (('a, 'b, 'd) Nx.t, 'd) Rows.t) ~vxx =
+let common_step ~damping ~(row : (('a, 'b, 'd) Nx.t, 'd) Rows.t) ~vxx =
   let a = row.a
   and b = row.b in
   let at = matrix_transpose a
   and bt = matrix_transpose b in
+  let vxx = shift ~damping vxx in
   let qxx = Infix.(row.lxx + (at *@ (vxx *@ a))) in
   let qux = Infix.(row.lux + (bt *@ (vxx *@ a))) in
   let quu = Infix.(row.luu + (bt *@ (vxx *@ b))) in
-  let quu, qux, qxx = regularize ~mu ~at ~bt ~a ~b ~quu ~qux ~qxx in
   let u = cholesky ~triangle:Upper quu in
   let k_mat = Infix.(-chol_solve ~upper:u ~rhs:qux) in
   let vxx' = sym Infix.(qxx + (matrix_transpose qux *@ k_mat)) in
@@ -143,13 +143,23 @@ let rows_structure () = Nx.Ptree.instantiate (module Rows)
    as one scan, from the last step to the first. *)
 let backward_common ?mu (tape : ('a, 'b, 'd) tape) : ('a, 'b, 'd) common =
   let rows = rows_structure () in
+  (* The identity the damping shift needs. Built once: it lies where the tape
+     does, and its size is the state dimension, the last axis of [fxx]. *)
+  let damping =
+    match mu with
+    | None -> None
+    | Some mu ->
+      let shape_fxx = shape tape.fxx in
+      let n = shape_fxx.(Array.length shape_fxx - 1) in
+      Some (mu, Nx.eye_at (Nx.placement tape.fxx) (Nx.dtype tape.fxx) n)
+  in
   let value_hessian, (quu_chol, feedback) =
     Rune.scan
       Nx.Ptree.tensor
       rows
       Nx.Ptree.(pair tensor tensor)
       (fun vxx row ->
-         let u, k_mat, vxx' = common_step ~mu ~row ~vxx in
+         let u, k_mat, vxx' = common_step ~damping ~row ~vxx in
          vxx', (u, k_mat))
       ~init:tape.fxx
       (Nx.Ptree.map rows (fun _ x -> flip x) tape.blocks)

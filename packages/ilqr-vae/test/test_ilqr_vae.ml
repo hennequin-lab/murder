@@ -51,7 +51,7 @@ let close tol = float_rel ~rel:tol ~abs:tol
 
 (* The iLQR recognition's inner solver, as the tests ask for it: a fixed
    number of iterations, which is what makes the whole path traceable. *)
-let fixed iters = R.fixed ~iters ()
+let fixed ?conv_threshold iters = R.fixed ~iters ?conv_threshold ()
 
 let check_close ?msg ~tol got expected =
   equal ?msg (array (close tol)) (to_array expected) (to_array got)
@@ -985,9 +985,11 @@ let test_encoder_stationarity () =
   let max_grad = item (max (abs grad)) in
   less ~msg:"iLQR solves the LQR problem" float_exact ~than:1e-6 max_grad;
   (* the fixed solver finds the same point, and the generic mean agrees *)
-  let mu_fixed = Il.posterior_mean generative gparams ~solve:(fixed 60) o in
+  let mu_fixed =
+    Il.posterior_mean generative gparams ~solve:(fixed ~conv_threshold:1e-14 60) o
+  in
   check_close ~msg:"fixed encoder matches adaptive" ~tol:1e-6 mu_fixed mu;
-  let via_model = (M.mean model params ~solve:(fixed 60) o).R.u in
+  let via_model = (M.mean model params ~solve:(fixed ~conv_threshold:1e-14 60) o).R.u in
   check_close
     ~msg:"model mean matches the encoder"
     ~tol:1e-6
@@ -2088,7 +2090,7 @@ let test_initial_state_is_the_mode () =
      the value the local model approximates. *)
   let value x0 =
     let inputs : (_, _) Dilqr.Inputs.t = { theta = gp; x0; us0 } in
-    Dilqr.loss_of_taus problem gp (Dilqr.solve_fixed problem ~iters inputs)
+    Dilqr.loss_of_taus problem gp (Dilqr.solve_fixed problem ~max_iters:iters inputs)
   in
   let structure = Dilqr.inputs problem in
   let gradient x0 =

@@ -221,6 +221,65 @@ module Batched = struct
     }
 end
 
+(* A one-step problem whose control cost is concave where it starts:
+   x' = x + u, l(u) = ½ (u² - 1)², no terminal cost. The local model's [Q_uu]
+   is the loss Hessian 3u² - 1, which is negative at u = ½, so the undamped
+   Riccati pass cannot factorize it: only damping buys a step. The loss is
+   bounded below, and its minimum is u = 1. *)
+module Concave = struct
+  module Params = struct
+    type ('a, _) t = { unit : 'a } [@@deriving ptree]
+  end
+
+  let n = 1
+  let m = 1
+  let horizon = 1
+  let verbose = false
+  let dynamics { Params.unit } ~k:_ ~x ~u = Infix.((x + u) * unit)
+
+  let running_loss { Params.unit } ~k:_ ~x:_ ~u =
+    Infix.(unit * (((u * u) -$ 1.0) * ((u * u) -$ 1.0) *$ 0.5))
+
+  let final_loss { Params.unit } ~x:_ = Infix.(unit *$ 0.0)
+
+  let problem
+    : (Nx.float64_elt, (Nx.host Nx.float64_t, Nx.host) Params.t, Nx.host) Dilqr.Problem.t
+    =
+    { dtype = float64
+    ; n
+    ; m
+    ; horizon
+    ; verbose
+    ; params = Nx.Ptree.instantiate (module Params)
+    ; dynamics
+    ; running_loss
+    ; final_loss
+    }
+end
+
+(* A batch of pendulums whose initial angles are [angles], sharing one set of
+   dynamics parameters along the batch axis. *)
+let pendulum_batch (angles : float array) =
+  let b = Array.length angles in
+  let at v = broadcast_to [| b |] (scalar64 v) in
+  let theta : (Nx.host Nx.float64_t, Nx.host) Pendulum.Params.t =
+    { gravity = at 9.81; mass = at 1.0; length = at 1.0 }
+  in
+  let x0 =
+    create float64 [| b; 2 |] (Array.concat_map angles ~f:(fun a -> [| a; 0.0 |]))
+  in
+  let us0 = Array.init Pendulum.horizon ~f:(fun _ -> zeros float64 [| b; 1 |]) in
+  theta, x0, us0
+
+(* One pendulum from [angle], solved alone. *)
+let pendulum_member ?reg ~max_iters angle =
+  let theta : (Nx.host Nx.float64_t, Nx.host) Pendulum.Params.t =
+    { gravity = scalar64 9.81; mass = scalar64 1.0; length = scalar64 1.0 }
+  in
+  let x0 = vec64 [| angle; 0.0 |] in
+  let us0 = Array.init Pendulum.horizon ~f:(fun _ -> zeros float64 [| 1 |]) in
+  Dilqr.Solver.solve_fixed Pendulum.problem ?reg ~max_iters theta x0 us0
+
 (* A deterministic pseudo-random pattern of the same shape as [like]: a fixed
    float64 wave folded into the shape and cast to the leaf's dtype. Test inputs
    only — no generator, so a failing case reproduces. *)
@@ -431,31 +490,186 @@ let test_fixed_solve_works () =
   let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { mass = scalar64 1.0 } in
   let x0 = vec64 [| 1.0; 0.0 |] in
   let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
-  let sol = Dilqr.Solver.solve_fixed P.problem ~iters:8 theta x0 us0 in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~max_iters:8 theta x0 us0 in
   let adaptive = Dilqr.Solver.solve P.problem ~max_iter:20 theta x0 us0 in
   let c_fixed = item sol.cost
   and c_adaptive = item adaptive.cost in
   require ~msg:"fixed solve competitive" Float.(c_fixed < 1.05 *. c_adaptive)
 
 (* When every line-search trial is rejected — here because the trial steps
-   are NaN — the fixed solve must keep the current trajectory. The argmin of
-   an all-infinity score vector returns 0, so the solver must not select that
-   fallback trial. *)
+   are NaN — the fixed solve must keep the current trajectory. It cannot buy a
+   step and, with no damping to raise, it stops after the iteration rather than
+   retrying what cannot improve. *)
 let test_fixed_all_rejected () =
   let module P = Integrator in
   let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { mass = scalar64 1.0 } in
   let x0 = vec64 [| 1.0; 0.0 |] in
   let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
   let sol =
-    Dilqr.Solver.solve_fixed P.problem ~alphas:[ Float.nan ] ~iters:2 theta x0 us0
+    Dilqr.Solver.solve_fixed P.problem ~alphas:[ Float.nan ] ~max_iters:2 theta x0 us0
   in
   require ~msg:"all-rejected cost stays finite" (Float.is_finite (item sol.cost));
+  require ~msg:"all-rejected stops after one iteration" (Float.equal (item sol.iters) 1.0);
   Array.iter sol.us ~f:(fun u ->
     require
       ~msg:"all-rejected keeps the current controls"
       (Float.is_finite (Nx.item [ 0 ] u) && Float.( = ) (Nx.item [ 0 ] u) 0.0))
 
-(* JIT: the compiled fixed solve equals the eager one. *)
+(* The iteration budget is the batch's: the solve runs the iterations its
+   slowest member needs, and a member that has converged takes no step and does
+   not vote, so it cannot veto the steps of the others. *)
+let test_fixed_budget_and_no_veto () =
+  let module P = Pendulum in
+  let hanging = P.target -. 3.0 in
+  let theta, x0, us0 = pendulum_batch [| P.target; hanging |] in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~max_iters:40 theta x0 us0 in
+  let iters = item sol.iters in
+  let at_target = pendulum_member ~max_iters:40 P.target
+  and alone = pendulum_member ~max_iters:40 hanging in
+  require
+    ~msg:"a member at its optimum runs one iteration"
+    (Float.equal (item at_target.iters) 1.0);
+  require
+    ~msg:"the batch runs the slowest member's iterations"
+    (Float.equal iters (item alone.iters));
+  require ~msg:"and more than the converged member's" Float.(iters > 1.0);
+  require
+    ~msg:"a converged member is frozen"
+    Float.(Float.abs (item (slice [ I 0 ] sol.cost)) < 1e-20);
+  check_close
+    ~msg:"the hanging member is solved as it is alone"
+    ~tol:1e-9
+    (slice [ I 1 ] sol.cost)
+    alone.cost
+
+(* The batch runs its slowest member's iterations — not the mean, and not the
+   sum — and a member that converges early is frozen at its converged cost. *)
+let test_fixed_budget_is_the_slowest_member () =
+  let module P = Pendulum in
+  let near = P.target -. 0.05
+  and far = P.target -. 3.0 in
+  let theta, x0, us0 = pendulum_batch [| near; far |] in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~max_iters:40 theta x0 us0 in
+  let iters = item sol.iters in
+  let near_alone = pendulum_member ~max_iters:40 near
+  and far_alone = pendulum_member ~max_iters:40 far in
+  let fastest = Float.min (item near_alone.iters) (item far_alone.iters)
+  and slowest = Float.max (item near_alone.iters) (item far_alone.iters) in
+  require ~msg:"the batch spends the slowest member's iterations" Float.(iters = slowest);
+  require ~msg:"and more than the quickest member's" Float.(iters > fastest);
+  check_close
+    ~msg:"the member that converged early keeps its converged cost"
+    ~tol:1e-6
+    (slice [ I 0 ] sol.cost)
+    near_alone.cost
+
+(* Damping is what makes an indefinite [Q_uu] usable. Undamped, no trial can be
+   computed from the NaN factorization and the solve gives up; damped, the
+   strength is raised until the model factorizes — from the schedule's own
+   units, or from a seed far below what the pass needs. *)
+let test_fixed_damping_recovers () =
+  let module P = Concave in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { unit = scalar64 1.0 } in
+  let x0 = vec64 [| 0.0 |] in
+  let us0 = [| vec64 [| 0.5 |] |] in
+  (* [~mu:0.] turns damping off *)
+  let plain = Dilqr.Solver.solve_fixed P.problem ~max_iters:20 ~mu:0.0 theta x0 us0 in
+  require
+    ~msg:"undamped gives up after one iteration"
+    (Float.equal (item plain.iters) 1.0);
+  require
+    ~msg:"undamped keeps the cost of its initial guess"
+    Float.(Float.abs (item plain.cost -. 0.28125) < 1e-12);
+  (* Damping is on by default: the solve raises the strength until the model
+     factorizes, and reaches the loss's minimum. *)
+  let damped = Dilqr.Solver.solve_fixed P.problem ~max_iters:20 theta x0 us0 in
+  require ~msg:"adaptive damping decreases the cost" Float.(item damped.cost < 1e-5);
+  require
+    ~msg:"damped reaches u = 1"
+    Float.(Float.abs (Nx.item [ 0 ] damped.us.(0) -. 1.0) < 1e-3);
+  let climbing =
+    Dilqr.Solver.solve_fixed
+      P.problem
+      ~max_iters:20
+      ~reg:{ Dilqr.Regularisation.delta = 1.0; mu = 1e-3 }
+      theta
+      x0
+      us0
+  in
+  require
+    ~msg:"retries climb to a strength that factorizes"
+    Float.(item climbing.cost < 1e-5)
+
+(* [max_iters = 0] runs nothing and returns the rollout of the initial guess. *)
+let test_fixed_zero_budget () =
+  let module P = Integrator in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { mass = scalar64 1.0 } in
+  let x0 = vec64 [| 1.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~max_iters:0 theta x0 us0 in
+  let _, cost0 = Dilqr.Solver.rollout P.problem theta x0 us0 in
+  require ~msg:"a zero budget runs no iteration" (Float.equal (item sol.iters) 0.0);
+  check_close ~msg:"a zero budget keeps the initial guess" ~tol:1e-12 sol.cost cost0
+
+(* The adaptive solve reports the updates it applied, which its host-side loop
+   counts. *)
+let test_adaptive_reports_iterations () =
+  let module P = Integrator in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { mass = scalar64 1.0 } in
+  let x0 = vec64 [| 1.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let sol = Dilqr.Solver.solve P.problem theta x0 us0 in
+  require
+    ~msg:"the adaptive solve counts its updates"
+    Float.(item sol.iters > 0.0 && item sol.iters <= 20.0)
+
+(* Damping shifts the value Hessian, and the shift expands into Tassa's three
+   terms: one step's [Q_uu], [Q_ux] and [Q_xx] with [V + mu I] are what the
+   explicit [mu AᵀA], [mu BᵀA] and [mu BᵀB] give. *)
+let test_damping_is_a_value_hessian_shift () =
+  let open Dilqr.Lqr in
+  let one s v = Infix.(ones float64 s *$ v) in
+  let blocks =
+    Rows.
+      { a = one [| 1; 1; 1 |] 0.5
+      ; b = one [| 1; 1; 1 |] 1.5
+      ; lx = zeros float64 [| 1; 1 |]
+      ; lu = zeros float64 [| 1; 1 |]
+      ; lxx = one [| 1; 1; 1 |] 1.0
+      ; luu = one [| 1; 1; 1 |] 2.0
+      ; lux = one [| 1; 1; 1 |] 0.5
+      }
+  in
+  let tape = { blocks; fx = zeros float64 [| 1 |]; fxx = one [| 1; 1 |] 3.0 } in
+  let mu = 0.75 in
+  let a = 0.5
+  and b = 1.5
+  and vxx0 = 3.0 in
+  (* the hand recursion, with the damping written out *)
+  let quu = 2.0 +. (b *. vxx0 *. b) +. (mu *. b *. b) in
+  let qux = 0.5 +. (b *. vxx0 *. a) +. (mu *. b *. a) in
+  let qxx = 1.0 +. (a *. vxx0 *. a) +. (mu *. a *. a) in
+  let k = -.qux /. quu in
+  let vxx = qxx +. (qux *. k) in
+  let common = backward_common ~mu:(scalar64 mu) tape in
+  check_close
+    ~msg:"damped value Hessian"
+    ~tol:1e-12
+    common.value_hessian
+    (reshape [| 1; 1 |] (scalar64 vxx));
+  check_close
+    ~msg:"damped feedback gain"
+    ~tol:1e-12
+    common.feedback
+    (reshape [| 1; 1; 1 |] (scalar64 k));
+  check_close
+    ~msg:"damped Q_uu is the factor's square"
+    ~tol:1e-12
+    Infix.(common.quu_chol * common.quu_chol)
+    (reshape [| 1; 1; 1 |] (scalar64 quu))
+
+(* JIT: the compiled fixed solve equals the eager one, with and without the
+   adaptive-damping loop. *)
 let test_jit_solve () =
   let module P = Integrator in
   let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { mass = scalar64 1.0 } in
@@ -466,14 +680,25 @@ let test_jit_solve () =
     =
     { Dilqr.Inputs.theta; x0; us0 }
   in
-  let eager = Dilqr.solve_fixed P.problem ~iters:5 inputs in
+  let eager = Dilqr.solve_fixed P.problem ~max_iters:5 inputs in
   let jitted =
     Rune.jit
       Nx.Ptree.(Dilqr.inputs P.problem @-> returns Nx.Ptree.tensor)
-      (fun i -> Dilqr.solve_fixed P.problem ~iters:5 i)
+      (fun i -> Dilqr.solve_fixed P.problem ~max_iters:5 i)
       inputs
   in
-  check_close ~msg:"jit solve taus" ~tol:1e-10 jitted eager
+  check_close ~msg:"jit solve taus" ~tol:1e-10 jitted eager;
+  (* the same with an adaptive damping schedule, whose retries are a loop too *)
+  let eager =
+    Dilqr.solve_fixed P.problem ~max_iters:5 ~reg:Dilqr.Regularisation.init inputs
+  in
+  let jitted =
+    Rune.jit
+      Nx.Ptree.(Dilqr.inputs P.problem @-> returns Nx.Ptree.tensor)
+      (fun i -> Dilqr.solve_fixed P.problem ~max_iters:5 ~reg:Dilqr.Regularisation.init i)
+      inputs
+  in
+  check_close ~msg:"jit solve taus with damping" ~tol:1e-10 jitted eager
 
 (* JIT: the compiled gradient — forward solve and implicit VJP, all traced —
    matches the eager gradient. *)
@@ -497,7 +722,7 @@ let test_jit_grad () =
   let eager_grad =
     Rune.grad
       (Dilqr.inputs P.problem)
-      (fun i -> loss (Dilqr.solve_fixed P.problem ~iters:4 i))
+      (fun i -> loss (Dilqr.solve_fixed P.problem ~max_iters:4 i))
       inputs
   in
   let compiled =
@@ -506,7 +731,7 @@ let test_jit_grad () =
       (fun i ->
          Rune.grad
            (Dilqr.inputs P.problem)
-           (fun i -> loss (Dilqr.solve_fixed P.problem ~iters:4 i))
+           (fun i -> loss (Dilqr.solve_fixed P.problem ~max_iters:4 i))
            i)
       inputs
   in
@@ -539,11 +764,14 @@ let batched_member (theta : (Nx.host Nx.float64_t, Nx.host) Batched.Params.t) x0
   theta_i, x0_i, us0_i
 
 (* A batched fixed solve gives, member by member, what the unbatched solve
-   gives for that member. *)
+   gives for that member. The members share the batch's step, so this holds
+   because every one of them takes the full step here: a batch whose members
+   backtrack apart moves them together, which test_fixed_budget_and_no_veto
+   pins down. *)
 let test_batched_fixed_solve () =
   let module P = Batched in
   let b, theta, x0, us0 = batched_setup () in
-  let sol = Dilqr.Solver.solve_fixed P.problem ~iters:8 theta x0 us0 in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~max_iters:8 theta x0 us0 in
   require ~msg:"batched cost shape" (Array.length (shape sol.cost) = 1);
   require ~msg:"batched cost size" ((shape sol.cost).(0) = b);
   (* the stacked trajectory leads with the batch and then the horizon *)
@@ -559,7 +787,7 @@ let test_batched_fixed_solve () =
   in
   for i = 0 to b - 1 do
     let theta_i, x0_i, us0_i = batched_member theta x0 us0 i in
-    let sol_i = Dilqr.Solver.solve_fixed P.problem ~iters:8 theta_i x0_i us0_i in
+    let sol_i = Dilqr.Solver.solve_fixed P.problem ~max_iters:8 theta_i x0_i us0_i in
     check_close
       ~msg:(Printf.sprintf "batched cost %d" i)
       ~tol:1e-10
@@ -606,10 +834,25 @@ let test_batched_fixed_solve () =
       ~tol:1e-10
       (slice [ I i ] tape_b.Dilqr.Lqr.blocks.a)
       tape_i.Dilqr.Lqr.blocks.a
-  done
+  done;
+  (* The batch's solve compiles with an adaptive damping schedule too: the
+     per-member strengths and the retry loop are traced like the rest. *)
+  let inputs : (_, Nx.host Nx.float64_t) Dilqr.Inputs.t =
+    { Dilqr.Inputs.theta; x0; us0 }
+  in
+  let reg = Dilqr.Regularisation.init in
+  let eager = Dilqr.solve_fixed P.problem ~max_iters:8 ~reg inputs in
+  let jitted =
+    Rune.jit
+      Nx.Ptree.(Dilqr.inputs P.problem @-> returns Nx.Ptree.tensor)
+      (fun i -> Dilqr.solve_fixed P.problem ~max_iters:8 ~reg i)
+      inputs
+  in
+  check_close ~msg:"batched jit solve with damping" ~tol:1e-10 jitted eager
 
-(* The batched implicit gradient is the member's gradient, and the same
-   compiled. *)
+(* The batched implicit gradient is the member's gradient — the derivative is
+   taken at the returned trajectory, member by member, so this holds when the
+   batch and the members reach the same trajectory — and the same compiled. *)
 let test_batched_grad () =
   let module P = Batched in
   let b, theta, x0, us0 = batched_setup () in
@@ -623,7 +866,7 @@ let test_batched_grad () =
       (Dilqr.loss_of_taus
          P.problem
          i.Dilqr.Inputs.theta
-         (Dilqr.solve_fixed P.problem ~iters:5 i))
+         (Dilqr.solve_fixed P.problem ~max_iters:5 i))
   in
   let g = Rune.grad (Dilqr.inputs P.problem) objective inputs in
   for i = 0 to b - 1 do
@@ -777,7 +1020,7 @@ let test_jvp_is_the_transpose_of_the_vjp () =
   let grads =
     Rune.grad
       structure
-      (fun i -> sum Infix.(ybar * Dilqr.solve_fixed P.problem ~iters:6 i))
+      (fun i -> sum Infix.(ybar * Dilqr.solve_fixed P.problem ~max_iters:6 i))
       inputs
   in
   let dtaus =
@@ -785,7 +1028,7 @@ let test_jvp_is_the_transpose_of_the_vjp () =
       (Rune.jvp
          structure
          Nx.Ptree.tensor
-         (fun i -> Dilqr.solve_fixed P.problem ~iters:6 i)
+         (fun i -> Dilqr.solve_fixed P.problem ~max_iters:6 i)
          inputs
          dinputs)
   in
@@ -879,7 +1122,7 @@ let test_streaming_jvp_matches_tape_jvp () =
   let theta = inputs.Dilqr.Inputs.theta in
   let dtheta = (pattern_inputs ~seed:1.7 structure inputs).Dilqr.Inputs.theta in
   let dx0 = (pattern_inputs ~seed:2.9 structure inputs).Dilqr.Inputs.x0 in
-  let sol = Dilqr.Solver.solve_fixed P.problem ~iters:6 theta inputs.x0 inputs.us0 in
+  let sol = Dilqr.Solver.solve_fixed P.problem ~max_iters:6 theta inputs.x0 inputs.us0 in
   let streaming = Dilqr.Solver.tangent_solve P.problem theta ~dtheta ~dx0 sol.xs sol.us in
   let tape = Dilqr.Solver.blocks P.problem theta sol.xs sol.us in
   let tangent = Dilqr.Solver.tangent P.problem theta ~dtheta sol.xs sol.us in
@@ -918,7 +1161,7 @@ let test_batched_forward_mode () =
            (Rune.jvp
               structure
               Nx.Ptree.tensor
-              (fun i -> Dilqr.solve_fixed P.problem ~iters:4 i)
+              (fun i -> Dilqr.solve_fixed P.problem ~max_iters:4 i)
               inputs
               di))
       dirs
@@ -936,7 +1179,7 @@ let test_batched_forward_mode () =
         (Rune.jvp
            structure
            Nx.Ptree.tensor
-           (fun j -> Dilqr.solve_fixed P.problem ~iters:4 j)
+           (fun j -> Dilqr.solve_fixed P.problem ~max_iters:4 j)
            inputs
            (one dirs))
     in
@@ -953,7 +1196,7 @@ let test_batched_forward_mode () =
                 (Rune.jvp
                    structure
                    Nx.Ptree.tensor
-                   (fun i -> Dilqr.solve_fixed P.problem ~iters:4 i)
+                   (fun i -> Dilqr.solve_fixed P.problem ~max_iters:4 i)
                    inputs
                    di))
            dirs)
@@ -964,13 +1207,18 @@ let test_batched_forward_mode () =
 (* At a converged solution the local model is a fixed point: its feedforward
    gains vanish and its own solution is the zero deviation. That is the
    precondition of the implicit derivative in either mode, and it checks the
-   Riccati factors, the costate and the LQR solve against each other. *)
+   Riccati factors, the costate and the LQR solve against each other. The solve
+   is run far past what the fixed solve's own convergence test asks for, so
+   that the gains are at round-off and not at the test's third-order
+   tolerance. *)
 let test_local_model_is_a_fixed_point () =
   let module P = Integrator in
   let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { mass = scalar64 1.0 } in
   let x0 = vec64 [| 1.0; 0.0 |] in
   let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
-  let sol = Dilqr.Solver.solve_fixed P.problem ~iters:12 theta x0 us0 in
+  let sol =
+    Dilqr.Solver.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-13 theta x0 us0
+  in
   let tape = Dilqr.Solver.blocks P.problem theta sol.xs sol.us in
   let common = Dilqr.Lqr.backward_common tape in
   let gains, d1, _, _ =
@@ -1358,6 +1606,14 @@ let () =
        ; test
            "fixed solve keeps the trajectory when all trials are rejected"
            test_fixed_all_rejected
+       ; test "the budget is the batch's, and no veto" test_fixed_budget_and_no_veto
+       ; test
+           "the batch spends the slowest member's iterations"
+           test_fixed_budget_is_the_slowest_member
+       ; test "adaptive damping recovers an indefinite Quu" test_fixed_damping_recovers
+       ; test "a zero budget runs nothing" test_fixed_zero_budget
+       ; test "the adaptive solve reports its iterations" test_adaptive_reports_iterations
+       ; test "damping is a value-Hessian shift" test_damping_is_a_value_hessian_shift
        ; test "jit solve matches eager" test_jit_solve
        ; test "jit grad matches eager" test_jit_grad
        ; test "batched fixed solve matches unbatched" test_batched_fixed_solve

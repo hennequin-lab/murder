@@ -13,11 +13,13 @@
       option, its tensor kernels — the dynamics and cost scans, the
       linearization and Riccati pass, and one line-search rollout — are
       compiled by [Rune.jit], while the host keeps the regularization retries,
-      backtracking and convergence test. {!solve_fixed} runs a fixed number of
-      iterations with tensor-only control flow, is traceable by [Rune.jit], and
-      solves a batch of problems at once. Its time loops are [Rune.scan]s,
-      which the compiler stages as loops: a program's size grows with the
-      iteration count, not with the horizon.
+      backtracking and convergence test. {!solve_fixed} runs at most a budget
+      of iterations with tensor-only control flow — its backtracking and
+      damping are traced loops and branches — so it is traceable by [Rune.jit],
+      it stops when its batch has converged, and it solves a batch of problems
+      at once under one step. Its time loops are [Rune.scan]s and its
+      iteration budget a [Rune.iterate], which the compiler stages as loops: a
+      program's size grows with neither the horizon nor the budget.
 
     - implicit derivatives: both modes are attached to the same solve. Forward
       mode runs a tangent map that reuses one factorization of the local model
@@ -29,7 +31,7 @@
     Rune.jit
       Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
       (fun i ->
-         Rune.grad (inputs problem) (fun i -> loss (solve_fixed problem ~iters:5 i)) i)
+         Rune.grad (inputs problem) (fun i -> loss (solve_fixed problem ~max_iters:5 i)) i)
     ]}
 
     compiles the fixed solve and its gradient together, on CPU or GPU.

@@ -37,10 +37,12 @@ program's size grows with the iteration count, **not with the horizon**.
   convergence checks. Host-side control flow, so the returned closure is
   eager and unbatched. Pass `~beam` or `~parallel` to compile its tensor
   kernels with `Rune.jit`; build the solver once and reuse it.
-- **Traceable solve** (`solve_fixed`) — fixed iteration count, fixed
-  regularization, and a line search realized as a masked argmin over a fixed
-  trial schedule, so there is no host-side control flow: the solve traces and
-  JIT-compiles, and it solves a batch of problems at once.
+- **Traceable solve** (`solve_fixed`) — an iteration budget rather than a
+  fixed schedule: the loop stops when the batch has converged (or cannot be
+  moved), and each iteration is a Riccati pass, then a backtracking line search
+  whose levels are branches, so a level nobody takes costs nothing. All of it
+  is tensor code — no host-side control flow — so the solve traces and
+  JIT-compiles, and it solves a batch of problems at once under one step.
 - **Implicit gradients, both modes** (`solve_adaptive`, `solve_fixed`) — the
   same solve carries the implicit VJP and JVP. `Rune.grad` runs the adjoint
   system of the local LQR QP; `Rune.jvp` reuses one Riccati backward pass at
@@ -144,7 +146,7 @@ let objective (inputs : ((Nx.host Nx.float64_t, Nx.host) Integrator.Params.t, Nx
   Dilqr.loss_of_taus
     Integrator.problem
     inputs.Dilqr.Inputs.theta
-    (solve_fixed ~iters:5 inputs)
+    (solve_fixed ~max_iters:5 inputs)
 
 let inputs_ptree = Dilqr.inputs Integrator.problem
 let grads = Rune.grad inputs_ptree objective inputs
@@ -173,8 +175,9 @@ A few things worth knowing:
   modes. It is eager because the host owns the regularization, line search and
   convergence logic; pass `~beam` or `~parallel` to compile its tensor
   kernels. It is unbatched.
-- `solve_fixed` is the fixed-iteration solve. It is traceable: put it inside
-  `Rune.jit` for a compiled solve and derivative. It is batched. Calling
+- `solve_fixed` is the budgeted, traceable solve: it runs at most
+  `~max_iters` iterations and stops when it has converged, so pass a generous
+  budget rather than the exact count you used to need. It is batched. Calling
   `Rune.grad` on it gives the implicit VJP; calling `Rune.jvp` gives the
   implicit JVP.
 - The differentiable solves return the trajectory **stacked** as one
@@ -210,15 +213,20 @@ every solver and helper takes it as its first argument.
   Unbatched.
 
 - **`solve_fixed problem`** — fixed-iteration iLQR with its implicit
-  derivative in both modes. It returns a function taking `~iters`, an optional
-  trial schedule `alphas` (default `1; 1/2; …`, 8 trials), fixed `mu` (default
-  none), Armijo `c1`, and the solve inputs. Traceable, JIT-compilable, never
-  reads a tensor on the host, and batched.
+  derivative in both modes. It returns a function taking `~max_iters`, an
+  optional trial schedule `alphas` (default `1; 1/2; …`, 8 trials), an
+  optional damping schedule `reg` (default `Regularisation.init`; `~mu` pins a
+  fixed strength and `~mu:0.` turns damping off), Armijo `c1`, and a
+  convergence threshold. It runs at most `max_iters`
+  iterations and stops when every member of the batch has converged, so a
+  batch spends the iterations of its slowest member; `Solver.t.iters` reports
+  how many. Traceable, JIT-compilable, never reads a tensor on the host, and
+  batched.
 
 - **`Solver`** — the low-level record-returning solves (`solve`, `compile`,
   `solve_fixed`) and the tensor helpers used by the differentiable layer.
-  Advanced callers can use these directly when they want `{ xs; us; cost }`
-  rather than the stacked trajectory.
+  Advanced callers can use these directly when they want
+  `{ xs; us; cost; iters }` rather than the stacked trajectory.
 
 - **`Solver.rollout`** — integrate the dynamics under a control sequence and
   return the state path and total cost; useful for evaluating an existing
@@ -261,16 +269,36 @@ let theta =
 let x0 = Nx.create Nx.float64 [| b; 2 |] x0s
 let us0 = Array.init horizon ~f:(fun _ -> Nx.zeros Nx.float64 [| b; 1 |])
 let solve = Dilqr.solve_fixed Integrator.problem in
-let taus = solve ~iters:8 { Dilqr.Inputs.theta; x0; us0 }
+let taus = solve ~max_iters:8 { Dilqr.Inputs.theta; x0; us0 }
 (* taus : [b; K+1; n+m];  split_taus gives xs.(k) : [b; 2] and us.(k) : [b; 1] *)
 let cost = Dilqr.loss_of_taus Integrator.problem theta taus
 (* cost : [b] *)
 ```
 
 The dynamics and the losses are still written for **one member**: the solver
-maps them over the batch, so each member gets its own line search, its own
-trajectory and its own gradient. A shared dynamics parameter is simply
-repeated along the batch axis (`Nx.broadcast_to`).
+maps them over the batch, so each member gets its own trajectory, its own
+cost and its own gradient. A shared dynamics parameter is simply repeated
+along the batch axis (`Nx.broadcast_to`).
+
+Two things are the batch's, not the member's:
+
+- **The step.** A member accepts a trial step when Armijo holds at it for
+  every member that has not converged, and only then does the batch move — so
+  the batch advances at the step its slowest member can take. That is what
+  keeps the line search one recursion over the batch instead of one per
+  member: the levels are branches, and the batch pays the levels it takes.
+- **The iteration count.** The loop stops when the last member has converged
+  (or when an iteration could not buy a step at any damping), so a batch spends
+  the iterations of its slowest member out of `max_iters`. A member that
+  converges early is frozen at its converged trajectory, and it does not vote
+  on later trials, so it cannot hold the others back.
+
+Damping is on by default, and it is one schedule for the batch with a
+*relative* strength: `beta` is a fraction of each member's own value-Hessian
+scale, measured by the pass, so members whose curvature differs by orders of
+magnitude are damped alike. The first pass uses the schedule's own units. Pass
+`~reg` to start the adaptive schedule elsewhere, `~mu` for a fixed absolute
+strength, or `~mu:0.` to turn damping off.
 
 `taus_of` stacks to `[b; K+1; n+m]` (the batch axes lead the horizon), and
 `split_taus` / `loss_of_taus` accept the batched trajectory. Differentiating
@@ -286,7 +314,7 @@ let grads =
          (Dilqr.loss_of_taus
             Integrator.problem
             i.Dilqr.Inputs.theta
-            (solve ~iters:8 i)))
+            (solve ~max_iters:8 i)))
     inputs
 (* grads.theta.target : [b; 1];  grads.x0 : [b; 2];  ... *)
 ```
@@ -316,7 +344,7 @@ VJP is computed with the same machinery as the forward pass:
    the forward pass does.
 
 Under a converged solve this is the true derivative of the solution map. With
-`solve_fixed ~iters`, the gradient converges to the adaptive solve's as
+`solve_fixed ~max_iters`, the gradient converges to the adaptive solve's as
 iterations accumulate (see the pendulum example, which prints both).
 
 Forward mode is the transpose of the same linear map, which is why the two give
@@ -352,7 +380,7 @@ direction reuses — computed once, outside the lanes:
 
 ```ocaml
 let solve = Dilqr.solve_fixed problem in
-let taus = solve ~iters:4 inputs in
+let taus = solve ~max_iters:4 inputs in
 let dtaus =
   Rune.vmap
     Nx.Ptree.(Dilqr.inputs problem @-> returns Nx.Ptree.tensor)
@@ -361,7 +389,7 @@ let dtaus =
          (Rune.jvp
             (Dilqr.inputs problem)
             Nx.Ptree.tensor
-            (fun i -> solve ~iters:4 i)
+            (fun i -> solve ~max_iters:4 i)
             inputs
             dinputs))
     dirs
@@ -377,9 +405,10 @@ the primal's tape — the tape itself, the Hessian recursion and the Cholesky ar
 lane-free and paid for once — plus one sweep of `n`-vectors and one rollout of
 compute.
 
-A **batch of problems** is a different axis and composes: the leading batch
-axis of the solved inputs is mapped over inside the solve, and the direction
-axis stays visible to `vmap` outside it.
+A **batch of problems** is a different axis: its implicit derivative is taken
+member by member, and one direction costs one sweep per member. A direction
+axis belongs around a single problem, then — the two are both leading axes of
+the solve inputs, so they do not nest.
 
 Forward mode is what a *sketch* needs (see [`sofo`](../sofo)): a sketch wants
 the trajectory tangent to compute its curvature blocks, and does not want a
@@ -435,8 +464,10 @@ The test suite covers the regularization schedule, LQR correctness (double
 integrator: cost decrease and control stationarity, checked with independent
 autodiff), nonlinear convergence (pendulum), implicit gradients against
 central finite differences, the fixed solve's competitiveness with the
-adaptive one, JIT round-trips of both the solve and its gradient, batched
-solves and gradients against their per-member counterparts, the forward mode
+adaptive one, the batch's budget being its slowest member's, damping
+recovering an indefinite local model, JIT round-trips of both the solve and its
+gradient, batched solves and gradients against their per-member counterparts,
+the forward mode
 against finite differences and against the reverse mode (the transpose law,
 pointwise), and a batch of directions against the directions one at a time.
 
