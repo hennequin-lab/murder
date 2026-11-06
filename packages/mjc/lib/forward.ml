@@ -55,12 +55,13 @@ let forward ?linear ?iters ?dt (m : Model.host) (d : Data.host) : Data.host =
     if not constrained
     then d
     else (
-      let d = Constraint.equality m d in
-      let d = Constraint.friction m d in
+      let cfg = Constraint.config m in
+      let d = Constraint.equality cfg m d in
+      let d = Constraint.friction cfg m d in
       let d = Constraint.limits m d in
       let d = Constraint.tendon_limits m d in
-      let d = Constraint.contact m d in
-      let d = Constraint.impedance ?dt m d in
+      let d = Constraint.contact cfg m d in
+      let d = Constraint.impedance ?dt cfg m d in
       Solver.forward ?linear ?iters m d)
   in
   (* The sensor block reads the solved state, as MuJoCo's does. *)
