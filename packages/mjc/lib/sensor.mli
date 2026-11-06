@@ -25,4 +25,4 @@
 
     Raises [Invalid_argument] for a sensor kind or an option v1 does not have,
     naming the sensor. *)
-val forward : Model.host -> Data.host -> Data.host
+val forward : 'a Model.model -> 'a Data.data -> 'a Data.data

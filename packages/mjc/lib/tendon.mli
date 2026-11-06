@@ -18,10 +18,10 @@
 (** The type for a model's tendons.
 
     [jac] is [[ntendon;nv]], [length] and [velocity] are [[ntendon]]. *)
-type t =
-  { jac : Nx.host Nx.float64_t
-  ; length : Nx.host Nx.float64_t
-  ; velocity : Nx.host Nx.float64_t
+type 'a t =
+  { jac : 'a Nx.float64_t
+  ; length : 'a Nx.float64_t
+  ; velocity : 'a Nx.float64_t
   }
 
 (** [forward m d] is the tendon geometry at [d]'s configuration.
@@ -30,4 +30,4 @@ type t =
     wrap, and a tendon whose range is a limit row (that arrives with the
     tendon constraint, and until it does a model that asks for it must not be
     run as if it had no limit). *)
-val forward : Model.host -> Data.host -> t
+val forward : Nx.host Model.model -> Nx.host Data.data -> Nx.host t

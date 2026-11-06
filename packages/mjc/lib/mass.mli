@@ -21,7 +21,7 @@
 
     Reads [d.xpos d.xquat d.xipos d.ximat d.xanchor d.xaxis] and the model's
     masses, inertias, joint axes and armature. *)
-val forward : Model.host -> Data.host -> Data.host
+val forward : 'a Model.model -> 'a Data.data -> 'a Data.data
 
 (** {1:factor Factorization} *)
 

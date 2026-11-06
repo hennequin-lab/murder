@@ -91,7 +91,7 @@ let excluded t b1 b2 =
   let a, b = if Int.( <= ) b1 b2 then b1, b2 else b2, b1 in
   Array.exists t.exclude_pairs ~f:(fun (x, y) -> Int.equal a x && Int.equal b y)
 
-let candidates (m : Model.host) : cand array =
+let candidates (m : 'a Model.model) : cand array =
   let t = m.topo in
   let out = ref [] in
   if t.contacts_enabled
@@ -144,11 +144,11 @@ let candidates (m : Model.host) : cand array =
    returns the signed distance along the normal, the contact point and the
    normal, the normal pointing from geom 1 towards geom 2. *)
 
-let geom_zaxis (d : Data.host) g =
+let geom_zaxis (d : 'a Data.data) g =
   let m = Nx.reshape [| 3; 3 |] (Nx.slice [ I g; A ] d.geom_xmat) in
   Nx.slice [ A; I 2 ] m
 
-let geom_pos (d : Data.host) g = Nx.slice [ I g; A ] d.geom_xpos
+let geom_pos (d : 'a Data.data) g = Nx.slice [ I g; A ] d.geom_xpos
 
 (* A root of a squared length, with a finite derivative where the length is
    zero. [Nx.sqrt]'s own rule divides by the root, so a branch that is masked
@@ -214,7 +214,7 @@ let make_frame ~normal ~tangent =
   let z = Nx.cross n y in
   Nx.stack ~axis:0 [ n; y; z ]
 
-let geometry (m : Model.host) (d : Data.host) (c : cand) =
+let geometry (m : 'a Model.model) (d : 'a Data.data) (c : cand) =
   let p = m.params in
   let t = m.topo in
   let size g k = Nx.get [ g; k ] p.geom_size in
@@ -421,17 +421,17 @@ let geometry (m : Model.host) (d : Data.host) (c : cand) =
    tensor operations are allowed on one. So the same arithmetic is written as
    gathers and [where]s, one row per candidate contact. *)
 
-type mixed =
+type 'a mixed =
   { dim : Nx.host Nx.int32_t (** [[ncand]] *)
-  ; friction : Nx.host Nx.float64_t (** [[ncand;5]] *)
-  ; solref : Nx.host Nx.float64_t (** [[ncand;2]] *)
-  ; solimp : Nx.host Nx.float64_t (** [[ncand;5]] *)
-  ; includemargin : Nx.host Nx.float64_t (** [[ncand]] *)
-  ; reach : Nx.host Nx.float64_t
+  ; friction : 'a Nx.float64_t (** [[ncand;5]] *)
+  ; solref : 'a Nx.float64_t (** [[ncand;2]] *)
+  ; solimp : 'a Nx.float64_t (** [[ncand;5]] *)
+  ; includemargin : 'a Nx.float64_t (** [[ncand]] *)
+  ; reach : 'a Nx.float64_t
     (** [[ncand]], the bounding radius: the margin plus the two bounds. *)
   }
 
-let mixed_params (m : Model.host) (cands : cand array) : mixed =
+let mixed_params (m : 'a Model.model) (cands : cand array) : 'a mixed =
   let p = m.params in
   let n = Array.length cands in
   let minval = 1e-15 in
@@ -537,7 +537,7 @@ let is_box_pair (t : Topo.t) g1 g2 =
   | Box, Box -> true
   | _ -> false
 
-let box_box (m : Model.host) (d : Data.host) (cands : cand array) =
+let box_box (m : 'a Model.model) (d : 'a Data.data) (cands : cand array) =
   let t = m.topo in
   let pairs =
     Array.filter cands ~f:(fun c -> is_box_pair t c.g1 c.g2 && Int.equal c.slot 0)
@@ -583,14 +583,14 @@ let box_slot (bm : box_manifold) row slot =
   , Nx.where dead (Nx.zeros Nx.float64 [| 3 |]) (Nx.slice [ I row; I slot; A ] m.pos)
   , Nx.slice [ I row; I slot; A ] m.normal )
 
-let contacts (m : Model.host) (d : Data.host) : Data.host =
+let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   let t = m.topo in
   let cands = candidates m in
   let ncand = Array.length cands in
   (* A model with no candidate pair touches no parameter at all, which is most
      of them and keeps their step on the smooth path. *)
   if Int.equal ncand 0
-  then { d with ncon = Nx.zeros Nx.int32 [||] }
+  then { d with ncon = Nx.zeros_at (Nx.placement d.ncon) Nx.int32 [||] }
   else (
     let mix = mixed_params m cands in
     let boxes = box_box m d cands in

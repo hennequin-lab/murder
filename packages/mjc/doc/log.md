@@ -1330,3 +1330,41 @@ stage has no operand at all, the placement has to be named by the caller, which
 is why `Data.create` became `create_at at m` with `create = create_at
 Nx.Host.on`. Landed so far: `Linalg`, `Jacobian`, `Mass`, `Model.model`,
 `Data.data`/`create_at`. The suite is unchanged (18 groups, all passing).
+
+## Branding the engine: what is generic, and the `Nx.init` wall
+
+The second pass branded the value types and every stage that only needs one, and
+found the wall the rest of the work meets: `Nx.init` -- the op that builds a table
+from a function of its index -- has **no `_at` variant**, unlike `zeros`, `ones`,
+`full`, `scalar`, `eye`, `arange_f` and `linspace`. Stages that build a model
+table with it are host by construction, and three of them are:
+
+- `Actuator.const` builds the control-range table (`[nu]` values from
+  `ctrlrange` rows) with `Nx.init`, so `Actuator.forward`, `damping` and `qfrc`
+  are host.
+- `Transmission.rows_for` builds the scatter's index table with `Nx.init`, so
+  `Transmission.forward` -- and therefore `Tendon.forward` -- is host.
+- `Collision`'s candidate and mixed-parameter tables are the same shape of
+  problem, and its `contacts` also reads parameters with `Nx.item`.
+
+That is not a typing accident to be papered over: those tables are *model
+constants*, computed from `Topo` once. The fix is to compute them at load time,
+the way `ten_length0` and the `*_invweight0` fields already are, and carry them
+in `params` so a compiled program receives them as tensors rather than building
+them with a host callback. That is the same move M6 made for `Step.config`, and
+it is the next step of this refactor.
+
+What is generic now, all of it verified by the suite (18 groups) and by `g4.exe`
+(humanoid still 1000/1000 within 1e-8, walker/humanoid shadows still 507 and
+266): `Model.model`, `Data.data` with `Data.create_at`, `Linalg`, `Jacobian`,
+`Mass.factor`, `Kinematics`, `Bias`, `Passive`, `Sensor`, and the `Tendon`/
+`Transmission` geometry records. Host by design, for now: `Constraint`, `Solver`,
+`Collision.contacts`, `Dynamics`, and the three stages above that need the
+`Nx.init` tables.
+
+Two smaller findings worth keeping. `Data.create` needed a placement argument
+because a creation has no operand to take one from, which is now
+`create_at at m` with `create = create_at Nx.Host.on`. And a host read does not
+show up in types: `Nx.item` is polymorphic in the device and raises at run time,
+so "does this stage place on a device?" has to be answered by reading its body
+for `Nx.item` -- which is why the five in `Constraint` are the next thing to go.

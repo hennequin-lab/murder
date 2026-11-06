@@ -21,7 +21,8 @@ open Base
    term rather than a force the step has to chase. v1 has no fluid and no
    muscle, so those are the two terms. *)
 
-let advance_with ~topo ~dt ~solve ~(h : Nx.host Nx.float64_t) (d : Data.host) : Data.host =
+let advance_with ~topo ~dt ~solve ~(h : 'a Nx.float64_t) (d : 'a Data.data) : 'a Data.data
+  =
   let qacc =
     if not solve
     then d.qacc
@@ -53,7 +54,7 @@ type config =
   ; actuator_damped : bool
   }
 
-let config (m : Model.host) : config =
+let config (m : 'a Model.model) : config =
   let p = m.params in
   let dt = Nx.item [] p.timestep in
   let damping = Nx.to_array p.dof_damping in
@@ -82,7 +83,7 @@ let config (m : Model.host) : config =
    The actuator term is a sum of rank-one updates, one per actuator, and it is
    skipped entirely when no actuator has a velocity derivative — which is most
    models, and keeps their step on the same graph. *)
-let step_matrix (c : config) (m : Model.host) (d : Data.host) =
+let step_matrix (c : config) (m : 'a Model.model) (d : 'a Data.data) =
   let dt = c.dt in
   let h = Nx.add d.mass_matrix (Nx.mul_s (Nx.diag m.params.dof_damping) dt) in
   if not c.actuator_damped
@@ -102,7 +103,7 @@ let step_matrix (c : config) (m : Model.host) (d : Data.host) =
    stays. *)
 let config_dt (c : config) = c.dt
 
-let step_with (c : config) (m : Model.host) (d : Data.host) : Data.host =
+let step_with (c : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   let d = Forward.forward ~iters:c.iters ~dt:c.dt m d in
   let h = if c.solve then step_matrix c m d else d.mass_matrix in
   advance_with ~topo:m.topo ~dt:c.dt ~solve:c.solve ~h d
@@ -120,10 +121,10 @@ let step m d = advance m (Forward.forward m d)
 
 type t =
   { dt : float
-  ; run : Data.host -> Data.host
+  ; run : Nx.host Data.data -> Nx.host Data.data
   }
 
-let compile (m : Model.host) : t =
+let compile (m : 'a Model.model) : t =
   let c = config m in
   { dt = c.dt
   ; run = Rune.jit Nx.Ptree.(Data.ptree @-> returns Data.ptree) (step_with c m)

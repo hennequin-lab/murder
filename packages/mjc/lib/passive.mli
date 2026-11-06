@@ -20,4 +20,4 @@
 
 (** [forward m d] is [d] with [qfrc_passive] computed from [d.qpos] and
     [d.qvel]. *)
-val forward : Model.host -> Data.host -> Data.host
+val forward : 'a Model.model -> 'a Data.data -> 'a Data.data

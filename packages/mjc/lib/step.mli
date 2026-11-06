@@ -23,7 +23,7 @@ type t
 type config
 
 (** [config m] reads them from [m]. *)
-val config : Model.host -> config
+val config : Nx.host Model.model -> config
 
 (** [config_dt c] is the timestep [c] holds. *)
 val config_dt : config -> float
@@ -31,16 +31,16 @@ val config_dt : config -> float
 (** [step_with c m d] is one step with [c]'s structure and [m]'s *parameters*,
     read as tensors: it is the function a gradient with respect to a model
     parameter goes through, and it never reads one. *)
-val step_with : config -> Model.host -> Data.host -> Data.host
+val step_with : config -> Nx.host Model.model -> Nx.host Data.data -> Data.host
 
 (** [compile m] is [m]'s step, ready to run. The time step and the damping
     test are read here, not per call, because a traced program may not read a
     value from the data it is tracing. *)
-val compile : Model.host -> t
+val compile : Nx.host Model.model -> t
 
 (** [run t d] is [d] one time step forward, through the compiled program. The
     first call traces and compiles, the later ones reuse it. *)
-val run : t -> Data.host -> Data.host
+val run : t -> Nx.host Data.data -> Data.host
 
 (** [dt t] is the model's time step, which the compiled program holds. *)
 val dt : t -> float
@@ -48,7 +48,7 @@ val dt : t -> float
 (** [advance m d] is [d] one time step forward from a forward pass that has
     already run: [qvel] gains [dt * qacc], [qpos] then gains [dt] times the new
     [qvel] through {!Pose.integrate_pos}, and [time] gains [dt]. *)
-val advance : Model.host -> Data.host -> Data.host
+val advance : Nx.host Model.model -> Nx.host Data.data -> Data.host
 
 (** [step m d] is [advance m (Forward.forward m d)]. *)
-val step : Model.host -> Data.host -> Data.host
+val step : Nx.host Model.model -> Nx.host Data.data -> Data.host

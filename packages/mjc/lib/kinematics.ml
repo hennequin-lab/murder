@@ -21,7 +21,7 @@ let local2global ~xpos ~xquat ~pos ~quat =
   let m = flat 9 (Rigid.quat_to_mat q) in
   x, m
 
-let forward (m : Model.host) (d : Data.host) : Data.host =
+let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   let t = m.topo
   and p = m.params in
   let f64 = Nx.float64 in
@@ -31,7 +31,16 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
   let xquat = ref (Nx.zeros_like d.xquat) in
   let xanchor = ref (Nx.zeros_like d.xanchor) in
   let xaxis = ref (Nx.zeros_like d.xaxis) in
-  xquat := Nx.set [ I 0 ] (Nx.create f64 [| 4 |] [| 1.0; 0.0; 0.0; 0.0 |]) !xquat;
+  (* A creation has no operand to take a placement from, so the root's
+     identity quaternion is written into the value it belongs in. *)
+  xquat
+  := Nx.set
+       [ I 0 ]
+       (Nx.set
+          [ I 0 ]
+          (Nx.scalar_at (Nx.placement !xquat) f64 1.0)
+          (Nx.zeros_at (Nx.placement !xquat) f64 [| 4 |]))
+       !xquat;
   for i = 1 to t.nbody - 1 do
     let jntadr = t.body_jntadr.(i)
     and jntnum = t.body_jntnum.(i) in
@@ -89,7 +98,7 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
       xquat := Nx.set [ I i ] !quat !xquat)
   done;
   (* Inertial, geom and site frames, from their body's pose. *)
-  let identity9 = Nx.reshape [| 9 |] (Nx.eye f64 3) in
+  let identity9 = Nx.reshape [| 9 |] (Nx.eye_at (Nx.placement d.qpos) f64 3) in
   let xipos = ref (Nx.zeros_like d.xipos)
   and ximat = ref (Nx.zeros_like d.ximat) in
   ximat := Nx.set [ I 0 ] identity9 !ximat;
@@ -145,7 +154,7 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
   ; site_xmat = !site_xmat
   }
 
-let check (m : Model.host) : (unit, string) Result.t =
+let check (m : 'a Model.model) : (unit, string) Result.t =
   let t = m.topo in
   let problems =
     List.filter_map (List.range 0 t.njnt) ~f:(fun j ->

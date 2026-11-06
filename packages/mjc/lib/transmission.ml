@@ -5,28 +5,28 @@
 
 open Base
 
-type t =
-  { moment : Nx.host Nx.float64_t
-  ; length : Nx.host Nx.float64_t
-  ; velocity : Nx.host Nx.float64_t
+type 'a t =
+  { moment : 'a Nx.float64_t
+  ; length : 'a Nx.float64_t
+  ; velocity : 'a Nx.float64_t
   }
 
 (* [take x idx] is [x]'s rows [idx], as a tensor, so the values stay in the
    graph. *)
-let take (x : Nx.host Nx.float64_t) (idx : int array) =
+let take (x : 'a Nx.float64_t) (idx : int array) =
   let n = Array.length idx in
   Nx.take ~axis:0 (Nx.init Nx.int64 [| n |] (fun i -> Int64.of_int idx.(i.(0)))) x
 
-let zeros n = Nx.zeros Nx.float64 [| n |]
-let zeros2 n k = Nx.zeros Nx.float64 [| n; k |]
+let zeros at n = Nx.zeros_at at Nx.float64 [| n |]
+let zeros2 at n k = Nx.zeros_at at Nx.float64 [| n; k |]
 
 (* [rows_for] scatters whole rows into a [nu;nv] tensor: MuJoCo's moment matrix
    has one row per actuator, dense here, and a tendon row is the tendon's
    Jacobian scaled by the gear. Flat, because the rows are not contiguous. *)
-let rows_for ~nu ~nv (idx : int array) (rows : Nx.host Nx.float64_t) =
+let rows_for ~at ~nu ~nv (idx : int array) (rows : 'a Nx.float64_t) =
   let k = Array.length idx in
   if Int.equal k 0
-  then zeros2 nu nv
+  then zeros2 at nu nv
   else (
     let elem =
       Nx.init
@@ -43,16 +43,17 @@ let rows_for ~nu ~nv (idx : int array) (rows : Nx.host Nx.float64_t) =
          ~axis:0
          elem
          (Nx.reshape [| k * nv |] rows)
-         (Nx.zeros Nx.float64 [| nu * nv |])))
+         (Nx.zeros_at at Nx.float64 [| nu * nv |])))
 
-let forward (m : Model.host) (d : Data.host) =
+let forward (m : Nx.host Model.model) (d : Nx.host Data.data) =
+  let at = Nx.placement d.qpos in
   let t = m.topo in
   let nu = t.nu
   and nv = t.nv in
   if Int.equal nu 0
   then (
-    let z = zeros 0 in
-    { moment = zeros2 0 nv; length = z; velocity = z })
+    let z = zeros at 0 in
+    { moment = zeros2 at 0 nv; length = z; velocity = z })
   else (
     let tendon = lazy (Tendon.forward m d) in
     let gear = Nx.slice [ A; I 0 ] m.params.actuator_gear in
@@ -84,7 +85,7 @@ let forward (m : Model.host) (d : Data.host) =
     and qpos_of = Array.of_list !qpos_of in
     let joint_rows =
       if Int.equal (Array.length joint_ids) 0
-      then zeros2 nu nv
+      then zeros2 at nu nv
       else (
         (* one nonzero per row, at the dof the transmission reaches *)
         let lin =
@@ -100,11 +101,11 @@ let forward (m : Model.host) (d : Data.host) =
              ~axis:0
              lin
              (take gear joint_ids)
-             (Nx.zeros Nx.float64 [| nu * nv |])))
+             (Nx.zeros_at at Nx.float64 [| nu * nv |])))
     in
     let tendon_rows =
       if Int.equal (Array.length tendon_ids) 0
-      then zeros2 nu nv
+      then zeros2 at nu nv
       else (
         let ten = Lazy.force tendon in
         let ids = Array.map tendon_ids ~f:(fun i -> t.actuator_trnid.(2 * i)) in
@@ -113,7 +114,7 @@ let forward (m : Model.host) (d : Data.host) =
             (Nx.reshape [| Array.length ids; 1 |] (take gear tendon_ids))
             (take ten.Tendon.jac ids)
         in
-        rows_for ~nu ~nv tendon_ids rows)
+        rows_for ~at ~nu ~nv tendon_ids rows)
     in
     let moment = Nx.add joint_rows tendon_rows in
     (* The length is the joint coordinate or the tendon's, scaled by the gear.
@@ -121,12 +122,12 @@ let forward (m : Model.host) (d : Data.host) =
        paths in one expression rather than two programs. *)
     let by_joint =
       if Int.equal (Array.length joint_ids) 0
-      then zeros nu
+      then zeros at nu
       else Nx.mul (take gear joint_ids) (take d.qpos qpos_of)
     in
     let by_tendon =
       if Int.equal (Array.length tendon_ids) 0
-      then zeros nu
+      then zeros at nu
       else (
         let ids = Array.map tendon_ids ~f:(fun i -> t.actuator_trnid.(2 * i)) in
         Nx.mul (take gear tendon_ids) (take (Lazy.force tendon).Tendon.length ids))
@@ -143,7 +144,7 @@ let forward (m : Model.host) (d : Data.host) =
     let velocity = Nx.sum ~axes:[ 1 ] (Nx.mul moment (Nx.reshape [| 1; nv |] d.qvel)) in
     { moment; length; velocity })
 
-let pp ppf (t : t) =
+let pp ppf (t : 'a t) =
   Stdlib.Format.fprintf
     ppf
     "@[<v 2>transmission@,moment %a@,length %a@,velocity %a@]"

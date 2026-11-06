@@ -8,20 +8,20 @@ open Base
 let f64 = Nx.float64
 
 (* [column x j] is column [j] of a [nu;k] parameter tensor, as [nu]. *)
-let column (x : Nx.host Nx.float64_t) j = Nx.slice [ A; I j ] x
+let column (x : 'a Nx.float64_t) j = Nx.slice [ A; I j ] x
 
 (* A [nu] 0/1 flag tensor, from a [nu] tensor of flags. *)
-let flag (x : Nx.host Nx.float64_t) =
+let flag (x : 'a Nx.float64_t) =
   Nx.where (Nx.greater_s x 0.5) (Nx.ones_like x) (Nx.zeros_like x)
 
-let const (m : Model.host) f = Nx.init f64 [| m.topo.nu |] (fun i -> f i.(0))
+let const (m : 'a Model.model) f = Nx.init f64 [| m.topo.nu |] (fun i -> f i.(0))
 let clamp x lo hi = Nx.minimum (Nx.maximum x lo) hi
 
 (* [select mask a b] is [a] where the mask is one and [b] elsewhere. *)
 let select mask a b = Nx.add (Nx.mul mask a) (Nx.mul (Nx.sub (Nx.ones_like mask) mask) b)
 let minval = 1e-15
 
-let check (m : Model.host) =
+let check (m : 'a Model.model) =
   let t = m.topo in
   for i = 0 to t.nu - 1 do
     (match t.actuator_trntype.(i) with
@@ -56,7 +56,7 @@ let check (m : Model.host) =
 (* The activation each actuator reads: its state at the address the loader
    recorded, or zero when it has none. A stateful actuator is identified by a
    non-negative address, which is the same thing MuJoCo's [actnum > 0] says. *)
-let activation (m : Model.host) (d : Data.host) =
+let activation (m : 'a Model.model) (d : 'a Data.data) =
   let t = m.topo in
   if Int.equal t.na 0
   then Nx.zeros f64 [| t.nu |]
@@ -71,14 +71,14 @@ let activation (m : Model.host) (d : Data.host) =
     let has = const m (fun i -> if t.actuator_actadr.(i) >= 0 then 1. else 0.) in
     Nx.mul values has)
 
-type parts =
-  { ctrl : Nx.host Nx.float64_t (** [nu], after the control range *)
-  ; act : Nx.host Nx.float64_t (** [nu], zero where there is no state *)
-  ; length : Nx.host Nx.float64_t
-  ; velocity : Nx.host Nx.float64_t
+type 'a parts =
+  { ctrl : 'a Nx.float64_t (** [nu], after the control range *)
+  ; act : 'a Nx.float64_t (** [nu], zero where there is no state *)
+  ; length : 'a Nx.float64_t
+  ; velocity : 'a Nx.float64_t
   }
 
-let parts (m : Model.host) (d : Data.host) (tr : Transmission.t) =
+let parts (m : 'a Model.model) (d : 'a Data.data) (tr : 'a Transmission.t) =
   let p = m.params in
   let ctrl =
     select
@@ -92,12 +92,12 @@ let parts (m : Model.host) (d : Data.host) (tr : Transmission.t) =
   ; velocity = tr.Transmission.velocity
   }
 
-let affine (s : parts) prm =
+let affine (s : 'a parts) prm =
   Nx.add
     (column prm 0)
     (Nx.add (Nx.mul (column prm 1) s.length) (Nx.mul (column prm 2) s.velocity))
 
-let force (m : Model.host) (s : parts) =
+let force (m : 'a Model.model) (s : 'a parts) =
   let p = m.params in
   let g =
     let k0 = column p.actuator_gainprm 0 in
@@ -144,7 +144,7 @@ let force (m : Model.host) (s : parts) =
     (clamp raw (column p.actuator_forcerange 0) (column p.actuator_forcerange 1))
     raw
 
-let act_dot (m : Model.host) (d : Data.host) (s : parts) =
+let act_dot (m : 'a Model.model) (d : 'a Data.data) (s : 'a parts) =
   let t = m.topo in
   if Int.equal t.na 0
   then d.act_dot
@@ -183,7 +183,7 @@ let act_dot (m : Model.host) (d : Data.host) (s : parts) =
    only place that knows, and asking the model means reading a parameter
    tensor, which the differentiable entry point cannot do inside its program;
    so it is an argument, defaulting to the read. *)
-let damping ?force_limited (m : Model.host) (d : Data.host) =
+let damping ?force_limited (m : 'a Model.model) (d : 'a Data.data) =
   let tr = Transmission.forward m d in
   let s = parts m d tr in
   let p = m.params in
@@ -255,16 +255,16 @@ let damping ?force_limited (m : Model.host) (d : Data.host) =
     let skip = Nx.mul lim at_bound in
     Nx.mul k (Nx.sub (Nx.ones_like skip) skip))
 
-let qfrc_of (m : Model.host) (moment : Nx.host Nx.float64_t) (f : Nx.host Nx.float64_t) =
+let qfrc_of (m : 'a Model.model) (moment : 'a Nx.float64_t) (f : 'a Nx.float64_t) =
   Nx.reshape
     [| m.topo.nv |]
     (Nx.matmul (Nx.matrix_transpose moment) (Nx.reshape [| m.topo.nu; 1 |] f))
 
-let qfrc (m : Model.host) (d : Data.host) =
+let qfrc (m : 'a Model.model) (d : 'a Data.data) =
   let tr = Transmission.forward m d in
   qfrc_of m tr.Transmission.moment (force m (parts m d tr))
 
-let forward (m : Model.host) (d : Data.host) =
+let forward (m : Nx.host Model.model) (d : Nx.host Data.data) =
   check m;
   let tr = Transmission.forward m d in
   let s = parts m d tr in

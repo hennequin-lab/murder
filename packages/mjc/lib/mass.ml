@@ -55,7 +55,7 @@ let inert_com ~inertia ~mat ~dif ~mass =
 let zeros3 like =
   Nx.zeros_like (Nx.reshape [| 3 |] (Nx.slice [ R (0, 3) ] (Nx.get [ 0 ] like)))
 
-let forward (m : Model.host) (d : Data.host) : Data.host =
+let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   let t = m.topo
   and p = m.params in
   let nbody = t.nbody
@@ -90,7 +90,8 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
     cinert := Nx.set [ I b ] (Nx.reshape [| 10 |] row) !cinert
   done;
   (* cdof: each dof's motion axis in the same frame. *)
-  let cdof = ref (Nx.zeros f64 [| nv; 6 |]) in
+  let at = Nx.placement d.qpos in
+  let cdof = ref (Nx.zeros_at at f64 [| nv; 6 |]) in
   let unit = zeros3 d.xpos in
   for b = 1 to nbody - 1 do
     for j = t.body_jntadr.(b) to t.body_jntadr.(b) + t.body_jntnum.(b) - 1 do
@@ -149,7 +150,8 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
       crb
       := Nx.set [ I parent ] (Nx.add (Nx.get [ parent ] !crb) (Nx.get [ b ] !crb)) !crb
   done;
-  let mass_matrix = ref (Nx.zeros f64 [| nv; nv |]) in
+  let at = Nx.placement d.qpos in
+  let mass_matrix = ref (Nx.zeros_at at f64 [| nv; nv |]) in
   for v = 0 to nv - 1 do
     let buf =
       Rigid.mul_inert_vec (Nx.get [ t.dof_bodyid.(v) ] !crb) (Nx.get [ v ] !cdof)
