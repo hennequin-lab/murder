@@ -12,6 +12,7 @@
   g4
   cdump
   spike_scan
+  spike_batch
   perf)
  (modules
   spike_la
@@ -26,6 +27,7 @@
   g4
   cdump
   spike_scan
+  spike_batch
   perf)
  (libraries base mjc nx rune unix))
 

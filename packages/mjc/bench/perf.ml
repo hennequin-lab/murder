@@ -53,8 +53,8 @@ let () =
     | _ -> [ "pendulum"; "chain6"; "bounce"; "boxes2"; "hopper"; "walker"; "humanoid" ]
   in
   Printf.printf
-    "| model | nv | nefc | dt | eager | compiled | per_env, vmap 8 |\n\
-     | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+    "| model | nv | rows | nefcmax | dt | eager | compiled | per_env, vmap 8 |\n\
+     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
   List.iter models ~f:(fun name ->
     let m = load name in
     (* The reference pose at rest: the same state the MuJoCo script starts
@@ -91,10 +91,11 @@ let () =
     let _ = vec batched in
     let per_env = time ~steps:50 vec batched /. Float.of_int lanes in
     Printf.printf
-      "| %s | %d | %d | %.3g | %.0f us | %.0f us | %.0f us |\n"
+      "| %s | %d | %d | %d | %.3g | %.0f us | %.0f us | %.0f us |\n"
       name
       m.topo.nv
       nefc
+      m.topo.nefcmax
       (Nx.item [] m.params.timestep)
       (us eager)
       (us compiled_time)

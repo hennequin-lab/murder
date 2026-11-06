@@ -1219,3 +1219,34 @@ Two honest costs, measured on the same sheet as before:
 With the scan in, all three G4 models measure 1000/1000 steps inside 1e-8 on
 the gate's recording, rows and contacts matching MuJoCo's at every state, and
 the free run lasts 980 (hopper), 507 (walker) and 266 (humanoid) steps.
+
+## Batching: the scan does not unroll, the solver does
+
+The `perf.md` sheet said batching at 8 lanes did not pay, and the natural guess
+was that a `vmap` around a `Rune.scan` unrolls the loop per lane. It does not:
+the scan lowers to a real loop with carried buffers, and a map keeps one loop
+whose buffers carry a lane axis. A loop of 64 cheap steps costs 0.13-0.17x per
+lane batched, six times cheaper than repeating it, and the same at `nb = 8` and
+`nb = 64`. `vmap (jit f)` and `jit (vmap f)` are the same program for such a
+loop, to the microsecond.
+
+Two real effects sit under the number instead:
+
+- **The batched factorisation stops paying at about 48 rows.** Per lane, a loop
+  of matmul-and-Cholesky steps costs 0.19-0.23x at `nb = 8`, 0.27-0.32x at
+  16-32, 0.84-0.97x at 48 and 0.98-1.04x at 64; the matmul alone reaches 1.30x,
+  a loss. The solver's matrix is `[nefcmax; nefcmax]`, and `nefcmax` is 48 to
+  202 on the corpus models — every model but `pendulum` (4) sits at or past the
+  cliff, which is the whole of the batching column in `perf.md`.
+- **Compiling the batched step is much worse than interpreting it.** On
+  `chain6` the interpreted batched step costs 0.55x per lane and the compiled
+  one 2.02x: the jit that is supposed to make the step faster makes the batched
+  one 3.7x slower per lane. So the sheet's per-env column, which measured
+  `vmap` around an already-compiled program, is the worst of the two
+  compositions and not a verdict on batching.
+
+Stage by stage, everything else batches well and consistently: kinematics
+0.31-0.37x per lane, mass 0.36-0.37x, contacts 0.30-0.33x, passive and bias
+0.30-0.40x. The solver is the only stage that does not, and it is 40-60% of a
+step. `bench/spike_batch.ml` carries the whole measurement, three runs
+reproducing to about 0.03, and `perf.md` carries the plan it implies.

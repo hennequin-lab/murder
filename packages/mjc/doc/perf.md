@@ -37,13 +37,13 @@ Per step, microseconds. `compiled` is `Step.compile` + `Step.run`; `eager` is
 `per env` is the compiled step under `Rune.vmap` over 8 lanes, divided by 8.
 `rows` is `nefc` after one step from the reference pose.
 
-| model | nv | rows | dt | mjc eager | mjc compiled | mjc per env (vmap 8) | MuJoCo `mj_step` | compiled / MuJoCo |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| pendulum | 1 | 0 | 0.001 | 497 us | **54 us** | 12 us | **1 us** | 54× |
-| chain6 | 6 | 0 | 0.001 | 9266 us | **4778 us** | 9957 us | **3 us** | 1593× |
-| boxes2 | 30 | 16 | 0.002 | 38173 us | **152877 us** | 87737 us | **11 us** | 13898× |
-| hopper | 7 | 1 | 0.005 | 10320 us | **10151 us** | 7882 us | **5 us** | 2030× |
-| walker | 9 | 0 | 0.0025 | 9242 us | **9060 us** | 20225 us | **5 us** | 1812× |
+| model | nv | rows | nefcmax | dt | mjc eager | mjc compiled | mjc per env (vmap 8) | MuJoCo `mj_step` | compiled / MuJoCo |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| pendulum | 1 | 0 | 4 | 0.001 | 474 us | **54 us** | 12 us | **1 us** | 54x |
+| chain6 | 6 | 0 | 48 | 0.001 | 9195 us | **4856 us** | 9941 us | **3 us** | 1619x |
+| boxes2 | 30 | 16 | 176 | 0.002 | 38173 us | **152877 us** | 87737 us | **11 us** | 13898x |
+| hopper | 7 | 1 | 64 | 0.005 | 10320 us | **10151 us** | 7882 us | **5 us** | 2030x |
+| walker | 9 | 0 | 76 | 0.0025 | 9242 us | **9060 us** | 20225 us | **5 us** | 1812x |
 
 Three things in that table are facts about this engine rather than about the
 physics, and each is worth its own measurement before anyone plans work:
@@ -56,10 +56,10 @@ physics, and each is worth its own measurement before anyone plans work:
   38 ms). The box-box tensor path is evaluated for every candidate pair and
   the compiler has made it worse, not better. This is the one number on the
   sheet that looks like a defect rather than a cost.
-- **Batching at 8 lanes does not pay.** Per environment, `walker` costs 20 ms
-  batched against 9 ms single. The `vmap` path is not faster per environment
-  at this lane count — it has not been tuned, and the earlier `bench_step`
-  numbers at 256 lanes are not reproduced here.
+- **Batching pays on `pendulum` and loses on everything else.** Per
+  environment `pendulum` is 4.5x cheaper batched (12 us against 54 us) and
+  `walker` is 2.2x dearer (20 ms against 9 ms). Section 5 shows why: it is the
+  batched factorisation, and the two sizes that decide it are on this table.
 
 ## 3. Where the time goes: the solver's schedule
 
@@ -114,7 +114,58 @@ Not yet measured to the level of section 3; named with what is known.
   rather than estimated. Its single-step cost from `bench_grad`'s table
   (`doc/grad-report.md`) is in the same 10 ms range as `hopper` and `walker`.
 
-## 5. The plan
+## 5. Batching: does `vmap` cost an unrolled loop?
+
+The question worth answering before planning anything about batching, because
+the answer decides whether the loss is structural or fixable. The guess is that
+`Rune.vmap` over a `Rune.scan` unrolls the loop per lane, so batching a solver
+would multiply its rounds by the lane count.
+
+**It does not unroll.** `Rune.scan` lowers to a real loop (`Ops.range` with
+carried buffers), and a map around it keeps one loop whose buffers carry a lane
+axis. A loop of 64 cheap steps costs 137-154 us on one lane and 166-191 us for
+eight: **0.13-0.17x per lane**, six times cheaper to batch than to repeat, and
+flat in the buffer size (`nb = 8` and `nb = 64` measure the same).
+
+What the loss is instead is **the solver, and it grows with the row buffer**.
+Per lane divided by single lane, eight lanes, three runs each, reproducible to
+about 0.03 (`bench/spike_batch.exe`):
+
+| model | `nefcmax` | solve stage | whole step, interpreted | whole step, compiled |
+| --- | ---: | ---: | ---: | ---: |
+| pendulum | 4 | **0.18x** | **0.33x** | **0.20x** |
+| chain6 | 48 | 0.88x | **0.55x** | **2.02x** |
+| walker | 76 | **2.51x** | 1.55x | **2.24x** |
+
+Every other stage batches well and consistently: kinematics 0.31-0.37x, mass
+0.36-0.37x, contacts 0.30-0.33x, passive and bias 0.30-0.40x per lane. The
+solver is the only stage that does not, and it is 40-60% of the step.
+
+Two separate effects are visible in that table, and the second one is the
+surprise:
+
+- **The batched factorisation stops paying at about 48 rows.** A loop whose
+  step is a matmul and a Cholesky solve costs, per lane: 0.19-0.23x at
+  `nb = 8`, 0.27-0.32x at 16-32, 0.84-0.97x at 48, and **0.98-1.04x** at 64 —
+  while the matmul alone reaches **1.30x**, a loss. Elementwise work batches
+  at every size. So a solver round, which is a small matmul and a Cholesky on
+  an `[nefcmax; nefcmax]` matrix, inherits that cliff exactly where the corpus
+  models sit (48, 64, 76, 176, 202).
+- **Compiling the batched step is much worse than interpreting it.**
+  `Rune.vmap f` and `Rune.vmap (Rune.jit f)` are the same program when `f` is a
+  small loop (measured equal to the microsecond), but not when `f` is the
+  engine's step: on `chain6` the interpreted batched step is **0.55x** per lane
+  and the compiled one **2.02x** — the compiled form is 3.7x slower per lane
+  than the form the jit is supposed to improve. `perf.exe`'s per-env column
+  measures the compiled form, which is why section 2's batching numbers look
+  uniformly bad. They are the numbers for the worst of the two compositions.
+
+So: batching is not at odds with the scan, it is at odds with (a) a
+factorisation whose batched kernels stop paying at our buffer sizes and (b) a
+jit codegen path that does worse on a batched step than the interpreter does.
+The first is ours to fix; the second should be reported and possibly avoided.
+
+## 6. The plan
 
 Ordered by measured payoff per unit of work, with how each would be checked.
 None of these changes a physics result; the G4 parity tests
@@ -136,21 +187,43 @@ across all of them.
    to the non-constraint floor (tens of microseconds to low hundreds).
    Check: same as above, plus a test that a model whose rows appear later in
    a run still solves.
-3. **Make the row buffer follow the rows.** Even without the schedule change,
-   the factorisation could be sized to the rows in play rather than the
-   model-wide bound, or the bound could be tightened when recording. Cheap to
-   investigate with `spike_solver_iter`-style scaffolding; matters most for
-   models that are mostly contact-free.
+3. **Make the row buffer follow the rows.** Section 5 puts a number on this:
+   the solver's matrix is `[nefcmax; nefcmax]` (4 for `pendulum`, 48 for
+   `chain6`, 76 for `walker`, 202 for `humanoid`) while a step usually has
+   under sixteen rows, and the batched factorisation stops paying at 48. Sizing
+   the solve to the live rows — host-known in the eager path, bucketed and
+   padded in the compiled one — moves most steps under that cliff and shrinks
+   every round as well.
+
 4. **Fix `boxes2`.** 153 ms compiled against 38 ms eager is a defect, not a
    cost: find what the compiler did to the box-box path, then reduce the work
    to the pairs that can actually touch (the broadphase result is already a
    host-known set at these sizes). This is the M7 box-box item; the target is
    "no worse than the capsule path per body", i.e. single-digit milliseconds.
-5. **Batch properly or say it does not help.** Measure `vmap` at 32, 128, 256
-   lanes and per environment; either the batching pays at some lane count and
-   the number is quoted, or the sheet says the vectorised path is not faster
-   and the claim comes off the README.
-6. **Eager path: only if users feel it.** The demos run at 4 steps a frame;
+5. **Batch the solver the way the measurements say.** Three concrete levers,
+   in order of measured payoff:
+   - *Composition*: for batched runs, use `Rune.vmap (fun d -> Step.step m d)`
+     rather than `Rune.vmap (Step.run (Step.compile m))`. Measured on
+     `chain6`: 0.55x per lane interpreted against 2.02x compiled. This is a
+     call-site change plus a benchmark that keeps both compositions honest, and
+     it makes section 2's batching column look like section 5's interpreted one.
+   - *Factorisation*: write the Cholesky as its `n` public steps of elementwise
+     operations and one reduction each, which batch at 0.15x per lane, instead
+     of calling the batched kernel, which reaches 1.30x on the matmul alone.
+     Kept behind the same interface so `test_grad`'s QP oracle and the G4 parity
+     tests choose between the two.
+   - *Report the jit gap*: a compiled batched step 3.7x slower per lane than the
+     interpreted one is a codegen finding, not an engine one. It goes upstream
+     with `spike_batch.exe`, and until it is fixed the batched path does not go
+     through the jit.
+6. **Run the solver on the rows in play, not the bound.** `nefcmax` is the
+   compile-time worst case (48-202 on these models); a typical step has fewer
+   than sixteen rows and some have none. Sizing the solve to the live rows —
+   host-known in the eager path, bucketed and padded in the compiled one —
+   would put most steps under the cliff of section 5 as well as shrinking the
+   schedule's per-round cost. This is item 2's neighbour: skipping the solve
+   when there are no rows removes the worst cases, this one shrinks the rest.
+7. **Eager path: only if users feel it.** The demos run at 4 steps a frame;
    the viewer is not the bottleneck. Revisit after 1–4, and only with a
    measurement showing the viewer's frame time is dominated by the step.
 
@@ -162,7 +235,7 @@ set, so an early-exiting solver must still return the same `λ` the full
 schedule would — which is what `doc/grad-report.md`'s budget-invariance test
 checks, and it stays.
 
-## 6. What this sheet is not
+## 7. What this sheet is not
 
 It is not a claim about MuJoCo's or `mjc`'s *physics* cost. It is one state per
 model, chosen because both engines can be started there from the corpus, and
