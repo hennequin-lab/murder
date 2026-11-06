@@ -4,6 +4,10 @@ A recap of where the OCaml/Raven engine stands against the C engine on the
 corpus models, and what to do about it. Measured on one machine, one thread,
 warm-up then a timed loop, both engines starting from the same state.
 
+*See also `doc/research-mjx.md`: how DeepMind's MJX solved the same problem (a
+compiled physics engine on a GPU), what it gave up for it, and which of its
+answers we should and should not copy.*
+
 **The headline, said plainly:** `mjc` is between fifty and two thousand times
 slower per step than MuJoCo on these models, and the gap is not in the physics
 — the rows, contact sets and trajectories agree to 1e-10 or better — but in how
