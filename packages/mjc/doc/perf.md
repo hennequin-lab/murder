@@ -322,8 +322,20 @@ step but does for the demos, the viewer and the tests, which run eager.
 So placing the step on the GPU is not a benchmark away: it is the M7 item the
 plan already carries — make the engine's tensors device-polymorphic, then
 `Rune.jit` compiles the same program for the device its `Data` lies on.
-`bench/gpu.ml` was the attempt at measuring the solver's round (a batched
-Cholesky and solve, `[64; 76; 76]`) on the iGPU against the host; its OCaml
-needs the device set unpacked inside a functor rather than a match arm before it
-will type, and it is not landed. The measurement it was for is the one that
-should justify the device-polymorphism work, and it is worth doing first.
+The measurement that should precede the device-polymorphism work — the solver's
+round, a batched Cholesky and triangular solve on `[64; 76; 76]`, host against
+iGPU — is written and does not yet type. Two OCaml obstacles, both recorded here
+so the next attempt starts past them:
+
+- A `Rune.jit` created inside a `Bench (Set : Nx.Devices)` functor has its brand
+  as a *fresh* variable, and annotating it as `Set.d Nx.float64_t -> ...` does
+  not unify: the error is `(float, float64_elt, 'a) Nx.t ... but was expected to
+  have type Set.d Nx.float64_t`. So a jit'd program cannot be pinned to a
+  functor's abstract device set through its signature alone.
+- Timed through a polymorphic helper instead of in place, the brand escapes the
+  functor (`The type constructor Set.d would escape its scope`), so anything
+  branded must be created, used and turned back into numbers inside one scope.
+
+The clean route is a jit entry point that takes the device set, `Rune.jit_on :
+('d Nx.Devices.t) -> ...`, which is a small addition to rune's interface and the
+same change the engine's device polymorphism will need anyway.
