@@ -85,7 +85,8 @@ type ('a, 'd) t =
   }
 [@@deriving ptree]
 
-type host = (Nx.host Nx.float64_t, Nx.host) t
+type 'd model = ('d Nx.float64_t, 'd) t
+type host = Nx.host model
 type ('a, 'd) desc = ('a, 'd) t
 
 module Desc = struct
@@ -160,7 +161,7 @@ let pp_shape_key ppf k =
     k.nefcmax
     k.max_geom_pairs
 
-let validate (m : host) : (unit, string) Result.t =
+let validate (m : 'a model) : (unit, string) Result.t =
   let t = m.topo
   and p = m.params in
   let problems = ref [] in

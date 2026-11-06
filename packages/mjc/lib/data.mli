@@ -104,33 +104,40 @@ type ('a, 'd) t =
   }
 [@@deriving ptree]
 
-(** The type for [float64] data on the host, which is what every v1 kernel
-    takes. *)
-type host = (Nx.host Nx.float64_t, Nx.host) t
+(** The type for [float64] data whose values live on the device ['d]. *)
+type 'd data = ('d Nx.float64_t, 'd) t
+
+(** The type for [float64] data on the host. *)
+type host = Nx.host data
 
 (** {1:structure Structure} *)
 
 (** [ptree] describes a {!t} to the transformations. *)
-val ptree : (host, Nx.host) Nx.Ptree.t
+val ptree : (Nx.host data, Nx.host) Nx.Ptree.t
 
 (** {1:construction Construction and accessors} *)
 
-(** [create m] is the state of model [m] at rest: [qpos] is [m.qpos0], every
-    other leaf is zero, and [time] is zero with a zero time step. *)
-val create : Model.host -> host
+(** [create_at at m] is the state of model [m] at rest, every leaf placed at
+    [at]: [qpos] is [m.qpos0], every other leaf is zero, and [time] is zero with
+    a zero time step. A creation has no operand to take a placement from, so a
+    caller that wants the state on a device names it here. *)
+val create_at : 'd Nx.Placement.t -> ('d Nx.float64_t, 'd) Model.t -> 'd data
+
+(** [create m] is [create_at Nx.Host.on m]. *)
+val create : Nx.host Model.model -> host
 
 (** [nq m] and [nv m] are the model's counts, repeated for convenience. *)
-val nq : Model.host -> int
+val nq : 'd Model.model -> int
 
 (** [nv m] is the number of velocity coordinates. *)
-val nv : Model.host -> int
+val nv : 'd Model.model -> int
 
 (** {1:checks Checks} *)
 
 (** [validate m d] is [Ok ()] when every leaf of [d] has the shape [m]'s
     topology implies, and [Error message] otherwise, naming the field, the
     expected shape and the shape found. *)
-val validate : Model.host -> host -> (unit, string) result
+val validate : 'd Model.model -> 'd data -> (unit, string) result
 
 (** [pp] formats the state's counts and the time. *)
-val pp : Format.formatter -> host -> unit
+val pp : Format.formatter -> Nx.host data -> unit

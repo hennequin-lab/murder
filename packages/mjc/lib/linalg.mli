@@ -24,18 +24,18 @@
 
 (** The type for a batched square system: any number of leading axes, then
     [n] by [n]. *)
-type t = Nx.host Nx.float64_t
+type 'd t = 'd Nx.float64_t
 
 (** [cholesky a] is the lower factor of the symmetric positive definite
     matrices [a], which must have at least two axes and be square in the last
     two. A matrix that is not positive definite gives NaN where a kernel would,
     which is the same contract as {!Nx.cholesky}. *)
-val cholesky : t -> t
+val cholesky : 'a t -> 'a t
 
 (** [solve a b] is [a⁻¹ b] for the factors [a] that {!cholesky} returns and a
     right-hand side whose shape is [a]'s without its last axis, plus a
     trailing axis of extent 1 for a column. *)
-val solve : t -> t -> t
+val solve : 'a t -> 'a t -> 'a t
 
 (** [solve_spd a b] is [solve (cholesky a) b], the entry point the solver uses. *)
-val solve_spd : t -> t -> t
+val solve_spd : 'a t -> 'a t -> 'a t

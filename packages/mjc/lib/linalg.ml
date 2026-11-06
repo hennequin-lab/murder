@@ -6,7 +6,7 @@
 open Base
 open Nx
 
-type t = Nx.host Nx.float64_t
+type 'd t = 'd Nx.float64_t
 
 (* Every operation below addresses the last axis of its operand and leaves the
    leading ones alone, so each is a batch of the same operation for any number
@@ -14,35 +14,36 @@ type t = Nx.host Nx.float64_t
    not known when the module is compiled: a batched call has one more axis than
    an unbatched one, and both go through this code. *)
 
-let rank (x : t) = Array.length (Nx.shape x)
+let rank (x : 'a t) = Array.length (Nx.shape x)
 let last shape = shape.(Array.length shape - 1)
 
 (* The axes before the matrix: none for one matrix, the lanes for a batch. *)
-let batch_shape (x : t) = Array.sub ~pos:0 ~len:(rank x - 2) (Nx.shape x)
+let batch_shape (x : 'a t) = Array.sub ~pos:0 ~len:(rank x - 2) (Nx.shape x)
 
 (* [pick x idx] is [idx] on the last axis, all of it elsewhere. *)
-let pick (x : t) idx = Nx.slice (List.init (rank x - 1) ~f:(fun _ -> A) @ [ idx ]) x
-let col (x : t) j : t = pick x (I j)
-let cols (x : t) lo hi : t = pick x (R (lo, hi))
+let pick (x : 'a t) idx = Nx.slice (List.init (rank x - 1) ~f:(fun _ -> A) @ [ idx ]) x
+let col (x : 'a t) j : 'a t = pick x (I j)
+let cols (x : 'a t) lo hi : 'a t = pick x (R (lo, hi))
 
 (* Row [i] of the last two axes: index the second-to-last, keep the last. *)
-let row (x : t) i : t =
+let row (x : 'a t) i : 'a t =
   let before = List.init (rank x - 2) ~f:(fun _ -> A) in
   Nx.slice ((before @ [ I i ]) @ [ A ]) x
 
 (* A column's shape: the batch axes, then the row axis. *)
-let column_shape (x : t) = Nx.shape (col x 0)
+let column_shape (x : 'a t) = Nx.shape (col x 0)
 
 (* [row] already drops the axis it indexes, so its result is the vector over
    the last axis that the recurrence wants. *)
-let row_vec (x : t) i = row x i
+let row_vec (x : 'a t) i = row x i
 
 (* [Σ_k x.(..., i, k) r.(..., k)] for every [i], as a broadcast product reduced
    over the last axis: the form that batches, where {!Nx.matmul} does not. *)
-let dot ~(x : t) ~(r : t) = Nx.sum ~axes:[ -1 ] (Nx.mul x (Nx.unsqueeze ~axes:[ -2 ] r))
+let dot ~(x : 'a t) ~(r : 'a t) =
+  Nx.sum ~axes:[ -1 ] (Nx.mul x (Nx.unsqueeze ~axes:[ -2 ] r))
 
 (* The same for two vectors per batch, as the triangular solves need. *)
-let dot_vec ~(x : t) ~(r : t) = Nx.sum ~axes:[ -1 ] (Nx.mul x r)
+let dot_vec ~(x : 'a t) ~(r : 'a t) = Nx.sum ~axes:[ -1 ] (Nx.mul x r)
 
 let cholesky a =
   let shape = Nx.shape a in
@@ -53,7 +54,8 @@ let cholesky a =
       (Printf.sprintf
          "Linalg.cholesky: %s is not square in its last two axes"
          (String.concat ~sep:"x" (List.map (Array.to_list shape) ~f:Int.to_string)));
-  let idx = Nx.arange_f Nx.float64 0.0 (Float.of_int n) 1.0 in
+  let at = Nx.placement a in
+  let idx = Nx.arange_f_at at Nx.float64 0.0 (Float.of_int n) 1.0 in
   let l = ref (Nx.zeros_like a) in
   for j = 0 to n - 1 do
     (* L[i,j] = (A[i,j] - Σ_{k<j} L[i,k] L[j,k]) / L[j,j], where the diagonal's
@@ -66,8 +68,8 @@ let cholesky a =
     in
     let diagonal =
       Nx.maximum
-        (Nx.sqrt (Nx.maximum (pick pivot (I j)) (Nx.scalar Nx.float64 0.0)))
-        (Nx.scalar Nx.float64 1e-300)
+        (Nx.sqrt (Nx.maximum (pick pivot (I j)) (Nx.scalar_at at Nx.float64 0.0)))
+        (Nx.scalar_at at Nx.float64 1e-300)
     in
     (* [diagonal] is one value per batch: a scalar when unbatched. Broadcast it
        along the row axis so the division is elementwise. *)
@@ -80,7 +82,7 @@ let cholesky a =
     let at_or_below =
       Nx.broadcast_to
         (column_shape a)
-        (Nx.greater_equal idx (Nx.scalar Nx.float64 (Float.of_int j)))
+        (Nx.greater_equal idx (Nx.scalar_at at Nx.float64 (Float.of_int j)))
     in
     let column = Nx.where at_or_below (Nx.div pivot divisor) (Nx.zeros_like pivot) in
     l
@@ -108,7 +110,7 @@ let solve l b =
   for i = 0 to n - 1 do
     let acc =
       if Int.equal i 0
-      then Nx.zeros Nx.float64 lead
+      then Nx.zeros_at (Nx.placement b) Nx.float64 lead
       else dot_vec ~x:(cols !y 0 i) ~r:(pick (row_vec l i) (R (0, i)))
     in
     let value = Nx.div (Nx.sub (col !y i) acc) (pick (row_vec l i) (I i)) in
@@ -122,7 +124,7 @@ let solve l b =
   for i = n - 1 downto 0 do
     let acc =
       if Int.equal i (n - 1)
-      then Nx.zeros Nx.float64 lead
+      then Nx.zeros_at (Nx.placement b) Nx.float64 lead
       else dot_vec ~x:(cols !x (i + 1) n) ~r:(pick (col l i) (R (i + 1, n)))
     in
     let value = Nx.div (Nx.sub (col !x i) acc) (pick (row_vec l i) (I i)) in

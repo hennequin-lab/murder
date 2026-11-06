@@ -328,14 +328,20 @@ two triangular solves, `[64; 76; 76]` — on the host and on the iGPU.
 
 | | one round over 64 environments |
 | --- | ---: |
-| host (12 Zen 5 cores, one thread) | 3.04 ms |
+| host (12 Zen 5 cores, one thread) | 4.02 ms |
+| iGPU (gfx1151, via `Rig_amd_amdgpu`) | **0.11 ms** |
+| | **38x the host** |
 
-**The GPU column is empty, and the reason is a missing system library, not the
-engine.** The device opens (`Rig_amd_amdgpu` finds one, `gfx1151`, `computes =
-true`) and rune compiles the program for its brand, but tolk's AMD backend
-compiles HIP through AMD's *code object manager* (`libamd_comgr`), which this
-machine does not have — `pacman -S comgr` in `extra`. Until it is installed,
-`bench/gpu.ml` prints the host number and names the missing library.
+The two devices agree bit for bit: worst relative difference 0. This is the
+number the device-polymorphism refactor was gated on, and it clears the gate.
+Read it as one round's dense algebra, not a whole step: the solve is 40-60% of a
+step from the batching measurements in §5, and transfers are outside the timing
+(one copy each way, as a resident training loop would have).
+
+The GPU column needs AMD's *code object manager*: tolk's AMD backend compiles HIP
+through `libamd_comgr`, and without it the device still opens and the compile
+stops with `comgr not available`. `pacman -S comgr` (in `extra`) is the whole
+fix; no ROCm install is needed for the driver path.
 
 Two OCaml obstacles were in the way and both are solved, worth recording because
 the engine refactor will meet them again:

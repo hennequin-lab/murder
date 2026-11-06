@@ -78,7 +78,8 @@ type ('a, 'd) t =
   }
 [@@deriving ptree]
 
-type host = (Nx.host Nx.float64_t, Nx.host) t
+type 'd data = ('d Nx.float64_t, 'd) t
+type host = Nx.host data
 type ('a, 'd) desc = ('a, 'd) t
 
 module Desc = struct
@@ -88,14 +89,15 @@ module Desc = struct
 end
 
 let ptree = Nx.Ptree.instantiate (module Desc)
-let nq (m : Model.host) = m.topo.nq
-let nv (m : Model.host) = m.topo.nv
+let nq (m : 'a Model.model) = m.topo.nq
+let nv (m : 'a Model.model) = m.topo.nv
 
-let create (m : Model.host) : host =
+let create_at (type d) (at : d Nx.Placement.t) (m : (d Nx.float64_t, d) Model.t) : d data =
   let t = m.topo in
   let f64 = Nx.float64 in
-  let zeros shape = Nx.zeros f64 shape in
-  { time = Nx.scalar f64 0.0
+  let zeros shape = Nx.zeros_at at f64 shape in
+  let int32 s = Nx.zeros_at at Nx.int32 s in
+  { time = Nx.scalar_at at f64 0.0
   ; qpos = Nx.copy m.params.qpos0
   ; qvel = zeros [| t.nv |]
   ; qacc = zeros [| t.nv |]
@@ -133,22 +135,22 @@ let create (m : Model.host) : host =
   ; qfrc_constraint = zeros [| t.nv |]
   ; qfrc_smooth = zeros [| t.nv |]
   ; mass_matrix = zeros [| t.nv; t.nv |]
-  ; ncon = Nx.scalar Nx.int32 0l
+  ; ncon = Nx.scalar_at at Nx.int32 0l
   ; contact_dist = zeros [| t.nconmax |]
   ; contact_pos = zeros [| t.nconmax; 3 |]
   ; contact_frame = zeros [| t.nconmax; 9 |]
   ; contact_normal = zeros [| t.nconmax; 3 |]
-  ; contact_geom = Nx.zeros Nx.int32 [| t.nconmax; 2 |]
-  ; contact_body = Nx.zeros Nx.int32 [| t.nconmax; 2 |]
-  ; contact_dim = Nx.zeros Nx.int32 [| t.nconmax |]
+  ; contact_geom = int32 [| t.nconmax; 2 |]
+  ; contact_body = int32 [| t.nconmax; 2 |]
+  ; contact_dim = int32 [| t.nconmax |]
   ; contact_includemargin = zeros [| t.nconmax |]
   ; contact_friction = zeros [| t.nconmax; 5 |]
   ; contact_solref = zeros [| t.nconmax; 2 |]
   ; contact_jac = zeros [| t.nconmax; 3 * t.nv |]
   ; contact_solimp = zeros [| t.nconmax; 5 |]
-  ; nefc = Nx.scalar Nx.int32 0l
-  ; efc_type = Nx.zeros Nx.int32 [| t.nefcmax |]
-  ; efc_id = Nx.zeros Nx.int32 [| t.nefcmax |]
+  ; nefc = Nx.scalar_at at Nx.int32 0l
+  ; efc_type = int32 [| t.nefcmax |]
+  ; efc_id = int32 [| t.nefcmax |]
   ; efc_pos = zeros [| t.nefcmax |]
   ; efc_margin = zeros [| t.nefcmax |]
   ; efc_posnorm = zeros [| t.nefcmax |]
@@ -165,7 +167,9 @@ let create (m : Model.host) : host =
   ; efc_force = zeros [| t.nefcmax |]
   }
 
-let validate (m : Model.host) (d : host) : (unit, string) Result.t =
+let create m = create_at Nx.Host.on m
+
+let validate (m : 'a Model.model) (d : 'a data) : (unit, string) Result.t =
   let t = m.topo in
   let problems = ref [] in
   let want name expected x =

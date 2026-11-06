@@ -1282,3 +1282,51 @@ active set differently is not something a parity gate should sign off on. And th
 stage-level measurements it needed turned up the jit finding: a *compiled*
 batched step costs 2.02x per lane on `chain6` where the interpreted one costs
 0.55x, so the batched path should not go through the jit until that is fixed.
+
+## The GPU gate: 38x, and the typing that stood in the way
+
+The device polymorphism ADR gated the refactor on one measurement, and the
+measurement is now in: one active-set round -- a 76x76 Cholesky with its two
+triangular solves, `[64; 76; 76]`, which is the row buffer at walker's `nefcmax`
+over 64 environments -- runs on the iGPU (gfx1151) in **0.11 ms against the
+host's 4.02 ms, 38x faster**, and the two devices agree bit for bit (worst
+relative difference 0). The gate is met, so the refactor proceeds.
+
+Getting there cost one system package and two OCaml lessons. The package:
+tolk's AMD backend compiles HIP through AMD's code object manager, so without
+the package `comgr` (in `extra`) -- the device opens, `Rune.jit` compiles for its
+brand, and the compile then stops with `comgr not available`. That is worth
+knowing before anyone else tries: the driver path needs no ROCm, the *compiler*
+does need comgr.
+
+The lessons, both recorded in `doc/perf.md` §9 because the engine refactor
+meets them again:
+
+1. A jit'd program cannot be built inside a functor or a closure over a device
+   set -- the brand escapes. Rune's own idiom is a record with a polymorphic
+   field, `type run = { run : 'd. 'd Nx.Placement.t -> ... }`, instantiated per
+   set; the same source then compiles for the host's brand and for a set minted
+   at run time.
+2. The `Nx.Ptree` signature must be written inline in the `Rune.jit` call: a
+   top-level `let sig = Nx.Ptree.(...)` is an application, so value restriction
+   leaves its brand a weak variable and the field stops generalising.
+
+## Creation defaults to the host, and that is the real shape of the refactor
+
+Branding the value types turned out to be the easy half: `Model.t` and `Data.t`
+were already `('a, 'd) t`, so the change is additive -- `type 'd model`, with
+`host` keeping every existing call site compiling. The hard half is **creation**:
+`Nx.scalar`, `Nx.zeros`, `Nx.eye`, `Nx.arange_f`, `Nx.create`, `Nx.full`,
+`Nx.linspace` all return *host* values, and only the `_at` variants take a
+placement. Every stage that builds a constant therefore pins itself to the host
+without saying so, which is how `Linalg.cholesky` (an `Nx.arange_f` for its
+triangular mask), `Jacobian.chain_mask` (an `Nx.zeros` for its dof mask) and
+`Data.create` all came out host-monomorphic from code that reads as
+device-agnostic.
+
+The idiom that fixes it is `Nx.placement` of an operand the stage already has --
+`Nx.arange_f_at (Nx.placement a)`, `Nx.zeros_at (Nx.placement d.qpos)`. Where the
+stage has no operand at all, the placement has to be named by the caller, which
+is why `Data.create` became `create_at at m` with `create = create_at
+Nx.Host.on`. Landed so far: `Linalg`, `Jacobian`, `Mass`, `Model.model`,
+`Data.data`/`create_at`. The suite is unchanged (18 groups, all passing).

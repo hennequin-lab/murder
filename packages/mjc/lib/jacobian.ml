@@ -7,7 +7,7 @@ open Base
 open Nx
 open Topo
 
-type f = Nx.host Nx.float64_t
+type 'd f = 'd Nx.float64_t
 
 let dof_width = function
   | Hinge | Slide -> 1
@@ -29,17 +29,17 @@ let rec last_dof (t : Topo.t) b =
   else last_dof t t.body_parentid.(b)
 
 (* A mask over the dofs that move [body]: one pass up the parent chain. *)
-let chain_mask (t : Topo.t) body =
-  let mask = ref (Nx.zeros Nx.float64 [| t.nv |]) in
+let chain_mask ~at (t : Topo.t) body =
+  let mask = ref (Nx.zeros_at at Nx.float64 [| t.nv |]) in
   let i = ref (last_dof t body) in
   while !i >= 0 do
-    mask := Nx.set [ I !i ] (Nx.scalar Nx.float64 1.0) !mask;
+    mask := Nx.set [ I !i ] (Nx.scalar_at at Nx.float64 1.0) !mask;
     i := t.dof_parentid.(!i)
   done;
   !mask
 
 (* The offset of a point from the reference point of the motion subspace. *)
-let offset (t : Topo.t) (d : Data.host) body pos =
+let offset (t : Topo.t) (d : 'a Data.data) body pos =
   let com = Nx.slice [ I t.body_rootid.(body); A ] d.subtree_com in
   Nx.sub pos com
 
@@ -52,10 +52,10 @@ let mask_rows mask x =
 
 let as_row v = Nx.reshape [| 1; (Nx.shape v).(0) |] v
 
-let point (m : Model.host) (d : Data.host) ~body ~pos =
+let point (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
   let t = m.topo in
   let r = offset t d body pos in
-  let mask = chain_mask t body in
+  let mask = chain_mask ~at:(Nx.placement d.qpos) t body in
   let ang = ang6 d.cdof
   and lin = lin6 d.cdof in
   let cross = Nx.cross ang (as_row r) in
@@ -96,7 +96,7 @@ let cross6 vel u =
    joint: it recomputes it from the body's *final* velocity, where
    [mj_comVel] had used the velocity before the joint's own contribution.
    The two differ whenever the joint is not first in its body. *)
-let cdof_dot_jac (t : Topo.t) (d : Data.host) =
+let cdof_dot_jac (t : Topo.t) (d : 'a Data.data) =
   let out = ref d.cdof_dot in
   for dof = 0 to t.nv - 1 do
     let j = t.dof_jntid.(dof) in
@@ -114,10 +114,10 @@ let cdof_dot_jac (t : Topo.t) (d : Data.host) =
   done;
   !out
 
-let point_dot (m : Model.host) (d : Data.host) ~body ~pos =
+let point_dot (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
   let t = m.topo in
   let r = offset t d body pos in
-  let mask = chain_mask t body in
+  let mask = chain_mask ~at:(Nx.placement d.qpos) t body in
   let cvel = Nx.slice [ I body; A ] d.cvel in
   let omega = Nx.slice [ R (0, 3) ] cvel
   and vlin = Nx.slice [ R (3, 6) ] cvel in
@@ -134,7 +134,7 @@ let point_dot (m : Model.host) (d : Data.host) ~body ~pos =
   in
   jacp, jacr
 
-let jdotv (m : Model.host) (d : Data.host) ~body ~pos =
+let jdotv (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
   let t = m.topo in
   let jacp, jacr = point_dot m d ~body ~pos in
   let v = Nx.reshape [| t.nv; 1 |] d.qvel in

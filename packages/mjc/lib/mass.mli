@@ -26,14 +26,14 @@ val forward : Model.host -> Data.host -> Data.host
 (** {1:factor Factorization} *)
 
 (** The type for a factored mass matrix. *)
-type factor
+type 'd factor
 
 (** [factor m] is the Cholesky factor of the symmetric positive definite
     matrix [m], which [solve] reuses. It takes the matrix rather than the data
     so that a step can factor [M + h diag(B)], the implicit-damping metric,
     with the same code. [Nx.cholesky] raises on a matrix that is not positive
     definite. *)
-val factor : Nx.host Nx.float64_t -> factor
+val factor : 'd Nx.float64_t -> 'd factor
 
 (** [solve f b] is [M^-1 b] using the factor [f]. *)
-val solve : factor -> Nx.host Nx.float64_t -> Nx.host Nx.float64_t
+val solve : 'd factor -> 'd Nx.float64_t -> 'd Nx.float64_t

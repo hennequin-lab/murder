@@ -168,10 +168,10 @@ let forward (m : Model.host) (d : Data.host) : Data.host =
   done;
   { d with subtree_com; com; cinert = !cinert; cdof = !cdof; mass_matrix = !mass_matrix }
 
-type factor = Nx.host Nx.float64_t
+type 'd factor = 'd Nx.float64_t
 
-let factor (a : Nx.host Nx.float64_t) : factor = Nx.cholesky a
+let factor (a : 'd Nx.float64_t) : 'd factor = Nx.cholesky a
 
-let solve (l : factor) b =
+let solve (l : 'a factor) b =
   let y = Nx.solve_triangular ~triangle:Lower l b in
   Nx.solve_triangular ~triangle:Lower ~transpose:Transpose l y

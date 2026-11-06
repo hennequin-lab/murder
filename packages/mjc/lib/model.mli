@@ -106,15 +106,18 @@ type ('a, 'd) t =
   }
 [@@deriving ptree]
 
-(** The type for a [float64] model on the host, which is what every v1 kernel
-    takes. *)
-type host = (Nx.host Nx.float64_t, Nx.host) t
+(** The type for a [float64] model whose parameters live on the device ['d],
+    which is what a program compiled for that device takes. *)
+type 'd model = ('d Nx.float64_t, 'd) t
+
+(** The type for a [float64] model on the host. *)
+type host = Nx.host model
 
 (** {1:structure Structure} *)
 
 (** [ptree] describes a {!t} to the transformations: its parameters are
     leaves, its topology is a constant. *)
-val ptree : (host, Nx.host) Nx.Ptree.t
+val ptree : (Nx.host model, Nx.host) Nx.Ptree.t
 
 (** {1:accessors Accessors} *)
 
@@ -136,7 +139,7 @@ val ngeom : _ t -> int
     tensor has the shape its name and the topology imply, and
     [Error message] otherwise. The message names the field, the expected
     shape and the shape found. *)
-val validate : host -> (unit, string) result
+val validate : 'd model -> (unit, string) result
 
 (** {1:shape_keys Shape keys} *)
 

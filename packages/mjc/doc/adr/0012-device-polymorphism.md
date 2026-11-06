@@ -1,6 +1,6 @@
 # ADR 0012 — Device polymorphism, for GPU acceleration
 
-Status: accepted (decision to do it), implementation not started
+Status: accepted, gate met (38x on the solver's round), implementation started
 Date: 2026-02-14
 
 ## Context
@@ -87,7 +87,8 @@ comes first:
    polymorphic helper lets the brand escape. Both errors are in `doc/perf.md`
    §9. The enabler is a `Rune.jit` that takes the device set — a small addition
    to rune's interface, and the same one the engine will need.
-2. **If that number does not beat the host clearly, stop.** The refactor is not
+**Measured, and the gate is met.** Host 4.02 ms, iGPU 0.11 ms, 38x, bit-identical
+answers (`doc/perf.md` §9). 2. **If that number does not beat the host clearly, stop.** The refactor is not
    paid for by an iGPU that ties with twelve Zen 5 cores on 76x76 dense
    algebra; it would need the streaming part of the pipeline (kinematics, mass,
    contacts) to win, and that is measurable the same way before touching types.
