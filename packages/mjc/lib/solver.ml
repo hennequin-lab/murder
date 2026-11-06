@@ -8,7 +8,16 @@ open Base
 let max_iterations = 8
 
 type linear =
-  [ `Cholesky
+  [ `Cholesky (** {!Mass.factor} and {!Mass.solve}: the kernels. *)
+  | `Batched
+    (** {!Linalg}: the same factorisation written out of elementwise
+        operations, so that a map over the lanes of a step keeps one lane's
+        cost instead of paying the batched kernel's, which loses past about
+        forty rows (`doc/perf.md` §5). Its own accuracy is 1e-12 against the
+        kernel on well-conditioned matrices (`test/test_linalg.ml`), and it is
+        not the default: on the corpus's stiffest contact state it moves the
+        solved force by 1e-4, which is a conditioning question but not one a
+        parity test will sign off on. *)
   | `Cg
   ]
 
@@ -199,6 +208,8 @@ let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =
     let step =
       match linear with
       | `Cholesky -> Mass.solve (Mass.factor am) rhs
+      | `Batched ->
+        Linalg.solve am (Nx.reshape [| nb; 1 |] rhs) |> fun x -> Nx.reshape [| nb |] x
       | `Cg -> cg ~iters:nb am rhs
     in
     let target = Nx.where (Nx.greater_s step 0.0) r.hi r.lo in

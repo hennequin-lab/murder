@@ -1250,3 +1250,35 @@ Stage by stage, everything else batches well and consistently: kinematics
 0.30-0.40x. The solver is the only stage that does not, and it is 40-60% of a
 step. `bench/spike_batch.ml` carries the whole measurement, three runs
 reproducing to about 0.03, and `perf.md` carries the plan it implies.
+
+## The batch-friendly factorisation, built and measured
+
+`lib/linalg.ml` writes the Cholesky recurrence and the two triangular solves out
+of broadcast products and reductions, so that a map over lanes keeps one lane's
+cost instead of paying the batched kernel's, which loses past about forty rows.
+It is exact against the kernels at 1e-12 on well-conditioned matrices, batched or
+not, and differentiates with respect to the matrix and the right-hand side
+(`test/test_linalg.ml`: `L Lᵀ = A`, `A x = b`, `Nx.cholesky` and
+`Nx.solve_triangular` as references, central differences on the trace).
+
+It fixes the scaling — the solve stage's per-lane cost under a map goes from
+2.56x (kernel, walker, 8 lanes) to 0.36x — and it does not pay yet, because its
+constant is ten times the kernel's: 62 ms against 6 ms single-lane on walker, so
+8 lanes of it still cost more per lane than the kernel's. At 32 lanes it breaks
+even on the worst model and not before.
+
+The arithmetic that turns that into a plan: its constant is a function of the
+round count, and the round count is the defect. Two outer passes instead of
+eight divide both, and then the batched solve is about 2.8 ms per lane at 8
+lanes against the kernel's 15 ms. So the factorisation lands as
+`Solver.forward ~linear:\`Batched`, is not the default, and becomes a win once
+the schedule exits early.
+
+Two things this bought beyond the code. `\`Batched` is *not* the default for a
+parity reason worth recording: on `limited` state 9 it moves the solved force by
+9e-5 relative where the kernel reproduces MuJoCo's to 1e-9, and while both
+factors are accurate on well-conditioned matrices, resolving an ill-conditioned
+active set differently is not something a parity gate should sign off on. And the
+stage-level measurements it needed turned up the jit finding: a *compiled*
+batched step costs 2.02x per lane on `chain6` where the interpreted one costs
+0.55x, so the batched path should not go through the jit until that is fixed.

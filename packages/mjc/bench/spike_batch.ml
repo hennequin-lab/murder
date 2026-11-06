@@ -151,13 +151,46 @@ let stages name =
       batched
       (batched /. single)
   in
+  (* Where the batched factorisation breaks even with the kernel's: per lane,
+     for a few lane counts. *)
+  Printf.printf
+    "| %s, solve stage | single | lanes | per lane | per lane / single |\n"
+    name;
+  Printf.printf "| --- | ---: | ---: | ---: | ---: |\n";
+  List.iter [ 8; 32 ] ~f:(fun lanes ->
+    let batched_input =
+      Nx.Ptree.map
+        Mjc.Data.ptree
+        (fun _ x ->
+           Nx.concatenate
+             ~axis:0
+             (List.init lanes ~f:(fun _ -> Nx.unsqueeze ~axes:[ 0 ] x)))
+        d
+    in
+    List.iter
+      [ "kernel", `Cholesky; "batched", `Batched ]
+      ~f:(fun (label, linear) ->
+        let f d = Mjc.Solver.forward ~linear ~iters:8 m d in
+        let single = time ~reps:2 f d in
+        let per_lane =
+          time ~reps:2 (Rune.vmap ptree f) batched_input /. Float.of_int lanes
+        in
+        Printf.printf
+          "| %s | %.0f us | %d | %.0f us | %.2fx |\n"
+          label
+          single
+          lanes
+          per_lane
+          (per_lane /. single));
+    Printf.printf "\n");
   Printf.printf "| %s, stage | single | batched per lane | per lane / single |\n" name;
   Printf.printf "| --- | ---: | ---: | ---: |\n";
   row "kinematics" (fun d -> Mjc.Kinematics.forward m d);
   row "mass" (fun d -> Mjc.Mass.forward m d);
   row "contacts" (fun d -> Mjc.Collision.contacts m d);
   row "passive + bias" (fun d -> Mjc.Bias.forward m (Mjc.Passive.forward m d));
-  row "solve" (fun d -> Mjc.Solver.forward ~iters:8 m d);
+  row "solve, kernel" (fun d -> Mjc.Solver.forward ~iters:8 m d);
+  row "solve, batched" (fun d -> Mjc.Solver.forward ~linear:`Batched ~iters:8 m d);
   (* The whole step, interpreted and compiled: the composition a training loop
      actually picks, and the one the perf table measures. *)
   row "step, interpreted" (fun d -> Mjc.Step.step m d);

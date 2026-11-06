@@ -21,10 +21,17 @@
     alternative when a model's row count makes the factor the bottleneck
     (`doc/adr/0010`). *)
 
-(** The type for how the free block is solved: by a Cholesky factor, or by
-    conjugate gradients, which needs no factor of the reduced system. *)
+(** The type for how the free block is solved: by a Cholesky factor, by
+    conjugate gradients, which needs no factor of the reduced system, or by
+    {!Linalg}'s factorisation, which is written out of elementwise operations
+    so that batching a step keeps one lane's cost instead of paying the batched
+    kernel's. [`Batched] matches the kernel's factor to 1e-12 on well-conditioned
+    matrices (`test/test_linalg.ml`) but is not the default: on the corpus's
+    stiffest contact state it moves the solved force by 1e-4. See `doc/perf.md`
+    §5 for the measurement and the decision. *)
 type linear =
   [ `Cholesky
+  | `Batched
   | `Cg
   ]
 

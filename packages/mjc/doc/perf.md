@@ -165,6 +165,47 @@ factorisation whose batched kernels stop paying at our buffer sizes and (b) a
 jit codegen path that does worse on a batched step than the interpreter does.
 The first is ours to fix; the second should be reported and possibly avoided.
 
+### What happened when it was built
+
+`lib/linalg.ml` is that factorisation: the Cholesky recurrence and the two
+triangular solves written out of broadcast products and reductions, batched or
+not, differentiable, and pinned in `test/test_linalg.ml` against the kernels at
+1e-12 (`L Lᵀ = A` and `A x = b` as well as against `Nx.cholesky`, for `n` up to
+40 and with a lane axis). It is reachable as `Solver.forward ~linear:\`Batched`.
+
+It fixes the scaling and does not pay for itself yet:
+
+| model (`nefcmax`) | linear | single lane | 8 lanes, per lane | 32 lanes, per lane |
+| --- | --- | ---: | ---: | ---: |
+| pendulum (4) | kernel | 2815 us | 514 us (0.18x) | 150 us (0.05x) |
+| | batched | 5496 us | 936 us (0.17x) | 254 us (0.05x) |
+| chain6 (48) | kernel | 3798 us | 3100 us (0.82x) | 2828 us (0.77x) |
+| | batched | 40971 us | **8994 us (0.22x)** | **4759 us (0.12x)** |
+| walker (76) | kernel | 5993 us | 15357 us (**2.56x**) | 14457 us (**2.60x**) |
+| | batched | 62653 us | 22348 us (**0.36x**) | 15052 us (0.22x) |
+
+Read the parentheses first, then the absolutes. The batched factorisation is the
+only one whose per-lane cost falls with the lane count on every model — the
+kernel's *rises* on `walker` (2.56x at 8 lanes, 2.60x at 32), which is the defect
+section 5 measured. But its constant is ten times the kernel's, so in absolute
+terms it loses at 8 lanes on every model and only breaks even on `walker` at 32.
+
+That constant is a function of the round count, which is the thing section 3
+says is wrong. A round is 76 tensor operations for `walker`; the batched
+factorisation does them all at 10x the linear-algebra cost and wins the moment
+it is not doing them 64 times per step. With item 1 of the plan (two outer
+passes instead of eight) the batched solve's 62 ms single-lane becomes about
+8 ms, and its per-lane cost at 8 lanes becomes about 2.8 ms against the
+kernel's 15 ms. So the factorisation is not a substitute for fixing the
+schedule; it is what becomes affordable afterwards.
+
+The accuracy caveat that keeps `\`Batched` off the default path: on the corpus's
+stiffest contact state (`limited`, state 9) it moves the solved force by 9e-5
+relative where the kernel reproduces MuJoCo's to 1e-9. Both factors are accurate
+to 1e-12 on well-conditioned matrices, so this is the system's conditioning
+being resolved differently — but a parity gate is not the place to argue about
+that, and the kernel stays the default.
+
 ## 6. The plan
 
 Ordered by measured payoff per unit of work, with how each would be checked.
@@ -200,22 +241,22 @@ across all of them.
    to the pairs that can actually touch (the broadphase result is already a
    host-known set at these sizes). This is the M7 box-box item; the target is
    "no worse than the capsule path per body", i.e. single-digit milliseconds.
-5. **Batch the solver the way the measurements say.** Three concrete levers,
-   in order of measured payoff:
-   - *Composition*: for batched runs, use `Rune.vmap (fun d -> Step.step m d)`
-     rather than `Rune.vmap (Step.run (Step.compile m))`. Measured on
-     `chain6`: 0.55x per lane interpreted against 2.02x compiled. This is a
-     call-site change plus a benchmark that keeps both compositions honest, and
-     it makes section 2's batching column look like section 5's interpreted one.
-   - *Factorisation*: write the Cholesky as its `n` public steps of elementwise
-     operations and one reduction each, which batch at 0.15x per lane, instead
-     of calling the batched kernel, which reaches 1.30x on the matmul alone.
-     Kept behind the same interface so `test_grad`'s QP oracle and the G4 parity
-     tests choose between the two.
-   - *Report the jit gap*: a compiled batched step 3.7x slower per lane than the
-     interpreted one is a codegen finding, not an engine one. It goes upstream
-     with `spike_batch.exe`, and until it is fixed the batched path does not go
-     through the jit.
+5. **Batch the solver the way the measurements say.** Two of the three levers
+   are done and one is a finding:
+   - *Factorisation*: `lib/linalg.ml` implements the batch-friendly factor and
+     solve, `test/test_linalg.ml` pins it to the kernels at 1e-12, and
+     `Solver.forward ~linear:\`Batched` selects it. It fixes the per-lane
+     scaling (walker 2.56x -> 0.36x at 8 lanes) and does not yet pay in absolute
+     terms (its constant is 10x the kernel's). It becomes a win once the round
+     count is sane — the previous subsection carries the arithmetic — so it
+     lands with item 1, not before it.
+   - *Composition*: for batched runs, `Rune.vmap (fun d -> Step.step m d)` beats
+     `Rune.vmap (Step.run (Step.compile m))` by 3.7x per lane on `chain6`
+     (0.55x against 2.02x). Call-site change; `bench/perf.ml` keeps both
+     compositions honest until the jit's batched codegen is fixed.
+   - *Report the jit gap upstream*: a compiled batched step 3.7x slower per lane
+     than the interpreted one is a codegen finding, not an engine one, and
+     `spike_batch.exe` is the reproduction.
 6. **Run the solver on the rows in play, not the bound.** `nefcmax` is the
    compile-time worst case (48-202 on these models); a typical step has fewer
    than sixteen rows and some have none. Sizing the solve to the live rows —
