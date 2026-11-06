@@ -1378,3 +1378,27 @@ because a creation has no operand to take one from, which is now
 show up in types: `Nx.item` is polymorphic in the device and raises at run time,
 so "does this stage place on a device?" has to be answered by reading its body
 for `Nx.item` -- which is why the five in `Constraint` are the next thing to go.
+
+## The `Nx.item` list, sized properly
+
+The ADR and two log entries said "the five host reads in the constraint path".
+Counted properly it is **ten in `constraint.ml`**, and the rest of the engine has
+six more (`data.ml`'s sensor clock, `solver.ml`'s and `step.ml`'s iteration
+budget and timestep -- all host-only entry points that already have a `config`).
+Two of the ten are the `cone` option; six are `eq_obj1id`/`eq_obj2id`/
+`eq_active0`, each read inside a `for` over equalities to decide *which objects an
+equality couples* and *whether it is on*; two are the timestep fallback.
+
+What they gate is control flow -- which branch builds the row, which body index
+the row touches -- so no tensor rewrite removes them: they need the same
+structure/parameters split `Step.config` already is, extended with the equality
+table. That is the last design item before `Constraint`, `Solver` and `Dynamics`
+can be branded.
+
+One finding that shrinks the work: **`Nx.get` is not a host read.** It returns a
+0-d *view* (`val get : int list -> ('v,'s,'d) t -> ('v,'s,'d) t`), so the 171
+`Nx.get` sites across `bias`, `kinematics`, `mass`, `sensor` and `constraint` are
+all device-legal already. Only `Nx.item`, which returns an OCaml value, is not --
+16 sites in the whole engine. That is a much smaller surface than the "reads its
+tensors as host numbers" phrasing suggested, and it means the constraint rewrite
+is ten edits plus a config record, not a reimplementation.
