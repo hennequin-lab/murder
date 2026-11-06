@@ -108,7 +108,15 @@ reader lands, drawing every geom at the identity pose.
 | M4 (first half done) | Contact | 4.5 wk | **G4** | step hopper, walker, ant, humanoid |
 | M5 | Actuators, transmissions, sensors, tendons | 2.5 wk | G5 | load the lab's actuated and tendon models |
 | M6 | Differentiability | 2.5 wk | **G6** | differentiate the step, run iLQR/MPC on it |
-| M7 | Parity, performance, dtype consolidation | 2 wk | **G7** | quote throughput numbers and ship the package |
+| M7 | Parity, performance, device and dtype | 3 wk | **G7** | quote throughput numbers and ship the package |
+
+*Devices.* `doc/adr/0012-device-polymorphism.md` decides to make the engine
+polymorphic in its device so that a compiled step can run on the machine's AMD
+iGPU (reachable from `tolk` in this build; the engine's `Nx.host` types are what
+stop it). It is gated on a measurement: the solver's round on host against iGPU
+must win before any of the 106 brand sites are touched. The five host reads in
+the constraint path are the real work, and they are the same constraint that made
+`Step.config` necessary.
 
 *Performance is measured, not asserted:* `doc/perf.md` carries the wall time
 of both engines on the corpus models (mjc is 54-13898x MuJoCo's `mj_step`
