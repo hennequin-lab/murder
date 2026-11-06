@@ -1,6 +1,10 @@
 # ADR 0012 — Device polymorphism, for GPU acceleration
 
-Status: accepted, gate met (38x on the solver's round), implementation started
+Status: accepted, gate met (38x on the solver's round). Implementation: generic
+so far — `Model`, `Data` (`create_at`), `Linalg`, `Jacobian`, `Mass`,
+`Kinematics`, `Bias`, `Passive`, `Sensor`, `Actuator`, `Transmission`, `Tendon`,
+`Constraint` (with its `config`). Host still: `Collision.contacts`, `Solver`,
+`Dynamics`, `Step`.
 Date: 2026-02-14
 
 ## Context
@@ -106,10 +110,12 @@ Each step is independently shippable and leaves the suite green.
 2. **Brand the value types**, bottom-up, no behaviour change: `Rigid`, `Pose`,
    `Kinematics`, `Mass`, then `Data`, `Model.params`. Mechanical, reviewed by
    the compiler; the host instantiation is what the tests use.
-3. **Brand the constraint and solver**: `Constraint.f`, `Solver`, the row
-   records, `Constraint`'s five host reads into `Step.config` or masks. This is
-   the only step with a design question in it, and `test_grad`'s QP oracle plus
-   `test_linalg` are the checks.
+3. **Brand the constraint and solver** (constraint half done). `Constraint`'s
+   ten host reads became `Constraint.config`, and every stage is generic with
+   parity unchanged. `Collision.contacts` is the remaining mechanical sweep (its
+   pair kernels build constants with `Nx.scalar`/`Nx.zeros`/`Nx.init`, each of
+   which needs a placement from an operand); `Solver` follows, then
+   `Dynamics`/`Step`.
 4. **Brand `Step` and `Dynamics`**, and add `Dynamics.compile_on` (or a `device`
    in the config) so a caller chooses where the program runs. Host stays the
    default.
