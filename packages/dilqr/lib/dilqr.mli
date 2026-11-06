@@ -107,6 +107,10 @@
 (** Levenberg-Marquardt regularization schedule. *)
 module Regularisation : module type of Regularisation
 
+(** What a solve does about the local model's curvature: no damping, one fixed
+    strength, or a schedule that adapts it. Adaptive by default. *)
+module Damping : module type of Damping
+
 (** Line-search trial schedules and the Armijo predicate. *)
 module Linesearch : module type of Linesearch
 
@@ -239,15 +243,18 @@ module Solver : sig
   (** Adaptive iLQR. Host-side control flow: unbatched (a batch would need one
       line search per member; {!solve_fixed} has it), and not itself traceable
       by [Rune.jit]. Defaults: [max_iter = 20], [conv_threshold = 1e-6],
-      [c1 = 1e-2], [ls_depth = 8]. Fails when no step can be regularized into
-      descent. {!compile} is the same solve with the tensor work compiled. *)
+      [c1 = 1e-2], [ls_depth = 8], [damping = Damping.default]. Fails when no
+      step can be regularized into descent — with [Damping.Off] or a
+      [Damping.Fixed] strength that is already the case when the model's
+      [Q_uu] is not positive definite, and the failure says so. {!compile} is
+      the same solve with the tensor work compiled. *)
   val solve
     :  ('w, 'p, 'd) Problem.t
     -> ?max_iter:int
     -> ?conv_threshold:float
     -> ?c1:float
     -> ?ls_depth:int
-    -> ?reg:Regularisation.t
+    -> ?damping:Damping.t
     -> 'p
     -> ('w, 'd) Problem.value
     -> ('w, 'd) Problem.value array
@@ -260,7 +267,7 @@ module Solver : sig
     -> ?conv_threshold:float
     -> ?c1:float
     -> ?ls_depth:int
-    -> ?reg:Regularisation.t
+    -> ?damping:Damping.t
     -> 'p
     -> ('w, 'd) Problem.value
     -> ('w, 'd) Problem.value array
@@ -276,9 +283,9 @@ module Solver : sig
       requirement.
 
       Build the function once and reuse it. Its programs are keyed by the
-      shapes, dtypes and placements of the inputs, and the regularization
-      strength and line-search step arrive as tensor arguments, so a new
-      [mu] or [alpha] does not retrace. [beam] and [parallel] are
+      shapes, dtypes and placements of the inputs, and the damping strength and
+      line-search step arrive as tensor arguments, so a new strength or [alpha]
+      does not retrace. [beam] and [parallel] are
       [Rune.jit]'s kernel-search options; with [beam] each kernel is
       searched for its fastest variant, and [parallel] compiles the
       candidates on that many domains. *)
@@ -306,13 +313,13 @@ module Solver : sig
       iterations of its slowest member out of [max_iters], and [iters] reports
       how many.
 
-      Damping is adaptive by default: the strength is raised when no step is
-      bought and lowered after a full one, from [reg] ([Regularisation.init]
-      unless given). An adaptive strength is a fraction of each member's own
-      value-Hessian scale, measured by the pass, so members whose curvature
-      differs are damped alike; the first pass uses the schedule's units.
-      [mu] pins a fixed absolute strength instead, and [~mu:0.] turns damping
-      off; give one of [mu] and [reg], not both.
+      [damping] is [Damping.default] — adaptive, from the schedule's own start
+      — unless the caller picks another: [Damping.Off] or [Damping.Fixed]
+      leave nothing to raise when a pass cannot buy a step, so such an
+      iteration ends the solve. An adaptive strength is a fraction of each
+      member's own value-Hessian scale, measured by the pass, so members whose
+      curvature differs are damped alike; the first pass uses the schedule's
+      units.
 
       Batched inputs — a leading batch axis on the parameters, the initial
       state and every initial control — are solved as one batch: [cost] is
@@ -324,8 +331,7 @@ module Solver : sig
   val solve_fixed
     :  ('w, 'p, 'd) Problem.t
     -> ?alphas:float list
-    -> ?mu:float
-    -> ?reg:Regularisation.t
+    -> ?damping:Damping.t
     -> ?c1:float
     -> ?conv_threshold:float
     -> max_iters:int
@@ -384,7 +390,7 @@ val solve_adaptive
   -> ?conv_threshold:float
   -> ?c1:float
   -> ?ls_depth:int
-  -> ?reg:Regularisation.t
+  -> ?damping:Damping.t
   -> ('w, 'p, 'd) solve
 
 (** [solve_fixed problem] is the fixed-iteration iLQR solve with its implicit
@@ -413,16 +419,15 @@ val solve_adaptive
     ]}
 
     The derivative is taken at the undamped KKT system, as in
-    {!solve_adaptive}: the damping (adaptive by default, or pinned by [mu]),
-    the step and the iteration count are devices that find the trajectory, not
-    part of the map being differentiated. [Rune.grad] and [Rune.jvp] both apply to the same returned
+    {!solve_adaptive}: the damping, the step and the iteration count are
+    devices that find the trajectory, not part of the map being
+    differentiated. [Rune.grad] and [Rune.jvp] both apply to the same returned
     function; the forward tangent map is pure tensor code whose time loops are
     scans, so the solve and its JVP compile together. *)
 val solve_fixed
   :  ('w, 'p, 'd) Problem.t
   -> ?alphas:float list
-  -> ?mu:float
-  -> ?reg:Regularisation.t
+  -> ?damping:Damping.t
   -> ?c1:float
   -> ?conv_threshold:float
   -> max_iters:int

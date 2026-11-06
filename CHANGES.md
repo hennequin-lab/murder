@@ -99,12 +99,14 @@ changes do not need an entry.
   satisfies Armijo at it, so the batch moves at the step its slowest member
   can take. A converged member is frozen and does not vote, so it cannot veto
   the others. The implicit derivative is still taken member by member.
-- The fixed solve damps adaptively by default (Levenberg-Marquardt), from
-  `~reg` (`Regularisation.init` unless given) or a fixed `~mu`; `~mu:0.` turns
-  damping off. An adaptive strength is a fraction of each member's own
-  value-Hessian scale, so members whose curvature differs are damped alike. The
-  schedule is carried through the traced loops as tensors, and `~conv_threshold`
-  sets the stopping test.
+- `Dilqr.Damping` is how a solve damps: `Off`, `Fixed of float` (one absolute
+  strength) or `Adaptive of Regularisation.t`, with `Damping.default` —
+  adaptive — the default for both solves. It replaces the fixed solve's
+  `~mu`/`~reg` pair, which could be given together, and the adaptive solve's
+  `~reg`. An adaptive strength is a fraction of each member's own value-Hessian
+  scale, so members whose curvature differs are damped alike; the schedule is
+  carried through the traced loops as tensors. `~conv_threshold` sets the fixed
+  solve's stopping test.
 - `Lqr.backward_common` shifts the damping into the value Hessian
   (`V + μ I`) instead of adding Tassa's three terms one by one: expanding the
   shift gives exactly those terms, so a damped pass costs one diagonal
@@ -117,8 +119,8 @@ changes do not need an entry.
 - The fixed inner solve runs at most the recognition's iteration count and
   stops earlier when it has converged, so a fixed recognition is a budget
   rather than an exact count. `Recognition.fixed` takes `?conv_threshold` for
-  how tightly it should converge, and its `~mu` is now optional with adaptive
-  damping the default.
+  how tightly it should converge, and `?damping` (`Dilqr.Damping.t`, adaptive
+  by default) instead of `?mu`.
 - Mini-batches are tensors: `Elbo.batch_loss_fixed` takes
   `[batch…; n_steps; n_output]` instead of an array, and the recognitions and
   the bound accept the matching leading trial axes, so a JIT-compiled step can

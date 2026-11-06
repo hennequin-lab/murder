@@ -138,18 +138,19 @@ type solve
     Raises [Invalid_argument] if [max_iter] is not positive. *)
 val adaptive : ?max_iter:int -> ?conv_threshold:float -> unit -> solve
 
-(** [fixed ?alphas ?mu ?c1 ?conv_threshold ~iters ()] runs at most [iters]
-    iterations with tensor-only control flow: traceable and compilable together
-    with its implicit gradient. The inner solve stops earlier when it has
-    converged, as tightly as [conv_threshold] asks, and a batch of trials stops
-    when its last member has. [alphas] is the line-search step list, [mu] the
-    Levenberg-Marquardt damping (adaptive when omitted) and [c1] the line-search
-    constant; each defaults to the solver's own.
+(** [fixed ?alphas ?damping ?c1 ?conv_threshold ~iters ()] runs at most
+    [iters] iterations with tensor-only control flow: traceable and compilable
+    together with its implicit gradient. The inner solve stops earlier when it
+    has converged, as tightly as [conv_threshold] asks, and a batch of trials
+    stops when its last member has. [alphas] is the line-search step list,
+    [damping] what the inner solve does about the model's curvature
+    ({!Dilqr.Damping.default} unless given) and [c1] the line-search constant;
+    each otherwise defaults to the solver's own.
 
     Raises [Invalid_argument] if [iters] is not positive. *)
 val fixed
   :  ?alphas:float list
-  -> ?mu:float
+  -> ?damping:Dilqr.Damping.t
   -> ?c1:float
   -> ?conv_threshold:float
   -> iters:int

@@ -132,7 +132,7 @@ type solve =
   | Fixed of
       { iters : int
       ; alphas : float list option
-      ; mu : float option
+      ; damping : Dilqr.Damping.t
       ; c1 : float option
       ; conv_threshold : float option
       }
@@ -147,18 +147,18 @@ let adaptive ?max_iter ?conv_threshold () =
     if n <= 0 then invalid_arg "Recognition.adaptive: max_iter must be positive");
   Adaptive { max_iter; conv_threshold }
 
-(** [fixed ?alphas ?mu ?c1 ?conv_threshold ~iters ()] runs at most [iters]
-    iterations with tensor-only control flow: traceable and compilable, its
-    implicit gradient included. The inner solve stops earlier when it has
-    converged — as tightly as [conv_threshold] asks — and a batch of trials
-    stops when its last member has. [alphas] is the line-search step list,
-    [mu] the Levenberg-Marquardt damping (adaptive when omitted) and [c1] the
-    line-search constant.
+(** [fixed ?alphas ?damping ?c1 ?conv_threshold ~iters ()] runs at most
+    [iters] iterations with tensor-only control flow: traceable and
+    compilable, its implicit gradient included. The inner solve stops earlier
+    when it has converged — as tightly as [conv_threshold] asks — and a batch
+    of trials stops when its last member has. [alphas] is the line-search step
+    list, [damping] what the solve does about the model's curvature
+    ({!Dilqr.Damping.default} unless given) and [c1] the line-search constant.
 
     Raises [Invalid_argument] if [iters] is not positive. *)
-let fixed ?alphas ?mu ?c1 ?conv_threshold ~iters () =
+let fixed ?alphas ?(damping = Dilqr.Damping.default) ?c1 ?conv_threshold ~iters () =
   if iters <= 0 then invalid_arg "Recognition.fixed: iters must be positive";
-  Fixed { iters; alphas; mu; c1; conv_threshold }
+  Fixed { iters; alphas; damping; c1; conv_threshold }
 
 let default = Adaptive { max_iter = None; conv_threshold = None }
 
@@ -641,10 +641,10 @@ module Iilqr = struct
     match solve with
     | Adaptive { max_iter; conv_threshold } ->
       Dilqr.split_taus p (Dilqr.solve_adaptive p ?max_iter ?conv_threshold inputs)
-    | Fixed { iters; alphas; mu; c1; conv_threshold } ->
+    | Fixed { iters; alphas; damping; c1; conv_threshold } ->
       Dilqr.split_taus
         p
-        (Dilqr.solve_fixed p ~max_iters:iters ?alphas ?mu ?c1 ?conv_threshold inputs)
+        (Dilqr.solve_fixed p ~max_iters:iters ~damping ?alphas ?c1 ?conv_threshold inputs)
 
   (* [solve_trial gen gp ?u_init ?solve ?rounds data] is one trial's encoder
      solution: the Laplace posterior of the initial state, and the states and

@@ -44,6 +44,7 @@
     structure is an [Nx.Ptree.t], and no module or functor is involved. *)
 
 module Regularisation = Regularisation
+module Damping = Damping
 module Linesearch = Linesearch
 module Lqr = Lqr
 include Lqr

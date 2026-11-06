@@ -765,8 +765,7 @@ let solve_fixed_with
       (layout : d layout)
       (kernels : (w, p, d) fixed_kernels)
       ?(alphas = Linesearch.schedule ~n:8 ())
-      ?mu
-      ?reg
+      ?(damping = Damping.default)
       ?(c1 = 1e-2)
       ?(conv_threshold = 1e-6)
       ~(max_iters : int)
@@ -782,24 +781,13 @@ let solve_fixed_with
      members' costs, and is empty for one member. *)
   let member_zero = zeros_like cost0 in
   let member v = broadcast_to (shape cost0) (scalar v) in
-  (* Damping. [mu] pins a fixed absolute strength, and [~mu:0.] turns damping
-     off; otherwise the solve damps adaptively, from [reg] or, by default, from
-     [Regularisation.init]. *)
-  (match mu, reg with
-   | Some _, Some _ ->
-     invalid_arg
-       "dilqr: Solver.solve_fixed: give ~mu (a fixed damping) or ~reg (an adaptive one), \
-        not both"
-   | _ -> ());
-  let fixed_mu =
-    match mu with
-    | Some m when not (Float.equal m 0.0) -> Some (scalar m)
-    | _ -> None
-  in
-  let reg =
-    match mu with
-    | Some _ -> None
-    | None -> Some (Option.value reg ~default:Regularisation.init)
+  (* What the damping choice means for the loop: a strength that is the same
+     for every pass, or a schedule that adapts it. *)
+  let fixed_mu, reg =
+    match damping with
+    | Damping.Off -> None, None
+    | Damping.Fixed mu -> (if Float.equal mu 0.0 then None else Some (scalar mu)), None
+    | Damping.Adaptive schedule -> None, Some schedule
   in
   (* An adaptive schedule has to be able to raise the damping, so it is the
      only mode that retries a failed line search; a fixed strength that bought
@@ -818,7 +806,7 @@ let solve_fixed_with
      adaptive one is a fraction of the member's own value-Hessian scale, and is
      the raw fraction until a pass has measured one (the first pass uses the
      schedule's own units, as the adaptive solve does). *)
-  let damping beta scale =
+  let strength beta scale =
     match fixed_mu with
     | Some mu -> mu
     | None ->
@@ -889,7 +877,7 @@ let solve_fixed_with
      relative units without moving the damping — [beta] was the strength, and
      [beta / scale] times the scale is that same strength. *)
   let attempt ~(nominal : (w, d) fixed_step) ~beta ~delta ~scale ~attempts =
-    let gains = kernels.backward theta nominal.xs nominal.us (damping beta scale) in
+    let gains = kernels.backward theta nominal.xs nominal.us (strength beta scale) in
     let active = Nx.logical_not (converged gains.Fixed_gains.d1 nominal.cost) in
     let found =
       search ~active ~nominal ~gains ~cost:nominal.cost ~d1:gains.d1 ~d2:gains.d2 alphas
@@ -1000,7 +988,7 @@ let solve_fixed_with
    batch: the members share the step and the damping schedule, the batch stops
    when the last of them has converged or could not be moved, and the dynamics
    and the losses stay written for one member. *)
-let solve_fixed p ?alphas ?mu ?reg ?c1 ?conv_threshold ~max_iters theta x0 us0 =
+let solve_fixed p ?alphas ?damping ?c1 ?conv_threshold ~max_iters theta x0 us0 =
   if not (is_batched x0 us0)
   then (
     let us = stack us0 in
@@ -1009,8 +997,7 @@ let solve_fixed p ?alphas ?mu ?reg ?c1 ?conv_threshold ~max_iters theta x0 us0 =
       single_layout
       (single_fixed_kernels p)
       ?alphas
-      ?mu
-      ?reg
+      ?damping
       ?c1
       ?conv_threshold
       ~max_iters
@@ -1025,8 +1012,7 @@ let solve_fixed p ?alphas ?mu ?reg ?c1 ?conv_threshold ~max_iters theta x0 us0 =
       (batch_layout b)
       (batched_fixed_kernels p)
       ?alphas
-      ?mu
-      ?reg
+      ?damping
       ?c1
       ?conv_threshold
       ~max_iters
@@ -1083,7 +1069,7 @@ type ('w, 'p, 'd) compiled =
   -> ?conv_threshold:float
   -> ?c1:float
   -> ?ls_depth:int
-  -> ?reg:Regularisation.t
+  -> ?damping:Damping.t
   -> 'p
   -> ('w, 'd) Problem.value
   -> ('w, 'd) Problem.value array
@@ -1182,7 +1168,7 @@ let solve_with
       ?(conv_threshold = 1e-6)
       ?(c1 = 1e-2)
       ?(ls_depth = 8)
-      ?(reg = Regularisation.init)
+      ?(damping = Damping.default)
       (theta : p)
       (x0 : (w, d) Problem.value)
       (us0 : (w, d) Problem.value array)
@@ -1198,24 +1184,60 @@ let solve_with
   let xs = ref xs in
   let cost_t = ref cost0 in
   let cost = ref (item_f cost0) in
-  let reg = ref reg in
-  let backward_adaptive () =
-    let rec retry attempts =
-      if attempts > 30
-      then failwith "dilqr: Quu could not be regularized to positive definiteness";
-      let mu = scalar_like x0 !reg.Regularisation.mu in
-      let gains, d1, d2 = kernels.backward theta !xs !us mu in
-      (* A non-positive-definite [Quu] gives a NaN Cholesky factor, and the
-         NaN runs through the sweep into the gains and the expected-decrease
-         accumulators. *)
-      if item [] (all (isfinite d1)) && item [] (all (isfinite d2))
-      then gains, d1, d2
-      else (
-        reg := Regularisation.increase !reg;
-        log p "cholesky failed, mu -> %g" !reg.Regularisation.mu;
-        retry (attempts + 1))
-    in
-    retry 0
+  (* The damping choice: a strength to use at every pass, and the schedule to
+     adapt it when there is one. *)
+  let fixed_mu =
+    match damping with
+    | Damping.Off -> Some 0.0
+    | Damping.Fixed mu -> Some mu
+    | Damping.Adaptive _ -> None
+  in
+  let reg =
+    ref
+      (match damping with
+       | Damping.Adaptive schedule -> Some schedule
+       | _ -> None)
+  in
+  let mu_value () =
+    match !reg with
+    | Some schedule -> schedule.Regularisation.mu
+    | None -> Option.value fixed_mu ~default:0.0
+  in
+  let mu () = scalar_like x0 (mu_value ()) in
+  let finite d1 d2 = item [] (all (isfinite d1)) && item [] (all (isfinite d2)) in
+  (* Raise the strength, and say whether there was a schedule to raise: a
+     pinned strength has nothing to retry. *)
+  let raise_damping () =
+    match !reg with
+    | None -> false
+    | Some schedule ->
+      reg := Some (Regularisation.increase schedule);
+      true
+  in
+  let lower_damping () =
+    match !reg with
+    | None -> ()
+    | Some schedule -> reg := Some (Regularisation.decrease schedule)
+  in
+  let rec backward attempts =
+    if attempts > 30
+    then
+      failwith
+        "dilqr: Solver.solve: Quu could not be regularized to positive definiteness";
+    let gains, d1, d2 = kernels.backward theta !xs !us (mu ()) in
+    (* A non-positive-definite [Quu] gives a NaN Cholesky factor, and the NaN
+       runs through the sweep into the gains and the expected-decrease
+       accumulators. *)
+    if finite d1 d2
+    then gains, d1, d2
+    else if raise_damping ()
+    then (
+      log p "cholesky failed, mu -> %g" (mu_value ());
+      backward (attempts + 1))
+    else
+      failwith
+        "dilqr: Solver.solve: Quu is not positive definite and the damping is pinned; \
+         pass ~damping:(Damping.Adaptive ...) or a larger Damping.Fixed"
   in
   let converged c c' =
     Float.(Float.abs ((c -. c') /. Float.max (Float.abs c) 1.0) < conv_threshold)
@@ -1226,7 +1248,7 @@ let solve_with
     if iter >= max_iter
     then ()
     else (
-      let gains, d1t, d2t = backward_adaptive () in
+      let gains, d1t, d2t = backward 0 in
       let d1 = item_f d1t
       and d2 = item_f d2t in
       (* Converged: the modelled first-order decrease is negligible against
@@ -1251,29 +1273,20 @@ let solve_with
         in
         match accepted with
         | None ->
-          (* No trial decreased enough: regularize harder and retry the
-             same iteration. If even the largest regularization cannot
-             buy a decreasing step, stop — the solve is stuck at a point
-             its quadratic model cannot improve. *)
-          log p "line search failed at iter %d, mu -> %g" iter !reg.Regularisation.mu;
-          if attempts >= 12
+          (* No trial decreased enough: damp harder and retry the same
+             iteration. If even the largest damping cannot buy a decreasing
+             step — or there is no schedule to raise — stop: the solve is stuck
+             at a point its quadratic model cannot improve. *)
+          log p "line search failed at iter %d, mu -> %g" iter (mu_value ());
+          if attempts >= 12 || not (raise_damping ())
           then ()
-          else (
-            reg := Regularisation.increase !reg;
-            loop iter c (attempts + 1))
+          else loop iter c (attempts + 1)
         | Some (xs_t, us_t, cost_t', fv, alpha) ->
-          log
-            p
-            "iter %d: %g -> %g (alpha %g, mu %g)"
-            iter
-            c
-            fv
-            alpha
-            !reg.Regularisation.mu;
-          (* Decay the regularization only when the full step was
-             accepted; backtracked steps keep it. *)
+          log p "iter %d: %g -> %g (alpha %g, mu %g)" iter c fv alpha (mu_value ());
+          (* Decay the damping only when the full step was accepted;
+             backtracked steps keep it. *)
           if Float.equal alpha (List.hd_exn (Linesearch.schedule ~n:ls_depth ()))
-          then reg := Regularisation.decrease !reg;
+          then lower_damping ();
           xs := xs_t;
           us := us_t;
           cost_t := cost_t';
@@ -1299,5 +1312,5 @@ let solve p = solve_with p (eager_kernels p)
    [Rune.jit]'s search options. *)
 let compile ?beam ?parallel p =
   let kernels = compiled_kernels ?beam ?parallel p in
-  fun ?max_iter ?conv_threshold ?c1 ?ls_depth ?reg theta x0 us0 ->
-    solve_with p kernels ?max_iter ?conv_threshold ?c1 ?ls_depth ?reg theta x0 us0
+  fun ?max_iter ?conv_threshold ?c1 ?ls_depth ?damping theta x0 us0 ->
+    solve_with p kernels ?max_iter ?conv_threshold ?c1 ?ls_depth ?damping theta x0 us0

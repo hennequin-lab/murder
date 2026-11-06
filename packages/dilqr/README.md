@@ -204,10 +204,10 @@ every solver and helper takes it as its first argument.
 
 - **`solve_adaptive problem ?beam ?parallel`** — adaptive iLQR with its
   implicit derivative in both modes. It returns a function taking the adaptive
-  options (`?max_iter`, `?conv_threshold`, `?c1`, `?ls_depth`, `?reg`) and the
-  solve inputs, and returning the stacked trajectory. Defaults: `max_iter =
-  20`, `conv_threshold = 1e-6`, `c1 = 1e-2`, `ls_depth = 8`, seeded
-  regularization `Regularisation.init`. Without `beam` or `parallel` the solve
+  options (`?max_iter`, `?conv_threshold`, `?c1`, `?ls_depth`, `?damping`) and
+  the solve inputs, and returning the stacked trajectory. Defaults: `max_iter =
+  20`, `conv_threshold = 1e-6`, `c1 = 1e-2`, `ls_depth = 8`,
+  `damping = Damping.default`. Without `beam` or `parallel` the solve
   runs eagerly; with either, its tensor kernels are compiled and reused (pass
   `~parallel:1` or `~beam:0` to compile with the default search settings).
   Unbatched.
@@ -215,9 +215,8 @@ every solver and helper takes it as its first argument.
 - **`solve_fixed problem`** — fixed-iteration iLQR with its implicit
   derivative in both modes. It returns a function taking `~max_iters`, an
   optional trial schedule `alphas` (default `1; 1/2; …`, 8 trials), an
-  optional damping schedule `reg` (default `Regularisation.init`; `~mu` pins a
-  fixed strength and `~mu:0.` turns damping off), Armijo `c1`, and a
-  convergence threshold. It runs at most `max_iters`
+  optional damping choice `damping` (default `Damping.default`), Armijo `c1`,
+  and a convergence threshold. It runs at most `max_iters`
   iterations and stops when every member of the batch has converged, so a
   batch spends the iterations of its slowest member; `Solver.t.iters` reports
   how many. Traceable, JIT-compilable, never reads a tensor on the host, and
@@ -246,9 +245,14 @@ every solver and helper takes it as its first argument.
   direction in the problem's parameters: what `solve_jvp` needs from a problem,
   and nothing else.
 
+- **`Dilqr.Damping`** — what a solve does about the local model's curvature:
+  `Off`, `Fixed of float`, or `Adaptive of Regularisation.t`, with
+  `Damping.default` (adaptive) the default for both solves.
+
 - **`Dilqr.Regularisation`** — the Levenberg–Marquardt schedule
-  (`{ delta; mu }`, `init`, `increase`, `decrease`), with `mu` floored at
-  `1e-6`.
+  (`{ delta; mu }`, `init`, `increase`, `decrease`, `floor`). Under
+  `Damping.Adaptive` its `mu` is a fraction of each member's value-Hessian
+  scale, not an absolute strength.
 
 - **`Dilqr.Linesearch`** — trial-step schedules (`schedule ~n ()` is
   `1; 1/2; 1/4; …`) and the Armijo predicate (`accepts`).
@@ -293,12 +297,12 @@ Two things are the batch's, not the member's:
   converges early is frozen at its converged trajectory, and it does not vote
   on later trials, so it cannot hold the others back.
 
-Damping is on by default, and it is one schedule for the batch with a
-*relative* strength: `beta` is a fraction of each member's own value-Hessian
-scale, measured by the pass, so members whose curvature differs by orders of
-magnitude are damped alike. The first pass uses the schedule's own units. Pass
-`~reg` to start the adaptive schedule elsewhere, `~mu` for a fixed absolute
-strength, or `~mu:0.` to turn damping off.
+Damping is on by default: `Damping.default`, which adapts a strength that is
+one schedule for the batch and a *relative* magnitude — `beta` is a fraction of
+each member's own value-Hessian scale, measured by the pass, so members whose
+curvature differs by orders of magnitude are damped alike, and the first pass
+uses the schedule's own units. `~damping:(Damping.Fixed mu)` pins an absolute
+strength, and `~damping:Damping.Off` turns damping off.
 
 `taus_of` stacks to `[b; K+1; n+m]` (the batch axes lead the horizon), and
 `split_taus` / `loss_of_taus` accept the batched trajectory. Differentiating

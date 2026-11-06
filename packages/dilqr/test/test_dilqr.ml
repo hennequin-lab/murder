@@ -272,13 +272,13 @@ let pendulum_batch (angles : float array) =
   theta, x0, us0
 
 (* One pendulum from [angle], solved alone. *)
-let pendulum_member ?reg ~max_iters angle =
+let pendulum_member ?damping ~max_iters angle =
   let theta : (Nx.host Nx.float64_t, Nx.host) Pendulum.Params.t =
     { gravity = scalar64 9.81; mass = scalar64 1.0; length = scalar64 1.0 }
   in
   let x0 = vec64 [| angle; 0.0 |] in
   let us0 = Array.init Pendulum.horizon ~f:(fun _ -> zeros float64 [| 1 |]) in
-  Dilqr.Solver.solve_fixed Pendulum.problem ?reg ~max_iters theta x0 us0
+  Dilqr.Solver.solve_fixed Pendulum.problem ?damping ~max_iters theta x0 us0
 
 (* A deterministic pseudo-random pattern of the same shape as [like]: a fixed
    float64 wave folded into the shape and cast to the leaf's dtype. Test inputs
@@ -572,8 +572,15 @@ let test_fixed_damping_recovers () =
   let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { unit = scalar64 1.0 } in
   let x0 = vec64 [| 0.0 |] in
   let us0 = [| vec64 [| 0.5 |] |] in
-  (* [~mu:0.] turns damping off *)
-  let plain = Dilqr.Solver.solve_fixed P.problem ~max_iters:20 ~mu:0.0 theta x0 us0 in
+  let plain =
+    Dilqr.Solver.solve_fixed
+      P.problem
+      ~max_iters:20
+      ~damping:Dilqr.Damping.Off
+      theta
+      x0
+      us0
+  in
   require
     ~msg:"undamped gives up after one iteration"
     (Float.equal (item plain.iters) 1.0);
@@ -591,7 +598,7 @@ let test_fixed_damping_recovers () =
     Dilqr.Solver.solve_fixed
       P.problem
       ~max_iters:20
-      ~reg:{ Dilqr.Regularisation.delta = 1.0; mu = 1e-3 }
+      ~damping:(Dilqr.Damping.Adaptive { Dilqr.Regularisation.delta = 1.0; mu = 1e-3 })
       theta
       x0
       us0
@@ -599,6 +606,25 @@ let test_fixed_damping_recovers () =
   require
     ~msg:"retries climb to a strength that factorizes"
     Float.(item climbing.cost < 1e-5)
+
+(* The adaptive solve takes the same damping choice. Pinned to no damping it
+   cannot even factorize the concave model, and says so; the default buys the
+   step. *)
+let test_adaptive_pinned_damping_fails () =
+  let module P = Concave in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { unit = scalar64 1.0 } in
+  let x0 = vec64 [| 0.0 |] in
+  let us0 = [| vec64 [| 0.5 |] |] in
+  (match Dilqr.Solver.solve P.problem ~damping:Dilqr.Damping.Off theta x0 us0 with
+   | exception Failure msg ->
+     require
+       ~msg:"the failure names the damping"
+       (String.is_substring msg ~substring:"damping")
+   | _ -> failwith "the undamped adaptive solve accepted an indefinite Quu");
+  let sol = Dilqr.Solver.solve P.problem theta x0 us0 in
+  require
+    ~msg:"the adaptive solve's default damping buys the step"
+    Float.(item sol.cost < 1e-5)
 
 (* [max_iters = 0] runs nothing and returns the rollout of the initial guess. *)
 let test_fixed_zero_budget () =
@@ -668,8 +694,9 @@ let test_damping_is_a_value_hessian_shift () =
     Infix.(common.quu_chol * common.quu_chol)
     (reshape [| 1; 1; 1 |] (scalar64 quu))
 
-(* JIT: the compiled fixed solve equals the eager one, with and without the
-   adaptive-damping loop. *)
+(* JIT: the compiled fixed solve equals the eager one, for each damping mode:
+   the adaptive default carries a retry loop, and the pinned modes carry none
+   of it. *)
 let test_jit_solve () =
   let module P = Integrator in
   let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { mass = scalar64 1.0 } in
@@ -680,25 +707,19 @@ let test_jit_solve () =
     =
     { Dilqr.Inputs.theta; x0; us0 }
   in
-  let eager = Dilqr.solve_fixed P.problem ~max_iters:5 inputs in
-  let jitted =
-    Rune.jit
-      Nx.Ptree.(Dilqr.inputs P.problem @-> returns Nx.Ptree.tensor)
-      (fun i -> Dilqr.solve_fixed P.problem ~max_iters:5 i)
-      inputs
+  let check ~msg damping =
+    let eager = Dilqr.solve_fixed P.problem ~max_iters:5 ?damping inputs in
+    let jitted =
+      Rune.jit
+        Nx.Ptree.(Dilqr.inputs P.problem @-> returns Nx.Ptree.tensor)
+        (fun i -> Dilqr.solve_fixed P.problem ~max_iters:5 ?damping i)
+        inputs
+    in
+    check_close ~msg ~tol:1e-10 jitted eager
   in
-  check_close ~msg:"jit solve taus" ~tol:1e-10 jitted eager;
-  (* the same with an adaptive damping schedule, whose retries are a loop too *)
-  let eager =
-    Dilqr.solve_fixed P.problem ~max_iters:5 ~reg:Dilqr.Regularisation.init inputs
-  in
-  let jitted =
-    Rune.jit
-      Nx.Ptree.(Dilqr.inputs P.problem @-> returns Nx.Ptree.tensor)
-      (fun i -> Dilqr.solve_fixed P.problem ~max_iters:5 ~reg:Dilqr.Regularisation.init i)
-      inputs
-  in
-  check_close ~msg:"jit solve taus with damping" ~tol:1e-10 jitted eager
+  check ~msg:"jit solve taus (adaptive)" None;
+  check ~msg:"jit solve taus (off)" (Some Dilqr.Damping.Off);
+  check ~msg:"jit solve taus (fixed)" (Some (Dilqr.Damping.Fixed 1.0))
 
 (* JIT: the compiled gradient — forward solve and implicit VJP, all traced —
    matches the eager gradient. *)
@@ -840,12 +861,11 @@ let test_batched_fixed_solve () =
   let inputs : (_, Nx.host Nx.float64_t) Dilqr.Inputs.t =
     { Dilqr.Inputs.theta; x0; us0 }
   in
-  let reg = Dilqr.Regularisation.init in
-  let eager = Dilqr.solve_fixed P.problem ~max_iters:8 ~reg inputs in
+  let eager = Dilqr.solve_fixed P.problem ~max_iters:8 inputs in
   let jitted =
     Rune.jit
       Nx.Ptree.(Dilqr.inputs P.problem @-> returns Nx.Ptree.tensor)
-      (fun i -> Dilqr.solve_fixed P.problem ~max_iters:8 ~reg i)
+      (fun i -> Dilqr.solve_fixed P.problem ~max_iters:8 i)
       inputs
   in
   check_close ~msg:"batched jit solve with damping" ~tol:1e-10 jitted eager
@@ -1611,6 +1631,9 @@ let () =
            "the batch spends the slowest member's iterations"
            test_fixed_budget_is_the_slowest_member
        ; test "adaptive damping recovers an indefinite Quu" test_fixed_damping_recovers
+       ; test
+           "pinned damping fails on an indefinite Quu"
+           test_adaptive_pinned_damping_fails
        ; test "a zero budget runs nothing" test_fixed_zero_budget
        ; test "the adaptive solve reports its iterations" test_adaptive_reports_iterations
        ; test "damping is a value-Hessian shift" test_damping_is_a_value_hessian_shift

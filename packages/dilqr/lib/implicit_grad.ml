@@ -260,14 +260,14 @@ let solve_adaptive (p : ('w, 'p, 'd) Problem.t) ?beam ?parallel =
     ?conv_threshold
     ?c1
     ?ls_depth
-    ?reg
+    ?damping
     (inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t)
     : ('w, 'd) Problem.value ->
     Rune.custom_jvp
       (Problem.inputs p)
       Nx.Ptree.tensor
       (fun { Problem.Inputs.theta; x0; us0 } ->
-         let sol = solve ?max_iter ?conv_threshold ?c1 ?ls_depth ?reg theta x0 us0 in
+         let sol = solve ?max_iter ?conv_threshold ?c1 ?ls_depth ?damping theta x0 us0 in
          ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
          , tangent_rule p ~theta ~x0 ~us0 ~sol ))
       inputs
@@ -279,8 +279,7 @@ let solve_fixed_unbatched
       p
       ~(max_iters : int)
       ?alphas
-      ?mu
-      ?reg
+      ?damping
       ?c1
       ?conv_threshold
       (inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t)
@@ -291,7 +290,7 @@ let solve_fixed_unbatched
     Nx.Ptree.tensor
     (fun { Problem.Inputs.theta; x0; us0 } ->
        let sol =
-         Solver.solve_fixed p ?alphas ?mu ?reg ?c1 ?conv_threshold ~max_iters theta x0 us0
+         Solver.solve_fixed p ?alphas ?damping ?c1 ?conv_threshold ~max_iters theta x0 us0
        in
        ( taus_of_stacked p (Solver.stack sol.xs) (Solver.stack sol.us)
        , tangent_rule p ~theta ~x0 ~us0 ~sol ))
@@ -345,9 +344,9 @@ let batched_transpose
    member has converged. The derivative is taken member by member, which is
    what the implicit function theorem says: each member's solution does not
    depend on the others. *)
-let solve_fixed p ?alphas ?mu ?reg ?c1 ?conv_threshold ~max_iters inputs =
+let solve_fixed p ?alphas ?damping ?c1 ?conv_threshold ~max_iters inputs =
   if not (Solver.is_batched inputs.Problem.Inputs.x0 inputs.us0)
-  then solve_fixed_unbatched p ~max_iters ?alphas ?mu ?reg ?c1 ?conv_threshold inputs
+  then solve_fixed_unbatched p ~max_iters ?alphas ?damping ?c1 ?conv_threshold inputs
   else
     Rune.custom_jvp
       (Problem.inputs p)
@@ -360,8 +359,7 @@ let solve_fixed p ?alphas ?mu ?reg ?c1 ?conv_threshold ~max_iters inputs =
            Solver.solve_fixed
              p
              ?alphas
-             ?mu
-             ?reg
+             ?damping
              ?c1
              ?conv_threshold
              ~max_iters
