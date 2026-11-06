@@ -110,6 +110,8 @@ let system (r : rows) (free : f) =
    traced once too but stops when the KKT test holds instead of after the
    budget — is the obvious next step and belongs to M7. *)
 
+let inner_rounds = 8
+
 let iterate ~(linear : linear) ~iters ~boxed (r : rows) : f =
   let nb = (Nx.shape r.a).(0) in
   let rows_idx = Nx.arange_f Nx.float64 0.0 (Float.of_int nb) 1.0 in
