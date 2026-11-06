@@ -109,6 +109,13 @@ reader lands, drawing every geom at the identity pose.
 | M5 | Actuators, transmissions, sensors, tendons | 2.5 wk | G5 | load the lab's actuated and tendon models |
 | M6 | Differentiability | 2.5 wk | **G6** | differentiate the step, run iLQR/MPC on it |
 | M7 | Parity, performance, dtype consolidation | 2 wk | **G7** | quote throughput numbers and ship the package |
+
+*Performance is measured, not asserted:* `doc/perf.md` carries the wall time
+of both engines on the corpus models (mjc is 54-13898x MuJoCo's `mj_step`
+today), the measured schedule share (34-55% of a step is active-set rounds
+the problem did not need), and a ranked plan whose first two items are
+sized against those numbers: stop the schedule on the KKT test, and skip it
+when a step has no rows.
 | M8 | Convex meshes and hfield (optional) | 4+ wk | G8 | use arbitrary robot meshes |
 | M9 | Spatial tendons with wrapping (optional) | 2.5 wk | — | hand and leg models with routed tendons |
 | M10 | Native MJCF reader (conditional) | 3.5 wk | — | run MJCF with no MuJoCo installed |
