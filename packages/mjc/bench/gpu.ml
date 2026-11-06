@@ -65,6 +65,38 @@ let prog =
         ms, Nx.to_array (Nx.reshape [| -1 |] back))
   }
 
+(* The question this bench now answers: an op with no `_at` variant, `Nx.init`,
+   builds its result on the host -- but the host value can be placed. Here the
+   identity is built that way *inside* the compiled program, which is where the
+   stage code needs it, and the round that uses it must agree with the one that
+   does not. *)
+let round_init ((a : ('v, 's, 'd) Nx.t), (b : ('v, 's, 'd) Nx.t)) =
+  let at = Nx.placement a in
+  let n = (Nx.shape a).(Array.length (Nx.shape a) - 1) in
+  let id =
+    Nx.place
+      at
+      (Nx.init Nx.float64 [| n; n |] (fun i -> if Int.equal i.(0) i.(1) then 1.0 else 0.0))
+  in
+  (* Used, so it cannot be dropped, and scaled by zero, so it changes nothing. *)
+  round (Nx.add a (Nx.mul_s id 0.0), b)
+
+let prog_init =
+  { run =
+      (fun place (a_host, b_host) reps ->
+        let a = Nx.place place a_host
+        and b = Nx.place place b_host in
+        let f = Rune.jit Nx.Ptree.(pair tensor tensor @-> returns tensor) round_init in
+        ignore (f (a, b));
+        let t0 = now () in
+        for _ = 1 to reps do
+          ignore (f (a, b))
+        done;
+        let ms = (now () -. t0) /. Float.of_int reps *. 1e3 in
+        let back = Nx.place Nx.Host.on (f (a, b)) in
+        ms, Nx.to_array (Nx.reshape [| -1 |] back))
+  }
+
 let worst_rel got want =
   let n = Stdlib.min (Array.length got) (Array.length want) in
   let acc = ref 0.0 in
@@ -131,14 +163,19 @@ let () =
        and the number is simply not available; say so rather than crash. *)
     let go () =
       let module D = (val Nx.devices [ dev ] : Nx.Devices) in
-      prog.run D.on (a_host, b_host) reps
+      prog.run D.on (a_host, b_host) reps, prog_init.run D.on (a_host, b_host) 1
     in
     (try
-       let gpu_ms, gpu_out = go () in
+       let (gpu_ms, gpu_out), (_, init_gpu) = go () in
        Printf.printf "  gpu   %9.2f ms  (%.2fx the host)\n%!" gpu_ms (host_ms /. gpu_ms);
        Printf.printf
          "  gpu vs host, worst relative difference %.3g\n%!"
-         (worst_rel gpu_out host_out)
+         (worst_rel gpu_out host_out);
+       Printf.printf
+         "  Nx.init on the host then placed, inside the program: %.3g from the round \
+          that does not use it\n\
+          %!"
+         (worst_rel init_gpu host_out)
      with
      | e ->
        Printf.printf "  gpu   no number: %s\n%!" (Exn.to_string e);

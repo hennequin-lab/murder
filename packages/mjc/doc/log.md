@@ -1333,6 +1333,16 @@ Nx.Host.on`. Landed so far: `Linalg`, `Jacobian`, `Mass`, `Model.model`,
 
 ## Branding the engine: what is generic, and the `Nx.init` wall
 
+**Correction.** The wall described below is not a wall, and calling it one was
+wrong. `Nx.init` returns a host value, and a host value can be **placed**:
+`Nx.place at (Nx.init dt shape f)` is a device value, and it works *inside a
+compiled program* -- `bench/gpu.ml` now builds an identity that way inside the
+jit'd round and gets an answer **bit-identical** to the round that does not use
+it (worst relative difference 0), on the iGPU, at the same 33x. So the three
+stages that need `Nx.init` can be branded the same way as the rest, and the
+"compute the tables at load time" plan is an optimisation (it would transfer
+them once instead of per call), not a prerequisite.
+
 The second pass branded the value types and every stage that only needs one, and
 found the wall the rest of the work meets: `Nx.init` -- the op that builds a table
 from a function of its index -- has **no `_at` variant**, unlike `zeros`, `ones`,
