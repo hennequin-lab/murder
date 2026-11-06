@@ -54,14 +54,17 @@ type config =
   ; actuator_damped : bool
   }
 
-let config (m : Nx.host Model.model) : config =
+let config ?iters (m : Nx.host Model.model) : config =
   let p = m.params in
   let dt = Nx.item [] p.timestep in
   let damping = Nx.to_array p.dof_damping in
   let damped = Stdlib.Array.exists (fun b -> not (Float.equal b 0.0)) damping in
   let solve = damped || Poly.( = ) m.topo.integrator Topo.Implicit_fast in
   let iters =
-    Stdlib.min (Stdlib.int_of_float (Nx.item [] p.iterations)) Solver.max_iterations
+    match iters with
+    | Some n -> Stdlib.max 1 (Stdlib.min n Solver.max_iterations)
+    | None ->
+      Stdlib.min (Stdlib.int_of_float (Nx.item [] p.iterations)) Solver.max_iterations
   in
   let force_limited =
     Stdlib.Array.exists

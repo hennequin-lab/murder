@@ -15,7 +15,8 @@
   spike_batch
   perf
   gpu
-  device)
+  device
+  throughput)
  (modules
   spike_la
   bench_step
@@ -32,7 +33,8 @@
   spike_batch
   perf
   gpu
-  device)
+  device
+  throughput)
  (libraries base mjc nx rune unix rig rig.amd rig.amd.amdgpu))
 
 ; The iLQR demo is the one executable that links dilqr, so the rest of the

@@ -22,8 +22,12 @@ type t
     differentiation traces may not read them from a parameter tensor. *)
 type config
 
-(** [config m] reads them from [m]. *)
-val config : Nx.host Model.model -> config
+(** [config ?iters m] reads them from [m]. [iters] overrides the model's
+    solver budget, which is a *policy* decision rather than a property of the
+    model: the schedule costs `iters × Solver.inner_rounds` rounds whatever the
+    problem needs, so a training loop may want fewer rounds than the XML asks
+    for. The parity gate is what says whether a given budget is enough. *)
+val config : ?iters:int -> Nx.host Model.model -> config
 
 (** [config_dt c] is the timestep [c] holds. *)
 val config_dt : config -> float

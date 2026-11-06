@@ -24,6 +24,14 @@ let () =
       | Ok m -> m
       | Error e -> failwith e
     in
+    let iters = Option.map (Stdlib.Sys.getenv_opt "G4_ITERS") ~f:Stdlib.int_of_string in
+    let step =
+      match iters with
+      | None -> fun d -> Mjc.Step.step m d
+      | Some n ->
+        let c = Mjc.Step.config ~iters:n m in
+        fun d -> Mjc.Step.step_with c m d
+    in
     let path = Printf.sprintf "test/fixtures/%s.g4.mjbf" name in
     let qpos, qvel, qacc, act, ctrl, nefc, ncon_t, (steps, _) = G4lib.fixture path in
     let nefc_ref = Nx.to_array nefc
@@ -92,7 +100,7 @@ let () =
         let e_acc =
           rel_error (Nx.slice [ I k; A ] qacc) (Mjc.Forward.forward m d).Mjc.Data.qacc
         in
-        Float.max e_acc (error_vs_recording k (Mjc.Step.step m d)))
+        Float.max e_acc (error_vs_recording k (step d)))
     in
     let sorted = Array.sorted_copy errors ~compare:Float.compare in
     let within = Array.count errors ~f:(fun e -> Float.( <= ) e threshold) in
@@ -116,7 +124,7 @@ let () =
       let e_acc =
         rel_error (Nx.slice [ I k; A ] qacc) (Mjc.Forward.forward m d).Mjc.Data.qacc
       in
-      let e_step = error_vs_recording k (Mjc.Step.step m d) in
+      let e_step = error_vs_recording k (step d) in
       Stdlib.Printf.printf
         "  worst %4d  e=%.2e (forward %.2e, integrate %.2e)\n%!"
         k
@@ -129,7 +137,7 @@ let () =
     let d = ref (state 0) in
     (try
        for k = 0 to steps - 1 do
-         d := Mjc.Step.step m !d;
+         d := step !d;
          if Float.( > ) (error_vs_recording k !d) threshold
          then (
            horizon := k;

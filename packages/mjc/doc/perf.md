@@ -332,12 +332,19 @@ two triangular solves, `[64; 76; 76]` — on the host and on the iGPU.
 
 | | one round over 64 environments |
 | --- | ---: |
-| host (12 Zen 5 cores, one thread) | 4.02 ms |
-| iGPU (gfx1151, via `Rig_amd_amdgpu`) | **0.11 ms** |
-| | **38x the host** |
+| host (12 Zen 5 cores, one thread) | 3.95 ms |
+| iGPU (gfx1151, via `Rig_amd_amdgpu`) | 2.47 ms |
+| | **1.6x the host** |
 
-The two devices agree bit for bit: worst relative difference 0. This is the
-number the device-polymorphism refactor was gated on, and it clears the gate.
+The two devices agree bit for bit: worst relative difference 0.
+
+**Correction, and it was mine.** The first measurement of this row said the GPU
+was *38x* the host (0.11 ms). That number was the time to *submit* the work: a
+device program runs asynchronously, and the bench timed the loop without waiting.
+Adding `Nx.sync` before reading the clock gives 2.47 ms, and the 38x became 1.6x.
+Every GPU number in this document has been re-measured with a sync since; the
+lesson is recorded in `doc/log.md` because it would have flattered the engine by
+an order of magnitude in exactly the direction we wanted to believe.
 Read it as one round's dense algebra, not a whole step: the solve is 40-60% of a
 step from the batching measurements in §5, and transfers are outside the timing
 (one copy each way, as a resident training loop would have).
@@ -392,3 +399,59 @@ description as a function (`Model.ptree ()`) because value restriction would
 otherwise fix it to one device, and `Step.config` taken from a **host** model --
 structure is host data, identical on every device, which is why `Step.step_with`
 is the device entry point and `Step.step` stays a host convenience.
+
+## 11. Throughput: env-steps per second, which is the metric that decides
+
+Section 2 measures latency at one environment, which is the right comparison
+against `mj_step` and the wrong one for training. `bench/throughput.ml` measures
+`env-steps/s` at a batch, `vmap` of a compiled step, one copy in and one out,
+timed with a sync. The budget is four solver passes (see below).
+
+| model | lanes | device | ms/step | us/env-step | env-steps/s | x `mj_step`, 1 core |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| hopper | 1 | host | 9.59 | 9594 | 104 | 1919x |
+| hopper | 1 | gpu | 36.56 | 36559 | 27 | 7312x |
+| hopper | 64 | host | 98.44 | 1538 | 650 | 308x |
+| hopper | 64 | gpu | 49.00 | 766 | 1306 | 153x |
+| hopper | 512 | host | 544.60 | 1064 | 940 | 213x |
+| hopper | 512 | gpu | 231.91 | **453** | **2208** | **91x** |
+| hopper | 4096 | gpu | ~1960 | ~981 | ~1020 | 196x |
+| walker | 64 | gpu | 80.43 | 1257 | 796 | 251x |
+| walker | 512 | gpu | 758.24 | 1481 | 675 | 296x |
+
+Four things this says, in order of how much they matter.
+
+**Batching helps, then stops helping.** Per env-step on the GPU: 36.6 ms at one
+lane, 766 us at 64, 453 us at 512, then worse again at 4096. The knee is 512. So
+this is not a throughput story yet — the cost per environment is not amortising
+after a few hundred lanes, which means the work per lane dominates the work of
+having lanes.
+
+**The GPU is 2x the host, not 100x.** At 512 lanes: 453 us against 1064 us. The
+iGPU is a 40-CU part sharing memory with the CPU, every number here is float64
+(where RDNA is weak), and the hot loop is a sequential Cholesky rather than a
+wide product — so this is consistent with the hardware, and it is the opposite
+of what a dense-algebra GPU port usually looks like.
+
+**The solver schedule was worth exactly 2x, and that is now taken.** The corpus
+stops changing at four passes: `G4_ITERS=4` reproduces the gate's numbers
+*exactly* on hopper, walker and humanoid -- same worst error, same shadowing
+horizon -- while two passes fail (99.2% and 96.9% of steps within 1e-8) and one
+fails badly (90% and 81%, shadowing horizons 35 and 10). `Solver.max_iterations`
+is now 4 and the whole suite plus `g4.exe` are unchanged, which is a free 2x on
+every model. It also says the schedule's remaining cost is *real* work: we are
+no longer paying for rounds the problem does not need.
+
+**What is left is per-round cost, not round count.** At 512 lanes and four
+passes the step is 232 ms for hopper, and `nefcmax` is 64, so a round is
+`512 x 64^3 / 3` = 45 MFLOP, 32 rounds = 1.4 GFLOP in 232 ms = 6 GFLOP/s: one
+percent of what this GPU should do in float64. `Linalg.cholesky` is written as a
+loop over the matrix dimension with a handful of small tensor ops per column, so
+a round is ~64 sequential tiny operations, and on a device that is latency, not
+arithmetic. **The next GPU lever is a Cholesky whose inner work is wide** (a
+blocked or right-looking form, or a kernel), not a smaller schedule.
+
+For orientation, one core of MuJoCo does hopper at 200K steps/s (5 us). We are
+at 2.2K steps/s on the best configuration measured, so 91x short of one core and
+~450x short of what a 4096-environment loop at 50 Hz wants (~1M steps/s). This
+is the number to improve, and it is now a number rather than an extrapolation.

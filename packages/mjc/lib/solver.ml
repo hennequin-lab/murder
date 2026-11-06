@@ -5,7 +5,14 @@
 
 open Base
 
-let max_iterations = 8
+(* The schedule runs `iters × inner_rounds` rounds whatever the problem needs;
+   MuJoCo's Newton exits on tolerance, so a model asking for eight pays nothing
+   for the unused ones and we pay 2x. Four passes is where the corpus stops
+   changing: `G4_ITERS=4` reproduces the gate's numbers *exactly* on hopper,
+   walker and humanoid (same worst error, same shadowing horizon), while 2 fails
+   and 1 fails badly. So four is the cap, and `Step.config ?iters` is how a
+   caller says otherwise. *)
+let max_iterations = 4
 
 type linear =
   [ `Cholesky (** {!Mass.factor} and {!Mass.solve}: the kernels. *)

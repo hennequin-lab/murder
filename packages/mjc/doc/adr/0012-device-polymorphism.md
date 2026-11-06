@@ -1,6 +1,7 @@
 # ADR 0012 — Device polymorphism, for GPU acceleration
 
-Status: accepted, gate met (38x on the solver's round). Implementation: generic
+Status: accepted; it runs, and the device is *1.6x* the host on the solver's round
+(the ``38x`` first reported measured submission, not work — see `doc/log.md`). Implementation: generic
 so far — `Model`, `Data` (`create_at`), `Linalg`, `Jacobian`, `Mass`,
 `Kinematics`, `Bias`, `Passive`, `Sensor`, `Actuator`, `Transmission`, `Tendon`,
 `Constraint` (with its `config`), `Collision` (with the box-box batch), `Solver`,
@@ -8,9 +9,12 @@ so far — `Model`, `Data` (`create_at`), `Linalg`, `Jacobian`, `Mass`,
 Host by design: `Step.config`/`advance`/`step` (structure is read with
 `Nx.item`), and `Dynamics`' jit'd wrappers.
 
-**Met.** A whole step runs on the iGPU: 100 hopper steps to 4.4e-15 of the host,
-50 walker steps to 3.6e-16 (`doc/perf.md` §10). Throughput on device is not yet
-measured, and `humanoid` is slow enough that measuring it is the next question.
+**Met, and then measured.** A whole step runs on the iGPU: 100 hopper steps to
+4.4e-15 of the host, 50 walker steps to 3.6e-16 (`doc/perf.md` §10). Throughput
+is now measured too (`doc/perf.md` §11): 2208 env-steps/s for hopper at 512 lanes
+on the iGPU, against 940 on the host and 200K on one core of the C engine. So the
+refactor bought device execution and a 2x, not the order of magnitude the goal
+needs; the remaining cost is per-round Cholesky work, not the schedule.
 Date: 2026-02-14
 
 ## Context

@@ -55,13 +55,16 @@ let prog =
            so its brand would be a weak variable and the field could not
            generalise over the device. *)
         let f = Rune.jit Nx.Ptree.(pair tensor tensor @-> returns tensor) round in
-        ignore (f (a, b));
+        let out = ref (f (a, b)) in
+        (* Wait for the work, not for the submission queue. *)
+        Nx.sync (Nx.slice [ I 0 ] (Nx.reshape [| -1 |] !out));
         let t0 = now () in
         for _ = 1 to reps do
-          ignore (f (a, b))
+          out := f (a, b)
         done;
+        Nx.sync (Nx.slice [ I 0 ] (Nx.reshape [| -1 |] !out));
         let ms = (now () -. t0) /. Float.of_int reps *. 1e3 in
-        let back = Nx.place Nx.Host.on (f (a, b)) in
+        let back = Nx.place Nx.Host.on !out in
         ms, Nx.to_array (Nx.reshape [| -1 |] back))
   }
 
@@ -87,13 +90,15 @@ let prog_init =
         let a = Nx.place place a_host
         and b = Nx.place place b_host in
         let f = Rune.jit Nx.Ptree.(pair tensor tensor @-> returns tensor) round_init in
-        ignore (f (a, b));
+        let out = ref (f (a, b)) in
+        Nx.sync (Nx.slice [ I 0 ] (Nx.reshape [| -1 |] !out));
         let t0 = now () in
         for _ = 1 to reps do
-          ignore (f (a, b))
+          out := f (a, b)
         done;
+        Nx.sync (Nx.slice [ I 0 ] (Nx.reshape [| -1 |] !out));
         let ms = (now () -. t0) /. Float.of_int reps *. 1e3 in
-        let back = Nx.place Nx.Host.on (f (a, b)) in
+        let back = Nx.place Nx.Host.on !out in
         ms, Nx.to_array (Nx.reshape [| -1 |] back))
   }
 

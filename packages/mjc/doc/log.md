@@ -1402,3 +1402,33 @@ all device-legal already. Only `Nx.item`, which returns an OCaml value, is not -
 16 sites in the whole engine. That is a much smaller surface than the "reads its
 tensors as host numbers" phrasing suggested, and it means the constraint rewrite
 is ten edits plus a config record, not a reimplementation.
+
+## The 38x was submission time, and the schedule was 2x over-provisioned
+
+Two findings from building `bench/throughput.ml`, and the first is a correction
+of my own headline.
+
+**A device program is asynchronous, so timing it needs a sync.** The "38x faster
+than the host" number that gated the whole device refactor was the time to
+*submit* a kernel, not to run it: the bench timed a loop of `Rune.jit` calls and
+only copied the result back after the clock had stopped. With `Nx.sync` in the
+right place the same round measures **1.6x**, not 38x. Every GPU number in
+`doc/perf.md` has been re-measured since. The general lesson is worth keeping:
+a benchmark that flatters the thing being built is the one to double-check, and
+this one was wrong by 24x in exactly the direction I wanted it to be.
+
+**The solver schedule was 2x over-provisioned, and now is not.** `G4_ITERS=4`
+reproduces the parity gate's numbers *exactly* on hopper, walker and humanoid —
+same worst error to the digit, same shadowing horizon — while two passes fail
+(99.2% / 96.9% of steps within 1e-8) and one fails badly (90% / 81%). So
+`Solver.max_iterations` is 4, `Step.config ?iters` lets a caller say otherwise,
+and every model got 2x for free with the gate unchanged. That the solve is
+idempotent past a point is the same thing `b56e034` found when it replaced the
+fraction search; it is now measured as an *exact* fixed point over 1000 steps.
+
+**And the remaining cost is not rounds.** At 512 lanes, four passes, `nefcmax`
+64: 45 MFLOP per round, 1.4 GFLOP per step, 232 ms — 6 GFLOP/s, about one percent
+of what this GPU does in float64. `Linalg.cholesky` steps one column at a time
+with a few small tensor ops each, so a round is ~64 sequential tiny operations:
+on a device that is latency, not arithmetic. The lever is a wide inner work, not
+a smaller budget.
