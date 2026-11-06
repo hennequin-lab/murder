@@ -287,3 +287,43 @@ recording is the data for it — running `perf.exe` against the recorded
 trajectory states is the obvious next version of this measurement, and would
 change the absolute numbers, though not the ranking: the fixed schedule and
 the pair-wise contact work are paid at every step regardless.
+
+## 8. Kernel search: `Rune.jit ~beam:2`
+
+The beam search times the candidate optimisations of every kernel on the
+compiling device and keeps the fastest. It costs compilation, once, and buys
+steady-state time, on every call after:
+
+| model | beam 0, compiled | beam 2, compiled | beam 0, per env | beam 2, per env | beam 0, first call | beam 2, first call |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| pendulum | 58 us | 55 us | 14 us | 11 us | 0.09 s | 4.87 s |
+| chain6 | 4910 us | **2203 us** | 9955 us | **2273 us** | 0.79 s | 215 s |
+
+`BEAM=2` is the switch; `perf.exe` now reports the first call, which is where
+the search's cost goes. On `chain6` the search pays for itself after about
+eighty steps and halves the step; on a model with one body it is not worth the
+five seconds. The numbers to remember are the ratio (2.2x on the step, 4.4x per
+environment) and the price tag (215 s of compilation for a model that took
+0.8 s to compile without it).
+
+## 9. The machine's GPU
+
+This host has an AMD Ryzen AI MAX+ 395 with its integrated Radeon 8060S, so the
+question of running the engine there is a fair one. `rig` ships the driver for
+it (`rig_amd_amdgpu`, path `/dev/kfd` + `/dev/dri/renderD128`, both present),
+and `tolk` compiles kernels for it, so **jit'd work can target it in this
+build**. What cannot target it is `mjc`: every signature in the engine is
+`Nx.host` (`Model.host`, `Data.host`, `Constraint.f = Nx.host Nx.float64_t`),
+so a `Data.t` cannot be placed on a device, and `Rune.jit` of the step is a host
+program by construction. There are also no *eager* GPU kernels in the
+dependency set (`nx` links `nx_cpu` alone), which does not matter for a jit'd
+step but does for the demos, the viewer and the tests, which run eager.
+
+So placing the step on the GPU is not a benchmark away: it is the M7 item the
+plan already carries — make the engine's tensors device-polymorphic, then
+`Rune.jit` compiles the same program for the device its `Data` lies on.
+`bench/gpu.ml` was the attempt at measuring the solver's round (a batched
+Cholesky and solve, `[64; 76; 76]`) on the iGPU against the host; its OCaml
+needs the device set unpacked inside a functor rather than a match arm before it
+will type, and it is not landed. The measurement it was for is the one that
+should justify the device-polymorphism work, and it is worth doing first.

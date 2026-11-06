@@ -53,8 +53,9 @@ let () =
     | _ -> [ "pendulum"; "chain6"; "bounce"; "boxes2"; "hopper"; "walker"; "humanoid" ]
   in
   Printf.printf
-    "| model | nv | rows | nefcmax | dt | eager | compiled | per_env, vmap 8 |\n\
-     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+    "| model | nv | rows | nefcmax | dt | eager | compiled | per_env, vmap 8 | first \
+     call |\n\
+     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
   List.iter models ~f:(fun name ->
     let m = load name in
     (* The reference pose at rest: the same state the MuJoCo script starts
@@ -67,7 +68,12 @@ let () =
     let eager = time ~steps:500 (fun d -> Step.step m d) d in
     let compiled = Step.compile m in
     let one = Step.run compiled in
+    (* The first call traces, compiles, and — with BEAM set — searches kernel
+       optimisations and times the candidates. It is the compile cost and it is
+       reported separately because a beam search makes it minutes. *)
+    let t0 = now () in
     let _ = one d in
+    let compile_time = now () -. t0 in
     let compiled_time = time ~steps:500 one d in
     let lanes = 8 in
     (* Stack every leaf along a new leading axis, 0-d ones included; the vmap
@@ -91,7 +97,7 @@ let () =
     let _ = vec batched in
     let per_env = time ~steps:50 vec batched /. Float.of_int lanes in
     Printf.printf
-      "| %s | %d | %d | %d | %.3g | %.0f us | %.0f us | %.0f us |\n"
+      "| %s | %d | %d | %d | %.3g | %.0f us | %.0f us | %.0f us | %.2f s |\n"
       name
       m.topo.nv
       nefc
@@ -99,7 +105,8 @@ let () =
       (Nx.item [] m.params.timestep)
       (us eager)
       (us compiled_time)
-      (us per_env));
+      (us per_env)
+      compile_time);
   (* Where the time goes: the same forward pass with the solver's schedule at
      one outer iteration and at the budget the step uses. The difference is the
      active-set schedule's share, and it is what the M7 recommendations in
