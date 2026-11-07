@@ -2024,3 +2024,36 @@ Also settled: the margin convention (each object contributes half its own margin
 pass the pair margin to both, as MuJoCo does), and that contact geometry through
 GJK/EPA will be **non-differentiable** on purpose, with the derivative coming from
 the KKT rule as it already does for the primitive rows.
+
+
+## The quadruped was on ice, and its drive was a gait
+
+Asked whether the feet should be sliding: no. Every geom in the `quad` model
+carried `condim="1"`, which in MuJoCo is a **frictionless** contact -- the
+`friction="1.2"` on the feet was inert, and the robot was skating. That is a
+modelling error of mine, and it is the kind that a viewer never catches because a
+skating robot still looks like a robot.
+
+Turning friction on (`condim="3"`) did not fix the motion, it changed it: with the
+antiphase drive the robot now *walks* 0.13 m in 1.8 s where it had drifted 0.04.
+That drive -- a quarter turn of phase per actuator on every joint -- is a gait. A
+wiggle in place needs a pattern, and the measurement picks it:
+
+| drive, 0.6 s period, friction on | x drift over 1.8 s | z range |
+| --- | ---: | ---: |
+| every joint, phase pi per actuator | +0.042 m | 5 mm |
+| knees only, phase pi per leg, amp 0.2 | **+0.005 m** | 4 mm |
+| knees only, amp 0.3 | +0.249 m | 21 mm |
+| every joint, amp 0.2 | +0.941 m (and it falls) | 211 mm |
+
+So the demo drives the knees only, on a pattern (`Drive.pattern`, cycled weights,
+which no amplitude can express), at an amplitude where the feet stay planted. Our
+engine agrees with MuJoCo on it: drift 7.4 mm, rock 4.2 mm, **contact in 900 of
+900 steps**, against MuJoCo's 4.9 mm and 4 mm.
+
+Two things worth keeping from this. A contact model is `condim`, not `friction`: a
+non-zero friction coefficient on a `condim=1` geom does nothing, which reads as
+"friction is set" in the XML and is not. And "wiggle" and "walk" are different
+drive signals, so a clip that travels was never a bug in the engine -- the first
+one was skating because of the contact model, the second was walking because of
+the signal.

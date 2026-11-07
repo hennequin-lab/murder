@@ -13,7 +13,7 @@ let usage =
   \  [--shot-prefix P] [--width W] [--height H] [--eye x,y,z] [--target x,y,z]\n\
   \  [--body-frames] [--contacts|--no-contacts] [--forces] [--no-grid] [--no-hud]\n\
   \  [--inertia] [--com] [--joint-axes] [--velocity] [--energy] [--drive]\n\
-  \  [--drive-amplitude A] [--drive-period T] [--drive-offset U]\n\
+  \  [--drive-amplitude A] [--drive-period T] [--drive-offset U] [--drive-pattern LIST]\n\
   \  [--log out.mjlog | --follow in.mjlog]\n\
   \  [--bench N] [--check]"
 
@@ -59,6 +59,7 @@ let () =
   and drive_period = ref 0.9
   and drive_offset = ref 0.0
   and drive_phase = ref 0.0
+  and drive_pattern = ref [||]
   and log_path = ref None
   and follow_path = ref None in
   let rec go = function
@@ -139,6 +140,11 @@ let () =
     | "--drive-phase" :: v :: r ->
       drive_phase := Stdlib.float_of_string v;
       go r
+    | "--drive-pattern" :: v :: r ->
+      drive_pattern
+      := Stdlib.Array.of_list
+           (Stdlib.List.map Stdlib.float_of_string (Stdlib.String.split_on_char ',' v));
+      go r
     | "--log" :: v :: r ->
       log_path := Some v;
       go r
@@ -194,7 +200,8 @@ let () =
                 ~amplitude:!drive_amplitude
                 ~period:!drive_period
                 ~offset:!drive_offset
-                ~phase_step:!drive_phase)
+                ~phase_step:!drive_phase
+                ~pattern:!drive_pattern)
          else None)
       ?log_path:!log_path
       ?follow_path:!follow_path

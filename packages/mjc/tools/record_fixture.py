@@ -347,52 +347,52 @@ MODELS = {
   <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
   <compiler angle="degree"/>
   <worldbody>
-    <geom name="floor" type="plane" size="5 5 0.1" condim="1" rgba=".55 .6 .65 1"/>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="3" rgba=".55 .6 .65 1"/>
     <body name="torso" pos="0 0 0.40">
       <freejoint/>
       <geom name="torso" type="capsule" size="0.07 0.20" quat="0.7071068 0 0.7071068 0"
-            condim="1" density="700"/>
+            condim="3" density="700"/>
     <body name="hip_fl" pos="0.18 0.13 0">
       <joint name="hip_fl" type="hinge" axis="0 1 0" range="-60 60" damping="0.2"/>
-      <geom name="thigh_fl" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="1"/>
+      <geom name="thigh_fl" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="3"/>
       <body name="knee_fl" pos="-0.02 0 -0.18">
         <joint name="knee_fl" type="hinge" axis="0 1 0" range="-90 10" damping="0.2"/>
-        <geom name="shin_fl" type="capsule" size="0.022 0.10" fromto="0 0 0 0.02 0 -0.20" condim="1"/>
+        <geom name="shin_fl" type="capsule" size="0.022 0.10" fromto="0 0 0 0.02 0 -0.20" condim="3"/>
         <body name="foot_fl" pos="0.02 0 -0.18">
-          <geom name="foot_fl" type="sphere" size="0.045" condim="1" friction="1.2"/>
+          <geom name="foot_fl" type="sphere" size="0.045" condim="3" friction="1.2"/>
         </body>
       </body>
     </body>
     <body name="hip_fr" pos="0.18 -0.13 0">
       <joint name="hip_fr" type="hinge" axis="0 1 0" range="-60 60" damping="0.2"/>
-      <geom name="thigh_fr" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="1"/>
+      <geom name="thigh_fr" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="3"/>
       <body name="knee_fr" pos="-0.02 0 -0.18">
         <joint name="knee_fr" type="hinge" axis="0 1 0" range="-90 10" damping="0.2"/>
-        <geom name="shin_fr" type="capsule" size="0.022 0.10" fromto="0 0 0 0.02 0 -0.20" condim="1"/>
+        <geom name="shin_fr" type="capsule" size="0.022 0.10" fromto="0 0 0 0.02 0 -0.20" condim="3"/>
         <body name="foot_fr" pos="0.02 0 -0.18">
-          <geom name="foot_fr" type="sphere" size="0.045" condim="1" friction="1.2"/>
+          <geom name="foot_fr" type="sphere" size="0.045" condim="3" friction="1.2"/>
         </body>
       </body>
     </body>
     <body name="hip_bl" pos="-0.18 0.13 0">
       <joint name="hip_bl" type="hinge" axis="0 1 0" range="-60 60" damping="0.2"/>
-      <geom name="thigh_bl" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="1"/>
+      <geom name="thigh_bl" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="3"/>
       <body name="knee_bl" pos="-0.02 0 -0.18">
         <joint name="knee_bl" type="hinge" axis="0 1 0" range="-90 10" damping="0.2"/>
-        <geom name="shin_bl" type="capsule" size="0.022 0.10" fromto="0 0 0 0.02 0 -0.20" condim="1"/>
+        <geom name="shin_bl" type="capsule" size="0.022 0.10" fromto="0 0 0 0.02 0 -0.20" condim="3"/>
         <body name="foot_bl" pos="0.02 0 -0.18">
-          <geom name="foot_bl" type="sphere" size="0.045" condim="1" friction="1.2"/>
+          <geom name="foot_bl" type="sphere" size="0.045" condim="3" friction="1.2"/>
         </body>
       </body>
     </body>
     <body name="hip_br" pos="-0.18 -0.13 0">
       <joint name="hip_br" type="hinge" axis="0 1 0" range="-60 60" damping="0.2"/>
-      <geom name="thigh_br" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="1"/>
+      <geom name="thigh_br" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="3"/>
       <body name="knee_br" pos="-0.02 0 -0.18">
         <joint name="knee_br" type="hinge" axis="0 1 0" range="-90 10" damping="0.2"/>
-        <geom name="shin_br" type="capsule" size="0.022 0.10" fromto="0 0 0 0.02 0 -0.20" condim="1"/>
+        <geom name="shin_br" type="capsule" size="0.022 0.10" fromto="0 0 0 0.02 0 -0.20" condim="3"/>
         <body name="foot_br" pos="0.02 0 -0.18">
-          <geom name="foot_br" type="sphere" size="0.045" condim="1" friction="1.2"/>
+          <geom name="foot_br" type="sphere" size="0.045" condim="3" friction="1.2"/>
         </body>
       </body>
     </body>
