@@ -22,6 +22,13 @@ type cand =
     data and is empty when the model disables contacts. *)
 val candidates : 'a Model.model -> cand array
 
+(** [unsupported_pairs m] is the geom-type pairs [m] can produce and the engine
+    cannot solve, each with the number of candidate pairs it accounts for. Empty
+    for every model that steps; a model with contacts the engine does not have
+    refuses in {!candidates}, and this says which ones and how many before it
+    does. *)
+val unsupported_pairs : 'a Model.model -> ((Topo.geom_type * Topo.geom_type) * int) list
+
 (** [contacts m d] is [d] with the contacts of the current pose: [ncon] and
     the [contact_*] arrays, compacted to the contacts that actually exist.
 

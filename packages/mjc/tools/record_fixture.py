@@ -310,6 +310,34 @@ MODELS = {
     # single model exercises a fixed gain, an affine bias through a position
     # and a velocity servo, an integrated setpoint, a damper and a general
     # gain/bias polynomial, plus the control and force ranges.
+    # The two cylinder pairs, in a pose that never changes. Every body carries a
+    # hinge through its own centre -- the cylinder's about its own axis -- so each
+    # is dynamic, which a body welded to the world is not, and yet rotationally
+    # invariant, so the geometry is fixed and all 32 states test the same pose.
+    # A static body would be welded to the world and MuJoCo filters that pair out.
+    "cyl": """
+<mujoco model="cyl">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="1"/>
+    <body name="can" pos="0 0 0.12" quat="0.9238795 0.3826834 0 0">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="can" type="cylinder" size="0.1 0.12" condim="1"/>
+    </body>
+    <body name="side" pos="0.12 0 0.12">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="side" type="sphere" size="0.05" condim="1"/>
+    </body>
+    <body name="cap" pos="0 0.05 0.27">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="cap" type="sphere" size="0.05" condim="1"/>
+    </body>
+    <body name="rim" pos="0.1 0 0.2">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="rim" type="sphere" size="0.05" condim="1"/>
+    </body>
+  </worldbody>
+</mujoco>""",
     "actuators": """
 <mujoco model="actuators">
   <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>

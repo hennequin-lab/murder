@@ -1833,3 +1833,56 @@ So the session's arithmetic on the two contact-hungry models is 7x and 26x of on
 MuJoCo core, from 9x and "does not compile", and every step of it came from
 configuration that the measurements chose: the row budget, the schedule's exact
 fixed point, and a solver path that turned out to be broken rather than slow.
+
+## Quadruped, first instalment: the two cylinder pairs, and what is actually left
+
+`bench/pairs.exe` asks the engine which of a model's *candidate* pairs it cannot
+solve -- after the body filter, the parent filter and the contype mask, which is
+the set that matters and not simply "which geom types does the model contain".
+For dm_control's quadruped that is **64 candidate pairs in 9 type pairs**, and
+the list is the milestone:
+
+| pair | candidates |
+| --- | ---: |
+| capsule vs cylinder | 16 |
+| hfield vs capsule | 12 |
+| sphere vs cylinder | 10 |
+| capsule vs ellipsoid | 8 |
+| sphere vs ellipsoid | 5 |
+| hfield vs sphere | 5 |
+| plane vs ellipsoid | 5 |
+| hfield vs cylinder | 2 |
+| hfield vs ellipsoid | 1 |
+
+Two of those are done. `plane vs cylinder` and `sphere vs cylinder` are
+MuJoCo's own `mjc_PlaneCylinder` and `mjc_SphereCylinder`, term for term: four
+slots for the first (a rim point per cap, then two halfway up the rim), and three
+branches for the second (beside the barrel, over a cap with the normal flipped
+because the plane is the second geom, or against the rim as a zero-radius sphere).
+The fixture is a cylinder with a sphere beside it, over each cap and at the rim,
+in a pose that never changes -- every body carries a hinge through its own centre,
+the cylinder's about its own axis, so each is dynamic without being able to move.
+That last detail is not decoration: a body without a dof is welded to the world,
+MuJoCo filters welded pairs, and an all-static scene produces *no contacts at
+all*, which is how the first two attempts at this fixture failed.
+
+`test_contact`'s "contact geometry" now includes the model and matches MuJoCo at
+1e-12 on distance, position, normal and the full frame, all 32 states.
+
+What is left is 54 candidate pairs in 8 type pairs, and they are one piece of
+work, not seven. MuJoCo 3.3.7's `engine_collision_primitive.c` has exactly eight
+primitive functions -- plane×{sphere,capsule,cylinder,box}, sphere×{sphere,
+capsule,cylinder} and capsule×capsule -- and everything else goes through
+`engine_collision_convex.c`: `mjc_primitiveConvex` turns a sphere, capsule,
+cylinder, ellipsoid or box into a convex polytope with a margin, and GJK plus EPA
+measures it against another convex, a mesh, or a heightfield. So capsule-cylinder,
+the three ellipsoid pairs and the four heightfield pairs are all the same missing
+subsystem. (Box-box already works because it has its own tensor kernel here, which
+was checked against the C engine as a set.)
+
+That also settles the shape of the next milestone: `mjc_Convex` (support
+functions, GJK distance, EPA penetration, the simplex and its termination rules),
+the primitive-to-convex conversions, and the heightfield's cell pruning. Until
+that lands, the quadruped loads, reports its 54 missing pairs by name, and refuses
+to step -- which is the honest state and, unlike MuJoCo, not a silent one: its
+collision table has a null entry for a pair it cannot do and simply returns.

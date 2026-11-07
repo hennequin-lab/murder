@@ -1,0 +1,22 @@
+<mujoco model="cyl">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="1"/>
+    <body name="can" pos="0 0 0.12" quat="0.9238795 0.3826834 0 0">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="can" type="cylinder" size="0.1 0.12" condim="1"/>
+    </body>
+    <body name="side" pos="0.12 0 0.12">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="side" type="sphere" size="0.05" condim="1"/>
+    </body>
+    <body name="cap" pos="0 0.05 0.27">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="cap" type="sphere" size="0.05" condim="1"/>
+    </body>
+    <body name="rim" pos="0.1 0 0.2">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="rim" type="sphere" size="0.05" condim="1"/>
+    </body>
+  </worldbody>
+</mujoco>

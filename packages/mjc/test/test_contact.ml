@@ -212,7 +212,7 @@ let test_exclusions () =
 
 let test_geometry () =
   (* [boxes2] is compared as a set below: its box pairs have their own order *)
-  List.iter [ "bounce"; "boxes"; "blocks"; "hopper"; "walker" ] ~f:(fun name ->
+  List.iter [ "bounce"; "boxes"; "blocks"; "hopper"; "walker"; "cyl" ] ~f:(fun name ->
     let f = fixture name in
     List.iteri (states name) ~f:(fun s (d, ncon) ->
       let label tag = Printf.sprintf "%s state %d %s" name s tag in

@@ -55,6 +55,8 @@ let supported (t : Topo.t) g1 g2 =
   | Plane, Box
   | Sphere, Box
   | Capsule, Capsule
+  | Plane, Cylinder
+  | Sphere, Cylinder
   | Box, Box -> true
   | _ -> false
 
@@ -70,6 +72,7 @@ let slots (t : Topo.t) g1 g2 =
   match t.geom_type.(g1), t.geom_type.(g2) with
   | Plane, Capsule -> 2
   | Plane, Box -> 8
+  | Plane, Cylinder -> 4
   | Capsule, Capsule -> 2
   (* a face contact is a clipped polygon: a quad through four half-planes has at
      most eight vertices, and the tensor kernel holds twelve slots *)
@@ -91,6 +94,26 @@ let excluded t b1 b2 =
   let a, b = if Int.( <= ) b1 b2 then b1, b2 else b2, b1 in
   Array.exists t.exclude_pairs ~f:(fun (x, y) -> Int.equal a x && Int.equal b y)
 
+(* [filtered_pair t g1 g2] is whether the model's own structure forbids these
+   two geoms from touching, before any geometry is considered. It is one
+   definition so that the candidate list and {!unsupported_pairs} cannot
+   disagree about what a pair is. *)
+let filtered_pair t g1 g2 =
+  let weld1 = weldbody t t.geom_bodyid.(g1)
+  and weld2 = weldbody t t.geom_bodyid.(g2) in
+  (* An explicit exclusion is the model saying these two never touch, and it is
+     the only thing that stops two limbs of one robot from colliding with each
+     other. *)
+  excluded t weld1 weld2
+  || Int.equal weld1 weld2
+  || (Int.equal weld1 0 && Int.equal weld2 0)
+  (* filterparent, MuJoCo's default: a body does not touch its own parent, but
+     the world body is exempt. *)
+  || ((not (Int.equal weld1 0))
+      && (not (Int.equal weld2 0))
+      && (Int.equal weld1 (weldparent t t.geom_bodyid.(g2))
+          || Int.equal weld2 (weldparent t t.geom_bodyid.(g1))))
+
 let candidates (m : 'a Model.model) : cand array =
   let t = m.topo in
   let out = ref [] in
@@ -103,22 +126,7 @@ let candidates (m : 'a Model.model) : cand array =
           then a, b
           else b, a
         in
-        let weld1 = weldbody t t.geom_bodyid.(g1)
-        and weld2 = weldbody t t.geom_bodyid.(g2) in
-        let filtered =
-          (* An explicit exclusion is the model saying these two never touch,
-             and it is the only thing that stops two limbs of one robot from
-             colliding with each other. *)
-          excluded t weld1 weld2
-          || Int.equal weld1 weld2
-          || (Int.equal weld1 0 && Int.equal weld2 0)
-          (* filterparent, MuJoCo's default: a body does not touch its own
-             parent, but the world body is exempt. *)
-          || ((not (Int.equal weld1 0))
-              && (not (Int.equal weld2 0))
-              && (Int.equal weld1 (weldparent t t.geom_bodyid.(g2))
-                  || Int.equal weld2 (weldparent t t.geom_bodyid.(g1))))
-        in
+        let filtered = filtered_pair t g1 g2 in
         (* A pair that may touch but whose distance v1 cannot compute is a hole
            in the physics, not an omission to leave silent. *)
         if (not filtered) && bitmask_ok t g1 g2 && not (supported t g1 g2)
@@ -137,6 +145,37 @@ let candidates (m : 'a Model.model) : cand array =
       done
     done;
   Array.of_list (List.rev !out)
+
+(* [unsupported_pairs m] is the geom-type pairs this model can produce and the
+   engine cannot solve, with how many candidate pairs each accounts for,
+   descending. A model either has none of these and steps, or names the gap:
+   {!candidates} refuses rather than dropping a contact silently, and this is the
+   report that says how far the geometry reaches on a given model. It is what
+   made the quadruped's remaining work a list rather than a guess. *)
+let unsupported_pairs (m : 'a Model.model) =
+  let t = m.topo in
+  let out = ref [] in
+  if t.contacts_enabled
+  then
+    for a = 0 to t.ngeom - 1 do
+      for b = a + 1 to t.ngeom - 1 do
+        let g1, g2 =
+          if Int.( <= ) (type_index t.geom_type.(a)) (type_index t.geom_type.(b))
+          then a, b
+          else b, a
+        in
+        if (not (filtered_pair t g1 g2)) && bitmask_ok t g1 g2 && not (supported t g1 g2)
+        then (
+          let k = t.geom_type.(g1), t.geom_type.(g2) in
+          let rec bump = function
+            | [] -> [ k, 1 ]
+            | (k', n) :: tl when Poly.( = ) k k' -> (k', n + 1) :: tl
+            | x :: tl -> x :: bump tl
+          in
+          out := bump !out)
+      done
+    done;
+  List.sort (List.rev !out) ~compare:(fun (_, a) (_, b) -> Int.compare b a)
 
 (* {1 Contact geometry}
 
@@ -263,6 +302,106 @@ let plane_box ~pos1 ~normal ~pos2 ~mat2 ~half ~signs =
   let far = const_like dist 1e10 in
   let dist = Nx.where up far dist in
   let pos = Nx.add corner (smul normal (Nx.mul_s dist (-0.5))) in
+  dist, pos, normal
+
+(* [mjraw_PlaneCylinder]: the rim point of whichever cap is deeper, then -- only
+   if that is inside the margin -- two points halfway up the rim on either side.
+   The first point is the deepest of the four, so testing its distance against
+   the margin is MuJoCo's early return and no separate flag is needed. *)
+(* [mjraw_SphereCylinder]: the sphere against the axis if it is beside the
+   barrel, against a cap if it is over one, and against the rim otherwise. A
+   sphere deep inside the barrel is beside the nearer face, which is MuJoCo's
+   one branch here; the cap case is a plane-sphere whose normal is flipped
+   because the plane is the second geom. *)
+let sphere_cylinder ~pos1 ~r1 ~pos2 ~axis2 ~r2 ~h2 ~axis1 =
+  let x = dp axis2 (Nx.sub pos1 pos2) in
+  let on_axis = smul axis2 x in
+  let beside = Nx.sub (Nx.sub pos1 pos2) on_axis in
+  let beside_sqr = dp beside beside in
+  let abs_x = Nx.abs x in
+  let side = Nx.less abs_x h2 in
+  let cap = Nx.less beside_sqr (Nx.mul r2 r2) in
+  let deep = Nx.logical_and side cap in
+  let nearer_cap = Nx.less (Nx.sub h2 abs_x) (Nx.sub r2 (ssqrt beside_sqr)) in
+  let side = Nx.logical_and side (Nx.logical_not (Nx.logical_and deep nearer_cap)) in
+  let cap =
+    Nx.logical_and cap (Nx.logical_not (Nx.logical_and deep (Nx.logical_not nearer_cap)))
+  in
+  (* Beside the barrel: a sphere at the closest point of the axis. *)
+  let d_side, p_side, n_side =
+    sphere_sphere ~pos1 ~size1:r1 ~pos2:(Nx.add pos2 on_axis) ~size2:r2 ~axis1 ~axis2
+  in
+  (* Over a cap: the plane through that cap, with its normal flipped back. *)
+  let up = Nx.greater_s x 0.0 in
+  let cap_centre = Nx.add pos2 (smul axis2 (wsel up h2 (Nx.neg h2))) in
+  let cap_normal = wsel up axis2 (Nx.neg axis2) in
+  let d_cap, p_cap, _ =
+    plane_sphere ~pos1:cap_centre ~normal:cap_normal ~pos2:pos1 ~size:r1
+  in
+  let n_cap = Nx.neg cap_normal in
+  (* Otherwise the rim: a sphere-sphere against the corner point itself. *)
+  let corner =
+    let radial = smul beside (Nx.div r2 (len_clamped beside)) in
+    let along = smul axis2 (wsel up h2 (Nx.neg h2)) in
+    Nx.add pos2 (Nx.add along radial)
+  in
+  let d_cor, p_cor, n_cor =
+    sphere_sphere ~pos1 ~size1:r1 ~pos2:corner ~size2:(const_like r1 0.0) ~axis1 ~axis2
+  in
+  let dist = Nx.where side d_side (Nx.where cap d_cap d_cor) in
+  let pos = wsel side p_side (wsel cap p_cap p_cor) in
+  let normal = wsel side n_side (wsel cap n_cap n_cor) in
+  dist, pos, normal
+
+let plane_cylinder ~pos1 ~normal ~pos2 ~mat2 ~r2 ~l2 ~slot =
+  let axis0 = Nx.slice [ A; A; I 2 ] mat2 in
+  let prj = dp normal axis0 in
+  (* The axis is flipped to point towards the plane, and the projection with
+     it, so the deeper cap is always the one the positive sign reaches. *)
+  let axis = wsel (Nx.greater_s prj 0.0) (Nx.neg axis0) axis0 in
+  let prjaxis = Nx.neg (Nx.abs prj) in
+  let dist0 = dp (Nx.sub pos2 pos1) normal in
+  (* The radial direction to the deepest point: the part of the normal that the
+     axis does not already account for, scaled to the radius. A cap parallel to
+     the plane has none, and MuJoCo falls back to the cylinder's own x axis. *)
+  let vec = Nx.sub (smul axis prjaxis) normal in
+  let len_sqr = dp vec vec in
+  let parallel = Nx.less len_sqr (const_like len_sqr 1e-30) in
+  let radial =
+    wsel
+      parallel
+      (smul (Nx.slice [ A; A; I 0 ] mat2) r2)
+      (smul vec (Nx.div r2 (Nx.maximum_s len_sqr 1e-300 |> Nx.sqrt)))
+  in
+  let prjvec = dp radial normal in
+  let axis = smul axis l2 in
+  let prjaxis = Nx.mul prjaxis l2 in
+  let cap sign prj =
+    let dist = Nx.add (Nx.add dist0 (Nx.mul_s prjaxis sign)) prj in
+    let pos = Nx.add pos2 radial in
+    let pos = if Float.( > ) sign 0.0 then Nx.add pos axis else Nx.sub pos axis in
+    let pos = Nx.add pos (smul normal (Nx.mul_s dist (-0.5))) in
+    dist, pos
+  in
+  let d0, p0 = cap 1.0 prjvec in
+  let d1, p1 = cap (-1.0) prjvec in
+  (* Halfway between the two caps, on either side of the rim. *)
+  let prjvec1 = Nx.mul_s prjvec (-0.5) in
+  let side =
+    let c = Nx.cross radial axis in
+    let half = Nx.mul r2 (const_like r2 (Float.sqrt 3.0 /. 2.0)) in
+    smul c (Nx.div half (len_clamped c))
+  in
+  let d2 = Nx.add (Nx.add dist0 prjaxis) prjvec1 in
+  let rim towards =
+    let pos = Nx.add pos2 (if towards then side else Nx.neg side) in
+    let pos = Nx.add pos axis in
+    let pos = Nx.sub pos (smul radial (const_like radial 0.5)) in
+    Nx.add pos (smul normal (Nx.mul_s d2 (-0.5)))
+  in
+  let at k = Nx.equal_s slot (Float.of_int k) in
+  let dist = Nx.where (at 0) d0 (Nx.where (at 1) d1 d2) in
+  let pos = wsel (at 0) p0 (wsel (at 1) p1 (wsel (at 2) (rim true) (rim false))) in
   dist, pos, normal
 
 let sphere_box ~pos1 ~r1 ~pos2 ~mat2 ~half =
@@ -661,6 +800,24 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
           ~r2:(size a2 0)
           ~l2:(size a2 1)
           ~slot:(scalars ix (fun i -> Float.of_int slots.(i)))
+      | 8 ->
+        sphere_cylinder
+          ~pos1:p1
+          ~r1:(size a1 0)
+          ~pos2:p2
+          ~axis2:x2
+          ~r2:(size a2 0)
+          ~h2:(size a2 1)
+          ~axis1:x1
+      | 7 ->
+        plane_cylinder
+          ~pos1:p1
+          ~normal:x1
+          ~pos2:p2
+          ~mat2:(take a2 gmat)
+          ~r2:(size a2 0)
+          ~l2:(size a2 1)
+          ~slot:(scalars ix (fun i -> Float.of_int slots.(i)))
       | 5 ->
         sphere_box
           ~pos1:p1
@@ -687,9 +844,11 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
       | Capsule, Capsule -> Some 4
       | Sphere, Box -> Some 5
       | Sphere, Capsule -> Some 6
+      | Plane, Cylinder -> Some 7
+      | Sphere, Cylinder -> Some 8
       | _ -> None
     in
-    let groups = Array.create ~len:7 [] in
+    let groups = Array.create ~len:9 [] in
     let box_ix = ref [] in
     Array.iteri g1s ~f:(fun i _ ->
       match code_of i with
