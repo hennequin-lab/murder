@@ -582,7 +582,8 @@ evaluation, some forty tensor ops) is the other 14%.
 That reframes what fp32 is worth end to end: 1.5× on 86% of the step is a factor
 of `0.86/1.5 + 0.14 = 1.40`, not 1.5. For a refactor the size of the device one,
 with a second precision's validation surface, that is a poor trade while anything
-cheaper is left. The cheaper thing is the one the row counts point at: `nefcmax`
-medians are 8–9 rows while the factorisation is compiled for 24–40, so if the
-*free* block — which is a subset of the rows — is also small, the cubic term is
-being paid on padding.
+cheaper is left. The cheaper thing is the one the row counts point at, and `bench/rows.ml`
+measures it: the *free* block is 3–4 rows typically and 12–25 at the worst, against
+a row buffer of 21–34. Compacting the free block is worth 2.0–5.4× at the model's
+worst case and 145× at its median; the median figure needs per-lane dynamic
+shapes, which the compiled-program design rules out.

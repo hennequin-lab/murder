@@ -1688,3 +1688,44 @@ magnitude. That is the next measurement, and it needs a hook: the rows, their
 bounds and the final working set are built inside `Constraint`/`Solver.forward`
 and are not reachable from a bench, so the first task is to expose the working
 set's size per step (a recording pass over the corpus), not to guess at it.
+
+## The free block is 3-4 rows, and that is the next 100x
+
+`bench/rows.ml` replays every recorded state of the corpus and reports, per
+state, how many rows the step produced and how many of them have a non-zero
+force -- an upper bound on the working set the solver factors:
+
+| model | states | rows median | rows max | non-zero median | non-zero max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| hopper | 1001 | 8 | 21 | **4** | **12** |
+| walker | 1001 | 8 | 19 | **3** | **15** |
+| humanoid | 1001 | 9 | 34 | **4** | **25** |
+
+The distinction this draws is the whole point. A step must *present* `nefc` rows
+-- 21, 19 and 34 at the worst -- and that is why the row budget cannot shrink
+below them. But only the rows with a non-zero force enter the Newton step, and
+there are three or four of them typically, twelve to twenty-five at the very
+worst. The solver factors the former, because `system` builds an `[nb x nb]`
+matrix over the row buffer and masks the pinned rows into an identity block. So
+the cubic term -- 86% of a step -- is being paid on padding:
+
+| | budget | working set, max | (budget/set)^3 |
+| --- | ---: | ---: | ---: |
+| hopper | 21 | 12 | 5.4x |
+| walker | 19 | 15 | 2.0x |
+| humanoid | 34 | 25 | 2.5x |
+| | budget | working set, *median* | |
+| hopper | 21 | 4 | 145x |
+
+Two numbers with very different prices. Compacting the free block to the model's
+own worst case is a **2.0-5.4x** and needs a static shape, which the compiler
+already gives us: build the row Jacobians for the free set only, form
+`J' M^-1 J'ᵀ` at `nf_max` instead of `nefc_max`, and factor `nf_max^3` instead of
+`nb^3`. Compacting to each lane's *own* size is 145x but needs per-lane dynamic
+shapes, which the single-compiled-program design rules out -- the same wall as the
+early exit, and the same reason to price it rather than queue it.
+
+One trap worth naming because it looks like a shortcut and is not: `?rows` cannot
+do this. It truncates the row buffers, so a step that presents more rows drops
+them; the budget must cover `nefc`, not the working set. Compaction and truncation
+have the same effect on the matrix size and only one of them preserves the answer.
