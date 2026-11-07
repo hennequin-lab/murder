@@ -78,6 +78,51 @@ let point ?masks (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
   let jacp = mask_rows mask (Nx.add lin cross) in
   jacp, jacr
 
+(* The same Jacobians for many points at once: [bodies] and [positions] are a
+   batch of `[k]` body indices and `[k; 3]` world points, and the result is
+   `[k; nv; 3]` twice over. The contact stage needs this: per candidate it would
+   put `2 * ncand` copies of this arithmetic in the graph, and a few hundred
+   candidates is a program no compiler finishes. *)
+let points
+      ?masks
+      (m : 'a Model.model)
+      (d : 'a Data.data)
+      ~(bodies : int array)
+      ~(positions : 'a Nx.float64_t)
+  =
+  let t = m.topo in
+  let k = Array.length bodies in
+  let at = Nx.placement positions in
+  let idx =
+    Nx.place at (Nx.init Nx.int64 [| k |] (fun i -> Int64.of_int bodies.(i.(0))))
+  in
+  (* [offset] takes the *root* subtree's centre of mass, which is what makes a
+     point's velocity a subtree quantity; the body's own row is a different
+     number for every child. *)
+  let roots =
+    Nx.place
+      at
+      (Nx.init Nx.int64 [| k |] (fun i -> Int64.of_int t.body_rootid.(bodies.(i.(0)))))
+  in
+  let com = Nx.take ~axis:0 roots d.subtree_com in
+  let r = Nx.sub positions com in
+  let mask =
+    match masks with
+    | Some table -> Nx.take ~axis:0 idx table
+    | None -> Nx.zeros_at at Nx.float64 [| k; t.nv |]
+  in
+  let ang = ang6 d.cdof
+  and lin = lin6 d.cdof in
+  (* [ang] is [nv; 3]; broadcast it against the batch of offsets. *)
+  let ang_k = Nx.broadcast_to [| k; t.nv; 3 |] (Nx.reshape [| 1; t.nv; 3 |] ang)
+  and lin_k = Nx.broadcast_to [| k; t.nv; 3 |] (Nx.reshape [| 1; t.nv; 3 |] lin) in
+  let r_k = Nx.broadcast_to [| k; t.nv; 3 |] (Nx.reshape [| k; 1; 3 |] r) in
+  let cross = Nx.cross ang_k r_k in
+  let w = Nx.reshape [| k; t.nv; 1 |] mask in
+  let jacr = Nx.mul w ang_k in
+  let jacp = Nx.mul w (Nx.add lin_k cross) in
+  jacp, jacr
+
 (* [crossMotion] of two 6-vectors, angular part first. *)
 let cross6 vel u =
   let g k x = Nx.get [ k ] x in

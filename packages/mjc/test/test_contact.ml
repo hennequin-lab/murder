@@ -388,6 +388,44 @@ let test_compiled () =
     equal ~msg:"compiled ncon" int (int_of_t !eager.ncon) (int_of_t !jitted.ncon)
   done
 
+(* The batched Jacobian against the single-point one it replaces: same answer
+   for every body, with the body/dof table passed in and built internally, and
+   with a position batch whose entries differ per body. This is the helper the
+   contact stage needs to stop emitting one copy of the arithmetic per
+   candidate, so it has to be exactly the same arithmetic. *)
+let test_points_match_point () =
+  let m = Support.model "humanoid" in
+  let d = Mjc.Forward.forward m (Mjc.Data.create m) in
+  let nbody = m.Mjc.Model.topo.Mjc.Topo.nbody in
+  let bodies = Array.init nbody ~f:Fn.id in
+  let positions =
+    let n = Array.length bodies in
+    Nx.create
+      Nx.float64
+      [| n; 3 |]
+      (Array.init (3 * n) ~f:(fun i -> 0.1 *. Float.of_int (i - (n / 2))))
+  in
+  let rel expected actual =
+    let e = Nx.to_array (Nx.reshape [| -1 |] expected)
+    and a = Nx.to_array (Nx.reshape [| -1 |] actual) in
+    Array.fold2_exn e a ~init:0.0 ~f:(fun acc x y ->
+      Float.max acc (Float.abs (x -. y) /. Float.max 1.0 (Float.abs x)))
+  in
+  let masks =
+    Mjc.Jacobian.body_dof_masks ~at:(Nx.placement d.Mjc.Data.qpos) m.Mjc.Model.topo
+  in
+  let batch = Mjc.Jacobian.points ~masks m d ~bodies ~positions in
+  Array.iteri bodies ~f:(fun k body ->
+    let pos = Nx.slice [ I k; A ] positions in
+    let single = Mjc.Jacobian.point ~masks m d ~body ~pos in
+    let bc p = Nx.slice [ I k; A; A ] p in
+    List.iter
+      [ rel (fst single) (bc (fst batch)); rel (snd single) (bc (snd batch)) ]
+      ~f:(fun e ->
+        if Float.( > ) e 1e-12
+        then
+          failwith (Printf.sprintf "points vs point, body %d: relative error %.3g" body e)))
+
 let () =
   Stdlib.exit
     (run
@@ -409,4 +447,5 @@ let () =
        ; test "contact trajectory, pyramidal cone" (fun () ->
            test_trajectory_of "friction3")
        ; test "compiled equals eager" test_compiled
+       ; test "batched points equal single points" test_points_match_point
        ])

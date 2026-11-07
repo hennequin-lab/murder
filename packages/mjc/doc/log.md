@@ -1485,3 +1485,39 @@ Humanoid has no batched number yet, and it is not the solver: at 8 lanes on the
 device, kinematics is 1.2 ms, mass 1.2 ms, and then `contacts` never returns --
 the tracing cost section 4 of `doc/perf.md` names, one traced `set` per degree of
 freedom per candidate. That is the next piece of work.
+
+## Vectorising contacts: the pieces, the measurement that says why
+
+The contact stage is the last thing standing between the corpus and a batched
+number, and the reason is now measured rather than guessed. `bench/probe.ml`
+prints a model's scale before it runs anything: **humanoid has 20 geoms, 273
+candidate pairs and 27 dofs**. `Collision.contacts` traces the whole geometry and
+Jacobian assembly once per candidate, so that is ~16k graph nodes with [273]-long
+tensors, and `Rune.jit` of it does not finish — at *one* lane, where the eager
+path takes 43 ms. So it is compile time, not execution, and not the lane axis.
+
+The fix is to make the graph's size independent of the candidate count. Three
+pieces are in, each tested on its own:
+
+- the pair formulae are **rank-agnostic**: `comp`, `dp`, `stack3` and
+  `const_like` let one implementation take `[3]` (a single point) or `[k;3]` (a
+  group), and `geometry`'s seven arms now call them. All fourteen contact tests
+  are unchanged, which is what says the translation is faithful.
+- `Jacobian.body_dof_masks` is exposed, so the body/dof table is built **once**
+  per contact stage rather than once per candidate; `point`/`point_dot` take it
+  as `~masks`.
+- `Jacobian.points` computes the Jacobians for a **batch** of (body, point)
+  pairs: `[k; nv; 3]` twice over, one graph node per operation. It has its own
+  test against `point` in a loop, which immediately caught a real bug — the
+  batch took the body's own `subtree_com` row where the single-point path takes
+  its **root's**, a difference of 0.485 relative on humanoid's body 2.
+
+What is left is the assembly itself: the per-candidate loop that decides which
+candidates become contacts and writes them into the `[ncand; ...]` buffers. Its
+sequencing is the only subtle part — `seen` caps the number of contacts per geom
+pair, and it is a *cumulative* count within a pair's run of candidates, which
+becomes `cumsum(near) - cumsum(near)[pair_start]` once candidates are known to be
+contiguous per pair (they are: `slots` generates them that way). That, plus
+scattering each type-pair group's results in with `Nx.scatter`, is the remaining
+work; the numbers to move are humanoid's absent batched throughput and `boxes2`'s
+64.6 ms per host step.
