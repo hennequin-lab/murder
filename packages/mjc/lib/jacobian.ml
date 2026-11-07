@@ -28,15 +28,26 @@ let rec last_dof (t : Topo.t) b =
     t.jnt_dofadr.(j) + dof_width t.jnt_type.(j) - 1)
   else last_dof t t.body_parentid.(b)
 
-(* A mask over the dofs that move [body]: one pass up the parent chain. *)
-let chain_mask ~at (t : Topo.t) body =
-  let mask = ref (Nx.zeros_at at Nx.float64 [| t.nv |]) in
-  let i = ref (last_dof t body) in
-  while !i >= 0 do
-    mask := Nx.set [ I !i ] (Nx.scalar_at at Nx.float64 1.0) !mask;
-    i := t.dof_parentid.(!i)
-  done;
-  !mask
+(* Which dofs move which body.
+
+   It is structure -- a property of the topology, the same every step -- so it is
+   one host creation of `[nbody; nv]` rather than a traced `set` per dof of the
+   chain. The old form built `nv`-many graph nodes per candidate contact, and a
+   model with a thousand candidates spent minutes tracing before it ran; this is
+   one node, whatever the chain length. *)
+let body_dof_masks ~at (t : Topo.t) =
+  Nx.place
+    at
+    (Nx.init Nx.float64 [| t.nbody; t.nv |] (fun i ->
+       let body = i.(0)
+       and dof = i.(1) in
+       let rec walks j =
+         if j < 0 then 0.0 else if Int.equal j dof then 1.0 else walks t.dof_parentid.(j)
+       in
+       walks (last_dof t body)))
+
+(* A mask over the dofs that move [body], as a row of that table. *)
+let chain_mask ~at (t : Topo.t) body = Nx.slice [ I body; A ] (body_dof_masks ~at t)
 
 (* The offset of a point from the reference point of the motion subspace. *)
 let offset (t : Topo.t) (d : 'a Data.data) body pos =
