@@ -233,7 +233,12 @@ let iterate (type d) ~(linear : linear) ~iters ~boxed (r : d rows) : d f =
       match linear with
       | `Cholesky -> Mass.solve (Mass.factor am) rhs
       | `Batched ->
-        Linalg.solve am (Nx.reshape [| nb; 1 |] rhs) |> fun x -> Nx.reshape [| nb |] x
+        (* {!Linalg.solve} takes a *factor*, not a matrix: passing it [am] solved
+           with an unfactored matrix, which is why this path diverged outright
+           (hopper reached worst 2.0 over a thousand steps) while the blocked
+           factorisation itself was as accurate as the kernel on every corpus
+           state. {!Linalg.solve_spd} factors first. *)
+        Linalg.solve_spd am (Nx.reshape [| nb; 1 |] rhs) |> fun x -> Nx.reshape [| nb |] x
       | `Cg -> cg ~iters:nb am rhs
     in
     let target = Nx.where (Nx.greater_s step 0.0) r.hi r.lo in

@@ -1729,3 +1729,57 @@ One trap worth naming because it looks like a shortcut and is not: `?rows` canno
 do this. It truncates the row buffers, so a step that presents more rows drops
 them; the budget must cover `nefc`, not the working set. Compaction and truncation
 have the same effect on the matrix size and only one of them preserves the answer.
+
+## The blocked solve was never slow, it was broken -- and it is 2.4x
+
+`bench/la.ml` compares the engine's default linear solver (`Nx.cholesky` plus two
+triangular solves) against {!Linalg}'s blocked factorisation, which is composed of
+matmuls, on the same system at the corpus's row counts. 512 lanes, synced:
+
+| rows | device | kernel ms | blocked ms | ratio |
+| ---: | --- | ---: | ---: | ---: |
+| 24 | host | 1.73 | 1.04 | 1.66x |
+| 24 | gpu | 0.64 | 0.51 | 1.25x |
+| 40 | host | 10.01 | 4.35 | 2.30x |
+| 40 | gpu | 3.45 | 1.09 | **3.16x** |
+| 76 | host | 26.71 | 13.27 | 2.01x |
+| 76 | gpu | 23.32 | 5.42 | **4.31x** |
+
+The blocked factor agrees with the kernel to 1e-17 on these, and the engine has
+had it all along as `Solver.forward ~linear:\`Batched`, off the default path
+because of a note in `doc/perf.md` that it "moves the solved force by 9e-5
+relative" on `limited` state 9, attributed to the system's conditioning.
+
+**That note was wrong, and the cause was a one-token bug.** `Linalg.solve` takes
+a *factor* -- its own interface says so -- and the `` `Batched `` branch of the
+solver passed it the unfactored matrix, so it ran a triangular solve on `A`
+instead of `L`. `bench/solve.ml` rebuilt every recorded corpus state's matrix and
+measured residuals: the blocked solve's are the kernel's to the last digit
+(4.0e-15 vs 4.0e-15 on hopper, 4.5e-14 vs 6.5e-14 walker, 1.9e-14 vs 2.2e-14
+humanoid, answers within 9e-11 over 2805 states). Conditioning was never
+involved; the path had never been exercised, because the one comparison that
+would have caught it was itself the thing that produced the number it was
+blamed for.
+
+With `solve_spd` (factor, then solve):
+
+| | kernel | batched | gain |
+| --- | ---: | ---: | ---: |
+| hopper, 512 lanes, rows=24, gpu | 44.90 µs | **39.94 µs** | 1.12x |
+| humanoid, 512 lanes, rows=40, gpu | 353.24 µs | **149.58 µs** | **2.36x** |
+| humanoid, same, host | 582.45 µs | 682.13 µs | 0.85x |
+
+and the parity gate: hopper 1000/1000 within 1e-8 with worst 8.46e-12 (shadow
+878 against the kernel's 980), walker 1000/1000 with worst 8.77e-11 and shadow
+507 — identical — humanoid 1000/1000 with worst 4.35e-10 and shadow 275 (against
+266). So the fast path passes the gate and is not bit-identical, which is why
+`Cholesky` stays the default and `` `Batched `` is a documented choice:
+`Step.config ~linear` now carries it, and `bench/g4.ml` and
+`bench/throughput.ml` take `G4_LINEAR=batched` and `--linear=1`.
+
+Two lessons. The first is that a performance note with a *cause* attached is a
+claim like any other, and this one survived three sessions by being plausible:
+ill-conditioning does exactly that, and nobody re-derived it. The second is that
+the `` `Batched `` path is worth 2.4x on the largest model, which is larger than
+anything left on the plan -- and it was sitting behind a bug, not behind an
+algorithm.

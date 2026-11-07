@@ -26,8 +26,20 @@ type config
     solver budget, which is a *policy* decision rather than a property of the
     model: the schedule costs `iters × Solver.inner_rounds` rounds whatever the
     problem needs, so a training loop may want fewer rounds than the XML asks
-    for. The parity gate is what says whether a given budget is enough. *)
-val config : ?iters:int -> ?rows:int -> Nx.host Model.model -> config
+    for. The parity gate is what says whether a given budget is enough.
+
+    [linear] picks how the solver inverts the reduced system. [`Cholesky] (the
+    default) uses the [Nx.cholesky] kernel; [`Batched] uses {!Linalg}'s blocked
+    factorisation, which is composed of matmuls and is 1.25-4.3x faster on a
+    device at the corpus's row counts, at answers that differ by up to 9e-5 on
+    the corpus's stiffest limit state (`doc/perf.md`). It is not the default for
+    that reason, not for speed. *)
+val config
+  :  ?linear:Solver.linear
+  -> ?iters:int
+  -> ?rows:int
+  -> Nx.host Model.model
+  -> config
 
 (** [config_dt c] is the timestep [c] holds. *)
 val config_dt : config -> float

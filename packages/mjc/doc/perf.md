@@ -203,12 +203,13 @@ passes instead of eight) the batched solve's 62 ms single-lane becomes about
 kernel's 15 ms. So the factorisation is not a substitute for fixing the
 schedule; it is what becomes affordable afterwards.
 
-The accuracy caveat that keeps `\`Batched` off the default path: on the corpus's
-stiffest contact state (`limited`, state 9) it moves the solved force by 9e-5
-relative where the kernel reproduces MuJoCo's to 1e-9. Both factors are accurate
-to 1e-12 on well-conditioned matrices, so this is the system's conditioning
-being resolved differently — but a parity gate is not the place to argue about
-that, and the kernel stays the default.
+**Correction.** This paragraph used to say that `\`Batched` moves the solved force
+by 9e-5 on `limited` state 9 because of the system's conditioning. It does not:
+`Linalg.solve` takes a *factor* and the solver passed it the unfactored matrix, so
+the path was solving with `A` instead of `L` and had never actually run.
+`bench/solve.ml` now measures residuals on all 2805 corpus states and the blocked
+solve matches the kernel to the last digit (4e-15 vs 4e-15, answers within 9e-11).
+With `Linalg.solve_spd` the path is real and faster: see §12.
 
 ## 6. The plan
 
@@ -587,3 +588,28 @@ measures it: the *free* block is 3–4 rows typically and 12–25 at the worst, 
 a row buffer of 21–34. Compacting the free block is worth 2.0–5.4× at the model's
 worst case and 145× at its median; the median figure needs per-lane dynamic
 shapes, which the compiled-program design rules out.
+
+## 12. The blocked solve, after the bug
+
+`bench/la.ml`, one round, 512 lanes, synced — the kernel (`Nx.cholesky` + two
+triangular solves) against {!Linalg}'s blocked factorisation, which is matmuls:
+
+| rows | device | kernel ms | blocked ms | ratio |
+| ---: | --- | ---: | ---: | ---: |
+| 24 | gpu | 0.64 | 0.51 | 1.25× |
+| 40 | gpu | 3.45 | 1.09 | 3.16× |
+| 76 | gpu | 23.32 | 5.42 | 4.31× |
+
+End to end, since the round is 86% of a step:
+
+| | kernel | batched | gain |
+| --- | ---: | ---: | ---: |
+| hopper, 512 lanes, rows=24, gpu | 44.90 µs/env-step | 39.94 | 1.12× |
+| humanoid, 512 lanes, rows=40, gpu | 353.24 µs/env-step | **149.58** | **2.36×** |
+| humanoid, same, host | 582.45 µs | 682.13 | 0.85× |
+
+The gate: hopper 1000/1000 within 1e-8, worst 8.46e-12, shadow 878 (kernel 980);
+walker 1000/1000, worst 8.77e-11, shadow 507 (identical); humanoid 1000/1000,
+worst 4.35e-10, shadow 275 (kernel 266). `Cholesky` remains the default because
+it is the bit-identical one; `Step.config ~linear:\`Batched` is the fast path, and
+it wins on the device and loses on the host, so it is a choice and not a switch.

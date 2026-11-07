@@ -51,11 +51,12 @@ type config =
   ; solve : bool
   ; iters : int
   ; rows : int
+  ; linear : Solver.linear
   ; force_limited : bool
   ; actuator_damped : bool
   }
 
-let config ?iters ?rows (m : Nx.host Model.model) : config =
+let config ?(linear = `Cholesky) ?iters ?rows (m : Nx.host Model.model) : config =
   let p = m.params in
   let dt = Nx.item [] p.timestep in
   let damping = Nx.to_array p.dof_damping in
@@ -86,7 +87,7 @@ let config ?iters ?rows (m : Nx.host Model.model) : config =
          (fun x -> not (Float.equal x 0.0))
          (Nx.to_array (Actuator.damping ~force_limited:false m (Data.create m)))
   in
-  { dt; solve; iters; rows; force_limited; actuator_damped }
+  { dt; solve; iters; rows; linear; force_limited; actuator_damped }
 
 (* [M - dt * (d qfrc_smooth / d qvel)]: the matrix the implicit step solves.
    The actuator term is a sum of rank-one updates, one per actuator, and it is
@@ -113,7 +114,7 @@ let step_matrix (c : config) (m : 'a Model.model) (d : 'a Data.data) =
 let config_dt (c : config) = c.dt
 
 let step_with (c : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
-  let d = Forward.forward ~iters:c.iters ~dt:c.dt ~rows:c.rows m d in
+  let d = Forward.forward ~linear:c.linear ~iters:c.iters ~dt:c.dt ~rows:c.rows m d in
   let h = if c.solve then step_matrix c m d else d.mass_matrix in
   advance_with ~topo:m.topo ~dt:c.dt ~solve:c.solve ~h d
 

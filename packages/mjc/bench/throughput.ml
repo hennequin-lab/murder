@@ -154,6 +154,11 @@ let () =
     | Some n -> [ 0; n ]
     | None -> [ 0 ]
   in
+  let linears =
+    match knob "linear" with
+    | Some 1 -> [ `Cholesky; `Batched ]
+    | _ -> [ `Cholesky ]
+  in
   let budget_ms = 25000.0 in
   Printf.printf
     "| model | lanes | device | ms/step | us/env-step | env-steps/s | x mj_step, 1 core |\n";
@@ -177,46 +182,53 @@ let () =
     let d0 = Data.create m in
     List.iter budgets ~f:(fun iters ->
       List.iter row_budgets ~f:(fun rows ->
-        let c =
-          let iters = if Int.equal iters 0 then None else Some iters in
-          let rows = if Int.equal rows 0 then None else Some rows in
-          Step.config ?iters ?rows m
-        in
-        List.iter lanes ~f:(fun n ->
-          let steps = if n <= 64 then 6 else if n <= 512 then 3 else 2 in
-          let label =
-            match iters, rows with
-            | 0, 0 -> name
-            | n, 0 -> Printf.sprintf "%s, iters=%d" name n
-            | 0, r -> Printf.sprintf "%s, rows=%d" name r
-            | n, r -> Printf.sprintf "%s, iters=%d, rows=%d" name n r
+        List.iter linears ~f:(fun linear ->
+          let c =
+            let iters = if Int.equal iters 0 then None else Some iters in
+            let rows = if Int.equal rows 0 then None else Some rows in
+            Step.config ~linear ?iters ?rows m
           in
-          let row device ms =
-            let per = ms *. 1e3 /. Float.of_int n in
-            Printf.printf
-              "| %s | %d | %s | %.2f | %.2f | %.0f | %.0fx |\n%!"
-              label
-              n
-              device
-              ms
-              per
-              (1e6 /. per)
-              (per /. reference name)
-          in
-          let module H = Run (Nx.Host) in
-          (match H.run c m d0 ~lanes:n ~steps ~budget_ms with
-           | Stdlib.Ok ms -> row "host" ms
-           | Stdlib.Error _ ->
-             Printf.printf "| %s | %d | host | skipped | | | |\n%!" label n);
-          match gpus with
-          | [] -> ()
-          | dev :: _ ->
-            let module D = (val Nx.devices [ dev ] : Nx.Devices) in
-            let module G = Run (D) in
-            (match G.run c m d0 ~lanes:n ~steps ~budget_ms with
-             | Stdlib.Ok ms -> row "gpu" ms
+          List.iter lanes ~f:(fun n ->
+            let steps = if n <= 64 then 6 else if n <= 512 then 3 else 2 in
+            let label =
+              match iters, rows with
+              | 0, 0 -> name
+              | n, 0 -> Printf.sprintf "%s, iters=%d" name n
+              | 0, r -> Printf.sprintf "%s, rows=%d" name r
+              | n, r -> Printf.sprintf "%s, iters=%d, rows=%d" name n r
+            in
+            let label =
+              match linear with
+              | `Cholesky -> label
+              | `Batched -> label ^ ", batched"
+              | `Cg -> label ^ ", cg"
+            in
+            let row device ms =
+              let per = ms *. 1e3 /. Float.of_int n in
+              Printf.printf
+                "| %s | %d | %s | %.2f | %.2f | %.0f | %.0fx |\n%!"
+                label
+                n
+                device
+                ms
+                per
+                (1e6 /. per)
+                (per /. reference name)
+            in
+            let module H = Run (Nx.Host) in
+            (match H.run c m d0 ~lanes:n ~steps ~budget_ms with
+             | Stdlib.Ok ms -> row "host" ms
              | Stdlib.Error _ ->
-               Printf.printf "| %s | %d | gpu | skipped | | | |\n%!" label n)))));
+               Printf.printf "| %s | %d | host | skipped | | | |\n%!" label n);
+            match gpus with
+            | [] -> ()
+            | dev :: _ ->
+              let module D = (val Nx.devices [ dev ] : Nx.Devices) in
+              let module G = Run (D) in
+              (match G.run c m d0 ~lanes:n ~steps ~budget_ms with
+               | Stdlib.Ok ms -> row "gpu" ms
+               | Stdlib.Error _ ->
+                 Printf.printf "| %s | %d | gpu | skipped | | | |\n%!" label n))))));
   if with_policy
   then (
     Printf.printf "\n| device | lanes | policy fwd+bwd, ms | policy us/sample |\n%!";
