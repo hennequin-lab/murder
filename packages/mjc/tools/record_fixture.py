@@ -338,6 +338,77 @@ MODELS = {
     </body>
   </worldbody>
 </mujoco>""",
+    # A quadruped the engine can already collide: torso, thighs and shins as
+    # capsules, feet as spheres, a plane floor -- the pairs v1 has. dm_control's
+    # quadruped is not this: it needs the convex path for its eye cylinders, its
+    # ellipsoids and its heightfield terrain, which is M7's remaining work.
+    "quad": """
+<mujoco model="quad">
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+  <compiler angle="degree"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="1" rgba=".55 .6 .65 1"/>
+    <body name="torso" pos="0 0 0.36">
+      <freejoint/>
+      <geom name="torso" type="capsule" size="0.07 0.20" quat="0.7071068 0 0.7071068 0"
+            condim="1" density="700"/>
+    <body name="hip_fl" pos="0.18 0.13 0">
+      <joint name="hip_fl" type="hinge" axis="0 1 0" range="-60 60" damping="0.2"/>
+      <geom name="thigh_fl" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="1"/>
+      <body name="knee_fl" pos="-0.02 0 -0.18">
+        <joint name="knee_fl" type="hinge" axis="0 1 0" range="-90 10" damping="0.2"/>
+        <geom name="shin_fl" type="capsule" size="0.022 0.09" fromto="0 0 0 0.02 0 -0.18" condim="1"/>
+        <body name="foot_fl" pos="0.02 0 -0.18">
+          <geom name="foot_fl" type="sphere" size="0.045" condim="1" friction="1.2"/>
+        </body>
+      </body>
+    </body>
+    <body name="hip_fr" pos="0.18 -0.13 0">
+      <joint name="hip_fr" type="hinge" axis="0 1 0" range="-60 60" damping="0.2"/>
+      <geom name="thigh_fr" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="1"/>
+      <body name="knee_fr" pos="-0.02 0 -0.18">
+        <joint name="knee_fr" type="hinge" axis="0 1 0" range="-90 10" damping="0.2"/>
+        <geom name="shin_fr" type="capsule" size="0.022 0.09" fromto="0 0 0 0.02 0 -0.18" condim="1"/>
+        <body name="foot_fr" pos="0.02 0 -0.18">
+          <geom name="foot_fr" type="sphere" size="0.045" condim="1" friction="1.2"/>
+        </body>
+      </body>
+    </body>
+    <body name="hip_bl" pos="-0.18 0.13 0">
+      <joint name="hip_bl" type="hinge" axis="0 1 0" range="-60 60" damping="0.2"/>
+      <geom name="thigh_bl" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="1"/>
+      <body name="knee_bl" pos="-0.02 0 -0.18">
+        <joint name="knee_bl" type="hinge" axis="0 1 0" range="-90 10" damping="0.2"/>
+        <geom name="shin_bl" type="capsule" size="0.022 0.09" fromto="0 0 0 0.02 0 -0.18" condim="1"/>
+        <body name="foot_bl" pos="0.02 0 -0.18">
+          <geom name="foot_bl" type="sphere" size="0.045" condim="1" friction="1.2"/>
+        </body>
+      </body>
+    </body>
+    <body name="hip_br" pos="-0.18 -0.13 0">
+      <joint name="hip_br" type="hinge" axis="0 1 0" range="-60 60" damping="0.2"/>
+      <geom name="thigh_br" type="capsule" size="0.03 0.09" fromto="0 0 0 -0.02 0 -0.18" condim="1"/>
+      <body name="knee_br" pos="-0.02 0 -0.18">
+        <joint name="knee_br" type="hinge" axis="0 1 0" range="-90 10" damping="0.2"/>
+        <geom name="shin_br" type="capsule" size="0.022 0.09" fromto="0 0 0 0.02 0 -0.18" condim="1"/>
+        <body name="foot_br" pos="0.02 0 -0.18">
+          <geom name="foot_br" type="sphere" size="0.045" condim="1" friction="1.2"/>
+        </body>
+      </body>
+    </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position joint="hip_fl" kp="12" dampratio="1"/>
+    <position joint="knee_fl" kp="12" dampratio="1"/>
+    <position joint="hip_fr" kp="12" dampratio="1"/>
+    <position joint="knee_fr" kp="12" dampratio="1"/>
+    <position joint="hip_bl" kp="12" dampratio="1"/>
+    <position joint="knee_bl" kp="12" dampratio="1"/>
+    <position joint="hip_br" kp="12" dampratio="1"/>
+    <position joint="knee_br" kp="12" dampratio="1"/>
+  </actuator>
+</mujoco>""",
     "actuators": """
 <mujoco model="actuators">
   <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>

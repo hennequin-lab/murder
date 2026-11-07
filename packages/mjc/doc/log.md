@@ -1931,3 +1931,18 @@ functions as a fixed-length masked loop (for the same reason the solver's rounds
 are a scan), the primitive-to-convex conversion and `mjc_Convex`'s assembly, then
 `mjc_ConvexHField`. Fifty-four candidate pairs wait on it, in eight type pairs,
 all of them that one subsystem.
+
+## A quadruped the engine can already collide -- and it falls over
+
+dm_control's quadruped cannot run yet (54 candidate pairs, all the convex path).
+What can run today is a quadruped-shaped model built from the pairs v1 has: a
+capsule torso, capsule thighs and shins, sphere feet and a plane floor, with eight
+position servos. `bench/pairs.exe` on it reports **0 candidate pairs the engine
+cannot solve**, `bench/wig.ml` steps it 1000 times (torso at z = 0.23, two
+contacts), and `viz/window` renders it -- `doc/figures/quad-supported.png`.
+
+It is not yet a standing quadruped. At 0.9 s the drive has it on its back, so the
+gains, the leg geometry or the drive policy need tuning; that is a model problem
+and not an engine one, and the screenshot is committed as it actually looks rather
+than as it was hoped to look. The engine's part is done: the model loads with no
+gap, steps, keeps contacts and renders.
