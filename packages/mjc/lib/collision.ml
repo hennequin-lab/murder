@@ -144,12 +144,6 @@ let candidates (m : 'a Model.model) : cand array =
    returns the signed distance along the normal, the contact point and the
    normal, the normal pointing from geom 1 towards geom 2. *)
 
-let geom_zaxis (d : 'a Data.data) g =
-  let m = Nx.reshape [| 3; 3 |] (Nx.slice [ I g; A ] d.geom_xmat) in
-  Nx.slice [ A; I 2 ] m
-
-let geom_pos (d : 'a Data.data) g = Nx.slice [ I g; A ] d.geom_xpos
-
 (* A root of a squared length, with a finite derivative where the length is
    zero. [Nx.sqrt]'s own rule divides by the root, so a branch that is masked
    out because its pair is degenerate still sends an infinity into the reverse
@@ -177,6 +171,15 @@ let stack3 a b c = Nx.stack ~axis:(-1) [ a; b; c ]
 
 (* A constant shaped like [v], which for a batch is one per candidate. *)
 let const_like v x = Nx.mul_s (Nx.ones_like v) x
+
+(* A vector times a scalar that may be one per candidate. [k; 3] against [k]
+   does not broadcast -- the trailing axes have to agree -- so the batch case
+   gets a trailing axis of its own; a lone scalar, which is what the
+   single-point path passes, must not. *)
+let trail s = if Int.equal (rank s) 1 then Nx.unsqueeze ~axes:[ -1 ] s else s
+let smul v s = Nx.mul v (trail s)
+let sdiv v s = Nx.div v (trail s)
+let wsel c a b = Nx.where (trail c) a b
 let ssqrt = Rigid.safe_sqrt_exact
 let len v = ssqrt (dp v v)
 
@@ -189,8 +192,8 @@ let fallback_normal axis1 axis2 =
   let cross = Nx.cross axis1 axis2 in
   let norm = len cross in
   let x = stack3 (const_like norm 1.0) (const_like norm 0.0) (const_like norm 0.0) in
-  let v = Nx.where (Nx.greater_s norm 1e-15) cross x in
-  Nx.div v (len_clamped v)
+  let v = wsel (Nx.greater_s norm 1e-15) cross x in
+  sdiv v (len_clamped v)
 
 let sphere_sphere ~pos1 ~size1 ~pos2 ~size2 ~axis1 ~axis2 =
   let dif = Nx.sub pos1 pos2 in
@@ -199,37 +202,37 @@ let sphere_sphere ~pos1 ~size1 ~pos2 ~size2 ~axis1 ~axis2 =
   let towards = Nx.sub pos2 pos1 in
   let norm = len towards in
   let normal =
-    Nx.where
+    wsel
       (Nx.greater_s norm 1e-15)
-      (Nx.div towards (len_clamped towards))
+      (sdiv towards (len_clamped towards))
       (fallback_normal axis1 axis2)
   in
-  let pos = Nx.add pos1 (Nx.mul normal (Nx.add size1 (Nx.mul_s dist 0.5))) in
+  let pos = Nx.add pos1 (smul normal (Nx.add size1 (Nx.mul_s dist 0.5))) in
   dist, pos, normal
 
 let plane_sphere ~pos1 ~normal ~pos2 ~size =
   let cdist = dp (Nx.sub pos2 pos1) normal in
   let dist = Nx.sub cdist size in
-  let pos = Nx.add pos2 (Nx.mul normal (Nx.neg (Nx.add (Nx.mul_s dist 0.5) size))) in
+  let pos = Nx.add pos2 (smul normal (Nx.neg (Nx.add (Nx.mul_s dist 0.5) size))) in
   dist, pos, normal
 
 (* [mju_makeFrame]: the contact's third row from its normal and whatever
    tangent the pair supplied, orthonormalised. *)
 let make_frame ~normal ~tangent =
   let norm v = len_clamped v in
-  let n = Nx.div normal (norm normal) in
+  let n = sdiv normal (norm normal) in
   let degenerate = Nx.less_s (dp tangent tangent) 0.25 in
   let ny = comp 1 n in
   let sc = const_like ny in
   let fallback =
-    Nx.where
+    wsel
       (Nx.logical_and (Nx.less_s ny 0.5) (Nx.greater_s ny (-0.5)))
       (stack3 (sc 0.0) (sc 1.0) (sc 0.0))
       (stack3 (sc 0.0) (sc 0.0) (sc 1.0))
   in
-  let y0 = Nx.where degenerate fallback tangent in
-  let y = Nx.sub y0 (Nx.mul n (dp n y0)) in
-  let y = Nx.div y (norm y) in
+  let y0 = wsel degenerate fallback tangent in
+  let y = Nx.sub y0 (smul n (dp n y0)) in
+  let y = sdiv y (norm y) in
   let z = Nx.cross n y in
   (* Rows, not columns: appending the stack axis *before* the last one gives
      [3; 3] for a single frame and [k; 3; 3] for a batch. Stacking on the last
@@ -246,7 +249,7 @@ let matvec_t m v =
     (Nx.matmul (Nx.matrix_transpose m) (Nx.unsqueeze ~axes:[ -1 ] v))
 
 let plane_capsule ~pos1 ~normal ~pos2 ~axis2 ~r2 ~l2 ~sign =
-  let endpoint = Nx.add pos2 (Nx.mul axis2 (Nx.mul l2 sign)) in
+  let endpoint = Nx.add pos2 (smul axis2 (Nx.mul l2 sign)) in
   plane_sphere ~pos1 ~normal ~pos2:endpoint ~size:r2
 
 let plane_box ~pos1 ~normal ~pos2 ~mat2 ~half ~signs =
@@ -259,7 +262,7 @@ let plane_box ~pos1 ~normal ~pos2 ~mat2 ~half ~signs =
   let up = Nx.greater_s ldist 0.0 in
   let far = const_like dist 1e10 in
   let dist = Nx.where up far dist in
-  let pos = Nx.add corner (Nx.mul normal (Nx.mul_s dist (-0.5))) in
+  let pos = Nx.add corner (smul normal (Nx.mul_s dist (-0.5))) in
   dist, pos, normal
 
 let sphere_box ~pos1 ~r1 ~pos2 ~mat2 ~half =
@@ -270,8 +273,8 @@ let sphere_box ~pos1 ~r1 ~pos2 ~mat2 ~half =
   let towards = Nx.sub clamped centre in
   let away = len towards in
   let touch = Nx.maximum_s away 1e-300 in
-  let direction = Nx.div towards touch in
-  let deepest = Nx.add centre (Nx.mul direction r1) in
+  let direction = sdiv towards touch in
+  let deepest = Nx.add centre (smul direction r1) in
   let outside_pos = Nx.mul_s (Nx.add clamped deepest) 0.5 in
   let outside_normal = matvec mat2 direction in
   let outside_dist = Nx.sub away r1 in
@@ -296,13 +299,13 @@ let sphere_box ~pos1 ~r1 ~pos2 ~mat2 ~half =
       (Nx.cast Nx.float64 pick1)
       (Nx.cast Nx.float64 pick2)
   in
-  let nearest = Nx.mul onehot sign in
+  let nearest = smul onehot sign in
   let closest = Nx.minimum g0 (Nx.minimum g1 g2) in
-  let inside_pos = Nx.add centre (Nx.mul nearest (Nx.mul_s (Nx.sub r1 closest) 0.5)) in
+  let inside_pos = Nx.add centre (smul nearest (Nx.mul_s (Nx.sub r1 closest) 0.5)) in
   let inside_normal = matvec mat2 nearest in
   let inside = Nx.less_equal away (const_like away 1e-15) in
-  let pos_local = Nx.where inside inside_pos outside_pos in
-  let normal = Nx.where inside inside_normal outside_normal in
+  let pos_local = wsel inside inside_pos outside_pos in
+  let normal = wsel inside inside_normal outside_normal in
   let dist = Nx.where inside (Nx.sub (Nx.neg closest) r1) outside_dist in
   let pos = Nx.add (matvec mat2 pos_local) pos2 in
   dist, pos, normal
@@ -310,17 +313,17 @@ let sphere_box ~pos1 ~r1 ~pos2 ~mat2 ~half =
 let sphere_capsule ~pos1 ~r1 ~pos2 ~axis2 ~r2 ~l2 ~axis1 =
   let vec = Nx.sub pos1 pos2 in
   let along = Nx.minimum (Nx.maximum (dp axis2 vec) (Nx.neg l2)) l2 in
-  let nearest = Nx.add pos2 (Nx.mul axis2 along) in
+  let nearest = Nx.add pos2 (smul axis2 along) in
   sphere_sphere ~pos1 ~size1:r1 ~pos2:nearest ~size2:r2 ~axis1 ~axis2
 
 let capsule_capsule ~pos1 ~axis1 ~r1 ~l1 ~pos2 ~axis2 ~r2 ~l2 ~slot =
   (* [mjraw_CapsuleCapsule]: the closest pair of points on the two axial
      segments, then a sphere-sphere test on them. Nearly parallel segments have
      two candidate pairs and one slot carries each. *)
-  let p1 = Nx.sub pos1 (Nx.mul axis1 l1)
-  and p2 = Nx.add pos1 (Nx.mul axis1 l1)
-  and q1 = Nx.sub pos2 (Nx.mul axis2 l2)
-  and q2 = Nx.add pos2 (Nx.mul axis2 l2) in
+  let p1 = Nx.sub pos1 (smul axis1 l1)
+  and p2 = Nx.add pos1 (smul axis1 l1)
+  and q1 = Nx.sub pos2 (smul axis2 l2)
+  and q2 = Nx.add pos2 (smul axis2 l2) in
   let ab = Nx.sub p2 p1
   and cd = Nx.sub q2 q1
   and ca = Nx.sub p1 q1 in
@@ -358,89 +361,15 @@ let capsule_capsule ~pos1 ~axis1 ~r1 ~l1 ~pos2 ~axis2 ~r2 ~l2 ~slot =
   and w_b = Nx.where first (Nx.where parallel b1 b0) b2 in
   let dist, pos, normal =
     sphere_sphere
-      ~pos1:(Nx.add p1 (Nx.mul ab w_a))
+      ~pos1:(Nx.add p1 (smul ab w_a))
       ~size1:r1
-      ~pos2:(Nx.add q1 (Nx.mul cd w_b))
+      ~pos2:(Nx.add q1 (smul cd w_b))
       ~size2:r2
       ~axis1
       ~axis2
   in
   let dist = Nx.where first dist (Nx.where parallel dist (const_like dist 1e10)) in
   dist, pos, normal
-
-let geometry (m : 'a Model.model) (d : 'a Data.data) (c : cand) =
-  let at = Nx.placement d.qpos in
-  let p = m.params in
-  let t = m.topo in
-  let pos g = geom_pos d g in
-  let axis g = geom_zaxis d g in
-  let size g k = Nx.slice [ I g; I k ] p.geom_size in
-  let slot = Nx.scalar_at at Nx.float64 (if Int.equal c.slot 0 then 1.0 else -1.0) in
-  match t.geom_type.(c.g1), t.geom_type.(c.g2) with
-  | Plane, Sphere ->
-    plane_sphere ~pos1:(pos c.g1) ~normal:(axis c.g1) ~pos2:(pos c.g2) ~size:(size c.g2 0)
-  | Plane, Capsule ->
-    plane_capsule
-      ~pos1:(pos c.g1)
-      ~normal:(axis c.g1)
-      ~pos2:(pos c.g2)
-      ~axis2:(axis c.g2)
-      ~r2:(size c.g2 0)
-      ~l2:(size c.g2 1)
-      ~sign:slot
-  | Sphere, Sphere ->
-    sphere_sphere
-      ~pos1:(pos c.g1)
-      ~size1:(size c.g1 0)
-      ~pos2:(pos c.g2)
-      ~size2:(size c.g2 0)
-      ~axis1:(axis c.g1)
-      ~axis2:(axis c.g2)
-  | Plane, Box ->
-    let pick i flag hi lo = if Int.( land ) i flag <> 0 then hi else lo in
-    let half = stack3 (size c.g2 0) (size c.g2 1) (size c.g2 2) in
-    let sc = Nx.scalar_at at Nx.float64 in
-    let signs =
-      stack3
-        (sc (pick c.slot 1 1.0 (-1.0)))
-        (sc (pick c.slot 2 1.0 (-1.0)))
-        (sc (pick c.slot 4 1.0 (-1.0)))
-    in
-    plane_box
-      ~pos1:(pos c.g1)
-      ~normal:(axis c.g1)
-      ~pos2:(pos c.g2)
-      ~mat2:(Nx.reshape [| 3; 3 |] (Nx.slice [ I c.g2; A ] d.geom_xmat))
-      ~half
-      ~signs
-  | Capsule, Capsule ->
-    capsule_capsule
-      ~pos1:(pos c.g1)
-      ~axis1:(axis c.g1)
-      ~r1:(size c.g1 0)
-      ~l1:(size c.g1 1)
-      ~pos2:(pos c.g2)
-      ~axis2:(axis c.g2)
-      ~r2:(size c.g2 0)
-      ~l2:(size c.g2 1)
-      ~slot:(Nx.scalar_at at Nx.float64 (Float.of_int c.slot))
-  | Sphere, Box ->
-    sphere_box
-      ~pos1:(pos c.g1)
-      ~r1:(size c.g1 0)
-      ~pos2:(pos c.g2)
-      ~mat2:(Nx.reshape [| 3; 3 |] (Nx.slice [ I c.g2; A ] d.geom_xmat))
-      ~half:(stack3 (size c.g2 0) (size c.g2 1) (size c.g2 2))
-  | Sphere, Capsule ->
-    sphere_capsule
-      ~pos1:(pos c.g1)
-      ~r1:(size c.g1 0)
-      ~pos2:(pos c.g2)
-      ~axis2:(axis c.g2)
-      ~r2:(size c.g2 0)
-      ~l2:(size c.g2 1)
-      ~axis1:(axis c.g1)
-  | _ -> Nx.scalar_at at Nx.float64 0.0, pos c.g1, pos c.g1
 
 (* {1 Contact parameters}
 
@@ -614,19 +543,6 @@ let box_box (m : 'a Model.model) (d : 'a Data.data) (cands : cand array) =
     done;
     Some { row; manifold = man })
 
-(* [box_slot bm row slot] is one contact of a pair's manifold, or an infinite
-   distance for a dead slot, which the inclusion test then drops. *)
-let box_slot (bm : 'a box_manifold) row slot =
-  let m = bm.manifold in
-  let at = Nx.placement m.Collision_box_tensor.dist in
-  let dead = Nx.equal_s (Nx.slice [ I row; I slot ] m.Collision_box_tensor.live) 0. in
-  ( Nx.where dead (Nx.scalar_at at Nx.float64 1e30) (Nx.slice [ I row; I slot ] m.dist)
-  , Nx.where
-      dead
-      (Nx.zeros_at at Nx.float64 [| 3 |])
-      (Nx.slice [ I row; I slot; A ] m.pos)
-  , Nx.slice [ I row; I slot; A ] m.normal )
-
 let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   let at = Nx.placement d.qpos in
   let t = m.topo in
@@ -639,90 +555,256 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   else (
     let mix = mixed_params ~at m cands in
     let boxes = box_box m d cands in
-    let row_of k x = Nx.slice [ I k ] x in
-    let tangent (t : Topo.t) d (c : cand) =
-      match t.geom_type.(c.g1), t.geom_type.(c.g2) with
-      | Plane, Capsule -> geom_zaxis d c.g2
-      | _ -> Nx.zeros_at at Nx.float64 [| 3 |]
-    in
     let masks = Jacobian.body_dof_masks ~at t in
+    (* No per-candidate loop is left in this stage. What the candidate list
+       says -- which geoms, which body, which slot -- is read here on the host,
+       where it is model structure, and the arithmetic runs once per geom-type
+       pair over a batch of that pair's candidates. That is the difference
+       between a program whose size follows the model and one whose size follows
+       the candidate count: humanoid has 273 candidates, and the traced version
+       did not compile at all. *)
+    let g1s = Array.map cands ~f:(fun (c : cand) -> c.g1)
+    and g2s = Array.map cands ~f:(fun (c : cand) -> c.g2)
+    and slots = Array.map cands ~f:(fun (c : cand) -> c.slot) in
+    let idx_of (ix : int array) =
+      Nx.place
+        at
+        (Nx.init Nx.int64 [| Array.length ix |] (fun i -> Int64.of_int ix.(i.(0))))
+    in
+    let take ix (x : _ Nx.t) = Nx.take ~axis:0 (idx_of ix) x in
+    let scatter ix (v : 'a Nx.float64_t) (base : 'a Nx.float64_t) =
+      if Int.equal (Array.length (Nx.shape v)) 1
+      then Nx.scatter ~combine:Set ~axis:0 (idx_of ix) v base
+      else (
+        let k = Array.length ix in
+        let cols = (Nx.shape v).(1) in
+        let ix_rows = Nx.broadcast_to [| k; cols |] (Nx.reshape [| k; 1 |] (idx_of ix)) in
+        Nx.scatter ~combine:Set ~axis:0 ix_rows v base)
+    in
+    let ones_like x = Nx.mul_s (Nx.ones_like x) 1.0
+    and zeros_like x = Nx.mul_s (Nx.ones_like x) 0.0 in
+    let gpos = d.geom_xpos
+    and gsize = m.params.geom_size
+    and gmat = Nx.reshape [| t.ngeom; 3; 3 |] d.geom_xmat in
+    let zaxis = Nx.slice [ A; A; I 2 ] gmat in
+    let size ix k = Nx.take ~axis:0 (idx_of ix) (Nx.slice [ A; I k ] gsize) in
+    let scalars ix f =
+      Nx.place at (Nx.init Nx.float64 [| Array.length ix |] (fun i -> f ix.(i.(0))))
+    in
+    (* A candidate that produces nothing is dropped by distance, so the base
+       values only have to be finite and far; they are the ones the scalar
+       formulation returned for an unsupported pair. *)
     let dist = ref (Nx.zeros_at at Nx.float64 [| ncand |])
-    and pos = ref (Nx.zeros_at at Nx.float64 [| ncand; 3 |])
-    and normal = ref (Nx.zeros_at at Nx.float64 [| ncand; 3 |])
-    and frames = ref (Nx.zeros_at at Nx.float64 [| ncand; 9 |])
-    and live = ref (Nx.zeros_at at Nx.float64 [| ncand |])
-    and jac = ref (Nx.zeros_at at Nx.float64 [| ncand; 3 * t.nv |]) in
-    (* MuJoCo keeps at most four contacts per pair, taking them in corner
-       order. The candidate loop runs in that order, so a running count per
-       pair does the same cut. *)
-    let seen = ref (Nx.scalar_at at Nx.float64 0.0)
-    and pair = ref (-1, -1) in
-    Array.iteri cands ~f:(fun i c ->
-      let dist_i, pos_i, normal_i =
-        if is_box_pair t c.g1 c.g2
-        then (
-          let row =
-            match boxes with
-            | Some bm -> Hashtbl.find_exn bm.row ((c.g1 * t.ngeom) + c.g2)
-            | None -> assert false
-          in
-          box_slot (Option.value_exn boxes) row c.slot)
-        else geometry m d c
-      in
-      let includemargin = row_of i mix.includemargin
-      and reach = row_of i mix.reach in
-      let plane =
-        Poly.( = ) t.geom_type.(c.g1) Plane || Poly.( = ) t.geom_type.(c.g2) Plane
-      in
-      let bound =
-        if plane
-        then Nx.scalar_at at Nx.float64 1.0
-        else (
-          let dif = Nx.sub (geom_pos d c.g1) (geom_pos d c.g2) in
-          Nx.where
-            (Nx.less_equal (Nx.dot dif dif) (Nx.mul reach reach))
-            (Nx.scalar_at at Nx.float64 1.0)
-            (Nx.scalar_at at Nx.float64 0.0))
-      in
-      let near = Nx.less_equal dist_i includemargin in
-      if not (Int.equal (fst !pair) c.g1 && Int.equal (snd !pair) c.g2)
-      then (
-        pair := c.g1, c.g2;
-        seen := Nx.scalar_at at Nx.float64 0.0);
-      let room =
-        Nx.where
-          (Nx.less_s !seen (Float.of_int (pair_limit t c.g1 c.g2)))
-          (Nx.scalar_at at Nx.float64 1.0)
-          (Nx.scalar_at at Nx.float64 0.0)
-      in
-      let on =
-        Nx.mul
-          (Nx.mul bound room)
-          (Nx.where
-             near
-             (Nx.scalar_at at Nx.float64 1.0)
-             (Nx.scalar_at at Nx.float64 0.0))
-      in
-      seen := Nx.add !seen on;
-      (* The frame's three rows, each dotted with the Jacobian difference:
-         geom 2's point Jacobian minus geom 1's. The normal row leads; a
-         pyramidal friction pair is built from it and one tangent. *)
-      let b1 = t.geom_bodyid.(c.g1)
-      and b2 = t.geom_bodyid.(c.g2) in
-      let frame = make_frame ~normal:normal_i ~tangent:(tangent t d c) in
-      let jacp1, _ = Jacobian.point ~masks m d ~body:b1 ~pos:pos_i
-      and jacp2, _ = Jacobian.point ~masks m d ~body:b2 ~pos:pos_i in
-      let rows =
-        Nx.matmul (Nx.sub jacp2 jacp1) (Nx.matrix_transpose frame)
-        |> Nx.matrix_transpose
-        |> fun x -> Nx.reshape [| 3 * t.nv |] x
-      in
-      jac := Nx.set [ I i ] rows !jac;
-      dist := Nx.set [ I i ] dist_i !dist;
-      pos := Nx.set [ I i ] pos_i !pos;
-      frames := Nx.set [ I i ] (Nx.reshape [| 9 |] frame) !frames;
-      normal := Nx.set [ I i ] normal_i !normal;
-      live := Nx.set [ I i ] on !live);
+    and pos = ref (take g1s gpos)
+    and normal = ref (take g1s gpos)
+    and tangent = ref (Nx.zeros_at at Nx.float64 [| ncand; 3 |]) in
+    (* One geom-type pair's candidates, all at once. Every formula is the same
+       function the single-point path used, so this is batching, not a second
+       implementation. *)
+    let batch code ix =
+      let a1 = Array.map ix ~f:(fun i -> g1s.(i))
+      and a2 = Array.map ix ~f:(fun i -> g2s.(i)) in
+      let p1 = take a1 gpos
+      and p2 = take a2 gpos
+      and x1 = take a1 zaxis
+      and x2 = take a2 zaxis in
+      match code with
+      | 0 -> plane_sphere ~pos1:p1 ~normal:x1 ~pos2:p2 ~size:(size a2 0)
+      | 1 ->
+        plane_capsule
+          ~pos1:p1
+          ~normal:x1
+          ~pos2:p2
+          ~axis2:x2
+          ~r2:(size a2 0)
+          ~l2:(size a2 1)
+          ~sign:(scalars ix (fun i -> if Int.equal slots.(i) 0 then 1.0 else -1.0))
+      | 2 ->
+        sphere_sphere
+          ~pos1:p1
+          ~size1:(size a1 0)
+          ~pos2:p2
+          ~size2:(size a2 0)
+          ~axis1:x1
+          ~axis2:x2
+      | 3 ->
+        let signs =
+          Nx.place
+            at
+            (Nx.init
+               Nx.float64
+               [| Array.length ix; 3 |]
+               (fun i ->
+                  let slot = slots.(ix.(i.(0))) in
+                  let bit f = if Int.( land ) slot f <> 0 then 1.0 else -1.0 in
+                  bit
+                    (match i.(1) with
+                     | 0 -> 1
+                     | 1 -> 2
+                     | _ -> 4)))
+        in
+        plane_box
+          ~pos1:p1
+          ~normal:x1
+          ~pos2:p2
+          ~mat2:(take a2 gmat)
+          ~half:(take a2 gsize)
+          ~signs
+      | 4 ->
+        capsule_capsule
+          ~pos1:p1
+          ~axis1:x1
+          ~r1:(size a1 0)
+          ~l1:(size a1 1)
+          ~pos2:p2
+          ~axis2:x2
+          ~r2:(size a2 0)
+          ~l2:(size a2 1)
+          ~slot:(scalars ix (fun i -> Float.of_int slots.(i)))
+      | 5 ->
+        sphere_box
+          ~pos1:p1
+          ~r1:(size a1 0)
+          ~pos2:p2
+          ~mat2:(take a2 gmat)
+          ~half:(take a2 gsize)
+      | _ ->
+        sphere_capsule
+          ~pos1:p1
+          ~r1:(size a1 0)
+          ~pos2:p2
+          ~axis2:x2
+          ~r2:(size a2 0)
+          ~l2:(size a2 1)
+          ~axis1:x1
+    in
+    let code_of i =
+      match t.geom_type.(g1s.(i)), t.geom_type.(g2s.(i)) with
+      | Plane, Sphere -> Some 0
+      | Plane, Capsule -> Some 1
+      | Sphere, Sphere -> Some 2
+      | Plane, Box -> Some 3
+      | Capsule, Capsule -> Some 4
+      | Sphere, Box -> Some 5
+      | Sphere, Capsule -> Some 6
+      | _ -> None
+    in
+    let groups = Array.create ~len:7 [] in
+    let box_ix = ref [] in
+    Array.iteri g1s ~f:(fun i _ ->
+      match code_of i with
+      | Some c -> groups.(c) <- i :: groups.(c)
+      | None -> if is_box_pair t g1s.(i) g2s.(i) then box_ix := i :: !box_ix);
+    Array.iteri groups ~f:(fun code group ->
+      match List.rev group with
+      | [] -> ()
+      | group ->
+        let ix = Array.of_list group in
+        let dist_i, pos_i, normal_i = batch code ix in
+        dist := scatter ix dist_i !dist;
+        pos := scatter ix pos_i !pos;
+        normal := scatter ix normal_i !normal;
+        if Int.equal code 1
+        then
+          tangent := scatter ix (take (Array.map ix ~f:(fun i -> g2s.(i))) zaxis) !tangent);
+    (* Box pairs come from the manifold rather than a formula: one gather of
+       the [row, slot] each candidate names, and a dead slot sent far away. *)
+    (match boxes with
+     | Some bm when not (List.is_empty !box_ix) ->
+       let ix = Array.of_list (List.rev !box_ix) in
+       let k = Array.length ix in
+       let mf = bm.manifold in
+       let maxc = Collision_box_tensor.max_contacts in
+       let flat =
+         Array.map ix ~f:(fun i ->
+           let c = cands.(i) in
+           (Hashtbl.find_exn bm.row ((c.g1 * t.ngeom) + c.g2) * maxc) + c.slot)
+       in
+       let live_f = Nx.reshape [| -1 |] mf.Collision_box_tensor.live
+       and dist_f = Nx.reshape [| -1 |] mf.dist
+       and pos_f = Nx.reshape [| -1; 3 |] mf.pos
+       and normal_f = Nx.reshape [| -1; 3 |] mf.normal in
+       let dead = Nx.equal_s (take flat live_f) 0.0 in
+       dist
+       := scatter
+            ix
+            (Nx.where dead (Nx.scalar_at at Nx.float64 1e30) (take flat dist_f))
+            !dist;
+       pos
+       := scatter
+            ix
+            (wsel dead (Nx.zeros_at at Nx.float64 [| k; 3 |]) (take flat pos_f))
+            !pos;
+       normal := scatter ix (take flat normal_f) !normal
+     | _ -> ());
+    (* MuJoCo keeps at most four contacts per pair, in corner order. Candidates
+       for a pair are contiguous, so the count of eligible candidates before
+       this one within its own run -- a prefix count less the count at the run's
+       start -- is the same running total, without the loop. *)
+    let start = Array.create ~len:ncand 0
+    and limit = Array.create ~len:ncand 0.0 in
+    let run = ref 0 in
+    Array.iteri cands ~f:(fun i (c : cand) ->
+      if i > 0 && not (Int.equal c.g1 g1s.(i - 1) && Int.equal c.g2 g2s.(i - 1))
+      then run := i;
+      start.(i) <- !run;
+      limit.(i) <- Float.of_int (pair_limit t c.g1 c.g2));
+    let plane =
+      Array.map cands ~f:(fun (c : cand) ->
+        Poly.( = ) t.geom_type.(c.g1) Plane || Poly.( = ) t.geom_type.(c.g2) Plane)
+    in
+    let plane_t =
+      scalars (Array.init ncand ~f:Fn.id) (fun i -> if plane.(i) then 1.0 else 0.0)
+    in
+    let dif = Nx.sub (take g2s gpos) (take g1s gpos) in
+    let reach = mix.reach in
+    let bound =
+      Nx.where
+        (Nx.greater_s plane_t 0.5)
+        (ones_like plane_t)
+        (Nx.where
+           (Nx.less_equal (Nx.sum ~axes:[ -1 ] (Nx.mul dif dif)) (Nx.mul reach reach))
+           (ones_like plane_t)
+           (zeros_like plane_t))
+    in
+    let eligible =
+      Nx.mul
+        bound
+        (Nx.where
+           (Nx.less_equal !dist mix.includemargin)
+           (ones_like bound)
+           (zeros_like bound))
+    in
+    let cum = Nx.sub (Nx.cumsum ~axis:0 eligible) eligible in
+    let rank = Nx.sub cum (take start cum) in
+    let room = Nx.less rank (scalars (Array.init ncand ~f:Fn.id) (fun i -> limit.(i))) in
+    let live = ref (Nx.where room eligible (zeros_like eligible)) in
+    (* The frame's three rows, each dotted with the Jacobian difference: geom
+       2's point Jacobian minus geom 1's. The normal row leads; a pyramidal
+       friction pair is built from it and one tangent. *)
+    let frame = make_frame ~normal:!normal ~tangent:!tangent in
+    let bodies_of f = Array.map cands ~f:(fun (c : cand) -> f c) in
+    let jacp1, _ =
+      Jacobian.points
+        ~masks
+        m
+        d
+        ~bodies:(bodies_of (fun c -> t.geom_bodyid.(c.g1)))
+        ~positions:!pos
+    and jacp2, _ =
+      Jacobian.points
+        ~masks
+        m
+        d
+        ~bodies:(bodies_of (fun c -> t.geom_bodyid.(c.g2)))
+        ~positions:!pos
+    in
+    let jac =
+      Nx.matmul (Nx.sub jacp2 jacp1) (Nx.transpose ~axes:[ 0; 2; 1 ] frame)
+      |> fun x ->
+      Nx.transpose ~axes:[ 0; 2; 1 ] x |> fun x -> Nx.reshape [| ncand; 3 * t.nv |] x
+    in
+    let frames = Nx.reshape [| ncand; 9 |] frame in
     let before = Nx.sub (Nx.cumsum ~axis:0 !live) !live in
     let far = Nx.full_like before (Float.of_int t.nconmax) in
     let idx = Nx.cast Nx.int64 (Nx.where (Nx.greater_s !live 0.5) before far) in
@@ -757,7 +839,7 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
     ; contact_dist = put !dist d.contact_dist
     ; contact_pos = put_cols !pos d.contact_pos
     ; contact_normal = put_cols !normal d.contact_normal
-    ; contact_frame = put_cols !frames d.contact_frame
+    ; contact_frame = put_cols frames d.contact_frame
     ; contact_geom = put_cols geom d.contact_geom
     ; contact_body = put_cols body d.contact_body
     ; contact_dim = put dim d.contact_dim
@@ -765,5 +847,5 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
     ; contact_friction = put_cols friction d.contact_friction
     ; contact_solref = put_cols solref d.contact_solref
     ; contact_solimp = put_cols solimp d.contact_solimp
-    ; contact_jac = put_cols !jac d.contact_jac
+    ; contact_jac = put_cols jac d.contact_jac
     })

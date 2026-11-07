@@ -528,3 +528,18 @@ at 2.2K steps/s on the best configuration measured, so 91x short of one core and
 the row buffer sized to the step, the same arithmetic puts us within a small
 factor of one MuJoCo core, which is the next thing to build rather than the next
 thing to hope for.
+
+### Humanoid, the first batched measurement
+
+Vectorising the contact stage removed the compile-time blowup (eager contacts
+43.5 ms → 2.9 ms; `Rune.jit` of it now finishes at all), which made a humanoid
+throughput number possible for the first time. It is not a good number:
+
+| model | lanes | rows | ms/step | µs/env-step | env-steps/s | × mj_step 1 core |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| hopper | 512 | 24 | 24 | 47 | 21073 | 9× |
+| **humanoid** | 512 | 40 | 21422 | **41839** | **24** | **8368×** |
+
+Contacts are 2.9 ms of that 21.4 s step, so the remaining pathology is elsewhere
+and is the next thing to profile. No GPU row is quoted: the run did not produce
+one within the measurement window.

@@ -1521,3 +1521,41 @@ contiguous per pair (they are: `slots` generates them that way). That, plus
 scattering each type-pair group's results in with `Nx.scatter`, is the remaining
 work; the numbers to move are humanoid's absent batched throughput and `boxes2`'s
 64.6 ms per host step.
+
+## The contact stage compiles, and the number it produces is embarrassing
+
+The per-candidate loop is gone. Every formula now runs once per **geom-type
+pair** over a batch of that pair's candidates, scattered into the candidate
+buffers; the per-pair contact cap became a prefix count (`cumsum` less the count
+at the pair's run start); the frame, the Jacobian rows and the compaction were
+already tensor code. `batch/probe.ml`, which exists to print scale before it
+runs anything:
+
+| humanoid (20 geoms, 273 candidates, nv 27, nefcmax 202) | before | after |
+| --- | ---: | ---: |
+| eager `Collision.contacts` | 43.5 ms | **2.9 ms** |
+| `Rune.jit` of it, 1 lane | never finished | **416 ms**, ncon 77, same as eager |
+
+So the stage is 15× faster interpreted and it compiles. Three compiler-level
+lessons were needed to get there, all of them the same one: `Nx` broadcasting
+aligns *trailing* axes, so every place a per-candidate scalar `[k]` meets a
+per-candidate vector `[k;3]` has to grow a trailing axis. That is `smul`,
+`sdiv`, `wsel` and `trail` in `collision.ml`, and it is not decoration: the
+formulae are the ones the single-point path used, so the fix had to keep them
+working at rank 1 too, where there is nothing to unsqueeze. Two other things
+bit: `Nx.scatter` takes (positions, updates, into) with positions and updates of
+the *same* shape, and `Nx.stack` on the last axis transposes a single frame
+where `-2` builds rows.
+
+The gate is untouched: hopper shadow 980, walker 507, humanoid 266 with all
+1000/1000 states inside 1e-8 and every row and contact count matching, and the
+worst errors are the same to the digit.
+
+Then the number that matters, and it does not flatter the work: humanoid batched
+on the host, 512 lanes, `--rows=40`, is **41.8 ms per env-step (24 env-steps/s,
+8368× of one MuJoCo core)**. Hopper is 47 µs. So humanoid is 900× worse per
+env-step than hopper, and the contact rewrite did not fix that -- it made the
+model *expressible*, which is different from fast. What remains pathological in
+humanoid is not the contact stage any more (2.9 ms of a 21 s step) and the next
+thing to measure is where the 21 s actually goes; `bench/gpuprof.ml` is the
+instrument and the honest next entry in this log is its output.
