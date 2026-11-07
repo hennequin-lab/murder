@@ -63,10 +63,14 @@ let mask_rows mask x =
 
 let as_row v = Nx.reshape [| 1; (Nx.shape v).(0) |] v
 
-let point (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
+let point ?masks (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
   let t = m.topo in
   let r = offset t d body pos in
-  let mask = chain_mask ~at:(Nx.placement d.qpos) t body in
+  let mask =
+    match masks with
+    | Some table -> Nx.slice [ I body; A ] table
+    | None -> chain_mask ~at:(Nx.placement d.qpos) t body
+  in
   let ang = ang6 d.cdof
   and lin = lin6 d.cdof in
   let cross = Nx.cross ang (as_row r) in
@@ -125,10 +129,14 @@ let cdof_dot_jac (t : Topo.t) (d : 'a Data.data) =
   done;
   !out
 
-let point_dot (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
+let point_dot ?masks (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
   let t = m.topo in
   let r = offset t d body pos in
-  let mask = chain_mask ~at:(Nx.placement d.qpos) t body in
+  let mask =
+    match masks with
+    | Some table -> Nx.slice [ I body; A ] table
+    | None -> chain_mask ~at:(Nx.placement d.qpos) t body
+  in
   let cvel = Nx.slice [ I body; A ] d.cvel in
   let omega = Nx.slice [ R (0, 3) ] cvel
   and vlin = Nx.slice [ R (3, 6) ] cvel in
