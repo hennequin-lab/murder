@@ -535,11 +535,14 @@ Vectorising the contact stage removed the compile-time blowup (eager contacts
 43.5 ms → 2.9 ms; `Rune.jit` of it now finishes at all), which made a humanoid
 throughput number possible for the first time. It is not a good number:
 
-| model | lanes | rows | ms/step | µs/env-step | env-steps/s | × mj_step 1 core |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| hopper | 512 | 24 | 24 | 47 | 21073 | 9× |
-| **humanoid** | 512 | 40 | 21422 | **41839** | **24** | **8368×** |
+| model | lanes | rows | device | µs/env-step | env-steps/s | × mj_step 1 core |
+| --- | ---: | ---: | --- | ---: | ---: | ---: |
+| hopper | 512 | 24 | gpu | 47 | 21073 | 9× |
+| humanoid | 512 | 202 (default) | gpu | 38923 | 26 | 7785× |
+| humanoid | 512 | 40 | gpu | **286** | **3495** | **57×** |
+| humanoid | 512 | 40 | host | 777 | 1288 | 155× |
 
-Contacts are 2.9 ms of that 21.4 s step, so the remaining pathology is elsewhere
-and is the next thing to profile. No GPU row is quoted: the run did not produce
+The default row is `nefcmax` and sizing it to the step is worth **145×** here;
+the remaining 6× against hopper is the solver's row count cubed (40³/24³ = 4.6),
+not a second pathology. Contacts are 2.9 ms of a step that was 21 s.
 one within the measurement window.

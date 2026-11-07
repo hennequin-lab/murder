@@ -1551,11 +1551,25 @@ The gate is untouched: hopper shadow 980, walker 507, humanoid 266 with all
 1000/1000 states inside 1e-8 and every row and contact count matching, and the
 worst errors are the same to the digit.
 
-Then the number that matters, and it does not flatter the work: humanoid batched
-on the host, 512 lanes, `--rows=40`, is **41.8 ms per env-step (24 env-steps/s,
-8368× of one MuJoCo core)**. Hopper is 47 µs. So humanoid is 900× worse per
-env-step than hopper, and the contact rewrite did not fix that -- it made the
-model *expressible*, which is different from fast. What remains pathological in
-humanoid is not the contact stage any more (2.9 ms of a 21 s step) and the next
-thing to measure is where the 21 s actually goes; `bench/gpuprof.ml` is the
-instrument and the honest next entry in this log is its output.
+Then a number that looked catastrophic and was **my own misreading**. I recorded
+humanoid at 41.8 ms per env-step (8368× of one MuJoCo core) as the `--rows=40`
+result. It was not: `bench/throughput.ml` prints *two* rows — the default budget,
+which is `nefcmax`, and the sized one — and I quoted the first while labelling it
+the second. Rerun at 512 lanes, all four rows:
+
+| humanoid, 512 lanes | host µs/env-step | GPU µs/env-step | GPU env-steps/s | × mj_step 1 core |
+| --- | ---: | ---: | ---: | ---: |
+| default budget (202 rows) | 41484 | 38923 | 26 | 7785× |
+| `rows=40` | **777** | **286** | **3495** | **57×** |
+
+The row budget is worth **145×** on this model — the same cliff as before, now
+with a model on the wrong side of it and a size that puts it on the right side.
+Humanoid's 286 µs against hopper's 47 µs is a ratio of 6, and the solver's 40 rows
+against hopper's 24 cubed is 4.6 of it, so there is no second pathology to chase:
+the remaining gap is the row count, which is what the model is. Contact
+vectorisation made humanoid expressible; the row budget made it fast; neither was
+a solver change.
+
+The lesson is the same one as the 38× that was submission time: a benchmark table
+with two rows per configuration is a table you can misread, and I did, in the
+direction that made my work look finished.
