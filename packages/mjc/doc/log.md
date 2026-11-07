@@ -1886,3 +1886,48 @@ the primitive-to-convex conversions, and the heightfield's cell pruning. Until
 that lands, the quadruped loads, reports its 54 missing pairs by name, and refuses
 to step -- which is the honest state and, unlike MuJoCo, not a silent one: its
 collision table has a null entry for a pair it cannot do and simply returns.
+
+## The convex path: what it actually is, and the layer that is now done
+
+Starting M7 with the question that decides how big it is: what does MuJoCo *do*
+for the pairs it has no primitive for? `engine_collision_primitive.c` in 3.3.7
+has exactly eight functions -- plane×{sphere,capsule,cylinder,box},
+sphere×{sphere,capsule,cylinder}, capsule×capsule -- and everything else goes
+through `engine_collision_convex.c`, which is **libccd**: a support-mapped GJK
+for distance and Minkowski Portal Refinement for penetration, with MuJoCo
+supplying only the per-shape support functions and the contact assembly.
+
+That settles the milestone's shape and its cost. A faithful port is libccd's
+`ccd.c` and `mpr.c` (its tolerances, its iteration caps, its simplex bookkeeping)
+plus MuJoCo's assembly (`mjc_CCDIteration`, `mjc_isDistinctContact`,
+`maxContacts`, `mjc_fixNormal`) plus `mjc_ConvexHField`'s cell iteration. It is
+not "write a GJK": a textbook GJK would agree on distances and disagree on
+contact count, ordering and normals, and this project's whole claim is the second
+kind of agreement.
+
+So the first instalment is the layer underneath it, which is unambiguous:
+`Convex.support` gives a shape's farthest point along a direction, for point,
+sphere, line, capsule, ellipsoid, cylinder and box, written against MuJoCo's own
+functions term for term -- the local-frame rotation through `matᵀ`, the
+tie-breaking at a zero direction, and the fact that the *sphere* case does not
+normalize its direction, which is libccd's job and means the sphere's support
+point is only the support point for unit directions.
+
+Two tests, and both caught real bugs:
+
+- the defining property -- no sampled point of the shape may reach farther along
+  the direction than the support point -- over nine unit directions and all seven
+  shapes. It first failed on the sphere, correctly: a non-unit direction is
+  outside the contract, and the test now says so instead of averaging over it.
+- the batched form agrees with the single-point one lane by lane. This found the
+  session's most reusable bug: `smul`/`sdiv` grew a trailing axis on the scalar
+  whenever it was `[k]`, which is right for `[k;3]` against `[k]` and wrong for
+  `[k]` against `[k]`, where it silently produces `[k;k]`. The same helpers are
+  used by `Collision`'s batched geometry, so that was a latent bug there too; the
+  axis now grows only when the ranks differ by one.
+
+What is left for the quadruped, in order: libccd's GJK/MPR over these support
+functions as a fixed-length masked loop (for the same reason the solver's rounds
+are a scan), the primitive-to-convex conversion and `mjc_Convex`'s assembly, then
+`mjc_ConvexHField`. Fifty-four candidate pairs wait on it, in eight type pairs,
+all of them that one subsystem.

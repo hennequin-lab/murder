@@ -215,10 +215,13 @@ let const_like v x = Nx.mul_s (Nx.ones_like v) x
    does not broadcast -- the trailing axes have to agree -- so the batch case
    gets a trailing axis of its own; a lone scalar, which is what the
    single-point path passes, must not. *)
-let trail s = if Int.equal (rank s) 1 then Nx.unsqueeze ~axes:[ -1 ] s else s
-let smul v s = Nx.mul v (trail s)
-let sdiv v s = Nx.div v (trail s)
-let wsel c a b = Nx.where (trail c) a b
+(* The trailing axis belongs only where the vector has one more axis than the
+   scalar: [k;3] against [k]. A [k] against [k] must not grow one, or the product
+   is [k;k]. *)
+let align v s = if Int.equal (rank v) (rank s + 1) then Nx.unsqueeze ~axes:[ -1 ] s else s
+let smul v s = Nx.mul v (align v s)
+let sdiv v s = Nx.div v (align v s)
+let wsel c a b = Nx.where (align a c) a b
 let ssqrt = Rigid.safe_sqrt_exact
 let len v = ssqrt (dp v v)
 
