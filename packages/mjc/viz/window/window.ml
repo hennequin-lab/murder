@@ -39,7 +39,7 @@ type t =
   ; mutable joint_axes : bool
   ; mutable velocity : bool
   ; mutable energy : bool
-  ; drive : bool (** scripted controls, so a demo moves on its own *)
+  ; drive : Mjc_viz.Drive.t option (** scripted controls, so a demo moves on its own *)
   ; joints : Mjc_viz.Controls.joint array
   ; mutable joint : int (** the selected joint index, [-1] for none. *)
   ; mutable scene_s : float (** seconds spent building scenes, for the bench. *)
@@ -74,7 +74,7 @@ let open_
       ?(joint_axes = false)
       ?(velocity = false)
       ?(energy = false)
-      ?(drive = false)
+      ?drive
       ?log_path
       ?follow_path
       (model : Mjc.Model.host)
@@ -607,23 +607,20 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
        if not t.paused
        then
          for _ = 1 to steps_per_frame do
-           if t.drive
-           then (
+           match t.drive with
+           | Some signal ->
              let time = Nx.item [] t.data.Mjc.Data.time in
-             let u =
-               Mjc_viz.Drive.ctrl
-                 Mjc_viz.Drive.default
-                 ~nu:t.model.Mjc.Model.topo.nu
-                 ~time
-             in
+             let u = Mjc_viz.Drive.ctrl signal ~nu:t.model.Mjc.Model.topo.nu ~time in
              t.data
              <- { t.data with
                   Mjc.Data.ctrl = Nx.create Nx.float64 [| t.model.Mjc.Model.topo.nu |] u
-                });
-           t.data <- Mjc.Step.step t.model t.data;
-           match t.log with
-           | Some w -> Mjc_viz.Log.append w ~step:(Stdlib.Int64.of_int !drawn) t.data
-           | None -> ()
+                }
+           | None ->
+             ();
+             t.data <- Mjc.Step.step t.model t.data;
+             (match t.log with
+              | Some w -> Mjc_viz.Log.append w ~step:(Stdlib.Int64.of_int !drawn) t.data
+              | None -> ())
          done);
     (* Draw *)
     RC.begin_drawing ();

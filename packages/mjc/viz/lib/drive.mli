@@ -15,6 +15,14 @@
 type t =
   { amplitude : float (** The control at a quarter period, in the model's units. *)
   ; period : float (** Seconds for a full cycle. *)
+  ; offset : float
+    (** The pose the signal is added to. A gripper wants 0; a legged model
+        wants the stance its servos should hold, with the sine read as a
+        wiggle about it. *)
+  ; phase_step : float
+    (** Radians of phase added per actuator. Every actuator in step hops a
+        legged model off the floor; alternating it (pi) rocks the body with
+        the feet planted. *)
   }
 
 (** [default] is a signal sized for the gripper demo: amplitude 1.2 and a period
@@ -23,6 +31,11 @@ type t =
     links. *)
 val default : t
 
-(** [ctrl t ~nu ~time] is [nu] controls at [time]: every actuator follows
-    [amplitude * sin (2 pi time / period)], so a mirrored pair moves together. *)
+(** [make ~amplitude ~period ~offset] is the same signal with the caller's
+    numbers, which is what the viewer's [--drive-*] flags build. *)
+val make : amplitude:float -> period:float -> offset:float -> phase_step:float -> t
+
+(** [ctrl t ~nu ~time] is [nu] controls at [time]: actuator [i] follows
+    [offset + amplitude * sin (2 pi time / period + phase_step * i)], so a
+    mirrored pair moves together and a legged model can be driven in antiphase. *)
 val ctrl : t -> nu:int -> time:float -> float array

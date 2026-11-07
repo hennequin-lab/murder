@@ -12,8 +12,9 @@ let () =
     let ctrl =
       let nu = (Nx.shape !d.Mjc.Data.ctrl).(0) in
       Nx.init Nx.float64 [| nu |] (fun i ->
-        let p = float_of_int (i.(0) / 2) *. 1.57 in
-        Float.sin ((float_of_int k *. 0.004) +. p) *. 0.6)
+        let t = float_of_int k *. 0.002 in
+        let i = float_of_int i.(0) in
+        0.25 *. Float.sin ((2. *. Float.pi *. t /. 0.6) +. (Float.pi *. i)))
     in
     d := Mjc.Step.step m { !d with Mjc.Data.ctrl }
   done;
@@ -23,4 +24,28 @@ let () =
     steps
     h.(0)
     (Stdlib.Int32.to_int (Nx.item [] !d.Mjc.Data.ncon))
-    nq
+    nq;
+  (* The wiggle, in numbers: a standing model keeps its height and its feet. *)
+  let lo = ref 1e9
+  and hi = ref (-1e9)
+  and touching = ref 0 in
+  let d = ref (Mjc.Forward.forward m (Mjc.Data.create m)) in
+  for k = 1 to 600 do
+    let t = float_of_int k *. 0.002 in
+    let nu = (Nx.shape !d.Mjc.Data.ctrl).(0) in
+    let ctrl =
+      Nx.init Nx.float64 [| nu |] (fun i ->
+        let i = float_of_int i.(0) in
+        0.25 *. Float.sin ((2. *. Float.pi *. t /. 0.6) +. (Float.pi *. i)))
+    in
+    d := Mjc.Step.step m { !d with Mjc.Data.ctrl };
+    let z = (Nx.to_array (Nx.slice [ I 2 ] !d.Mjc.Data.qpos)).(0) in
+    lo := Float.min !lo z;
+    hi := Float.max !hi z;
+    if Stdlib.Int32.to_int (Nx.item [] !d.Mjc.Data.ncon) > 0 then incr touching
+  done;
+  Printf.printf
+    "over 600 steps of antiphase drive: torso z %.4f..%.4f, in contact %d of 600\n"
+    !lo
+    !hi
+    !touching

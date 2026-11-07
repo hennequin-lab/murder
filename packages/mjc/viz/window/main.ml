@@ -13,6 +13,7 @@ let usage =
   \  [--width W] [--height H] [--eye x,y,z] [--target x,y,z]\n\
   \  [--body-frames] [--contacts|--no-contacts] [--forces] [--no-grid] [--no-hud]\n\
   \  [--inertia] [--com] [--joint-axes] [--velocity] [--energy] [--drive]\n\
+  \  [--drive-amplitude A] [--drive-period T] [--drive-offset U]\n\
   \  [--log out.mjlog | --follow in.mjlog]\n\
   \  [--bench N] [--check]"
 
@@ -53,6 +54,10 @@ let () =
   and velocity = ref false
   and energy = ref false
   and drive = ref false
+  and drive_amplitude = ref 1.2
+  and drive_period = ref 0.9
+  and drive_offset = ref 0.0
+  and drive_phase = ref 0.0
   and log_path = ref None
   and follow_path = ref None in
   let rec go = function
@@ -118,6 +123,18 @@ let () =
     | "--drive" :: r ->
       drive := true;
       go r
+    | "--drive-amplitude" :: v :: r ->
+      drive_amplitude := Stdlib.float_of_string v;
+      go r
+    | "--drive-period" :: v :: r ->
+      drive_period := Stdlib.float_of_string v;
+      go r
+    | "--drive-offset" :: v :: r ->
+      drive_offset := Stdlib.float_of_string v;
+      go r
+    | "--drive-phase" :: v :: r ->
+      drive_phase := Stdlib.float_of_string v;
+      go r
     | "--log" :: v :: r ->
       log_path := Some v;
       go r
@@ -165,7 +182,16 @@ let () =
       ~joint_axes:!joint_axes
       ~velocity:!velocity
       ~energy:!energy
-      ~drive:!drive
+      ?drive:
+        (if !drive
+         then
+           Some
+             (Mjc_viz.Drive.make
+                ~amplitude:!drive_amplitude
+                ~period:!drive_period
+                ~offset:!drive_offset
+                ~phase_step:!drive_phase)
+         else None)
       ?log_path:!log_path
       ?follow_path:!follow_path
       ?eye:!eye

@@ -12,7 +12,7 @@ open Windtrap
 let close a b = Float.( <= ) (Float.abs (a -. b)) 1e-12
 
 let test_sine () =
-  let t = { Mjc_viz.Drive.amplitude = 2.; period = 4. } in
+  let t = { Mjc_viz.Drive.amplitude = 2.; period = 4.; offset = 0.; phase_step = 0. } in
   let at time = (Mjc_viz.Drive.ctrl t ~nu:1 ~time).(0) in
   List.iter
     [ 0., 0.; 1., 2.; 2., 0.; 3., -2. ]

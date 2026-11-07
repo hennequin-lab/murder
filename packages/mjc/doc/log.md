@@ -1946,3 +1946,38 @@ gains, the leg geometry or the drive policy need tuning; that is a model problem
 and not an engine one, and the screenshot is committed as it actually looks rather
 than as it was hoped to look. The engine's part is done: the model loads with no
 gap, steps, keeps contacts and renders.
+
+## The quadruped wiggles, and the still cannot show it
+
+The supported quadruped model now stands and rocks in place, and it took two
+changes that are worth separating.
+
+**The model.** `kp=60` with `dampratio=1` on the eight position servos: at 12 it
+was thrown over, at 4 it folded. Stiff servos are what a legged model needs to
+hold a stance at all.
+
+**The drive.** The viewer's `--drive` was one sine at amplitude 1.2 and period
+0.9 s sent to *every* actuator -- sized for the gripper demo, and for a quadruped
+it is a pogo stick. `Drive.t` now carries an `offset` (the stance the sine is read
+about) and a `phase_step` (radians per actuator), and the viewer takes
+`--drive-amplitude`, `--drive-period`, `--drive-offset`, `--drive-phase`. With the
+actuators **in antiphase** (`phase_step = pi`), amplitude 0.25 and period 0.6 s:
+
+| | torso z | feet touching |
+| --- | --- | --- |
+| mjc, 600 steps | 0.3935 – 0.4063 | 600 of 600 |
+| MuJoCo, same signal | 0.394 – 0.406 | 100% |
+
+Both agree, and both are *upright the whole time* (tilt cosine 1.00). In phase,
+the same model leaves the floor entirely -- `ncon` drops to 0, which is how the
+first version of this demo was hopping rather than walking.
+
+**What the still cannot show, and why.** `doc/figures/quad-standing.png` is a real
+frame of a real run, but it is the *first* frame: a headless `mjc-window` draws one
+frame and never advances. The tell is the log written by the same run -- 96 bytes,
+a header and no steps -- and every screenshot being byte-identical whatever
+`--frames` says. So the picture is the quadruped standing on the floor, and the
+wiggle is a number in the table above rather than a thing in the image. Fixing the
+headless loop is chrome work, not physics; the alternative, baking a posed stance
+into the model's `qpos0`, would have been a picture of something that never
+happened.
