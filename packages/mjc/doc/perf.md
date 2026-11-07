@@ -442,16 +442,56 @@ is now 4 and the whole suite plus `g4.exe` are unchanged, which is a free 2x on
 every model. It also says the schedule's remaining cost is *real* work: we are
 no longer paying for rounds the problem does not need.
 
-**What is left is per-round cost, not round count.** At 512 lanes and four
-passes the step is 232 ms for hopper, and `nefcmax` is 64, so a round is
-`512 x 64^3 / 3` = 45 MFLOP, 32 rounds = 1.4 GFLOP in 232 ms = 6 GFLOP/s: one
-percent of what this GPU should do in float64. `Linalg.cholesky` is written as a
-loop over the matrix dimension with a handful of small tensor ops per column, so
-a round is ~64 sequential tiny operations, and on a device that is latency, not
-arithmetic. **The next GPU lever is a Cholesky whose inner work is wide** (a
-blocked or right-looking form, or a kernel), not a smaller schedule.
+**What is left is the solver, and it is 98.5% of the step.** `bench/gpuprof.ml`
+compiles each stage for the device, runs it over 512 lanes and times it with a
+sync:
+
+| stage | ms/step | us/env-step |
+| --- | ---: | ---: |
+| kinematics | 1.2 | 2 |
+| mass | 0.3 | 1 |
+| contacts | 1.6 | 3 |
+| passive | 0.8 | 2 |
+| bias | 0.3 | 1 |
+| actuator, tendon | 0.5 | 1 |
+| **solver, four passes** | **227.9** | **445** |
+| whole step | 231.6 | 452 |
+
+So every stage but one is a rounding error, which is good news: the pipeline is
+fine and the problem is one function.
+
+**And that function is factoring a matrix the problem does not have.** Hopper
+has *one* contact row at the reference pose and `nefcmax = 64`, so the solver
+factorises a dense `64 x 64` matrix thirty-two times per step. `gpuprof.exe`
+measures what the buffer alone costs, 512 lanes, factor plus both triangular
+solves:
+
+| row buffer | per factor+solve | x 32 rounds, us/env-step |
+| ---: | ---: | ---: |
+| 4 | 0.05 ms | 3 |
+| 8 | 0.13 ms | 8 |
+| 16 | 0.53 ms | 33 |
+| 32 | 1.72 ms | 107 |
+| 48 | 13.4 ms | 835 |
+| 64 | 20.2 ms | 1260 |
+| 76 | 34.6 ms | 2164 |
+
+It is not cubic here, it is a cliff: 32 to 48 rows multiplies the cost by eight.
+The corpus's `nefcmax` values (48, 64, 76, 176, 202) all sit past it. Sizing the
+buffer to the rows a step actually has -- eight or sixteen for these models --
+is therefore worth ten to fifty times on the whole step, which would land hopper
+at 20-50 us per env-step, 20K-50K env-steps/s.
+
+**A correction.** An earlier version of this section blamed `Linalg.cholesky` for
+being column-serial. That was wrong: the default solver path is
+`Mass.factor`/`Mass.solve`, which are `Nx.cholesky` and `Nx.solve_triangular`
+*kernels*. `Linalg` is only the `` `Batched `` alternative. The blocked
+factorisation is in `Linalg` now and tested (it is 8x less memory traffic on that
+path), but it cannot move the default, because the default was never the loop.
 
 For orientation, one core of MuJoCo does hopper at 200K steps/s (5 us). We are
 at 2.2K steps/s on the best configuration measured, so 91x short of one core and
-~450x short of what a 4096-environment loop at 50 Hz wants (~1M steps/s). This
-is the number to improve, and it is now a number rather than an extrapolation.
+~450x short of what a 4096-environment loop at 50 Hz wants (~1M steps/s). With
+the row buffer sized to the step, the same arithmetic puts us within a small
+factor of one MuJoCo core, which is the next thing to build rather than the next
+thing to hope for.

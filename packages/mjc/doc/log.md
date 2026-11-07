@@ -1432,3 +1432,28 @@ of what this GPU does in float64. `Linalg.cholesky` steps one column at a time
 with a few small tensor ops each, so a round is ~64 sequential tiny operations:
 on a device that is latency, not arithmetic. The lever is a wide inner work, not
 a smaller budget.
+
+## The solver is 98.5% of a device step, and half of that is padding
+
+Profiling a batched step on the iGPU (`bench/gpuprof.ml`, 512 lanes, every stage
+compiled for the device and timed with a sync) gives one dominant row: the solver
+is **446 of 452 us per env-step**, and kinematics, mass, contacts, passive, bias,
+actuator and tendon together are 9 us. The pipeline batches; one function does
+not.
+
+The reason is not the iteration count (four passes is the minimum the parity gate
+allows) and not the factorisation's implementation: it is that the solver
+factorises a dense `nefcmax x nefcmax` matrix when the step has one row. Hopper's
+buffer is 64. Measured cost of the buffer alone, over the buffer sizes the corpus
+uses: 3 us/env-step at 4 rows, 33 at 16, 107 at 32, **835 at 48**, 1260 at 64. A
+cliff, not a curve, and every corpus model's `nefcmax` (48 to 202) is past it.
+
+Two corrections came out of the same afternoon. First, `Linalg.cholesky` was not
+what the default path runs -- that is `Mass.factor`/`Mass.solve`, i.e. the
+`Nx.cholesky` and `Nx.solve_triangular` kernels; `Linalg` is the `` `Batched ``
+alternative, which is why rewriting it as a blocked factorisation (done, tested,
+8x less traffic on that path) moved the throughput not at all. Second, the stages
+are not rank-generic: they reshape at fixed ranks, so a *tensor* with a leading
+lane axis does not work and the batch has to go through `Rune.vmap`, which is
+what the throughput numbers actually measure -- a lowered loop over lanes, not a
+batched kernel.

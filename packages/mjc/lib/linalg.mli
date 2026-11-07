@@ -26,11 +26,11 @@
     [n] by [n]. *)
 type 'd t = 'd Nx.float64_t
 
-(** [cholesky a] is the lower factor of the symmetric positive definite
+(** [cholesky ?block a] is the lower factor of the symmetric positive definite
     matrices [a], which must have at least two axes and be square in the last
     two. A matrix that is not positive definite gives NaN where a kernel would,
     which is the same contract as {!Nx.cholesky}. *)
-val cholesky : 'a t -> 'a t
+val cholesky : ?block:int -> 'a t -> 'a t
 
 (** [solve a b] is [a⁻¹ b] for the factors [a] that {!cholesky} returns and a
     right-hand side whose shape is [a]'s without its last axis, plus a

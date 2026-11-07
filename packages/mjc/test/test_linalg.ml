@@ -80,6 +80,53 @@ let test_factor_matches_kernel () =
       if Float.( > ) e 1e-12
       then failwith (Printf.sprintf "cholesky n=%d: L Lᵀ is off by %.3g" n e))
 
+(* The blocked path against the unblocked recurrence and the kernel, at the
+   row counts the solver meets: `nefcmax` is 48 to 202 in the corpus, and the
+   block is sixteen, so these are one to thirteen panels. *)
+let test_blocked_matches_unblocked () =
+  List.iter
+    [ 17, [||]; 32, [||]; 48, [||]; 76, [||]; 202, [||]; 76, [| 3 |] ]
+    ~f:(fun (n, batch) ->
+      let a = spd ~n ~batch in
+      let blocked = Linalg.cholesky a in
+      let unblocked = Linalg.cholesky ~block:n a in
+      (* The two orders sum the same terms in a different order, so they agree
+         to accumulated rounding rather than exactly: each of the [n] steps
+         brings a few ulps, which is [`n * eps] with a small constant. The
+         threshold is that bound, not a number picked to make this pass. *)
+      let tol = 1e-14 *. Float.of_int n in
+      let e = rel unblocked blocked in
+      if Float.( > ) e tol
+      then
+        failwith
+          (Printf.sprintf
+             "blocked cholesky n=%d: against unblocked, %.3g (tol %.1e)"
+             n
+             e
+             tol);
+      (* And against the kernel, which shares neither order. *)
+      let e = rel (Nx.cholesky a) blocked in
+      if Float.( > ) e tol
+      then
+        failwith
+          (Printf.sprintf
+             "blocked cholesky n=%d: against the kernel, %.3g (tol %.1e)"
+             n
+             e
+             tol);
+      (* The defining property again, at a size where the blocked path is what
+         ran. *)
+      let recon = Nx.matmul blocked (Nx.matrix_transpose blocked) in
+      let e = rel a recon in
+      if Float.( > ) e 1e-11
+      then failwith (Printf.sprintf "blocked cholesky n=%d: L Lᵀ is off by %.3g" n e);
+      (* And it is still a factor one can solve with. *)
+      let b = rhs ~n ~batch in
+      let x = Linalg.solve blocked (Nx.reshape (Array.append batch [| n |]) b) in
+      let e = rel b (Nx.matmul a (Nx.reshape (Array.append batch [| n; 1 |]) x)) in
+      if Float.( > ) e 1e-10
+      then failwith (Printf.sprintf "blocked cholesky n=%d: A x is off by %.3g" n e))
+
 let test_solve_matches_kernel () =
   List.iter
     [ 1, [||]; 3, [||]; 12, [||]; 33, [||]; 6, [| 5 |] ]
@@ -153,6 +200,9 @@ let () =
     (run
        "mjc linalg"
        [ test "factor matches the kernel, batched or not" test_factor_matches_kernel
+       ; test
+           "the blocked factor matches the unblocked one"
+           test_blocked_matches_unblocked
        ; test "solve matches the kernel, batched or not" test_solve_matches_kernel
        ; test "factor and solve differentiate" test_differentiable
        ])

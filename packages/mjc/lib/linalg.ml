@@ -45,7 +45,14 @@ let dot ~(x : 'a t) ~(r : 'a t) =
 (* The same for two vectors per batch, as the triangular solves need. *)
 let dot_vec ~(x : 'a t) ~(r : 'a t) = Nx.sum ~axes:[ -1 ] (Nx.mul x r)
 
-let cholesky a =
+(* The unblocked recurrence: one column at a time.
+
+   Right for a small matrix and for a batch of them, and wrong for a big one on
+   a device: every column rebuilds the whole tensor with `concatenate`, so an
+   `n x n` factorisation moves `O(n^3)` elements and does its arithmetic in
+   `n`-long steps. `cholesky` below blocks it; this stays as the panel kernel
+   and as the small-`n` path. *)
+let cholesky_unblocked a =
   let shape = Nx.shape a in
   let n = last shape in
   if not (Int.equal n shape.(Array.length shape - 2))
@@ -91,6 +98,75 @@ let cholesky a =
          [ cols !l 0 j; Nx.unsqueeze ~axes:[ -1 ] column; cols !l (j + 1) n ]
   done;
   !l
+
+(* The blocked factorisation: a right-looking Cholesky.
+
+   Panel by panel, with the trailing matrix kept as the Schur complement:
+   factor the diagonal block with the unblocked recurrence (small: `block x
+   block`), solve the panel below it (`L21 = C21 L11^-T`), update the trailing
+   block (`C22 - L21 L21^T`, one matmul), and move on. The column blocks are
+   collected and joined once at the end, so the factorisation copies the matrix
+   `O(1)` times and puts its arithmetic in matmuls over `n`-long rows instead of
+   `n` sequential steps of length one. That difference is the whole point: on a
+   device the unblocked form was latency-bound at about one percent of what the
+   hardware can do. *)
+let cholesky_blocked ~block a =
+  let shape = Nx.shape a in
+  let n = last shape in
+  let lead = Array.length shape - 2 in
+  let batch = Array.sub ~pos:0 ~len:lead shape in
+  let at = Nx.placement a in
+  (* Rank-relative: [lead] axes of [A], then a row range and a column range. *)
+  let window r0 r1 c0 c1 =
+    Nx.slice (List.init lead ~f:(fun _ -> A) @ [ R (r0, r1); R (c0, c1) ])
+  in
+  let zeros rows cols = Nx.zeros_at at Nx.float64 (Array.append batch [| rows; cols |]) in
+  let blocks = ref []
+  and trailing = ref a
+  and k = ref 0 in
+  while !k < n do
+    let b = Int.min block (n - !k) in
+    let m = n - !k in
+    let c11 = window 0 b 0 b !trailing in
+    let l11 = cholesky_unblocked c11 in
+    let panel =
+      if Int.equal b m
+      then l11
+      else (
+        let c21 = window b m 0 b !trailing in
+        (* [L21 = C21 L11^-T], as one triangular solve of the transposed panel. *)
+        let l21 =
+          Nx.matrix_transpose
+            (Nx.solve_triangular ~triangle:Lower l11 (Nx.matrix_transpose c21))
+        in
+        let c22 = window b m b m !trailing in
+        let c22 = Nx.sub c22 (Nx.matmul l21 (Nx.matrix_transpose l21)) in
+        trailing := c22;
+        Nx.concatenate ~axis:(-2) [ l11; l21 ])
+    in
+    (* The rows above this panel are zero: the block is the panel, padded. *)
+    blocks
+    := (if Int.equal !k 0 then panel else Nx.concatenate ~axis:(-2) [ zeros !k b; panel ])
+       :: !blocks;
+    k := !k + b
+  done;
+  Nx.concatenate ~axis:(-1) (List.rev !blocks)
+
+(* [block] is in elements: a panel of `block x block` is where the unblocked
+   recurrence is still cheap, and where a matmul becomes wide enough to be
+   worth issuing. Sixteen keeps the panel work small and gives four panels at
+   the corpus's row counts (48-202). *)
+let cholesky ?(block = 16) a =
+  let shape = Nx.shape a in
+  let n = last shape in
+  if not (Int.equal n shape.(Array.length shape - 2))
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Linalg.cholesky: %s is not square in its last two axes, so it cannot be \
+          factored"
+         (String.concat ~sep:"x" (List.map (Array.to_list shape) ~f:Int.to_string)));
+  if n <= block then cholesky_unblocked a else cholesky_blocked ~block a
 
 (* [b] is a column per batch, [batch; n; 1]; the recurrence is easier on the
    [batch; n] vector inside it, so the shape is flattened on the way in and
