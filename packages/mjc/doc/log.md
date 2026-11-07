@@ -1657,3 +1657,34 @@ launch). That is a scheduler, not a solver change, it costs the single-compiled-
 program property the device path depends on, and it is worth doing only after
 fp32 and per-round op count are exhausted. Named here so it is not rediscovered
 as a good idea without its price.
+
+## Where the step's time is: one Cholesky factor per round, 86% of it
+
+`bench/dtype.ml` measures one active-set round in both dtypes. Two conclusions,
+one about dtype and one about where the time actually goes.
+
+**fp32 is 1.5-1.8x on the GPU, not 2x, and its error is 2-4e-8 per solve.** The
+gain *falls* as the matrix grows (1.80x at 24 rows, 1.54x at 76), which is the
+opposite of what halving memory traffic predicts: the iGPU is not bandwidth-bound
+at these sizes. Against a gate that holds 1e-8 over a thousand steps with 24
+solves per step, f32 cannot be the parity path, so it would be a second precision
+with its own tolerance story. Measured end to end it is a factor of 1.40, not
+1.5, because 86% of the step is the factorisation and the remaining 14% does not
+speed up at all.
+
+**The step is mostly one matrix factor per round.** At `rows=24` and 512 lanes,
+hopper's step is 34.9 us/env-step and the isolated round is 1.25 us; times 24
+rounds that is 30 of the 34.9 us. So the forty-odd tensor ops the round is made of
+-- working-set rebuild, ratio test, cost evaluation -- are 14% of the step, and
+optimising them is pointless. I had "reduce per-round op count" on the plan and
+this removes it.
+
+What that leaves is the cubic term itself. The corpus's `nefcmax` medians are 8-9
+rows while the factorisation is compiled for 24-40, and the *free* block is a
+subset of those rows. If it is also small -- a standing hopper has three or four
+supporting contacts -- then the (nf/nb)^3 term is being paid almost entirely on
+padding, and compacting the free block to its own size would be worth an order of
+magnitude. That is the next measurement, and it needs a hook: the rows, their
+bounds and the final working set are built inside `Constraint`/`Solver.forward`
+and are not reachable from a bench, so the first task is to expose the working
+set's size per step (a recording pass over the corpus), not to guess at it.

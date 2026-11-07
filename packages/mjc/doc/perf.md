@@ -546,3 +546,43 @@ The default row is `nefcmax` and sizing it to the step is worth **145×** here;
 the remaining 6× against hopper is the solver's row count cubed (40³/24³ = 4.6),
 not a second pathology. Contacts are 2.9 ms of a step that was 21 s.
 one within the measurement window.
+
+### fp32, measured before it is built
+
+`bench/dtype.ml` runs one active-set round — a batched Cholesky of the row
+matrix and its two triangular solves — in both dtypes at the row counts the
+corpus uses, 512 lanes, synced:
+
+| rows | device | f64 ms | f32 ms | f64/f32 | f32 vs f64, worst rel |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 24 | host | 2.10 | 1.04 | 2.02× | 3.8e-8 |
+| 24 | gpu | 0.64 | 0.36 | 1.80× | 3.8e-8 |
+| 40 | host | 7.40 | 2.05 | 3.62× | 2.8e-8 |
+| 40 | gpu | 3.42 | 2.25 | 1.52× | 2.8e-8 |
+| 76 | host | 32.00 | 14.42 | 2.22× | 2.1e-8 |
+| 76 | gpu | 23.26 | 15.07 | 1.54× | 2.1e-8 |
+
+Two readings. The speedup is **1.5–1.8× on the GPU** and 2–3.6× on the host, and
+it shrinks as the problem grows — the iGPU is not bandwidth-bound at these sizes
+the way the host is, which is the opposite of what "fp32 halves the traffic"
+predicts. And the error per solve is **2–4e-8**, three orders of magnitude outside
+a gate that holds 1e-8 over a thousand steps and accumulates 24 solves per step.
+So fp32 cannot be the parity path: it is a training path that would need its own
+tolerance story, exactly as MJX has one (and their f32 NaN issues are the
+warning).
+
+### The round is the Cholesky
+
+At `rows=24`, 512 lanes, the whole hopper step is 34.9 µs/env-step and the
+isolated round is 0.64 ms/512 = 1.25 µs. Twenty-four rounds are 30 µs of that
+34.9 — **86% of the step is one batched Cholesky factor per round**, and
+everything else in the round (the ratio test, the working-set rebuild, the cost
+evaluation, some forty tensor ops) is the other 14%.
+
+That reframes what fp32 is worth end to end: 1.5× on 86% of the step is a factor
+of `0.86/1.5 + 0.14 = 1.40`, not 1.5. For a refactor the size of the device one,
+with a second precision's validation surface, that is a poor trade while anything
+cheaper is left. The cheaper thing is the one the row counts point at: `nefcmax`
+medians are 8–9 rows while the factorisation is compiled for 24–40, so if the
+*free* block — which is a subset of the rows — is also small, the cubic term is
+being paid on padding.
