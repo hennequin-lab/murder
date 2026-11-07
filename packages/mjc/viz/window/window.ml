@@ -607,20 +607,21 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?shot_prefix ?(bench = false) (t : 
        if not t.paused
        then
          for _ = 1 to steps_per_frame do
-           match t.drive with
-           | Some signal ->
-             let time = Nx.item [] t.data.Mjc.Data.time in
-             let u = Mjc_viz.Drive.ctrl signal ~nu:t.model.Mjc.Model.topo.nu ~time in
-             t.data
-             <- { t.data with
-                  Mjc.Data.ctrl = Nx.create Nx.float64 [| t.model.Mjc.Model.topo.nu |] u
-                }
-           | None ->
-             ();
-             t.data <- Mjc.Step.step t.model t.data;
-             (match t.log with
-              | Some w -> Mjc_viz.Log.append w ~step:(Stdlib.Int64.of_int !drawn) t.data
-              | None -> ())
+           (* The parentheses matter: without them the sequencing below binds
+              into the [None] branch and a driven run never steps at all. *)
+           (match t.drive with
+            | Some signal ->
+              let time = Nx.item [] t.data.Mjc.Data.time in
+              let u = Mjc_viz.Drive.ctrl signal ~nu:t.model.Mjc.Model.topo.nu ~time in
+              t.data
+              <- { t.data with
+                   Mjc.Data.ctrl = Nx.create Nx.float64 [| t.model.Mjc.Model.topo.nu |] u
+                 }
+            | None -> ());
+           t.data <- Mjc.Step.step t.model t.data;
+           match t.log with
+           | Some w -> Mjc_viz.Log.append w ~step:(Stdlib.Int64.of_int !drawn) t.data
+           | None -> ()
          done);
     (* Draw *)
     RC.begin_drawing ();
