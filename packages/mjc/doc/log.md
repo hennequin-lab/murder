@@ -1991,3 +1991,32 @@ wiggle is a number in the table above rather than a thing in the image. Fixing t
 headless loop is chrome work, not physics; the alternative, baking a posed stance
 into the model's `qpos0`, would have been a picture of something that never
 happened.
+
+## GJK, with the oracles first
+
+`lib/gjk.ml` decides whether two convex shapes touch, over
+{!Convex.support}, and `doc/adr/0013-convex-path.md` records what it is a port
+of: MuJoCo 3.3.7's *native* CCD (`engine_collision_gjk.c`, 2365 lines), not
+libccd, which is only the fallback when `mjDSBL_NATIVECCD` is set.
+
+The tests came before the confidence, and they earned it three times over:
+
+| test | what it pins |
+| --- | --- |
+| sphere-sphere, sphere-capsule, capsule-capsule, box-box | against closed forms, ~1100 random poses |
+| the distance subalgorithm | against a brute-force barycentric grid |
+| a margin widens a shape | the pair-margin convention |
+
+The brute-force test is the one that mattered: GJK was cycling -- three |x| values
+forever with a two-vertex simplex -- because the closest-point-on-a-triangle
+routine had two inequalities backwards. Fixing those exposed a second bug behind
+them: the interior projection was `a − n(n·a)/|n|²` instead of `n(n·a)/|n|²`. The
+triangle is now written as the minimum over its three edges plus a validated
+interior projection, which is longer than the Voronoi-region cascade and does not
+have regions to get wrong. Both bugs were invisible in the gate, which only
+exercises pairs the primitives already handle.
+
+Also settled: the margin convention (each object contributes half its own margin;
+pass the pair margin to both, as MuJoCo does), and that contact geometry through
+GJK/EPA will be **non-differentiable** on purpose, with the derivative coming from
+the KKT rule as it already does for the primitive rows.

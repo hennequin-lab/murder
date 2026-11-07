@@ -15,7 +15,8 @@
   test_boxbox_tensor
   test_grad
   test_linalg
-  test_convex)
+  test_convex
+  test_gjk)
  (modules
   support
   test_mjcb
@@ -33,7 +34,8 @@
   test_boxbox_tensor
   test_grad
   test_linalg
-  test_convex)
+  test_convex
+  test_gjk)
  (deps
   (glob_files fixtures/*))
  (libraries base mjc nx rune windtrap))
