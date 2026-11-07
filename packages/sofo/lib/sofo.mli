@@ -221,12 +221,17 @@ val sketch
     update — and it is deliberately small: everything expensive or
     differentiable belongs to the sketch.
 
-    Two halves, split by what compiles rather than by taste. The sketching half
-    is differentiable and jits ({!Optim.sketch_jit}), while the update needs
-    the eigendecomposition of the sketched GGN, which does not compile: it runs
-    eagerly on the host at O(k³), negligible beside a model with P ≫ k
-    parameters — the premise of the algorithm. A deployment therefore compiles
-    the sketch and keeps the solve outside it:
+    Two halves, split by what is worth compiling rather than by taste. The
+    sketching half is differentiable and jits ({!Optim.sketch_jit}); the update
+    needs the eigendecomposition of the sketched GGN, which Raven can compile —
+    [Nx.eigh] is lowered to Jacobi rotations — but at a cost that does not
+    scale: one compiled [k = 24] eigendecomposition takes 8.5 s, in a single
+    LLVM pass of a single kernel, and grows with the lane count, while the
+    host's is 0.09 ms at the same [k]. So the solve runs eagerly on the host at
+    O(k³), negligible beside a model with P ≫ k parameters — the premise of the
+    algorithm — and only [k]-sized numbers make the trip. A deployment
+    therefore compiles the sketch and the shift, and keeps the solve outside
+    them:
 
     {[
       (* build the compiled half once; it jits on first call *)
@@ -400,10 +405,12 @@ module Optim : sig
       properties of the curvature rather than of the draw. Omit [gram] to solve
       in the sketch's own basis, unconsidered directions and all.
 
-      {b Note.} Neither eigendecomposition — of the Gram, nor of the sketched
-      GGN — compiles, so this is for the host side of a step, not inside a
-      [Rune.jit]ed program. Its arguments must be on a set with kernels, such
-      as the host, since it computes eagerly.
+      {b Note.} A compiled eigendecomposition is possible — [Nx.eigh] lowers to
+      Jacobi rotations — but not practical at a sketch's lane count: one
+      [k = 24] program takes seconds to compile, in one LLVM pass of one
+      kernel, and the cost grows with [k] (see [doc/jit-solve.md]). So this is
+      for the host side of a step, not inside a [Rune.jit]ed program, and takes
+      arguments on a set with kernels, such as the host.
 
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
       smallest singular value is 0, and for a [gram] that is rank-deficient:
@@ -538,8 +545,10 @@ module Optim : sig
       ]}
 
       The solve runs on the host, from [out]'s [k]-sized [c], [ggn] and
-      [gram]. The step on the parameters is compiled and runs where [params]
-      and [out.dirs] live, so parameters placed on a GPU stay there.
+      [gram], and that is the whole of the round trip: three small tensors
+      down, [k] numbers up. The step on the parameters is compiled and runs
+      where [params] and [out.dirs] live, so parameters placed on a GPU stay
+      there. [doc/jit-solve.md] says why the solve is not compiled with them.
 
       {!update_sketch} is the same step for a sketch measured eagerly, which
       threads no state. This one compiles the parameter step on every call, so

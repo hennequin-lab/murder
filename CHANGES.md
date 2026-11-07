@@ -218,6 +218,14 @@ changes do not need an entry.
 
 ### sofo
 
+- The subspace solve is documented as the one part of a step that stays on the
+  host, and the reason is no longer "it does not compile": Raven lowers
+  `Nx.eigh` to Jacobi rotations and a `Rune.jit` traces it, to `1e-15` of the
+  host's eigenvalues. Compiling one is what fails — 8.5 s for a single
+  `k = 24` program, almost all of it in one LLVM pass of one kernel, against
+  0.09 ms for the host solve. `doc/jit-solve.md` records the measurements, the
+  offending construct (a wide `select` of a broadcast loop index, from the
+  arange masks in `lower_linalg.ml`), and what would unblock it. No API change.
 - Imported from `hennequin-lab/sofo-raven`.
 - `Optim.directions`, `Optim.step` and `Optim.sketch_jit` take `?custom`, a
   batched set of tangents that becomes the first lanes of the sketch and is
