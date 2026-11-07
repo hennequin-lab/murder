@@ -23,7 +23,7 @@
 ; Move this SHA forward deliberately; dune.lock records the same commit.
 (pin
  (url
-  "git+https://github.com/raven-ml/raven.git#4a3bc8311990a185a5636f94fa02a69906ff3f1c")
+  "git+https://github.com/raven-ml/raven.git#68e295cb560188c73cf994283fda7d182284d853")
  (package
   (name lz))
  (package
@@ -46,6 +46,13 @@
   (name ppx_ptree))
  (package
   (name kaun)))
+
+; Raven main pins thumper by branch; litany pins it by SHA. Assign it here, to
+; the commit both name, so the recursive resolution has one assignment.
+(pin
+ (url "git+https://github.com/invariant-hq/thumper.git#0d42dc6964e30525b0595b6d5be04a1eda76c90e")
+ (package
+  (name thumper)))
 
 ; Windtrap's releases are on opam, but Raven and litany pin it, and Dune
 ; resolves a pinned project's pins recursively, so the pin below is what keeps

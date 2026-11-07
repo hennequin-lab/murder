@@ -1,7 +1,7 @@
 (version dev)
 
 (build
- (all_platforms ((dune))))
+ (all_platforms ((action (run dune build -p %{pkg-self:name} -j %{jobs} %{pkg-self:name}.install)))))
 
 (depends
  (all_platforms
@@ -10,6 +10,6 @@
 (source
  (fetch
   (url
-   git+https://github.com/raven-ml/raven.git#4a3bc8311990a185a5636f94fa02a69906ff3f1c)))
+   git+https://github.com/raven-ml/raven.git#68e295cb560188c73cf994283fda7d182284d853)))
 
 (dev)

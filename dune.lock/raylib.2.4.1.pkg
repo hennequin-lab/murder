@@ -1,4 +1,4 @@
-(version 2.4.0)
+(version 2.4.1)
 
 (build
  (all_platforms
@@ -42,6 +42,6 @@
 (source
  (fetch
   (url
-   https://github.com/tjammer/raylib-ocaml/releases/download/2.4.0/raylib-2.4.0.tbz)
+   https://github.com/tjammer/raylib-ocaml/releases/download/2.4.1/raylib-2.4.1.tbz)
   (checksum
-   sha512=f6573f3a35cd04d7cfed40c7976960fb372bfbb69c8d3c9593371b7a71aa318b94bd37197ae79fcaf023bd02fa208c449ef3fc16a07790a6015a02416f50cd28)))
+   sha512=45bd1e529bf63a12e6aea7f0d3f36b642decf28502379d8205dc2928c0fbd76a5f295be2e365c9887ef550d9b66d8aa195cc0a402932e28711f0d1cd994ba1df)))
