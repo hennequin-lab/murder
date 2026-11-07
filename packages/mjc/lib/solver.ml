@@ -123,6 +123,13 @@ let system (r : 'a rows) (free : 'a f) =
    state stall until the next boundary rebuild; eight solve every recorded
    state of the corpus to MuJoCo's optimum, and that is the budget.
 
+   The schedule's exact fixed point is one pass shorter again, and it is per
+   model: at [iters = 3] hopper and humanoid reproduce the four-pass answer to
+   the digit (same worst error, same shadowing horizon, 1000/1000) while walker
+   has one state in a thousand that needs the fourth pass and lands 9.9e-3 away.
+   So 4 stays the default and 3 is a caller's choice, worth 1.30x on the GPU at
+   512 lanes where it holds (45.3 -> 34.9 us per env-step on hopper).
+
    The scan does not make the round free at run time: a step costs roughly
    what one unrolled round cost, so a longer schedule costs correspondingly
    more, and the cost sheet in [doc/grad-report.md] carries both budgets'

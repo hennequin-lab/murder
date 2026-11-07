@@ -1619,3 +1619,41 @@ The dash is honest, not a gap in the measurement: an eager program on a set
 minted without kernels cannot execute, and Rune currently refuses the nesting
 that would fix it. Making the gradient compile is now the first task in that
 line of work rather than an optimisation of it.
+
+## The schedule's exact fixed point is 24 rounds, not 32 -- and early exit is dead at batch
+
+Two results, one cheap win and one dead end, both measured before writing code.
+
+**The win.** `G4_ITERS` one pass shorter than the current budget:
+
+| rounds | hopper within 1e-8 | worst | shadow | walker | humanoid |
+| ---: | ---: | ---: | ---: | --- | --- |
+| 8 (1 pass) | 90.1% | 1.9e0 | 35 | — | — |
+| 16 (2) | 99.2% | 4.2e-1 | 105 | — | — |
+| 24 (3) | **100%** | **1.10e-11** | **980** | 999/1000, one state 9.9e-3 | **100%, 4.35e-10, 266** |
+| 32 (4) | 100% | 1.10e-11 | 980 | 1000/1000, shadow 507 | 100%, 4.35e-10, 266 |
+
+So 24 rounds is the exact fixed point for hopper and humanoid — same worst error
+and same shadowing horizon to the digit — and walker has one state in a thousand
+that needs the fourth pass. Default stays 4; `iters=3` is a caller's choice and is
+worth **1.30x at 512 lanes on the GPU** where it holds (hopper 45.3 -> 34.9 us per
+env-step, 22096 -> 28696 env-steps/s). The ratio is 32/24, which is what the
+solver's share predicts: it is 98.5% of a device step, so the schedule is the
+whole bill.
+
+**The dead end.** I had `Rune.iterate` with a KKT residual queued as the next
+lever, on the theory that most steps converge early. The table says they do --
+90% of states are done in 8 rounds -- and it also says the lever does not exist
+for a batched loop. `iterate` stops when *every* lane satisfies the test, so a
+batch of 512 lanes pays for its worst lane. With 0.8% of states needing more than
+16 rounds, the chance that a 512-lane step has no such lane is 0.992^512 = 1.6%:
+essentially every step pays for the tail. The measured walker outlier -- a single
+state needing the fourth pass, landing 9.9e-3 away -- is exactly that tail, and
+one lane is enough to set the whole batch's cost.
+
+What would recover the 3x that the *mean* state leaves on the table is per-lane
+dynamic batching (sort lanes by difficulty, retire the easy ones into a second
+launch). That is a scheduler, not a solver change, it costs the single-compiled-
+program property the device path depends on, and it is worth doing only after
+fp32 and per-round op count are exhausted. Named here so it is not rediscovered
+as a good idea without its price.
