@@ -1972,6 +1972,16 @@ Both agree, and both are *upright the whole time* (tilt cosine 1.00). In phase,
 the same model leaves the floor entirely -- `ncon` drops to 0, which is how the
 first version of this demo was hopping rather than walking.
 
+**The animation.** `doc/figures/quad-wiggle.mp4` is 120 frames of the run above
+(4 s of simulation at 30 fps), and `quad-wiggle-strip.png` is three of them side by
+side: the legs are plainly in different positions and the body sits at different
+heights. It took one viewer change to get it -- `--shot-prefix P` writes every
+frame as `P0000.png` instead of only the last one, which is what an encoder wants
+-- and the clip is rendered `--no-hud` because the HUD's `t`, `ncon` and `nefc`
+read zero in a headless run while the geometry plainly moves. That is a viewer bug
+worth its own fix, not a physics one, and it is recorded here rather than papered
+over by leaving the overlay out.
+
 **What the still cannot show, and why.** `doc/figures/quad-standing.png` is a real
 frame of a real run, but it is the *first* frame: a headless `mjc-window` draws one
 frame and never advances. The tell is the log written by the same run -- 96 bytes,

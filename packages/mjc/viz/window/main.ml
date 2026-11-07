@@ -10,7 +10,7 @@
 
 let usage =
   "mjc-window --model M.mjcb [--steps-per-frame N] [--frames N] [--shot out.png]\n\
-  \  [--width W] [--height H] [--eye x,y,z] [--target x,y,z]\n\
+  \  [--shot-prefix P] [--width W] [--height H] [--eye x,y,z] [--target x,y,z]\n\
   \  [--body-frames] [--contacts|--no-contacts] [--forces] [--no-grid] [--no-hud]\n\
   \  [--inertia] [--com] [--joint-axes] [--velocity] [--energy] [--drive]\n\
   \  [--drive-amplitude A] [--drive-period T] [--drive-offset U]\n\
@@ -39,6 +39,7 @@ let () =
   and check = ref false
   and bench = ref None
   and shot = ref None
+  and shot_prefix = ref None
   and width = ref 1280
   and height = ref 720
   and eye = ref None
@@ -73,6 +74,9 @@ let () =
       go r
     | "--shot" :: v :: r ->
       shot := Some v;
+      go r
+    | "--shot-prefix" :: v :: r ->
+      shot_prefix := Some v;
       go r
     | "--bench" :: v :: r ->
       bench := Some (Stdlib.int_of_string v);
@@ -232,5 +236,6 @@ let () =
          ~steps_per_frame:!steps
          ?frames
          ?shot:!shot
+         ?shot_prefix:!shot_prefix
          ~bench:(Option.is_some !bench)
          view))

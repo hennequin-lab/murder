@@ -62,4 +62,11 @@ val open_
     finite, because there is no last frame otherwise. [bench] turns off the
     frame-rate cap and prints the measured frame time, split into scene
     building and everything else. *)
-val run : ?steps_per_frame:int -> ?frames:int -> ?shot:string -> ?bench:bool -> t -> int
+val run
+  :  ?steps_per_frame:int
+  -> ?frames:int
+  -> ?shot:string
+  -> ?shot_prefix:string
+  -> ?bench:bool
+  -> t
+  -> int

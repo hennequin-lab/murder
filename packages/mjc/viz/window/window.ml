@@ -525,7 +525,7 @@ let camera_reset (t : t) = look t t.eye t.target
 
 (* {1 The loop} *)
 
-let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
+let run ?(steps_per_frame = 1) ?frames ?shot ?shot_prefix ?(bench = false) (t : t) =
   RC.init_window t.width t.height "mjc";
   (* A bench or a screenshot must not be paced by the display. *)
   if not bench then RC.set_target_fps 60;
@@ -629,12 +629,15 @@ let run ?(steps_per_frame = 1) ?frames ?shot ?(bench = false) (t : t) =
     draw ~fps:(Option.is_none shot) t;
     (* The screenshot reads the frame out of the buffer, so it has to happen
        between the draw calls and the swap. *)
-    (match shot with
-     | Some path when !drawn = last - 1 ->
-       (* raylib batches the 2D pass until EndDrawing, so a screenshot taken
-          here would miss the HUD and every other 2D call. Flush first. *)
+    (* raylib batches the 2D pass until EndDrawing, so a screenshot taken here
+       would miss the HUD and every other 2D call. Flush first. *)
+    (match shot, shot_prefix with
+     | Some path, _ when !drawn = last - 1 ->
        RL.draw_render_batch_active ();
        RC.take_screenshot path
+     | _, Some prefix ->
+       RL.draw_render_batch_active ();
+       RC.take_screenshot (Stdlib.Printf.sprintf "%s%04d.png" prefix !drawn)
      | _ -> ());
     RC.end_drawing ();
     Int.incr drawn
