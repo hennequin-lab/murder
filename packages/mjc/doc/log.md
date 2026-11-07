@@ -2057,3 +2057,27 @@ non-zero friction coefficient on a `condim=1` geom does nothing, which reads as
 drive signals, so a clip that travels was never a bug in the engine -- the first
 one was skating because of the contact model, the second was walking because of
 the signal.
+
+## EPA: written, wrong, removed
+
+The next step in the convex path was EPA -- penetration depth, normal and the
+witness pair, seeded by GJK's containing tetrahedron. It does not work yet and it
+is not in the tree.
+
+Two failures, both instructive rather than mysterious. For two spheres it never
+found a tetrahedron at all, so the depth came back zero for every overlapping
+pair: GJK's containing simplex is not always four points, and a seed that is not
+a tetrahedron makes "expand the polytope" meaningless. For two axis-aligned boxes
+it ran and returned 0.63 where the closed form says 0.21 -- the polytope expanded
+to the wrong face, which is what happens when the seed does not contain the origin
+and the face distances are therefore not bounds.
+
+Shipping either as-is would have meant a `contact` function that returns plausible
+numbers: a depth of zero reads as "touching", and a depth of 0.63 reads as a deep
+contact. Both are wrong in the direction that physics engines punish. So EPA and
+its tests came out, and the GJK contact test -- which is verified against four
+closed forms -- is what remains.
+
+The note for next time is in the ADR: check that the seed polytope contains the
+origin before expanding, and consider Minkowski Portal Refinement, which needs no
+containing polytope, which is why MuJoCo keeps it as the libccd fallback.

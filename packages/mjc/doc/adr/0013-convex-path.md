@@ -33,8 +33,16 @@ work:
    property and against their batched form.
 2. **GJK contact test** (`lib/gjk.ml`) — done, on float arrays, tested against
    four closed forms and against a brute-force distance subalgorithm.
-3. **EPA** — the depth and the witness pair, over the polytope with face
-   adjacency.
+3. **EPA** — the depth and the witness pair. **Started and reverted.** An
+   expanding-polytope search seeded by GJK's containing tetrahedron was written
+   and did not work: it never captured a tetrahedron for two spheres (the
+   containing simplex is not always four points) and converged to the wrong face
+   for two boxes (depth 0.63 against a closed form's 0.21). Shipping a depth
+   function that is quietly wrong is worse than shipping none, so it came out and
+   the tests with it. Two things to do differently next time: validate that the
+   seed polytope actually contains the origin before expanding, and consider
+   Minkowski Portal Refinement — which needs no containing polytope at all, and is
+   what MuJoCo itself keeps as the libccd fallback.
 4. **The multi-contact extraction** (`polytope2/3/4`, `mjc_isDistinctContact`,
    `maxContacts`) and `mjc_fixNormal`.
 5. **The heightfield**: `mjc_ConvexHField` iterates the cells a geom's bound

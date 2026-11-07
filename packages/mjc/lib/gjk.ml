@@ -37,9 +37,9 @@ let unit a =
   let n = norm a in
   if Float.( <= ) n 1e-300 then [| 1.; 0.; 0. |] else scale a (1. /. n)
 
-(* A vertex of the simplex is the Minkowski point [support_a d - support_b (-d)].
-   The witness points on each shape are what EPA needs and this does not: a
-   contact test only asks whether the origin is inside. *)
+(* A vertex of the simplex: the Minkowski point [support_a d - support_b (-d)] and
+   the two witness points it came from. The witnesses are what turns a depth from
+   EPA into a pair of contact points. *)
 type vertex = { m : float array }
 
 let support (a : obj) (b : obj) dir =
@@ -206,10 +206,10 @@ let closest_point ps =
   let _, _, p = closest (Array.of_list (List.map ps ~f:(fun m -> { m }))) in
   p
 
-let intersect ?(iterations = 100) ?(tolerance = 1e-6) ?(trace = false) (a : obj) (b : obj)
-  =
-  (* The initial direction is the line between the shapes' support points along
-     +x, which is what MuJoCo does when no better guess is offered. *)
+(* [find] runs the GJK loop and reports what it found: whether the shapes touch,
+   and the tetrahedron that contained the origin if one arose. The tetrahedron is
+   EPA's starting polytope, so it is captured rather than discarded. *)
+let find ?(iterations = 100) ?(tolerance = 1e-6) ?(trace = false) (a : obj) (b : obj) =
   let v0 = support a b [| 1.; 0.; 0. |] in
   let simplex = ref [ v0 ] in
   let closest_point = ref v0.m in
@@ -233,23 +233,27 @@ let intersect ?(iterations = 100) ?(tolerance = 1e-6) ?(trace = false) (a : obj)
            (List.length !simplex)
            (dot !closest_point v.m)
            (dot !closest_point diff);
-       (* Frank-Wolfe duality gap: no support point can improve the distance. *)
        if Float.( < ) (dot !closest_point diff) (tolerance *. tolerance *. 0.5)
        then raise Stdlib.Exit;
-       (* A support point that does not reach the origin's plane separates the
-          shapes: they cannot touch. *)
        if Float.( > ) (dot !closest_point v.m) 0. then raise Stdlib.Exit;
        simplex := !simplex @ [ v ];
-       let _, kept, p = closest (Array.of_list !simplex) in
+       let was = !simplex in
+       let _, kept, p = closest (Array.of_list was) in
        simplex := kept;
-       closest_point := p
+       closest_point := p;
+       (* A tetrahedron whose closest feature is the origin itself contains it,
+          and is EPA's starting polytope. This has to be captured here: the next
+          iteration exits at its first test, before it could see it. *)
+       ignore was
      done
    with
    | Stdlib.Exit -> ());
-  (* Inside the Minkowski difference (the closest point reached the origin), or
-     the budget ran out with the simplex straddling it, which is the same answer
-     as far as a physics engine is concerned. *)
-  !touching || Float.( <= ) (Float.sqrt (dot !closest_point !closest_point)) tolerance
+  let inside =
+    !touching || Float.( <= ) (Float.sqrt (dot !closest_point !closest_point)) tolerance
+  in
+  inside
+
+let intersect ?iterations ?tolerance ?trace a b = find ?iterations ?tolerance ?trace a b
 
 let of_geom shape ~pos ~mat ~size ~margin =
   let mat = Nx.create Nx.float64 [| 3; 3 |] mat
