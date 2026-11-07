@@ -1573,3 +1573,49 @@ a solver change.
 The lesson is the same one as the 38× that was submission time: a benchmark table
 with two rows per configuration is a table you can misread, and I did, in the
 direction that made my work look finished.
+
+## The RL loop split: the policy is 2% and the model gradient is 233 steps
+
+`bench/rl.ml` times the three things an agent loop is made of, on one batch and
+one device. Hopper and walker, 512 lanes, `rows=24`, 5 steps:
+
+| model | device | rollout µs/env-step | policy fwd+bwd µs/env-step | sim gradient ms | gradient ÷ step | env-steps/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| hopper | host | 146.0 | 9.9 | 32.5 | **223×** | 6851 |
+| hopper | gpu | 42.9 | — | — | — | **23313** |
+| walker | host | 140.1 | 27.4 | 36.8 | **262×** | 7138 |
+| walker | gpu | 42.7 | — | — | — | **23401** |
+
+Three things follow, and the third changes the plan.
+
+**The policy is not the problem.** At 10–27 µs against a 140 µs rollout it is
+7–16% of a loop, so a faster actor network would buy little; this is a simulator
+problem.
+
+**The GPU is 3.4× the host on the rollout** (42.9 vs 146 µs), not the 2× that
+`throughput.ml` reported — that bench ran three steps and this one five, so the
+older figure was warmer-clocked rather than better. Worth re-measuring both ways
+before quoting either again.
+
+**The model gradient costs 223–263 single steps.** That is the number the plan
+did not have, and it reorders it. A KKT-rule gradient of one step over the full
+model parameter tree costs as much as 233 env-steps of rollout at 512 lanes, so
+model-based RL built on it would spend 99.6% of its compute in the backward pass.
+It is not a rival to the rollout: it is the whole budget. Two consequences:
+
+- The gradient segment has to be *batched* and *compiled* before it is usable at
+  all. Right now it runs one environment, eagerly, because `Rune.value_and_grad`
+  brings its own program and nesting it inside a `Rune.jit` is what the first
+  failure was: the tracer walks into the gradient's program. A kernel-less device
+  set therefore cannot run it at all, which is why the GPU rows have a dash there
+  rather than a number.
+- Differentiating the **model** is the expensive choice. The cheap choice -- the
+  one PPO actually needs -- is the policy gradient, which the policy column
+  already measures at 10 µs and which needs no engine gradient whatsoever. So the
+  engine's differentiability is for model-based methods and for iLQR-style
+  planning, and any claim that it accelerates policy-gradient RL is wrong.
+
+The dash is honest, not a gap in the measurement: an eager program on a set
+minted without kernels cannot execute, and Rune currently refuses the nesting
+that would fix it. Making the gradient compile is now the first task in that
+line of work rather than an optimisation of it.
