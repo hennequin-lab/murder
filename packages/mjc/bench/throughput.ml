@@ -136,12 +136,21 @@ let () =
     | [] -> [ "pendulum"; "chain6"; "hopper"; "walker" ]
     | xs -> xs
   in
+  (* Two knobs, each measured against the model's own value: the solver
+     budget (`--iters`) and the row budget the dense factorisation is compiled
+     for (`--rows`). *)
+  let knob name =
+    List.find_map argv ~f:(fun a ->
+      String.chop_prefix ~prefix:("--" ^ name ^ "=") a
+      |> Option.bind ~f:(fun v -> List.hd (split_lanes v)))
+  in
   let budgets =
-    match
-      List.find_map argv ~f:(fun a ->
-        String.chop_prefix ~prefix:"--iters=" a
-        |> Option.bind ~f:(fun v -> List.hd (split_lanes v)))
-    with
+    match knob "iters" with
+    | Some n -> [ 0; n ]
+    | None -> [ 0 ]
+  in
+  let row_budgets =
+    match knob "rows" with
     | Some n -> [ 0; n ]
     | None -> [ 0 ]
   in
@@ -167,38 +176,47 @@ let () =
     let m = load name in
     let d0 = Data.create m in
     List.iter budgets ~f:(fun iters ->
-      let c = if Int.equal iters 0 then Step.config m else Step.config ~iters m in
-      List.iter lanes ~f:(fun n ->
-        let steps = if n <= 64 then 6 else if n <= 512 then 3 else 2 in
-        let label =
-          if Int.equal iters 0 then name else Printf.sprintf "%s, iters=%d" name iters
+      List.iter row_budgets ~f:(fun rows ->
+        let c =
+          let iters = if Int.equal iters 0 then None else Some iters in
+          let rows = if Int.equal rows 0 then None else Some rows in
+          Step.config ?iters ?rows m
         in
-        let row device ms =
-          let per = ms *. 1e3 /. Float.of_int n in
-          Printf.printf
-            "| %s | %d | %s | %.2f | %.2f | %.0f | %.0fx |\n%!"
-            label
-            n
-            device
-            ms
-            per
-            (1e6 /. per)
-            (per /. reference name)
-        in
-        let module H = Run (Nx.Host) in
-        (match H.run c m d0 ~lanes:n ~steps ~budget_ms with
-         | Stdlib.Ok ms -> row "host" ms
-         | Stdlib.Error _ ->
-           Printf.printf "| %s | %d | host | skipped | | | |\n%!" label n);
-        match gpus with
-        | [] -> ()
-        | dev :: _ ->
-          let module D = (val Nx.devices [ dev ] : Nx.Devices) in
-          let module G = Run (D) in
-          (match G.run c m d0 ~lanes:n ~steps ~budget_ms with
-           | Stdlib.Ok ms -> row "gpu" ms
+        List.iter lanes ~f:(fun n ->
+          let steps = if n <= 64 then 6 else if n <= 512 then 3 else 2 in
+          let label =
+            match iters, rows with
+            | 0, 0 -> name
+            | n, 0 -> Printf.sprintf "%s, iters=%d" name n
+            | 0, r -> Printf.sprintf "%s, rows=%d" name r
+            | n, r -> Printf.sprintf "%s, iters=%d, rows=%d" name n r
+          in
+          let row device ms =
+            let per = ms *. 1e3 /. Float.of_int n in
+            Printf.printf
+              "| %s | %d | %s | %.2f | %.2f | %.0f | %.0fx |\n%!"
+              label
+              n
+              device
+              ms
+              per
+              (1e6 /. per)
+              (per /. reference name)
+          in
+          let module H = Run (Nx.Host) in
+          (match H.run c m d0 ~lanes:n ~steps ~budget_ms with
+           | Stdlib.Ok ms -> row "host" ms
            | Stdlib.Error _ ->
-             Printf.printf "| %s | %d | gpu | skipped | | | |\n%!" name n))));
+             Printf.printf "| %s | %d | host | skipped | | | |\n%!" label n);
+          match gpus with
+          | [] -> ()
+          | dev :: _ ->
+            let module D = (val Nx.devices [ dev ] : Nx.Devices) in
+            let module G = Run (D) in
+            (match G.run c m d0 ~lanes:n ~steps ~budget_ms with
+             | Stdlib.Ok ms -> row "gpu" ms
+             | Stdlib.Error _ ->
+               Printf.printf "| %s | %d | gpu | skipped | | | |\n%!" label n)))));
   if with_policy
   then (
     Printf.printf "\n| device | lanes | policy fwd+bwd, ms | policy us/sample |\n%!";

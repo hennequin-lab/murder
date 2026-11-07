@@ -31,6 +31,7 @@ val forward
   :  ?linear:Solver.linear
   -> ?iters:int
   -> ?dt:float
+  -> ?rows:int
   -> 'd Model.model
   -> 'd Data.data
   -> 'd Data.data

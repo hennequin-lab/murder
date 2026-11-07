@@ -4,6 +4,7 @@
   ---------------------------------------------------------------------------*)
 
 open Base
+open Nx
 
 (* The schedule runs `iters × inner_rounds` rounds whatever the problem needs;
    MuJoCo's Newton exits on tolerance, so a model asking for eight pays nothing
@@ -339,29 +340,53 @@ let forward
       ?(linear = `Cholesky)
       ?(implicit = true)
       ?iters
+      ?rows
       (m : 'a Model.model)
       (d : 'a Data.data)
   : 'a Data.data
   =
   let t = m.topo
   and p = m.params in
-  let nb = t.nefcmax in
+  (* The row buffer is the model's `nefcmax`, which is a bound chosen when the
+     model was written; this step's rows are `nefc`, which is usually far
+     smaller -- hopper has one row and a sixty-four row buffer, and the
+     factorisation is cubic in the buffer. [rows] is how many the caller
+     compiled for: the solve is `rows x rows` and a step that needs more raises
+     rather than being truncated. *)
+  let nb = Stdlib.min (Option.value rows ~default:t.nefcmax) t.nefcmax in
   let at = Nx.placement d.efc_J in
+  let lead = Array.length (Nx.shape d.efc_J) - 2 in
+  let head = List.init lead ~f:(fun _ -> A) in
+  let take1 x = Nx.slice (head @ [ R (0, nb) ]) x in
+  let take2 x = Nx.slice (head @ [ R (0, nb); A ]) x in
+  Nx.check
+    Nx.Ptree.unit
+    (Nx.less_equal d.nefc (Nx.scalar_at at Nx.int32 (Stdlib.Int32.of_int nb)))
+    ()
+    (fun _ () ->
+       Stdlib.invalid_arg
+         (Printf.sprintf
+            "Solver.forward: this step needs more than the %d rows it was compiled for \
+             (nefcmax is %d). Raise the row budget, or the model's nefcmax if that is \
+             what is short."
+            nb
+            t.nefcmax));
   let rows_idx = Nx.arange_f_at at Nx.float64 0.0 (Float.of_int nb) 1.0 in
   let mask = Nx.less rows_idx (Nx.cast Nx.float64 d.nefc) in
   let zero = Nx.zeros_like rows_idx in
   let select x = Nx.where mask x zero in
   (* A = J M^-1 J^T + diag R, on the fixed buffer. *)
   let l = Mass.factor d.mass_matrix in
-  let jt = Nx.matrix_transpose d.efc_J in
+  let j = take2 d.efc_J in
+  let jt = Nx.matrix_transpose j in
   let solved = Mass.solve l jt in
-  let a0 = Nx.matmul d.efc_J solved in
-  let weight = Nx.where mask d.efc_R (Nx.ones_like rows_idx) in
+  let a0 = Nx.matmul j solved in
+  let weight = Nx.where mask (take1 d.efc_R) (Nx.ones_like rows_idx) in
   let a = Nx.add a0 (Nx.diag weight) in
   (* b = J qacc_smooth - aref, zero on the rows that do not exist. *)
-  let b = select (Nx.sub (Nx.matmul d.efc_J d.qacc) d.efc_aref) in
+  let b = select (Nx.sub (Nx.matmul j d.qacc) (take1 d.efc_aref)) in
   let of_type k =
-    Nx.equal d.efc_type (Nx.scalar_at at Nx.int32 (Stdlib.Int32.of_int k))
+    Nx.equal (take1 d.efc_type) (Nx.scalar_at at Nx.int32 (Stdlib.Int32.of_int k))
   in
   let bilateral = of_type Constraint.type_equality in
   let friction =
@@ -369,7 +394,7 @@ let forward
       (of_type Constraint.type_friction_dof)
       (of_type Constraint.type_friction_tendon)
   in
-  let floss = d.efc_frictionloss in
+  let floss = take1 d.efc_frictionloss in
   (* The rows are the multipliers of a convex quadratic with bounds: equality
      rows are free, limit rows are non-negative, friction rows sit in
      [-loss, +loss]. *)
@@ -395,10 +420,13 @@ let forward
     ; hi
     ; mask = Nx.where mask (Nx.ones_like rows_idx) zero
     ; bilateral = Nx.where bilateral (Nx.ones_like rows_idx) zero
-    ; lambda0 = select d.efc_force
+    ; lambda0 = select (take1 d.efc_force)
     }
   in
   let lambda = solve_rows ~implicit ~linear ~iters ~boxed rows in
   let qfrc_constraint = Nx.matmul jt lambda in
   let qacc = Nx.add d.qacc (Mass.solve l qfrc_constraint) in
-  { d with efc_force = lambda; qfrc_constraint; qacc }
+  (* Dead rows are left at zero, so a stale force from a previous step cannot
+     leak into a warm start. *)
+  let efc_force = Nx.set (head @ [ R (0, nb) ]) lambda (Nx.zeros_like d.efc_force) in
+  { d with efc_force; qfrc_constraint; qacc }

@@ -1457,3 +1457,31 @@ are not rank-generic: they reshape at fixed ranks, so a *tensor* with a leading
 lane axis does not work and the batch has to go through `Rune.vmap`, which is
 what the throughput numbers actually measure -- a lowered loop over lanes, not a
 batched kernel.
+
+## The row budget: 91x of one MuJoCo core became 9x
+
+The solver was 98.5% of a device step and it was factoring `nefcmax x nefcmax`
+for a step with eight rows. The row count is a *structural* choice, like the
+iteration budget and the timestep, so it now is one: `Step.config ?rows` compiles
+the solve for that many rows, `Solver.forward` slices the first `rows` of the
+row buffers, and a step that needs more raises with the count it wanted rather
+than being quietly truncated. `G4_ROWS` reproduces the corpus's maxima: 21 rows
+for hopper, 19 for walker, 34 for humanoid, medians 8, 8 and 9.
+
+With the budget at 24 (hopper, walker) and 40 (humanoid): hopper goes from 454 to
+**47 us per env-step** on the iGPU at 512 lanes, walker from 1486 to **45**, i.e.
+21K and 22K env-steps/s, and the parity gate does not move -- `G4_ROWS=24`
+reproduces hopper's and walker's worst error and shadowing horizon to the digit,
+and humanoid at 40 rows is still 1000/1000 within 1e-8. From 91x of one MuJoCo
+core to 9x, by choosing a number that was already in the recording.
+
+Two things this taught that generalize. A budget the engine can *state* is worth
+more than one it guesses: raising with the count wanted makes an aggressive
+budget safe to try. And the padding was not in the physics -- it was in the
+allocation, which is the kind of cost that only a profile finds, because the code
+reads as if it solves an eight-row problem.
+
+Humanoid has no batched number yet, and it is not the solver: at 8 lanes on the
+device, kinematics is 1.2 ms, mass 1.2 ms, and then `contacts` never returns --
+the tracing cost section 4 of `doc/perf.md` names, one traced `set` per degree of
+freedom per candidate. That is the next piece of work.

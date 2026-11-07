@@ -482,6 +482,39 @@ buffer to the rows a step actually has -- eight or sixteen for these models --
 is therefore worth ten to fifty times on the whole step, which would land hopper
 at 20-50 us per env-step, 20K-50K env-steps/s.
 
+**Sized to the rows a step has, it is 9.6x on hopper and 33x on walker.** The
+row budget is now a structural choice like the timestep: `Step.config ?rows`
+compiles the solve for that many rows, `Solver.forward` slices the first `rows`
+of the buffers and raises by name if a step needs more. With the corpus's own
+row counts (8-21 for hopper, 8-19 for walker, 8-34 for humanoid; the recordings'
+medians are 8, 8 and 9):
+
+| model | rows | lanes | device | us/env-step | env-steps/s | x `mj_step`, 1 core |
+| --- | ---: | ---: | --- | ---: | ---: | ---: |
+| hopper | 64 (`nefcmax`) | 512 | gpu | 454 | 2202 | 91x |
+| hopper | **24** | 512 | gpu | **47** | **21073** | **9x** |
+| hopper | 24 | 512 | host | 138 | 7234 | 28x |
+| walker | 76 (`nefcmax`) | 512 | gpu | 1486 | 673 | 297x |
+| walker | **24** | 512 | gpu | **45** | **22153** | **9x** |
+| walker | 24 | 512 | host | 140 | 7120 | 28x |
+
+And the parity gate does not move: `G4_ROWS=24` reproduces hopper and walker's
+numbers *exactly* (worst 1.10e-11 and 8.77e-11, shadows 980 and 507) and
+humanoid at `G4_ROWS=40` is still 1000/1000 within 1e-8. From 91x of one MuJoCo
+core to 9x, with nothing but a budget.
+
+Choosing the budget is a tuning question of the same kind MJX asks of
+`max_geom_pairs`: take the maximum `nefc` a recorded run produces and round up.
+The engine refuses rather than truncating, so a budget that is too small raises
+with the count it wanted, which is what makes the choice safe.
+
+**Humanoid is a separate pathology and not this one.** Batched, it does not
+finish even on the host: at 8 lanes the device profiler shows kinematics at 1.2
+ms, mass at 1.2 ms, and then stops in `contacts` -- the defect section 4 names,
+where each candidate contact walks its dof chain with one traced `set` per degree
+of freedom, so a model with many candidates spends minutes *tracing*. That has to
+be fixed before humanoid has a throughput number at all.
+
 **A correction.** An earlier version of this section blamed `Linalg.cholesky` for
 being column-serial. That was wrong: the default solver path is
 `Mass.factor`/`Mass.solve`, which are `Nx.cholesky` and `Nx.solve_triangular`

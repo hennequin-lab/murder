@@ -27,7 +27,7 @@ type config
     model: the schedule costs `iters × Solver.inner_rounds` rounds whatever the
     problem needs, so a training loop may want fewer rounds than the XML asks
     for. The parity gate is what says whether a given budget is enough. *)
-val config : ?iters:int -> Nx.host Model.model -> config
+val config : ?iters:int -> ?rows:int -> Nx.host Model.model -> config
 
 (** [config_dt c] is the timestep [c] holds. *)
 val config_dt : config -> float

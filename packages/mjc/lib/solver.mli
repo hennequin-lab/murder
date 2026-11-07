@@ -104,6 +104,7 @@ val forward
   :  ?linear:linear
   -> ?implicit:bool
   -> ?iters:int
+  -> ?rows:int
   -> 'a Model.model
   -> 'a Data.data
   -> 'a Data.data

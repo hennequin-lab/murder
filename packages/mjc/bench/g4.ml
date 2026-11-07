@@ -24,12 +24,14 @@ let () =
       | Ok m -> m
       | Error e -> failwith e
     in
-    let iters = Option.map (Stdlib.Sys.getenv_opt "G4_ITERS") ~f:Stdlib.int_of_string in
+    let env name = Option.map (Stdlib.Sys.getenv_opt name) ~f:Stdlib.int_of_string in
+    let iters = env "G4_ITERS" in
+    let rows = env "G4_ROWS" in
     let step =
-      match iters with
-      | None -> fun d -> Mjc.Step.step m d
-      | Some n ->
-        let c = Mjc.Step.config ~iters:n m in
+      match iters, rows with
+      | None, None -> fun d -> Mjc.Step.step m d
+      | iters, rows ->
+        let c = Mjc.Step.config ?iters ?rows m in
         fun d -> Mjc.Step.step_with c m d
     in
     let path = Printf.sprintf "test/fixtures/%s.g4.mjbf" name in
