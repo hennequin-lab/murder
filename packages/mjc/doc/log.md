@@ -1783,3 +1783,53 @@ ill-conditioning does exactly that, and nobody re-derived it. The second is that
 the `` `Batched `` path is worth 2.4x on the largest model, which is larger than
 anything left on the plan -- and it was sitting behind a bug, not behind an
 algorithm.
+
+## Both remaining candidates are dead, and the best configuration is 26x
+
+The plan had two candidates left, both premised on the free block being small
+(3-4 rows against a 21-34 row buffer): compact the factorisation to the free
+block, statically (2.0-5.4x) or per lane (145x at the median). They need the same
+thing -- the working set *in advance* -- and `tools/measure_churn.py` says it
+cannot be had. Stepping MuJoCo along each recorded trajectory and comparing one
+step's free set with the next, i.e. what the warm start offers against what the
+solve ends at:
+
+| model | steps | rows median | rows max | set unchanged | rows joining | rows leaving |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| hopper | 613 | 8 | 21 | 29.7% | 0.95 | 1.16 |
+| walker | 626 | 9 | 21 | 13.4% | 1.54 | 1.74 |
+| humanoid | 296 | 9 | 33 | 11.5% | 1.41 | 1.86 |
+
+The set changes on 70-88% of steps and by up to eleven rows at once. So a block
+sized from the warm start is wrong on most steps, and one sized to absorb the
+churn is the row buffer again. That is the static candidate finished, and the
+per-lane one inherits the same problem plus a host read per step to learn each
+lane's size, which at 32-130 us a step is a sync that costs more than it saves.
+
+Both are written down rather than left on the plan. `bench/churn.ml` carries the
+table so the next person arguing for compaction starts from the measurement.
+
+What is left is configuration, and it compounds:
+
+| hopper, 512 lanes, gpu | µs/env-step | env-steps/s | × mj_step 1 core |
+| --- | ---: | ---: | ---: |
+| kernel, rows=21 (`nefcmax`) | 452.45 | 2210 | 90x |
+| kernel, rows=24 | 44.90 | 22273 | 9x |
+| kernel, rows=24, iters=3 | 35.51 | 28161 | 7x |
+| **batched, rows=24, iters=3** | **32.65** | **30632** | **7x** |
+
+| humanoid, 512 lanes, gpu | µs/env-step | env-steps/s | × mj_step 1 core |
+| --- | ---: | ---: | ---: |
+| kernel, rows=40 (first working number) | 353.24 | 2831 | 71x |
+| batched, rows=40 | 149.58 | 6685 | 30x |
+| kernel, rows=40, iters=3 | 237.68 | 4207 | 48x |
+| **batched, rows=40, iters=3** | **128.81** | **7764** | **26x** |
+
+and the gate holds for all of these combinations: hopper 1000/1000 (worst
+8.46e-12), humanoid 1000/1000 (worst 4.35e-10) at `iters=3` with the blocked
+solve, never a single state outside 1e-8.
+
+So the session's arithmetic on the two contact-hungry models is 7x and 26x of one
+MuJoCo core, from 9x and "does not compile", and every step of it came from
+configuration that the measurements chose: the row budget, the schedule's exact
+fixed point, and a solver path that turned out to be broken rather than slow.

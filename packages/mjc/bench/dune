@@ -23,7 +23,8 @@
   dtype
   rows
   la
-  solve)
+  solve
+  churn)
  (modules
   spike_la
   bench_step
@@ -48,7 +49,8 @@
   dtype
   rows
   la
-  solve)
+  solve
+  churn)
  (libraries base mjc nx rune unix rig rig.amd rig.amd.amdgpu))
 
 ; The iLQR demo is the one executable that links dilqr, so the rest of the

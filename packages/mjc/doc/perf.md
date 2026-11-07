@@ -613,3 +613,21 @@ walker 1000/1000, worst 8.77e-11, shadow 507 (identical); humanoid 1000/1000,
 worst 4.35e-10, shadow 275 (kernel 266). `Cholesky` remains the default because
 it is the bit-identical one; `Step.config ~linear:\`Batched` is the fast path, and
 it wins on the device and loses on the host, so it is a choice and not a switch.
+
+## 13. The best configuration, and the two candidates that died
+
+Configuration now compounds, and the gate holds at every row of this:
+
+| model | lanes | config | µs/env-step | env-steps/s | × mj_step 1 core |
+| --- | ---: | --- | ---: | ---: | ---: |
+| hopper | 512 | kernel, rows=21 | 452.45 | 2210 | 90× |
+| hopper | 512 | batched, rows=24, iters=3 | **32.65** | **30632** | **7×** |
+| humanoid | 512 | kernel, rows=40 | 353.24 | 2831 | 71× |
+| humanoid | 512 | batched, rows=40, iters=3 | **128.81** | **7764** | **26×** |
+
+The two candidates the plan had left — compacting the factorisation to the free
+block, statically or per lane — both need the working set in advance, and
+`tools/measure_churn.py` shows it changes on 70–88% of steps by up to eleven rows.
+Static compaction is therefore wrong on most steps, and per-lane compaction needs
+a host read per step whose sync costs more than it saves. `bench/churn.ml` and
+`doc/log.md` carry the table.
