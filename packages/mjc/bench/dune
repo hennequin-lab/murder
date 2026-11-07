@@ -17,6 +17,7 @@
   gpu
   device
   throughput
+  rl
   gpuprof
   probe)
  (modules
@@ -37,6 +38,7 @@
   gpu
   device
   throughput
+  rl
   gpuprof
   probe)
  (libraries base mjc nx rune unix rig rig.amd rig.amd.amdgpu))
