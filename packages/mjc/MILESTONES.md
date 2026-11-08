@@ -760,6 +760,28 @@ only if a lab model needs them; continue with MJCF only if a user writes
 MJCF; continue with the GPU only if there is a named consumer and the CPU
 path is within 5× of MuJoCo on the same machine.
 
+**Verdict, with acceptances 2, 3 and 5 as they stand (40 of 44 items met; two
+half, one not met and recorded above).**
+
+- **Meshes and heightfield: yes.** Not for a model we lack — the quadruped-sized
+  model with capsules and spheres stands and walks — but for a *shape*:
+  `Collision.unsupported_pairs` reports 54 candidate pairs in 8 type pairs on
+  that model, and every heightfield is unsupported. Meshes and terrain are what
+  those pairs are. M8 is justified by the report rather than by a hunch.
+- **MJCF: not yet.** The converter path works and is documented: MJCF is compiled
+  once at development time by a Python module and the engine itself never needs
+  MuJoCo. M10 buys convenience, not capability, and it is a month.
+- **GPU: yes, as a batch multiplier.** Named consumer: the RL loop (`bench/rl.ml`,
+  where rollout is 84–93% of the loop and the policy 7–16%). The CPU path is
+  within 5× of MuJoCo on hopper (10.60 µs against 5.0 at 1024 lanes, 2.1×) and
+  not within it on humanoid (330.04 against 18.7, 17.6×) — where the GPU is 7×
+  against the same core. So the GPU earns its place exactly where the CPU misses
+  the gate.
+- **The next milestone is M8**, starting with MPR for the penetration depth
+  (`doc/adr/0013-convex-path.md` records why EPA was withdrawn and why MPR is the
+  fallback MuJoCo itself keeps), then the multi-contact assembly, then the
+  heightfield, then the batched version of both.
+
 **Demo.** `dune exec packages/mjc/bench/bench_step.exe -- --json` prints the
 table; the README embeds it.
 
