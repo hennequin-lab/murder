@@ -223,12 +223,12 @@ val sketch
 
     Two halves, split by what is worth compiling rather than by taste. The
     sketching half is differentiable and jits ({!Optim.sketch_jit}); the update
-    needs the eigendecomposition of the sketched GGN, which Raven can compile —
-    [Nx.eigh] is lowered to Jacobi rotations — but at a cost that does not
-    scale: one compiled [k = 24] eigendecomposition takes 8.5 s, in a single
-    LLVM pass of a single kernel, and grows with the lane count, while the
-    host's is 0.09 ms at the same [k]. So the solve runs eagerly on the host at
-    O(k³), negligible beside a model with P ≫ k parameters — the premise of the
+    needs the eigendecomposition of the sketched GGN, which Raven compiles —
+    [Nx.eigh] is lowered to Jacobi rotations — but which runs slower compiled
+    than on the host: eight times slower at [k = 128], and ten to sixty times
+    slower on a GPU, against a round trip of three [k×k] tensors (see
+    [doc/jit-solve.md]). So the solve runs eagerly on the host at O(k³),
+    negligible beside a model with P ≫ k parameters — the premise of the
     algorithm — and only [k]-sized numbers make the trip. A deployment
     therefore compiles the sketch and the shift, and keeps the solve outside
     them:
@@ -406,11 +406,11 @@ module Optim : sig
       in the sketch's own basis, unconsidered directions and all.
 
       {b Note.} A compiled eigendecomposition is possible — [Nx.eigh] lowers to
-      Jacobi rotations — but not practical at a sketch's lane count: one
-      [k = 24] program takes seconds to compile, in one LLVM pass of one
-      kernel, and the cost grows with [k] (see [doc/jit-solve.md]). So this is
-      for the host side of a step, not inside a [Rune.jit]ed program, and takes
-      arguments on a set with kernels, such as the host.
+      Jacobi rotations and compiles in a fraction of a second — but its
+      replay is several times the host kernel's, and a device's is slower
+      still, so this is for the host side of a step rather than inside a
+      [Rune.jit]ed program (see [doc/jit-solve.md]). It takes arguments on a
+      set with kernels, such as the host.
 
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
       smallest singular value is 0, and for a [gram] that is rank-deficient:

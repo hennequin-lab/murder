@@ -13,14 +13,13 @@
      wraps the (key, aux, params) → (loss, c, C, G̃, Θ, gram) computation in
      [Rune.jit];
    - the *update* half needs the eigendecomposition of the sketched GGN. Raven
-     can compile one — [Nx.eigh] is lowered to Jacobi rotations and a jit
-     traces it — but not at a cost a training run can pay: one compiled
-     [k = 24] eigendecomposition takes 8.5 s, most of it in a single LLVM pass
-     over a single kernel, and the cost grows with the lane count (measured and
-     diagnosed in [doc/jit-solve.md]). So the solve runs eagerly on the host at
-     O(k³) — negligible against a model with P ≫ k parameters, which is the
-     algorithm's whole premise — and only k-sized matrices cross to the host.
-     The step on the parameters is compiled again, where they live.
+     compiles one — [Nx.eigh] is lowered to Jacobi rotations — but it runs
+     slower compiled than on the host: eight times at k = 128, and ten to sixty
+     times on a GPU, against a round trip of three k×k tensors (measured in
+     [doc/jit-solve.md]). So the solve runs eagerly on the host at O(k³) —
+     negligible against a model with P ≫ k parameters, which is the algorithm's
+     whole premise — and only k-sized matrices cross to the host. The step on
+     the parameters is compiled again, where they live.
 
    Everything here is a pure function of values. The only state is [state]: the
    key the directions are drawn from, carried as an int32 tensor so it can ride
