@@ -43,8 +43,15 @@ Try it:
 
 ```sh
 dune exec packages/mjc/tools/inspect.exe -- packages/mjc/test/fixtures/ball.mjcb --fk
-dune build @packages/mjc/runtest
+dune build @packages/mjc/runtest        # 16 fast suites, ~10 s once built
+dune build @packages/mjc/runtest-slow   # the parity gate and the exhaustive
+                                        # box-box manifolds, ~2 min; also nightly
 ```
+
+`runtest` is what CI runs on every push. `runtest-slow` holds the suites that are
+too slow to run on every edit and too important to drop: the box-box manifold
+comparison (800 pairs, every contact matched as a set) and hopper, walker and
+humanoid against 1000 recorded MuJoCo states each. It runs nightly.
 
 | Document | What it is |
 | --- | --- |

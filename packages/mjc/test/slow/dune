@@ -1,0 +1,27 @@
+; The tests too slow for `dune build @runtest`, and the parity gate itself.
+; Run them with `dune build @packages/mjc/runtest-slow` (a few minutes), which
+; is what the nightly workflow does. Nothing here is optional to the claim that
+; the engine matches MuJoCo: it is simply too big to run on every edit.
+
+(executable
+ (name test_boxbox_tensor)
+ (modules test_boxbox_tensor)
+ (libraries base mjc nx rune windtrap))
+
+(rule
+ (alias runtest-slow)
+ (action
+  (run %{exe:test_boxbox_tensor.exe})))
+
+; The gate: every model of the corpus against 1000 recorded MuJoCo states. It
+; reads the fixtures by package-relative path, so it runs from the package root.
+
+(rule
+ (alias runtest-slow)
+ (deps
+  (glob_files ../fixtures/*)
+  %{exe:../../bench/g4.exe})
+ (action
+  (chdir
+   %{workspace_root}/packages/mjc
+   (run %{exe:../../bench/g4.exe} hopper walker humanoid))))

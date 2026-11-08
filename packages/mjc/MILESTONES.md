@@ -711,8 +711,13 @@ tested, CI split, docs complete.
    `doc/perf.md` §14.
 3. float32 passes the same acceptance tests as float64 at `1e-4` relative,
    including the contact benchmarks.
-4. `dune build @packages/mjc/runtest` under 2 minutes warm;
-   `dune build @packages/mjc/runtest-slow` under 20 minutes.
+4. ✅ `dune build @packages/mjc/runtest` is 27 s with `--force` (recompiling and
+   rerunning everything) and 1 s with nothing to rebuild, against the 2-minute
+   budget; `dune build @packages/mjc/runtest-slow` is 115 s against 20 minutes.
+   The slow suite holds the exhaustive box-box manifold test (moved to
+   `test/slow/`) and runs the parity gate itself over hopper, walker and
+   humanoid. `.github/workflows/nightly.yml` runs the same alias, so the local
+   and overnight commands cannot drift.
 5. `odoc` builds with warnings as errors, and every public value in `lib/*.mli`
    has a doc comment.
 6. A user can write a model, load it, step it, differentiate it and save a

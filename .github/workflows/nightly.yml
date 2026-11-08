@@ -1,0 +1,45 @@
+name: Nightly
+
+# The suites too slow to run on every push: the exhaustive box-box manifold test
+# (800 pairs, every contact compared as a set) and the parity gate (hopper,
+# walker and humanoid against 1000 recorded MuJoCo states each). Together they
+# take about two minutes here; on a shared runner, longer.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DUNE_CACHE: enabled
+  DUNE_CACHE_STORAGE_MODE: copy
+  WINDTRAP_TIMEOUT: 120
+  WINDTRAP_PROP_COUNT: 200
+  LITANY_NO_PROGRESS: 1
+
+jobs:
+  slow:
+    name: slow suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ocaml-dune/setup-dune@v2
+        with:
+          version: 3.24.2
+          steps: install-dune enable-pkg install-depexts
+      - name: Build
+        run: dune build @all @install
+      # The same command a developer runs locally. If it passes here and fails
+      # there, the machine differs, not the code.
+      - name: Slow suites
+        run: dune build @packages/mjc/runtest-slow
