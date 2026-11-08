@@ -12,11 +12,14 @@
    - the *sketching* half is differentiable and compiles, so [sketch_jit]
      wraps the (key, aux, params) → (loss, c, C, G̃, Θ, gram) computation in
      [Rune.jit];
-   - the *update* half needs the eigendecomposition of the sketched GGN,
-     which does not compile, so it runs eagerly on the host at O(k³) —
-     negligible against a model with P ≫ k parameters, which is the
-     algorithm's whole premise. Only k-sized matrices cross to the host: the
-     step on the parameters is compiled again, where they live.
+   - the *update* half needs the eigendecomposition of the sketched GGN. Raven
+     compiles one — [Nx.eigh] is lowered to Jacobi rotations — but it runs
+     slower compiled than on the host: eight times at k = 128, and ten to sixty
+     times on a GPU, against a round trip of three k×k tensors (measured in
+     [doc/jit-solve.md]). So the solve runs eagerly on the host at O(k³) —
+     negligible against a model with P ≫ k parameters, which is the algorithm's
+     whole premise — and only k-sized matrices cross to the host. The step on
+     the parameters is compiled again, where they live.
 
    Everything here is a pure function of values. The only state is [state]: the
    key the directions are drawn from, carried as an int32 tensor so it can ride
@@ -351,9 +354,9 @@ let inverse_sqrt (z : 'd Nx.float64_t) : 'd Nx.float64_t =
    so it says what the loss does only once that basis is orthonormal:
    G̃ ← Q G̃ Qᵀ and C ← Q C with Q = (ΘΘᵀ)^{-1/2}, and the coordinates come back
    through Qᵀ so that [apply] of them is the step. The whitening belongs here,
-   with the Gram handed in, rather than on the directions themselves: the SVD
-   that produces Q cannot run inside a jitted step, while this one is host-side
-   by construction. *)
+   with the Gram handed in, rather than on the directions themselves: that owns
+   the Gram's own factorization, which is wanted once per step either way, and
+   keeps [directions] a draw. *)
 let coordinates
       ?(damping : damping = `Relative_from_top 1e-6)
       ?(preconditioner : preconditioner = `Inverse)

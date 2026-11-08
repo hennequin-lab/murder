@@ -18,7 +18,9 @@
     with [log q] at them, and {!compute} adds the likelihood of the rolled-out
     states and the model's log prior at the same draws. The KL term is thus
     sampled rather than analytic — no Gaussian assumption on [q] — and both
-    densities are evaluated at the same reparameterized draws.
+    densities are evaluated at the same reparameterized draws. A recognition
+    that leaves the inputs at the point mass at zero contributes no input
+    prior term, only the initial state's; see {!log_prior}.
 
     {b Sticking the landing.} {!Recognition.infer} evaluates [log q] with the
     recognition's distribution parameters stopped, so differentiating the
@@ -30,11 +32,10 @@
     unchanged — the difference is only in the backward pass.
 
     {!loss} is the negated bound, which is what a training loop minimizes. It
-    runs the recognition itself; {!loss_fixed} is the traceable form with a
-    fixed number of iLQR iterations, and {!batch_loss_fixed} is the same
-    objective on a tensor mini-batch of trials. A caller that already has a
-    posterior — reused across several bounds, or built with the adaptive iLQR
-    solve — passes it to {!compute} directly.
+    runs the recognition itself; {!loss_fixed} is the same objective with a
+    fixed number of iLQR iterations, which is what makes it traceable. A
+    caller that already has a posterior — reused across several bounds, or
+    built with the adaptive iLQR solve — passes it to {!compute} directly.
 
     {b Trial batches.} A single trial's data is [[n_steps; n_output]]; a
     mini-batch stacks trials on leading axes, [[batch…; n_steps; n_output]],
@@ -74,7 +75,7 @@ type ('w, 's) t =
     {!Recognition.infer} returns; it carries the draws and [log q] at them, so
     all three terms come from the same draws and one encoder pass. It carries
     gradients, so composing {!compute} with an inference differentiates the
-    whole path. [beta] is a scalar tensor (default: a one of the model's
+    whole path. [beta] is a scalar tensor (by default a one of the model's
     dtype), not a host float, so a training step can take it as an argument
     and follow a {!Schedule} — or any other per-step weight — without
     recompiling under {!Rune.jit}.
@@ -89,14 +90,15 @@ val compute
   -> ('w, 's) value
   -> ('w, 's) t
 
-(** [loss model params ?iters ~key ~n_samples data] is the negated bound:
+(** [loss model params ?solve ~key ~n_samples data] is the negated bound:
     the recognition's draws and {!compute}, in one call.
 
-    [iters] is passed to the recognition: [Some n] for [n] fixed iLQR
-    iterations — tensor-only control flow, traceable and JIT-compilable
-    together with the solve's implicit gradient — and [None] for the
-    adaptive solve. An LFADS recognition ignores it, since its encoder is a
-    plain feedforward computation.
+    [solve] is passed to the recognition: {!Recognition.fixed} runs a fixed
+    number of iLQR iterations with tensor-only control flow, so the whole call
+    is traceable and JIT-compilable together with the solve's implicit
+    gradient, and {!Recognition.adaptive} stops on the solver's own test.
+    {!Recognition.default} is the adaptive solve. An LFADS recognition ignores
+    it, since its encoder is a plain feedforward computation.
 
     [data] is one trial or a tensor mini-batch, as for {!compute}. On a
     mini-batch the key is split into one subkey per trial, so the draws are
@@ -105,14 +107,33 @@ val loss
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
   -> ?beta:('w, 's) value
-  -> ?iters:int
+  -> ?solve:Recognition.solve
   -> key:'s Nx.Rng.key
   -> n_samples:int
   -> ('w, 's) value
   -> ('w, 's) value
 
-(** [loss_fixed model params ~iters ~key ~n_samples data] is {!loss} with
-    [iters] required: the traceable and JIT-compilable objective. *)
+(** [loss_fixed model params ~iters ~key ~n_samples data] is {!loss} with a
+    fixed iteration count, fixed being what makes it traceable and
+    JIT-compilable: [loss ~solve:(Recognition.fixed ~iters ())].
+
+    [data] is one trial or a tensor mini-batch, as for {!loss}; on a mini-batch
+    this is the training objective, and [data] is an argument of the compiled
+    function rather than an OCaml array captured by it, so one compiled step
+    serves every mini-batch of its shape:
+
+    {[
+      let step =
+        Rune.jit
+          Nx.Ptree.(Model.structure model @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
+          (fun params key data ->
+             Elbo.loss_fixed model params ~key ~n_samples:16 ~iters:4 data)
+      in
+      let loss = step params key batch
+    ]}
+
+    The batch axes are part of the compiled program's key, as every tensor
+    shape is. *)
 val loss_fixed
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
@@ -123,42 +144,14 @@ val loss_fixed
   -> ('w, 's) value
   -> ('w, 's) value
 
-(** [batch_loss_fixed model params ~key ~n_samples ~iters data] is the mean
-    of {!loss_fixed} over a tensor mini-batch of trials: [data] is
-    [[batch…; n_steps; n_output]]. The key is split into one subkey per trial,
-    so the trials' draws are independent and the result is deterministic in
-    [key].
-
-    This is the mini-batch objective. [data] is an argument of the compiled
-    function rather than an OCaml array captured by it, so a JIT-compiled
-    training step takes the mini-batch as a tensor:
-
-    {[
-      let step =
-        Rune.jit
-          Nx.Ptree.(Model.structure model @-> Nx.Rng.ptree @-> tensor @-> returns tensor)
-          (fun params key data ->
-             Elbo.batch_loss_fixed model params ~key ~n_samples:16 ~iters:4 data)
-      in
-      let loss = step params key batch
-    ]}
-
-    The batch axes are part of the compiled program's key, as every tensor
-    shape is. *)
-val batch_loss_fixed
-  :  ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
-  -> ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params
-  -> ?beta:('w, 's) value
-  -> key:'s Nx.Rng.key
-  -> n_samples:int
-  -> iters:int
-  -> ('w, 's) value
-  -> ('w, 's) value
-
 (** [log_prior model params ~x0 ~u] is the model's log prior at a latent
     sample: [log p(x_0) + Σ_k log p(u_k)], one value per sample. [x0] is
     [[batch…; n_samples; n]] and [u] is [[batch…; n_steps; n_samples; m]].
-    It is the term the bound contrasts with [log q]. *)
+    It is the term the bound contrasts with [log q]. The input sum is present
+    exactly when the recognition infers the inputs: a recognition that leaves
+    them at the point mass at zero has no input factor to weigh, so the bound
+    carries no input term for it. Raises [Invalid_argument] if the two
+    tensors do not have those shapes. *)
 val log_prior
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.t
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) Model.params

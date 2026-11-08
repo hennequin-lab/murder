@@ -2,6 +2,14 @@
  (name dilqr)
  (public_name dilqr)
  (libraries base stdio nx rune)
- (modules regularisation linesearch lqr problem solver implicit_grad dilqr)
+ (modules
+  regularisation
+  damping
+  linesearch
+  lqr
+  problem
+  solver
+  implicit_grad
+  dilqr)
  (preprocess
   (pps ppx_ptree)))

@@ -42,9 +42,12 @@ let transpose_time ~time_axis t =
 
 (* [log_prior model params ~x0 ~u] is the log density of the model's prior
    over the latents at a sample: one value per member of the sample batch. The
-   input prior is evaluated step by step; the initial-state prior contributes
-   exactly when the model has one. [u] is time-major, so its leading axis is
-   scanned and every trial and sample axis is a batch axis. *)
+   input prior is evaluated step by step, and only when the recognition infers
+   the inputs at all: a recognition that leaves them at the point mass at zero
+   has no input factor to weigh, and pricing the point mass would add a term
+   the bound does not contain. The initial-state prior contributes exactly
+   when the model has one. [u] is time-major, so its leading axis is scanned
+   and every trial and sample axis is a batch axis. *)
 let log_prior
       (type w d l p e r)
       (model : (w, d, l, p, e, r, 's) Model.t)
@@ -52,21 +55,36 @@ let log_prior
       ~(x0 : (w, 's) value)
       ~(u : (w, 's) value)
   =
-  let t_steps = model.Model.n_steps in
+  let t_steps = Model.n_steps model in
   let u_rank = Array.length (Nx.shape u) in
-  let time_axis = Int.max 0 (u_rank - 3) in
-  let u_by_time = transpose_time ~time_axis u in
-  let ks = arange_at (beside u) model.Model.dtype 0 t_steps 1 in
-  let _, by_step =
-    Rune.scan
-      Nx.Ptree.unit
-      Nx.Ptree.(pair tensor tensor)
-      Nx.Ptree.tensor
-      (fun () (u_k, k) -> (), model.Model.prior.Prior.logp_t params.Model.prior ~k ~u:u_k)
-      ~init:()
-      (u_by_time, ks)
+  if u_rank < 3 || not (Int.equal (Array.length (Nx.shape x0)) (u_rank - 1))
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Elbo.log_prior: expected u [batch…; n_steps; n_samples; m] and x0 [batch…; \
+          n_samples; n], got [%s] and [%s]"
+         (shape_string (Nx.shape u))
+         (shape_string (Nx.shape x0)));
+  let time_axis = u_rank - 3 in
+  let sample_shape = Array.sub (Nx.shape x0) ~pos:0 ~len:(u_rank - 2) in
+  let u_logp =
+    if Recognition.infers_inputs (Model.recognition model)
+    then (
+      let u_by_time = transpose_time ~time_axis u in
+      let ks = arange_at (beside u) (Model.dtype model) 0 t_steps 1 in
+      let _, by_step =
+        Rune.scan
+          Nx.Ptree.unit
+          Nx.Ptree.(pair tensor tensor)
+          Nx.Ptree.tensor
+          (fun () (u_k, k) ->
+             (), Prior.logp_t (Model.prior model) params.Model.prior ~k ~u:u_k)
+          ~init:()
+          (u_by_time, ks)
+      in
+      sum ~axes:[ 0 ] by_step)
+    else zeros_at (beside x0) (Model.dtype model) sample_shape
   in
-  let u_logp = sum ~axes:[ 0 ] by_step in
   match params.Model.initial_prior with
   | None -> u_logp
   | Some p -> Infix.(u_logp + Initial.logp p x0)
@@ -82,12 +100,12 @@ let compute
   let beta =
     Option.value
       beta
-      ~default:(scalar_at (beside posterior.Recognition.x0) model.Model.dtype 1.0)
+      ~default:(scalar_at (beside posterior.Recognition.x0) (Model.dtype model) 1.0)
   in
-  let t_steps = model.Model.n_steps
-  and n = model.Model.n
-  and m = model.Model.m
-  and n_output = model.Model.n_output in
+  let t_steps = Model.n_steps model
+  and n = Model.n model
+  and m = Model.m model
+  and n_output = Model.n_output model in
   let data_shape = Nx.shape data in
   let data_rank = Array.length data_shape in
   if
@@ -121,6 +139,10 @@ let compute
   let n_samples = log_prob_shape.(batch_rank) in
   if n_samples <= 0 then invalid_arg "Elbo.compute: the posterior batch is empty";
   check_shape
+    ~what:"log_prob"
+    (append_shape batch_dims [| n_samples |])
+    posterior.Recognition.log_prob;
+  check_shape
     ~what:"x0"
     (append_shape batch_dims [| n_samples; n |])
     posterior.Recognition.x0;
@@ -130,7 +152,7 @@ let compute
     posterior.Recognition.u;
   let z =
     Dynamics.integrate_samples
-      model.Model.dynamics
+      (Model.dynamics model)
       params.Model.dynamics
       ~x0:posterior.Recognition.x0
       ~u:posterior.Recognition.u
@@ -139,7 +161,7 @@ let compute
   let z_by_time = transpose_time ~time_axis:batch_rank z in
   let z_next = slice [ R (1, t_steps + 1) ] z_by_time in
   let data_by_time = transpose_time ~time_axis:batch_rank data in
-  let ks = arange_at (beside data) model.Model.dtype 0 t_steps 1 in
+  let ks = arange_at (beside data) (Model.dtype model) 0 t_steps 1 in
   let _, likelihood_by_step =
     Rune.scan
       Nx.Ptree.unit
@@ -150,7 +172,8 @@ let compute
             added before that axis broadcasts it over the sample axis. *)
          let o_k = unsqueeze ~axes:[ -2 ] o_k in
          ( ()
-         , model.Model.likelihood.Likelihood.logp_t
+         , Likelihood.logp_t
+             (Model.likelihood model)
              params.Model.likelihood
              ~k
              ~x:z_k
@@ -176,19 +199,9 @@ let compute
   ; kl = mean kl_by_sample
   }
 
-let loss model params ?beta ?iters ~key ~n_samples data =
-  let posterior = Model.infer model params ?iters ~n_samples ~key data in
+let loss model params ?beta ?solve ~key ~n_samples data =
+  let posterior = Model.infer model params ?solve ~n_samples ~key data in
   Infix.(-(compute model params ?beta ~posterior data).elbo)
 
 let loss_fixed model params ?beta ~iters ~key ~n_samples data =
-  loss model params ?beta ~iters ~key ~n_samples data
-
-let batch_loss_fixed model params ?beta ~key ~n_samples ~iters data =
-  let shape = Nx.shape data in
-  if Array.length shape < 3
-  then
-    invalid_arg
-      (Printf.sprintf
-         "Elbo.batch_loss_fixed: data must be [batch…; n_steps; n_output], got [%s]"
-         (shape_string shape));
-  loss_fixed model params ?beta ~key ~n_samples ~iters data
+  loss model params ?beta ~solve:(Recognition.fixed ~iters ()) ~key ~n_samples data

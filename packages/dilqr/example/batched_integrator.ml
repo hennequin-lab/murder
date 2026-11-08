@@ -91,7 +91,7 @@ let inputs_ptree = Dilqr.inputs Integrator.problem
 let () =
   printf "── batched solve (b = %d) ──\n%!" b;
   let solve = Dilqr.solve_fixed Integrator.problem in
-  let taus = solve ~iters:8 inputs in
+  let taus = solve ~max_iters:8 inputs in
   let cost = Dilqr.loss_of_taus Integrator.problem theta taus in
   let xs, _ = Dilqr.split_taus Integrator.problem taus in
   let xf = xs.(Integrator.horizon) in
@@ -110,7 +110,8 @@ let () =
             , Nx.host Nx.float64_t )
             Dilqr.Inputs.t)
     =
-    sum (Dilqr.loss_of_taus Integrator.problem i.Dilqr.Inputs.theta (solve ~iters:8 i))
+    sum
+      (Dilqr.loss_of_taus Integrator.problem i.Dilqr.Inputs.theta (solve ~max_iters:8 i))
   in
   let grads =
     Rune.jit

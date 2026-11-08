@@ -23,7 +23,7 @@
 ; Move this SHA forward deliberately; dune.lock records the same commit.
 (pin
  (url
-  "git+https://github.com/raven-ml/raven.git#4a3bc8311990a185a5636f94fa02a69906ff3f1c")
+  "git+https://github.com/raven-ml/raven.git#720448679a36de9a6dfde022eee8dde6e73302e6")
  (package
   (name lz))
  (package
@@ -187,13 +187,16 @@
 ; The engine is not published yet (MILESTONES.md: private until M7), but its
 ; package has to exist for the lock to resolve what the viewer needs: dune pkg
 ; only resolves what some package depends on, and raylib is the viewer's only
-; dependency that is not already in the tree.
+; dependency that is not already in the tree. Every library here is private, so
+; nothing attaches to the package and nothing is installed from it: allow_empty
+; is what says so, without which `dune build`'s mjc.install fails.
 (package
  (name mjc)
  (synopsis "A MuJoCo-compatible differentiable physics engine on Nx")
  (depends
   base
   nx
-  raylib))
+  raylib)
+ (allow_empty))
 
 (executables_implicit_empty_intf false)

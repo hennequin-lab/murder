@@ -5,6 +5,7 @@
 
 open Base
 open Nx
+open Types
 (* The generative prior over the initial state [x_0].
 
    The library's own generative model starts every trial at [x_0 = 0] and
@@ -19,11 +20,29 @@ open Nx
    [N(0, kappa I)]; the reference implementation makes it learnable, and so
    does this one. *)
 
+(* The prior as a description: what it is, not the value it starts at. It
+   holds no tensor, so it needs no dtype and no placement. *)
+type t =
+  { n : int
+  ; mean : float
+  ; std : float
+  }
+
 type ('a, _) params =
   { mean : 'a
   ; log_stds : 'a
   }
 [@@deriving ptree]
+
+let make ?(mean = 0.0) ?(std = 1.0) ~n () =
+  if n <= 0 then invalid_arg "Initial.make: n must be positive";
+  if not (Float.( > ) std 0.0) then invalid_arg "Initial.make: std must be positive";
+  { n; mean; std }
+
+let init ~at (type w) (dtype : (float, w) Nx.dtype) (p : t) : ((w, 's) value, 's) params =
+  { mean = full_at at dtype [| p.n |] p.mean
+  ; log_stds = full_at at dtype [| p.n |] (Float.log p.std)
+  }
 
 let structure () =
   Nx.Ptree.instantiate
@@ -33,21 +52,20 @@ let structure () =
       let walk = walk_params
     end)
 
-let make ?(mean = 0.0) ?(std = 1.0) ~n dtype =
-  if n <= 0 then invalid_arg "Initial.make: n must be positive";
-  if not (Float.( > ) std 0.0) then invalid_arg "Initial.make: std must be positive";
-  { mean = full dtype [| n |] mean; log_stds = full dtype [| n |] (Float.log std) }
+let place ~at p =
+  Nx.Ptree.place
+    (module struct
+      type ('a, 's) t = ('a, 's) params
 
-let log_2pi = Float.log (2.0 *. Float.pi)
+      let walk = walk_params
+    end)
+    at
+    p
 
 (* [logp p x] is [log p(x)] summed over the last axis: one value per row of a
    batched [x], a scalar for a single state. *)
 let logp p x =
-  let open Infix in
-  let scaled = (x - p.mean) / exp p.log_stds in
-  (* [log (2 pi sigma^2)] is [log 2 pi + 2 log sigma]. *)
-  let log_scale = (p.log_stds *$ 2.0) + scalar_like p.log_stds log_2pi in
-  sum ~axes:[ -1 ] ((scaled * scaled) + log_scale) *$ -0.5
+  Density.logp ~mean:p.mean ~covariance:(Density.Diagonal { log_stds = p.log_stds }) x
 
 (* [sample p key ~n_samples] draws [n_samples] states, of shape
    [[n_samples; n]]. Reparameterized and differentiable. *)

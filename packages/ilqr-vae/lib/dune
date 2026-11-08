@@ -7,6 +7,7 @@
  (modules
   types
   special
+  density
   covariance
   initial
   prior

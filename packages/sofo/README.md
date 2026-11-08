@@ -27,9 +27,14 @@ The library splits along what can be compiled:
   differentiates, and it jits (`Sofo.Optim.sketch_jit`).
 - **Updating** (`Sofo.Optim`) — Algorithm 1's damped subspace solve
   `θ ← θ − η·Θ·U(S + γI)⁻¹UᵀC`, and the shift. The solve needs the
-  eigendecomposition of the symmetric `G̃`, which does not compile, so it runs
-  eagerly on the host at O(k³) — the cheap part, against a model with P ≫ k
-  parameters. The shift compiles, and runs where the parameters live.
+  eigendecomposition of the symmetric `G̃`. That compiles — `Nx.eigh` is lowered
+  to Jacobi rotations and `Rune.jit` traces it — but it is 8× the host kernel's
+  time to replay at `k = 128` and 10–60× on a GPU, against a round trip of three
+  `k×k` tensors; so the solve runs eagerly on the host at O(k³) — the cheap
+  part, 8.7 ms at `k = 128`, against a model with P ≫ k parameters — and only
+  `k`-sized numbers make the trip (see
+  [`doc/jit-solve.md`](doc/jit-solve.md)). The shift compiles, and runs where
+  the parameters live.
 
 A loss is ordinary OCaml either way. Inside a sketch, `Sofo.observe` is a
 `custom_jvp` that only the sketch's total intercepts; under every other Rune
@@ -198,6 +203,9 @@ How to read it:
 The API reference lives in [`lib/sofo.mli`](lib/sofo.mli), whose doc comments
 are the intended documentation; `PLAN.md` records the design and the
 implementation notes, including what each milestone settled.
+[`doc/jit-solve.md`](doc/jit-solve.md) is why the subspace solve is the one
+thing in the loop that stays on the host: what Raven now compiles and what it
+costs to run, measured on the host and on a GPU.
 
 ## Examples
 

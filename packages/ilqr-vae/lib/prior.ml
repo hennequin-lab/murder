@@ -10,7 +10,6 @@ open Types
 type ('w, 'p, 's) t =
   { m : int
   ; structure : ('p, 's) Nx.Ptree.t
-  ; params : 'p
   ; logp_t : 'p -> k:('w, 's) value -> u:('w, 's) value -> ('w, 's) value
   ; sample : 'p -> key:'s Nx.Rng.key -> n_steps:int -> ('w, 's) value
   ; kl_to_gaussian :
@@ -20,24 +19,31 @@ type ('w, 'p, 's) t =
        -> time_factor:('w, 's) value
        -> ('w, 's) value)
         option
+  ; init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> 'p
   }
 
-let log_2pi = Float.log (2.0 *. Float.pi)
+let make ~m ~structure ~init ~logp_t ~sample ?kl_to_gaussian () =
+  if m <= 0 then invalid_arg "Prior.make: m must be positive";
+  { m; structure; init; logp_t; sample; kl_to_gaussian }
+
+let m (p : ('w, 'p, 's) t) = p.m
+let structure (p : ('w, 'p, 's) t) = p.structure
+let init ?key dtype (p : ('w, 'p, 's) t) = p.init ?key dtype
+let logp_t (p : ('w, 'p, 's) t) = p.logp_t
+let sample (p : ('w, 'p, 's) t) = p.sample
+let kl_to_gaussian (p : ('w, 'p, 's) t) = p.kl_to_gaussian
 let log_2 = Float.log 2.0
 
 (* [first_step k] is a boolean scalar that is [true] at step 0. *)
 let first_step (k : ('w, 's) value) = Nx.equal k (scalar_like k 0.0)
 
-(* [gaussian_logp ~log_scale ~log_scale_first ~k ~u] is the log density of a
+(* [gaussian_logp ~log_stds ~log_stds_first ~k ~u] is the log density of a
    factorized zero-mean Gaussian, summed over the last axis: per-row scalars
    for a batch of rows, a scalar for one row. The first step uses
-   [log_scale_first], every other step [log_scale]. *)
-let gaussian_logp ~log_scale ~log_scale_first ~k ~u =
-  let open Infix in
-  let log_scale_k = where (first_step k) log_scale_first log_scale in
-  let scaled = u / exp log_scale_k in
-  let term = (scaled * scaled) + ((log_scale_k *$ 2.0) +$ log_2pi) in
-  sum ~axes:[ -1 ] term *$ -0.5
+   [log_stds_first], every other step [log_stds]. *)
+let gaussian_logp ~log_stds ~log_stds_first ~k ~u =
+  let log_stds = where (first_step k) log_stds_first log_stds in
+  Density.logp ~covariance:(Density.Diagonal { log_stds }) u
 
 (* [steps_mask at dtype ~n_steps] is a boolean [[n_steps; 1]] tensor at [at]
    that is [true] at the first step. Samplers use it to give that step its own
@@ -65,8 +71,8 @@ module Gaussian = struct
 
   let logp_t p ~k ~u =
     gaussian_logp
-      ~log_scale:p.log_spatial_stds
-      ~log_scale_first:Infix.(p.log_spatial_stds + p.log_first_bin)
+      ~log_stds:p.log_spatial_stds
+      ~log_stds_first:Infix.(p.log_spatial_stds + p.log_first_bin)
       ~k
       ~u
 
@@ -124,22 +130,28 @@ module Gaussian = struct
     in
     (trace + log_det_p - log_det_q + quadratic + scalar_like mu (-.dim)) *$ 0.5
 
-  let make ?(spatial_std = 1.0) ?(first_bin = 1.0) ~m dtype =
+  let place ~at p =
+    Nx.Ptree.place
+      (module struct
+        type ('a, 's) t = ('a, 's) params
+
+        let walk = walk_params
+      end)
+      at
+      p
+
+  let make ~at ?(spatial_std = 1.0) ?(first_bin = 1.0) ~m () =
     if m <= 0 then invalid_arg "Prior.Gaussian.make: m must be positive";
     if not (Float.( > ) spatial_std 0.0)
     then invalid_arg "Prior.Gaussian.make: spatial_std must be positive";
     if not (Float.( > ) first_bin 0.0)
     then invalid_arg "Prior.Gaussian.make: first_bin must be positive";
-    { m
-    ; structure = structure ()
-    ; params =
-        { log_spatial_stds = full dtype [| m |] (Float.log spatial_std)
-        ; log_first_bin = scalar dtype (Float.log first_bin)
-        }
-    ; logp_t
-    ; sample
-    ; kl_to_gaussian = Some kl_to_gaussian
-    }
+    let init (type w) ?key:(_ : 's Nx.Rng.key option) (dtype : (float, w) Nx.dtype) =
+      { log_spatial_stds = full_at at dtype [| m |] (Float.log spatial_std)
+      ; log_first_bin = scalar_at at dtype (Float.log first_bin)
+      }
+    in
+    make ~m ~structure:(structure ()) ~init ~logp_t ~sample ~kl_to_gaussian ()
 end
 
 (* {1 Student-t} *)
@@ -175,7 +187,7 @@ module Student = struct
     let m_f = Float.of_int m in
     let nu, sigma, log_sigma = t_params p in
     let gaussian =
-      gaussian_logp ~log_scale:p.log_spatial_stds ~log_scale_first:p.log_first_stds ~k ~u
+      gaussian_logp ~log_stds:p.log_spatial_stds ~log_stds_first:p.log_first_stds ~k ~u
     in
     let open Infix in
     let scaled = u / sigma in
@@ -208,7 +220,17 @@ module Student = struct
     in
     where (steps_mask (beside t) dtype ~n_steps) first (t * sigma)
 
-  let make ?(spatial_std = 1.0) ?(nu = 10.0) ?(first_std = 1.0) ~m dtype =
+  let place ~at p =
+    Nx.Ptree.place
+      (module struct
+        type ('a, 's) t = ('a, 's) params
+
+        let walk = walk_params
+      end)
+      at
+      p
+
+  let make ~at ?(spatial_std = 1.0) ?(nu = 10.0) ?(first_std = 1.0) ~m () =
     if m <= 0 then invalid_arg "Prior.Student.make: m must be positive";
     if not (Float.( > ) spatial_std 0.0)
     then invalid_arg "Prior.Student.make: spatial_std must be positive";
@@ -216,17 +238,13 @@ module Student = struct
     then invalid_arg "Prior.Student.make: first_std must be positive";
     if not (Float.( > ) nu 2.0)
     then invalid_arg "Prior.Student.make: nu must be greater than 2";
-    { m
-    ; structure = structure ()
-    ; params =
-        { log_spatial_stds = full dtype [| m |] (Float.log spatial_std)
-        ; log_nu_minus_two = scalar dtype (Float.log (nu -. 2.0))
-        ; log_first_stds = full dtype [| m |] (Float.log first_std)
-        }
-    ; logp_t
-    ; sample
-    ; kl_to_gaussian = None
-    }
+    let init (type w) ?key:(_ : 's Nx.Rng.key option) (dtype : (float, w) Nx.dtype) =
+      { log_spatial_stds = full_at at dtype [| m |] (Float.log spatial_std)
+      ; log_nu_minus_two = scalar_at at dtype (Float.log (nu -. 2.0))
+      ; log_first_stds = full_at at dtype [| m |] (Float.log first_std)
+      }
+    in
+    make ~m ~structure:(structure ()) ~init ~logp_t ~sample ()
 end
 
 (* {1 Laplacian} *)
@@ -251,7 +269,7 @@ module Laplacian = struct
     let dtype = Nx.dtype u in
     let sigma = exp p.log_spatial_stds in
     let gaussian =
-      gaussian_logp ~log_scale:p.log_spatial_stds ~log_scale_first:p.log_first_stds ~k ~u
+      gaussian_logp ~log_stds:p.log_spatial_stds ~log_stds_first:p.log_first_stds ~k ~u
     in
     let laplace =
       Infix.(
@@ -279,20 +297,26 @@ module Laplacian = struct
     in
     where (steps_mask (beside laplace) dtype ~n_steps) first laplace
 
-  let make ?(spatial_std = 1.0) ?(first_std = 1.0) ~m dtype =
+  let place ~at p =
+    Nx.Ptree.place
+      (module struct
+        type ('a, 's) t = ('a, 's) params
+
+        let walk = walk_params
+      end)
+      at
+      p
+
+  let make ~at ?(spatial_std = 1.0) ?(first_std = 1.0) ~m () =
     if m <= 0 then invalid_arg "Prior.Laplacian.make: m must be positive";
     if not (Float.( > ) spatial_std 0.0)
     then invalid_arg "Prior.Laplacian.make: spatial_std must be positive";
     if not (Float.( > ) first_std 0.0)
     then invalid_arg "Prior.Laplacian.make: first_std must be positive";
-    { m
-    ; structure = structure ()
-    ; params =
-        { log_spatial_stds = full dtype [| m |] (Float.log spatial_std)
-        ; log_first_stds = full dtype [| m |] (Float.log first_std)
-        }
-    ; logp_t
-    ; sample
-    ; kl_to_gaussian = None
-    }
+    let init (type w) ?key:(_ : 's Nx.Rng.key option) (dtype : (float, w) Nx.dtype) =
+      { log_spatial_stds = full_at at dtype [| m |] (Float.log spatial_std)
+      ; log_first_stds = full_at at dtype [| m |] (Float.log first_std)
+      }
+    in
+    make ~m ~structure:(structure ()) ~init ~logp_t ~sample ()
 end

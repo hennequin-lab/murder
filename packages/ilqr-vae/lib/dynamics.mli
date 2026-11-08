@@ -13,21 +13,63 @@
     [Rune.jacfwd'], so the reference implementation's analytic
     [dyn_x]/[dyn_u] (and their hand-written derivatives of [phi]) are gone.
 
-    A dynamics is a value whose parameters are passed into [dyn]; the
-    constructors here are the architectures the reference implementation
-    ships. A model whose dynamics is new is a record literal with a
-    [structure], its parameters and a [dyn]. *)
+    A dynamics is a {e description} — dimensions, the structure of its
+    parameters, the forward map that takes them, and how to draw them — and its
+    parameters are a value of their own, which every function here takes. A
+    description holds no tensor, so building one is free; {!val-init} makes
+    the parameters at the placement the description was built for. The
+    architectures the reference implementation ships are among the
+    constructors below, and a new one is a call to {!make}. *)
 
 open Types
 
-type ('w, 'p, 's) t =
-  { n : int (** state dimension *)
-  ; m : int (** input dimension *)
-  ; structure : ('p, 's) Nx.Ptree.t (** the structure of the dynamics' parameters *)
-  ; params : 'p (** the parameters a fresh model starts from *)
-  ; dyn : 'p -> k:('w, 's) value -> x:('w, 's) value -> u:('w, 's) value -> ('w, 's) value
-    (** [dyn p ~k ~x ~u] is the next state. *)
-  }
+(** A dynamics: a description, read through the accessors below and built by
+    {!make} or by one of the architectures further down. It holds no parameter
+    value and no tensor. *)
+type ('w, 'p, 's) t
+
+(** [make ~n ~m ~structure ~dyn ~init ()] is the dynamics those describe, and the
+    way to write one the library does not ship. [n] and [m] are the state and
+    input dimensions, [structure] is how the parameters are walked, [dyn] is the
+    step, and [init] draws the parameters at the placement the description was
+    built at.
+
+    Raises [Invalid_argument] if [n] or [m] is not positive. *)
+val make
+  :  n:int
+  -> m:int
+  -> structure:('p, 's) Nx.Ptree.t
+  -> dyn:
+       ('p -> k:('w, 's) value -> x:('w, 's) value -> u:('w, 's) value -> ('w, 's) value)
+  -> init:(?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> 'p)
+  -> unit
+  -> ('w, 'p, 's) t
+
+(** {1:reading Reading a dynamics} *)
+
+(** [n d] is the state dimension. *)
+val n : ('w, 'p, 's) t -> int
+
+(** [m d] is the input dimension. *)
+val m : ('w, 'p, 's) t -> int
+
+(** [structure d] is the [Nx.Ptree.t] of its parameters. *)
+val structure : ('w, 'p, 's) t -> ('p, 's) Nx.Ptree.t
+
+(** [dyn d p ~k ~x ~u] is the next state. *)
+val dyn
+  :  ('w, 'p, 's) t
+  -> 'p
+  -> k:('w, 's) value
+  -> x:('w, 's) value
+  -> u:('w, 's) value
+  -> ('w, 's) value
+
+(** [init ?key dtype d] draws the parameters a fresh model starts from, at the
+    placement the description was built for. The dtype pins the float width the
+    description was left polymorphic in; [key] defaults to the current random
+    scope. *)
+val init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> ('w, 'p, 's) t -> 'p
 
 (** [integrate d p ~x0 ~u] rolls the dynamics out over the horizon of [u]:
     [u] is [[batch…; T; m]], [x0] is [[batch…; n]], and the state path is
@@ -76,20 +118,30 @@ module Linear : sig
       instead. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ~key ~alpha ~n ~m dtype] is a linear system with spectral
-      abscissa [alpha] ([1.] by default) and step ratio [dt_over_tau = 0.1].
-      [W] starts at [alpha · I]; [b] is drawn from a standard normal when
-      [n ≠ m] and is absent otherwise ([key] defaults to the current random
-      scope).
+  (** [make ~at ~key ~alpha ?dt_over_tau ~n ~m dtype] is a linear system,
+      made at [at], with
+      spectral abscissa [alpha] ([1.] by default) and step ratio [dt_over_tau]
+      ([0.1] by default; the ratio is not learned), together with the
+      parameters a fresh model starts from. [W] starts at [alpha · I]; [b] is
+      drawn from a standard normal when [n ≠ m] and is absent otherwise
+      ([key] defaults to the current random scope).
 
-      Raises [Invalid_argument] if [n] or [m] is not positive. *)
+      Raises [Invalid_argument] if [n] or [m] is not positive, or
+      [dt_over_tau] is not positive. *)
   val make
-    :  ?key:Nx.host Nx.Rng.key
+    :  at:'s Nx.Placement.t
     -> ?alpha:float
+    -> ?dt_over_tau:float
     -> n:int
     -> m:int
-    -> (float, 'w) Nx.dtype
-    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
+    -> unit
+    -> ('w, ((float, 'w, 's) Nx.t, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> ((float, 'w, 's) Nx.t, 's) params
+    -> ((float, 'w, 'e) Nx.t, 'e) params
 
   (** [matrix p] is [A = I + dt_over_tau (W − I)]. *)
   val matrix : ((float, 'w, 's) Nx.t, 's) params -> ('w, 's) value
@@ -139,28 +191,35 @@ module Linear_nonlinear : sig
       instead. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ~key ~radius ~dt ~tau ~n ~nh ~m ~phi dtype] initializes
+  (** [make ~at ~key ~radius ~dt ~tau ~n ~nh ~m ~phi ()] is the
+      architecture, made at [at]; its parameters, which {!init} draws, start as
 
       - [a1] from a normal of standard deviation [1 / sqrt n] (as the
         reference implementation's [Linear_nonlinear]),
       - [a2] from a normal of standard deviation [radius / sqrt nh],
       - [a0] at [0.5 · I], [bias1] uniformly on [−1, 1] and [bias2] at zero,
-      - [b] from a normal of standard deviation [1 / sqrt m], and
-      - [dt_over_tau] at [dt / tau] in every dimension.
+        [b] from a normal of standard deviation [1 / sqrt m], and [dt_over_tau]
+        at [dt / tau] in every dimension.
 
       [radius] defaults to [0.1], [key] to the current random scope. Raises
       [Invalid_argument] if [n], [nh] or [m] is not positive. *)
   val make
-    :  ?key:Nx.host Nx.Rng.key
+    :  at:'s Nx.Placement.t
     -> ?radius:float
     -> dt:float
     -> tau:float
     -> n:int
     -> nh:int
     -> m:int
-    -> phi:(('w, Nx.host) value -> ('w, Nx.host) value)
-    -> (float, 'w) Nx.dtype
-    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
+    -> phi:(('w, 's) value -> ('w, 's) value)
+    -> unit
+    -> ('w, ((float, 'w, 's) Nx.t, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> ((float, 'w, 's) Nx.t, 's) params
+    -> ((float, 'w, 'e) Nx.t, 'e) params
 
   (** The forward map. [phi] is the activation; the constructor captures it in
       the dynamics' [dyn], and exposing the map lets a caller use it without
@@ -214,25 +273,32 @@ module Gnode : sig
       instead. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ~key ~radius ~m ~dt ~tau ~n ~nh ~phi dtype] initializes [g_a1]
+  (** [make ~at ~key ~radius ?m ~dt ~tau ~n ~nh ~phi dtype] is the
+      architecture and its fresh parameters, made at [at]: [g_a1]
       and [g_bias1] at zero, [h_a1] from a normal of standard deviation
       [1 / sqrt n], [h_a2] from one of standard deviation [radius / sqrt nh],
       the biases at zero, and [b] from a standard normal when [m] is given.
 
       [radius] defaults to [0.1], [key] to the current random scope. [m]
-      defaults to [n], with [b] then absent. Raises [Invalid_argument] if [n]
-      or [nh] is not positive. *)
+      defaults to [n], with [b] then absent. Raises [Invalid_argument] if [n],
+      [nh] or [m] is not positive, or [dt] or [tau] is not positive. *)
   val make
-    :  ?key:Nx.host Nx.Rng.key
+    :  at:'s Nx.Placement.t
     -> ?radius:float
     -> ?m:int
     -> dt:float
     -> tau:float
     -> n:int
     -> nh:int
-    -> phi:(('w, Nx.host) value -> ('w, Nx.host) value)
-    -> (float, 'w) Nx.dtype
-    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
+    -> phi:(('w, 's) value -> ('w, 's) value)
+    -> unit
+    -> ('w, ((float, 'w, 's) Nx.t, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> ((float, 'w, 's) Nx.t, 's) params
+    -> ((float, 'w, 'e) Nx.t, 'e) params
 
   val dyn
     :  phi:(('w, 's) value -> ('w, 's) value)
@@ -296,7 +362,8 @@ module Mgu : sig
       instead. *)
   val structure : unit -> ((('a, 'b, 's) Nx.t, 's) params, 's) Nx.Ptree.t
 
-  (** [make ~key ~bias_f ~n ~m ~phi dtype] initializes [uf] and [uh] at zero
+  (** [make ~at ~key ~bias_f ~n ~m ~phi dtype] is the architecture and its
+      fresh parameters, made at [at]: [uf] and [uh] at zero
       (weak initial dynamics, easily controlled by the inputs), [w] from a
       normal of standard deviation [1 / sqrt m], [bh] at zero and [bf] at
       [bias_f] in every dimension. [phi] is the activation of both the gate
@@ -305,13 +372,19 @@ module Mgu : sig
       [bias_f] defaults to [0.5]. [key] defaults to the current random scope.
       Raises [Invalid_argument] if [n] or [m] is not positive. *)
   val make
-    :  ?key:Nx.host Nx.Rng.key
+    :  at:'s Nx.Placement.t
     -> ?bias_f:float
     -> n:int
     -> m:int
-    -> phi:(('w, Nx.host) value -> ('w, Nx.host) value)
-    -> (float, 'w) Nx.dtype
-    -> ('w, ((float, 'w, Nx.host) Nx.t, Nx.host) params, Nx.host) t
+    -> phi:(('w, 's) value -> ('w, 's) value)
+    -> unit
+    -> ('w, ((float, 'w, 's) Nx.t, 's) params, 's) t
+
+  (** [place ~at p] is [p]'s tensors at [at]. *)
+  val place
+    :  at:'e Nx.Placement.t
+    -> ((float, 'w, 's) Nx.t, 's) params
+    -> ((float, 'w, 'e) Nx.t, 'e) params
 
   (** The forward map of {!make}, with the activation exposed. *)
   val dyn

@@ -11,9 +11,20 @@ type ('w, 'p, 's) t =
   { n : int
   ; m : int
   ; structure : ('p, 's) Nx.Ptree.t
-  ; params : 'p
   ; dyn : 'p -> k:('w, 's) value -> x:('w, 's) value -> u:('w, 's) value -> ('w, 's) value
+  ; init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> 'p
   }
+
+let make ~n ~m ~structure ~dyn ~init () =
+  if n <= 0 then invalid_arg "Dynamics.make: n must be positive";
+  if m <= 0 then invalid_arg "Dynamics.make: m must be positive";
+  { n; m; structure; dyn; init }
+
+let n (d : ('w, 'p, 's) t) = d.n
+let m (d : ('w, 'p, 's) t) = d.m
+let structure (d : ('w, 'p, 's) t) = d.structure
+let dyn (d : ('w, 'p, 's) t) = d.dyn
+let init ?key dtype (d : ('w, 'p, 's) t) = d.init ?key dtype
 
 let shape_string shape =
   String.concat ~sep:"; " (Array.to_list (Array.map shape ~f:Int.to_string))
@@ -30,7 +41,7 @@ let integrate_along
   =
   let horizon = (shape u).(time_axis) in
   let u = if Int.equal time_axis 0 then u else moveaxis time_axis 0 u in
-  let ks = arange_at (beside u) (Nx.dtype x0) 0 horizon 1 in
+  let ks = arange_at (beside u) (Nx.dtype u) 0 horizon 1 in
   let _, xs =
     Rune.scan
       Nx.Ptree.tensor
@@ -48,6 +59,35 @@ let integrate_along
   let x0 = reshape (Array.append [| 1 |] batch_shape) (broadcast_to batch_shape x0) in
   let path = concatenate ~axis:0 [ x0; xs ] in
   if Int.equal time_axis 0 then path else moveaxis 0 time_axis path
+
+(* [check_rollout ~caller d ~x0 ~u] rejects a rollout whose dimension axes
+   are not the dynamics'. The horizon is where the caller says; every other
+   axis is a batch axis and is left alone. Both ranks are already checked, so
+   the last axis of each tensor exists. *)
+let check_rollout
+      ~caller
+      (d : ('w, 'p, 's) t)
+      ~(x0 : ('w, 's) value)
+      ~(u : ('w, 's) value)
+  =
+  let u_shape = shape u in
+  if not (Int.equal u_shape.(Array.length u_shape - 1) d.m)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "%s: the last axis of u must be the input dimension %d, got [%s]"
+         caller
+         d.m
+         (shape_string u_shape));
+  let x0_shape = shape x0 in
+  if not (Int.equal x0_shape.(Array.length x0_shape - 1) d.n)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "%s: the last axis of x0 must be the state dimension %d, got [%s]"
+         caller
+         d.n
+         (shape_string x0_shape))
 
 let integrate (d : ('w, 'p, 's) t) (p : 'p) ~(x0 : ('w, 's) value) ~(u : ('w, 's) value) =
   let rank = Array.length (shape u) in
@@ -67,6 +107,7 @@ let integrate (d : ('w, 'p, 's) t) (p : 'p) ~(x0 : ('w, 's) value) ~(u : ('w, 's
          d.n
          time_axis
          (shape_string (shape x0)));
+  check_rollout ~caller:"Dynamics.integrate" d ~x0 ~u;
   integrate_along d p ~time_axis ~x0 ~u
 
 let integrate_samples
@@ -94,18 +135,19 @@ let integrate_samples
          d.n
          time_axis
          (shape_string (shape x0)));
+  check_rollout ~caller:"Dynamics.integrate_samples" d ~x0 ~u;
   integrate_along d p ~time_axis ~x0 ~u
 
-(* [randn ?key dtype shape] is a standard normal draw, from [key] when given
-   and from the implicit random scope otherwise. *)
-let randn ?key dtype shape =
+(* [randn ~at ?key dtype shape] is a standard normal draw at [at], from [key]
+   when given and from the implicit random scope otherwise. *)
+let randn ~at ?key dtype shape =
   match key with
-  | Some key -> Nx.Rng.normal ~key dtype shape
-  | None -> Nx.Rng.normal dtype shape
+  | Some key -> Nx.Rng.normal_at at ~key dtype shape
+  | None -> Nx.Rng.normal_at at dtype shape
 
-(* [scaled_randn ?key ~sigma dtype shape] is a normal draw of standard
-   deviation [sigma]. *)
-let scaled_randn ?key ~sigma dtype shape = Infix.(randn ?key dtype shape *$ sigma)
+(* [scaled_randn ~at ?key ~sigma dtype shape] is a normal draw of standard
+   deviation [sigma], at [at]. *)
+let scaled_randn ~at ?key ~sigma dtype shape = Infix.(randn ~at ?key dtype shape *$ sigma)
 
 (* [first_step k] is a boolean scalar that is [true] at step 0. A dynamics
    written for these constructors selects on it with [Nx.where], since [k] is
@@ -155,12 +197,32 @@ module Linear = struct
     let input = input_term ~dt_over_tau:(`Scalar p.dt_over_tau) ~k ~u in
     Infix.((x *@ matrix p) + input)
 
-  let make ?key ?(alpha = 1.0) ~n ~m dtype =
+  (* [dt_over_tau] is not learned, so the constructor takes it. The reference
+     implementation's default, one tenth, is what [make] uses when the caller
+     says nothing. *)
+  let default_dt_over_tau = 0.1
+
+  let make (type w) ~at ?(alpha = 1.0) ?(dt_over_tau = default_dt_over_tau) ~n ~m () =
     if n <= 0 then invalid_arg "Dynamics.Linear.make: n must be positive";
     if m <= 0 then invalid_arg "Dynamics.Linear.make: m must be positive";
-    let w = Infix.(eye dtype n *$ alpha) in
-    let b = if Int.equal n m then None else Some (randn ?key dtype [| m; n |]) in
-    { n; m; structure = structure (); params = { dt_over_tau = 0.1; w; b }; dyn }
+    if not (Float.( > ) dt_over_tau 0.0)
+    then invalid_arg "Dynamics.Linear.make: dt_over_tau must be positive";
+    let init ?key (dtype : (float, w) Nx.dtype) =
+      let w = Infix.(eye_at at dtype n *$ alpha) in
+      let b = if Int.equal n m then None else Some (randn ~at ?key dtype [| m; n |]) in
+      { w; b; dt_over_tau }
+    in
+    make ~n ~m ~structure:(structure ()) ~dyn ~init ()
+
+  let place ~at p =
+    Nx.Ptree.place
+      (module struct
+        type ('a, 's) t = ('a, 's) params
+
+        let walk = walk_params
+      end)
+      at
+      p
 end
 
 (* {1 Linear–nonlinear} *)
@@ -197,40 +259,58 @@ module Linear_nonlinear = struct
     in
     Infix.(passive + input_term ~dt_over_tau:(`Vector p.dt_over_tau) ~k ~u)
 
-  let make ?key ?(radius = 0.1) ~dt ~tau ~n ~nh ~m ~phi dtype =
+  let make (type w) ~at ?(radius = 0.1) ~dt ~tau ~n ~nh ~m ~phi () =
     if n <= 0 then invalid_arg "Dynamics.Linear_nonlinear.make: n must be positive";
     if nh <= 0 then invalid_arg "Dynamics.Linear_nonlinear.make: nh must be positive";
     if m <= 0 then invalid_arg "Dynamics.Linear_nonlinear.make: m must be positive";
     if not (Float.( > ) dt 0.0 && Float.( > ) tau 0.0)
     then invalid_arg "Dynamics.Linear_nonlinear.make: dt and tau must be positive";
-    let params =
-      { dt_over_tau = full dtype [| n |] (dt /. tau)
-      ; a0 = Infix.(eye dtype n *$ 0.5)
+    let init ?key (dtype : (float, w) Nx.dtype) =
+      { dt_over_tau = full_at at dtype [| n |] (dt /. tau)
+      ; a0 = Infix.(eye_at at dtype n *$ 0.5)
       ; a1 =
-          scaled_randn ?key ~sigma:(1.0 /. Float.sqrt (Float.of_int n)) dtype [| n; nh |]
+          scaled_randn
+            ~at
+            ?key
+            ~sigma:(1.0 /. Float.sqrt (Float.of_int n))
+            dtype
+            [| n; nh |]
       ; a2 =
           scaled_randn
+            ~at
             ?key
             ~sigma:(radius /. Float.sqrt (Float.of_int nh))
             dtype
             [| nh; n |]
-      ; bias1 = Infix.((Nx.Rng.uniform dtype [| nh |] *$ 2.0) -$ 1.0)
-      ; bias2 = zeros dtype [| n |]
+      ; bias1 = Infix.((Nx.Rng.uniform_at at dtype [| nh |] *$ 2.0) -$ 1.0)
+      ; bias2 = zeros_at at dtype [| n |]
       ; b =
           Some
             (scaled_randn
+               ~at
                ?key
                ~sigma:(1.0 /. Float.sqrt (Float.of_int m))
                dtype
                [| m; n |])
       }
     in
-    { n
-    ; m
-    ; structure = structure ()
-    ; params
-    ; dyn = (fun p ~k ~x ~u -> dyn ~phi p ~k ~x ~u)
-    }
+    make
+      ~n
+      ~m
+      ~structure:(structure ())
+      ~dyn:(fun p ~k ~x ~u -> dyn ~phi p ~k ~x ~u)
+      ~init
+      ()
+
+  let place ~at p =
+    Nx.Ptree.place
+      (module struct
+        type ('a, 's) t = ('a, 's) params
+
+        let walk = walk_params
+      end)
+      at
+      p
 end
 
 (* {1 Gated nonlinear} *)
@@ -267,36 +347,56 @@ module Gnode = struct
     in
     Infix.(passive + input_term ~dt_over_tau:(`Scalar p.dt_over_tau) ~k ~u)
 
-  let make ?key ?(radius = 0.1) ?m ~dt ~tau ~n ~nh ~phi dtype =
+  let make (type w) ~at ?(radius = 0.1) ?m ~dt ~tau ~n ~nh ~phi () =
     if n <= 0 then invalid_arg "Dynamics.Gnode.make: n must be positive";
     if nh <= 0 then invalid_arg "Dynamics.Gnode.make: nh must be positive";
     if not (Float.( > ) dt 0.0 && Float.( > ) tau 0.0)
     then invalid_arg "Dynamics.Gnode.make: dt and tau must be positive";
-    let m_input = m in
-    let m = Option.value m ~default:n in
-    let params =
+    (* [b] is present exactly when the caller names an input dimension; [m]
+       is then that dimension, and the state's otherwise, with no projection. *)
+    let input = m in
+    let m = Option.value input ~default:n in
+    if m <= 0 then invalid_arg "Dynamics.Gnode.make: m must be positive";
+    let init ?key (dtype : (float, w) Nx.dtype) =
       { dt_over_tau = dt /. tau
-      ; g_a1 = zeros dtype [| n; n |]
-      ; g_bias1 = zeros dtype [| n |]
+      ; g_a1 = zeros_at at dtype [| n; n |]
+      ; g_bias1 = zeros_at at dtype [| n |]
       ; h_a1 =
-          scaled_randn ?key ~sigma:(1.0 /. Float.sqrt (Float.of_int n)) dtype [| n; nh |]
+          scaled_randn
+            ~at
+            ?key
+            ~sigma:(1.0 /. Float.sqrt (Float.of_int n))
+            dtype
+            [| n; nh |]
       ; h_a2 =
           scaled_randn
+            ~at
             ?key
             ~sigma:(radius /. Float.sqrt (Float.of_int nh))
             dtype
             [| nh; n |]
-      ; h_bias1 = zeros dtype [| nh |]
-      ; h_bias2 = zeros dtype [| n |]
-      ; b = Option.map m_input ~f:(fun m -> randn ?key dtype [| m; n |])
+      ; h_bias1 = zeros_at at dtype [| nh |]
+      ; h_bias2 = zeros_at at dtype [| n |]
+      ; b = Option.map input ~f:(fun m -> randn ~at ?key dtype [| m; n |])
       }
     in
-    { n
-    ; m
-    ; structure = structure ()
-    ; params
-    ; dyn = (fun p ~k ~x ~u -> dyn ~phi p ~k ~x ~u)
-    }
+    make
+      ~n
+      ~m
+      ~structure:(structure ())
+      ~dyn:(fun p ~k ~x ~u -> dyn ~phi p ~k ~x ~u)
+      ~init
+      ()
+
+  let place ~at p =
+    Nx.Ptree.place
+      (module struct
+        type ('a, 's) t = ('a, 's) params
+
+        let walk = walk_params
+      end)
+      at
+      p
 end
 
 (* {1 Minimal gated unit} *)
@@ -328,21 +428,38 @@ module Mgu = struct
     let h = Infix.(phi ((f * x *@ p.uh) + p.bh) + (u *@ p.w)) in
     Infix.(((ones_like f - f) * x) + (f * h))
 
-  let make ?key ?(bias_f = 0.5) ~n ~m ~phi dtype =
+  let make (type w) ~at ?(bias_f = 0.5) ~n ~m ~phi () =
     if n <= 0 then invalid_arg "Dynamics.Mgu.make: n must be positive";
     if m <= 0 then invalid_arg "Dynamics.Mgu.make: m must be positive";
-    let params =
-      { uf = zeros dtype [| n; n |]
-      ; uh = zeros dtype [| n; n |]
-      ; w = scaled_randn ?key ~sigma:(1.0 /. Float.sqrt (Float.of_int m)) dtype [| m; n |]
-      ; bf = full dtype [| n |] bias_f
-      ; bh = zeros dtype [| n |]
+    let init ?key (dtype : (float, w) Nx.dtype) =
+      { uf = zeros_at at dtype [| n; n |]
+      ; uh = zeros_at at dtype [| n; n |]
+      ; w =
+          scaled_randn
+            ~at
+            ?key
+            ~sigma:(1.0 /. Float.sqrt (Float.of_int m))
+            dtype
+            [| m; n |]
+      ; bf = full_at at dtype [| n |] bias_f
+      ; bh = zeros_at at dtype [| n |]
       }
     in
-    { n
-    ; m
-    ; structure = structure ()
-    ; params
-    ; dyn = (fun p ~k ~x ~u -> dyn ~phi p ~k ~x ~u)
-    }
+    make
+      ~n
+      ~m
+      ~structure:(structure ())
+      ~dyn:(fun p ~k ~x ~u -> dyn ~phi p ~k ~x ~u)
+      ~init
+      ()
+
+  let place ~at p =
+    Nx.Ptree.place
+      (module struct
+        type ('a, 's) t = ('a, 's) params
+
+        let walk = walk_params
+      end)
+      at
+      p
 end

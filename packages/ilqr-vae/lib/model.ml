@@ -4,7 +4,6 @@
   ---------------------------------------------------------------------------*)
 
 open Base
-open Nx
 open Types
 
 type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
@@ -17,8 +16,8 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
   ; likelihood : ('w, 'l, 's) Likelihood.t
   ; prior : ('w, 'p, 's) Prior.t
   ; encoder_prior : ('w, 'e, 's) Prior.t
-  ; initial_prior : (('w, 's) value, 's) Initial.params option
-  ; recognition : ('w, 'd, 'l, 'p, 'e, 'r, 's) Recognition.t
+  ; initial_prior : Initial.t option
+  ; recognition : ('w, 'd, 'l, 'e, 'r, 's) Recognition.t
   }
 
 type ('w, 'd, 'l, 'p, 'e, 'r, 's) params =
@@ -30,69 +29,96 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) params =
   ; recognition : 'r
   }
 
-let require_dim name value = if value <= 0 then invalid_arg (name ^ " must be positive")
+let require_dim field value =
+  if value <= 0 then invalid_arg ("Model.make: " ^ field ^ " must be positive")
 
-(* [what] is the dimension the model takes as its own, [who] the component
-   field that must agree with it. *)
-let require_agree ~who ~who_is what expected =
-  if not (Int.equal who_is expected)
+(* [require_agree ~left ~right actual expected] requires the dimension named
+   [left] to equal the one named [right], and says both in the error. *)
+let require_agree ~left ~right actual expected =
+  if not (Int.equal actual expected)
   then
     invalid_arg
-      (Printf.sprintf "Model.make: %s is %d but %s is %d" who who_is what expected)
+      (Printf.sprintf "Model.make: %s is %d but %s is %d" left actual right expected)
 
-let make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition ?initial_prior () =
+(* [check_initial_prior ~n p] requires the prior's dimension to be the model's. *)
+let check_initial_prior ~n (p : Initial.t) =
+  if not (Int.equal p.Initial.n n)
+  then
+    invalid_arg
+      (Printf.sprintf
+         "Model.make: initial_prior is over %d dimensions but dynamics.n is %d"
+         p.Initial.n
+         n)
+
+let dtype (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.dtype
+let n (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.n
+let m (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.m
+let n_steps (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.n_steps
+let n_output (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.n_output
+let dynamics (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.dynamics
+let likelihood (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.likelihood
+let prior (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.prior
+let encoder_prior (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.encoder_prior
+let initial_prior (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.initial_prior
+let recognition (m : ('w, 'd, 'l, 'p, 'e, 'r, 's) t) = m.recognition
+
+let make
+      (type w d l p e r)
+      (dtype : (float, w) Nx.dtype)
+      ~(dynamics : (w, d, 's) Dynamics.t)
+      ~(likelihood : (w, l, 's) Likelihood.t)
+      ~(prior : (w, p, 's) Prior.t)
+      ~(encoder_prior : (w, e, 's) Prior.t)
+      ~(recognition : (w, d, l, e, r, 's) Recognition.t)
+      ?(initial_prior : Initial.t option)
+      ()
+  : (w, d, l, p, e, r, 's) t
+  =
   (* Every dimension is already a field of a component: the state and input
      dimensions of the dynamics, the observation dimension of the likelihood,
      the horizon of the recognition. The model takes them from there and only
      checks that the components agree with each other. *)
-  let n = dynamics.Dynamics.n in
-  let m = dynamics.Dynamics.m in
-  let n_output = likelihood.Likelihood.n_output in
-  let n_steps = recognition.Recognition.dims.Recognition.n_steps in
-  require_dim "Model.make: dynamics.n" n;
-  require_dim "Model.make: dynamics.m" m;
-  require_dim "Model.make: likelihood.n_output" n_output;
-  require_dim "Model.make: recognition n_steps" n_steps;
-  require_agree ~who:"likelihood.n" ~who_is:likelihood.Likelihood.n "dynamics.n" n;
-  require_agree ~who:"prior.m" ~who_is:prior.Prior.m "dynamics.m" m;
-  require_agree ~who:"encoder_prior.m" ~who_is:encoder_prior.Prior.m "dynamics.m" m;
+  let n = Dynamics.n dynamics in
+  let m = Dynamics.m dynamics in
+  let n_output = Likelihood.n_output likelihood in
+  let n_steps = Recognition.dims recognition |> fun d -> d.n_steps in
+  require_dim "dynamics.n" n;
+  require_dim "dynamics.m" m;
+  require_dim "likelihood.n_output" n_output;
+  require_dim "recognition n_steps" n_steps;
+  require_agree ~left:"likelihood.n" ~right:"dynamics.n" (Likelihood.n likelihood) n;
+  require_agree ~left:"prior.m" ~right:"dynamics.m" (Prior.m prior) m;
+  require_agree ~left:"encoder_prior.m" ~right:"dynamics.m" (Prior.m encoder_prior) m;
   (* The recognition is built for a shape of model; a mismatch would fail
      later, inside a solve, with a shape error far from its cause. *)
-  let dims = recognition.Recognition.dims in
-  require_agree ~who:"recognition.n" ~who_is:dims.Recognition.n "dynamics.n" n;
-  require_agree ~who:"recognition.m" ~who_is:dims.Recognition.m "dynamics.m" m;
+  let dims = Recognition.dims recognition in
+  require_agree ~left:"recognition.n" ~right:"dynamics.n" dims.Recognition.n n;
+  require_agree ~left:"recognition.m" ~right:"dynamics.m" dims.Recognition.m m;
   require_agree
-    ~who:"recognition.n_output"
-    ~who_is:dims.Recognition.n_output
-    "likelihood.n_output"
+    ~left:"recognition.n_output"
+    ~right:"likelihood.n_output"
+    dims.Recognition.n_output
     n_output;
   (* A recognition that infers the initial state needs a prior over it, and
      one that fixes [x_0 = 0] must not be given one: the ELBO's initial-state
      term would not cancel. *)
   (match initial_prior with
    | None ->
-     if recognition.Recognition.infers_initial
+     if Recognition.infers_initial recognition
      then
        invalid_arg
          (Printf.sprintf
             "Model.make: the %s recognition infers an initial state; pass ~initial_prior"
-            recognition.Recognition.name)
+            (Recognition.name recognition))
    | Some p ->
-     if not recognition.Recognition.infers_initial
+     if not (Recognition.infers_initial recognition)
      then
        invalid_arg
          (Printf.sprintf
             "Model.make: the %s recognition fixes x_0 = 0; it must not be given an \
              initial_prior"
-            recognition.Recognition.name);
-     let size = Array.get (shape p.Initial.mean) 0 in
-     if not (Int.equal size n)
-     then
-       invalid_arg
-         (Printf.sprintf
-            "Model.make: initial_prior has size %d but dynamics.n is %d"
-            size
-            n));
+            (Recognition.name recognition));
+     check_initial_prior ~n p);
   { dtype
   ; n
   ; m
@@ -106,15 +132,25 @@ let make dtype ~dynamics ~likelihood ~prior ~encoder_prior ~recognition ?initial
   ; recognition
   }
 
-let params (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
+(* [Model.init ~at ?key model] draws every component's parameters at [at],
+   one subkey each, and the initial-state prior's -- which is deterministic --
+   at the same placement. *)
+let init
+      (type w d l p e r)
+      ~(at : 's Nx.Placement.t)
+      ?key
+      (model : (w, d, l, p, e, r, 's) t)
   : (w, d, l, p, e, r, 's) params
   =
-  { dynamics = model.dynamics.Dynamics.params
-  ; likelihood = model.likelihood.Likelihood.params
-  ; prior = model.prior.Prior.params
-  ; encoder_prior = model.encoder_prior.Prior.params
-  ; initial_prior = model.initial_prior
-  ; recognition = model.recognition.Recognition.params
+  let keys = Option.map key ~f:(fun key -> Nx.Rng.split ~n:5 key) in
+  let sub i = Option.map keys ~f:(fun keys -> keys.(i)) in
+  let dtype = model.dtype in
+  { dynamics = Dynamics.init ?key:(sub 0) dtype model.dynamics
+  ; likelihood = Likelihood.init ?key:(sub 1) dtype model.likelihood
+  ; prior = Prior.init ?key:(sub 2) dtype model.prior
+  ; encoder_prior = Prior.init ?key:(sub 3) dtype model.encoder_prior
+  ; initial_prior = Option.map model.initial_prior ~f:(Initial.init ~at dtype)
+  ; recognition = Recognition.init ?key:(sub 4) dtype model.recognition
   }
 
 let structure (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
@@ -123,17 +159,21 @@ let structure (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
   Nx.Ptree.v (fun c r ->
     let open Nx.Ptree.Walk in
     let dynamics =
-      field c "dynamics" (structure model.dynamics.Dynamics.structure) r.dynamics
+      field c "dynamics" (structure (Dynamics.structure model.dynamics)) r.dynamics
     in
     let likelihood =
-      field c "likelihood" (structure model.likelihood.Likelihood.structure) r.likelihood
+      field
+        c
+        "likelihood"
+        (structure (Likelihood.structure model.likelihood))
+        r.likelihood
     in
-    let prior = field c "prior" (structure model.prior.Prior.structure) r.prior in
+    let prior = field c "prior" (structure (Prior.structure model.prior)) r.prior in
     let encoder_prior =
       field
         c
         "encoder_prior"
-        (structure model.encoder_prior.Prior.structure)
+        (structure (Prior.structure model.encoder_prior))
         r.encoder_prior
     in
     let initial_prior =
@@ -143,14 +183,14 @@ let structure (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
       field
         c
         "recognition"
-        (structure model.recognition.Recognition.structure)
+        (structure (Recognition.structure model.recognition))
         r.recognition
     in
     { dynamics; likelihood; prior; encoder_prior; initial_prior; recognition })
 
 (* [generative model] is the part of the model a recognition reads. [gparams params] is the matching part of the parameters. *)
 let generative (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
-  : (w, d, l, p, e, 's) Recognition.generative
+  : (w, d, l, e, 's) Recognition.generative
   =
   { Recognition.dtype = model.dtype
   ; Recognition.n = model.n
@@ -159,17 +199,14 @@ let generative (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
   ; Recognition.n_output = model.n_output
   ; Recognition.dynamics = model.dynamics
   ; Recognition.likelihood = model.likelihood
-  ; Recognition.prior = model.prior
   ; Recognition.encoder_prior = model.encoder_prior
-  ; Recognition.initial_prior = model.initial_prior
   }
 
 let gparams (type w d l p e r) (params : (w, d, l, p, e, r, 's) params)
-  : (w, d, l, p, e, 's) Recognition.gparams
+  : (w, d, l, e, 's) Recognition.gparams
   =
   { Recognition.dynamics = params.dynamics
   ; Recognition.likelihood = params.likelihood
-  ; Recognition.prior = params.prior
   ; Recognition.encoder_prior = params.encoder_prior
   ; Recognition.initial_prior = params.initial_prior
   }
@@ -178,16 +215,17 @@ let infer
       (type w d l p e r)
       (model : (w, d, l, p, e, r, 's) t)
       (params : (w, d, l, p, e, r, 's) params)
-      ?iters
+      ?solve
       ~n_samples
       ~key
       data
   =
-  model.recognition.Recognition.infer
+  Recognition.infer
+    model.recognition
     (generative model)
     (gparams params)
     ~params:params.recognition
-    ?iters
+    ?solve
     ~n_samples
     ~key
     data
@@ -196,28 +234,30 @@ let mean
       (type w d l p e r)
       (model : (w, d, l, p, e, r, 's) t)
       (params : (w, d, l, p, e, r, 's) params)
-      ?iters
+      ?solve
       data
   =
-  model.recognition.Recognition.mean
+  Recognition.mean
+    model.recognition
     (generative model)
     (gparams params)
     ~params:params.recognition
-    ?iters
+    ?solve
     data
 
 let log_prob
       (type w d l p e r)
       (model : (w, d, l, p, e, r, 's) t)
       (params : (w, d, l, p, e, r, 's) params)
-      ?iters
+      ?solve
       data
       samples
   =
-  model.recognition.Recognition.log_prob
+  Recognition.log_prob
+    model.recognition
     (generative model)
     (gparams params)
     ~params:params.recognition
-    ?iters
+    ?solve
     data
     samples

@@ -159,7 +159,7 @@ let run_adaptive () =
    forward solve and its implicit VJP compile together. Every horizon is a
    loop ([Rune.scan]), so a program costs its iterations, not its iterations
    times its horizon. *)
-let compiled_grad ~iters =
+let compiled_grad ~max_iters =
   Rune.jit
     Nx.Ptree.(inputs_ptree @-> returns inputs_ptree)
     (fun i ->
@@ -169,7 +169,7 @@ let compiled_grad ~iters =
             loss
               ~target:Pendulum.target
               Pendulum.problem
-              (Dilqr.solve_fixed Pendulum.problem ~iters i))
+              (Dilqr.solve_fixed Pendulum.problem ~max_iters i))
          i)
     inputs
 
@@ -191,14 +191,14 @@ let solve_compiled adaptive =
       (Nx.item [ 1 ] g.x0)
       (item g.theta.gravity)
   in
-  List.iter [ 2; 4; 6; 10; 20 ] ~f:(fun iters ->
-    show (Printf.sprintf "compiled iters %d" iters) (compiled_grad ~iters));
+  List.iter [ 2; 4; 6; 10; 20 ] ~f:(fun max_iters ->
+    show (Printf.sprintf "compiled iters %d" max_iters) (compiled_grad ~max_iters));
   show "adaptive" adaptive;
   (* The jitted solve itself, at a converged iteration count. *)
   let taus =
     Rune.jit
       Nx.Ptree.(inputs_ptree @-> returns Nx.Ptree.tensor)
-      (fun i -> Dilqr.solve_fixed Pendulum.problem ~iters:10 i)
+      (fun i -> Dilqr.solve_fixed Pendulum.problem ~max_iters:10 i)
       inputs
   in
   let xs, _ = Dilqr.split_taus Pendulum.problem taus in
@@ -213,7 +213,7 @@ let solve_compiled adaptive =
          loss
            ~target:Pendulum.target
            Pendulum.problem
-           (Dilqr.solve_fixed Pendulum.problem ~iters:10 i))
+           (Dilqr.solve_fixed Pendulum.problem ~max_iters:10 i))
       inputs
   in
   show "eager iters 10" eager

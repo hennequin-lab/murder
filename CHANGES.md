@@ -83,10 +83,44 @@ changes do not need an entry.
   `(float, 'w, 'd) Lqr.tape`), `inputs problem` describes the inputs at that
   set, and `Lqr.Rows`, `Lqr.Tangent_rows` and `Lqr.Tangent_roll_rows` are
   `('a, _) t` structures, as a parameter record now is.
+- `solve_fixed` (and `Solver.solve_fixed`) take `~max_iters` instead of
+  `~iters`: the budget is an upper bound, and the solve stops when the batch
+  has converged. Because it stops on its own test now, a solve that used to run
+  a given number of iterations converges a little less far than the same count
+  did; raise the budget or lower `~conv_threshold` where that matters. `Solver.t` gains `iters`, the number of iterations the solve
+  ran; a batch spends its slowest member's.
+- The fixed solve's line search is recursive: it tries the trial steps in
+  order and stops at the first the batch accepts, each level a `Rune.cond`
+  branch, so a level nobody reaches computes nothing. It selects the largest
+  accepted step, as the adaptive solve does, where it used to take the argmin
+  of the accepted trials' costs (and its Armijo test applied `c1` twice).
+- Batched fixed solves take one step and one damping schedule for the whole
+  batch: a trial is accepted when every member that has not converged
+  satisfies Armijo at it, so the batch moves at the step its slowest member
+  can take. A converged member is frozen and does not vote, so it cannot veto
+  the others. The implicit derivative is still taken member by member.
+- `Dilqr.Damping` is how a solve damps: `Off`, `Fixed of float` (one absolute
+  strength) or `Adaptive of Regularisation.t`, with `Damping.default` —
+  adaptive — the default for both solves. It replaces the fixed solve's
+  `~mu`/`~reg` pair, which could be given together, and the adaptive solve's
+  `~reg`. An adaptive strength is a fraction of each member's own value-Hessian
+  scale, so members whose curvature differs are damped alike; the schedule is
+  carried through the traced loops as tensors. `~conv_threshold` sets the fixed
+  solve's stopping test.
+- `Lqr.backward_common` shifts the damping into the value Hessian
+  (`V + μ I`) instead of adding Tassa's three terms one by one: expanding the
+  shift gives exactly those terms, so a damped pass costs one diagonal
+  addition per step. `mu` may hold one strength per batch member.
+  `Regularisation.floor` names the floor of a schedule.
 
 ### ilqr-vae
 
 - Imported from `hennequin-lab/ilqr-vae-raven`.
+- The fixed inner solve runs at most the recognition's iteration count and
+  stops earlier when it has converged, so a fixed recognition is a budget
+  rather than an exact count. `Recognition.fixed` takes `?conv_threshold` for
+  how tightly it should converge, and `?damping` (`Dilqr.Damping.t`, adaptive
+  by default) instead of `?mu`.
 - Mini-batches are tensors: `Elbo.batch_loss_fixed` takes
   `[batch…; n_steps; n_output]` instead of an array, and the recognitions and
   the bound accept the matching leading trial axes, so a JIT-compiled step can
@@ -116,6 +150,55 @@ changes do not need an entry.
   `Recognition.Iilqr.posterior_initial` reports the pair. A
   model with such a recognition must pass `~initial_prior`; one with the
   fixed-zero recognition must not, as before.
+- `Elbo.batch_loss_fixed` is gone: `Elbo.loss_fixed` already takes a tensor mini-batch, and the two names differed by a rank check and documentation only.
+- `Recognition.solve` selects the iLQR inner solver: `Recognition.adaptive` and
+  `Recognition.fixed` replace the `?iters` argument of every recognition call,
+  `Iilqr.posterior_mean_fixed` folds into `Iilqr.posterior_mean`, and
+  `Ilqr_vae.posterior_mean`, `posterior_draws`, `log_prob` and `loss` take
+  `?solve`.
+- `Recognition.generative` and `Recognition.gparams` no longer carry the
+  generative input prior, which no recognition reads, and `generative` no
+  longer carries the initial-state prior, which is a parameter:
+  `Recognition.t` takes one type parameter fewer.
+- `Ilqr_vae.sample_generative`, `predictions` and `predictions_deterministic`
+  return the records `Ilqr_vae.generated` and `Ilqr_vae.prediction` instead of
+  tuples of same-typed tensors.
+- The bound of a recognition that leaves the inputs at the point mass at zero
+  (`Lfads ~with_inputs:false`) no longer carries the input prior's term, which
+  moved with the prior's scales although there was no input density to weigh.
+  `Recognition.infers_inputs` states the case.
+- Shapes are checked where they were broadcast into a wrong answer: the latents
+  of `Recognition.log_prob`, the batch axes of `Elbo.compute`'s `log_prob`,
+  `Elbo.log_prior`'s two tensors, and the dimension axes of
+  `Dynamics.integrate` and `integrate_samples`.
+- `Iilqr.problem` takes no gparams, which it never read, and takes `?verbose`;
+  `Dynamics.Linear.make` takes `?dt_over_tau`; `Model.make` checks both vectors
+  of an `initial_prior`; and the decoders use the horizon of the state path
+  they are given instead of the model's.
+- `Recognition.Iilqr.posterior_initial` returns `Recognition.initial` — a mean
+  and a precision — instead of `Dilqr.Lqr.initial`: a caller reading the
+  encoder's initial state no longer names dilqr's record, and the conversion
+  happens once, inside the recognition.
+- Every component constructor takes `~at`, the device set its parameters live
+  at: `~at:Nx.Host.on` is the host, as before, and a device placement makes a
+  model whose parameters are there (`Covariance.make`, `Initial.make`, the
+  priors, the likelihoods, the dynamics and the recognitions).
+- A model component is a description, and its parameters are a value of their
+  own: none of the component records has a `params` field, `Dynamics.Linear.make`
+  and the rest build only the description, and `init` draws the parameters a
+  fresh model starts from — `Model.init ~at ~key model`, one subkey per
+  component. `Model.make` no longer returns parameters, and `Model.params` is
+  gone: building a model allocates nothing, so building one per device costs
+  nothing.
+- `place` moves a component's parameter value to another placement —
+  `Prior.Gaussian.place ~at p`, and the same for every component and for
+  `Initial` — with `Nx.Ptree.place`, so a checkpoint can follow the device it
+  runs on.
+- `Density` is the library's Gaussian log density, written once for the form
+  the covariance is held in — `Isotropic`, `Diagonal`, `Cholesky` of the
+  covariance, `Precision_cholesky` — so a diagonal costs `O (d)` and a factor
+  one triangular solve. `Initial.logp`, the priors and the two recognitions'
+  own densities go through it.
 - `Model.make` takes no dimensions. Every one of them is a field of a
   component — `n` and `m` of the dynamics, `n_output` of the likelihood,
   `n_steps` of the recognition — so the model reads them from there and only
@@ -135,6 +218,17 @@ changes do not need an entry.
 
 ### sofo
 
+- The subspace solve is documented as the one part of a step that stays on the
+  host, and the reason has moved twice. It was that an eigendecomposition could
+  not be compiled; then that Raven compiles one (`Nx.eigh` lowers to Jacobi
+  rotations, to `1e-15` of the host's eigenvalues) but that compiling it took
+  8.5 s for a single `k = 24` program, nearly all of it in one LLVM pass of one
+  kernel — LLVM 22's loop-idiom recogniser on a chain of float maxima, which
+  Raven 72044867 turns off for host kernels; and now that it compiles in a
+  fraction of a second but runs slower than the host's: 8× at `k = 128`, and
+  10–60× on an AMD GPU, against a round trip of three `k×k` tensors.
+  `doc/jit-solve.md` records the measurements on both sides, the diagnosis, and
+  what would make a compiled solve worth having. No API change.
 - Imported from `hennequin-lab/sofo-raven`.
 - `Optim.directions`, `Optim.step` and `Optim.sketch_jit` take `?custom`, a
   batched set of tangents that becomes the first lanes of the sketch and is

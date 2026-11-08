@@ -11,7 +11,10 @@ encoder, an initial state) drive a state through a dynamics; a likelihood
 emits each observation from the state reached by the inputs before it. The
 recognition is a value of type `Recognition.t` with its own parameters;
 `Model.make` takes one, and everything else — the ELBO, sampling, training,
-JIT compilation — is unchanged by the choice.
+JIT compilation — is unchanged by the choice. The model is a description with
+no parameters in it: `Model.make` builds it and draws nothing, and
+`Model.init` draws the parameters a fresh one starts from, one subkey per
+component.
 
 The model's dimensions are not arguments: `n` and `m` come from the
 dynamics, `n_output` from the likelihood and `n_steps` from the recognition
@@ -28,21 +31,22 @@ let model =
     Nx.float64
     ~dynamics:
       (Dynamics.Linear_nonlinear.make
+         ~at:Nx.Host.on
          ~dt:0.01
          ~tau:0.04
          ~n:3
          ~nh:128
          ~m:3
          ~phi:Nx.tanh
-         Nx.float64)
-    ~likelihood:(Likelihood.Gaussian.make ~n:3 ~n_output:3 Nx.float64)
-    ~prior:(Prior.Student.make ~m:3 Nx.float64)
-    ~encoder_prior:(Prior.Gaussian.make ~m:3 Nx.float64)
-    ~recognition:(Recognition.Iilqr.make ~n:3 ~m:3 ~n_steps:32 ~n_output:3 Nx.float64)
+         ())
+    ~likelihood:(Likelihood.Gaussian.make ~at:Nx.Host.on ~n:3 ~n_output:3 ())
+    ~prior:(Prior.Student.make ~at:Nx.Host.on ~m:3 ())
+    ~encoder_prior:(Prior.Gaussian.make ~at:Nx.Host.on ~m:3 ())
+    ~recognition:(Recognition.Iilqr.make ~at:Nx.Host.on ~n:3 ~m:3 ~n_steps:32 ~n_output:3 ())
     ()
 
-let params = Model.params model
 let key = Nx.Rng.key 0
+let params = Model.init ~at:Nx.Host.on ~key model
 let data = (* one trial: [n_steps; n_output] *)
 let batch = (* a tensor mini-batch: [batch; n_steps; n_output] *)
 
@@ -63,7 +67,7 @@ let step =
     (fun params key batch ->
        Rune.value_and_grad
          (Model.structure model)
-         (fun p -> Elbo.batch_loss_fixed model p ~key ~n_samples:16 ~iters:4 batch)
+         (fun p -> Elbo.loss_fixed model p ~key ~n_samples:16 ~iters:4 batch)
          params)
 ```
 
@@ -97,6 +101,14 @@ KL from `log q` and the model's `log p` at the same reparameterized draws, with
 the density's parameters stopped so that the gradient is the path-derivative
 (sticking-the-landing) estimator of Roeder, Wu & Duvenaud (2017).
 
+A recognition whose mean solves an iterative problem takes the solver as a
+value: `Recognition.adaptive ?max_iter ?conv_threshold ()` stops on the
+solver's own test and runs eagerly, `Recognition.fixed ~iters ()` runs a known
+number of iterations with tensor-only control flow and compiles. Pass it as
+`~solve` to `Model.infer`, `Model.mean`, `Model.log_prob` or any of the
+`Ilqr_vae` front-page functions; leaving it out means `Recognition.default`,
+the adaptive solve.
+
 ## KL warm-up
 
 The bound is `log p(o | z) − β · KL(q ‖ p)`, and `β` is a scalar tensor
@@ -124,13 +136,13 @@ already contains the encoder prior.
 ## Status
 
 The library is **implemented**: the `.mli` files in `lib/` are the design, the
-`.ml` files beside them are the implementation, and `test/` is the suite (25
-tests). See the [`dilqr`
-repository](https://github.com/hennequin-lab/dilqr-raven) for `dilqr` itself.
+`.ml` files beside them are the implementation, and `test/` is the suite. See
+the [`dilqr` repository](https://github.com/hennequin-lab/dilqr-raven) for
+`dilqr` itself.
 
 ## Checking
 
 ```sh
-dune build @check @fmt   # interfaces and formatting
-dune runtest             # the suite
+dune build @packages/ilqr-vae/check @packages/ilqr-vae/fmt   # interfaces and formatting
+dune build @packages/ilqr-vae/runtest                        # the suite
 ```
