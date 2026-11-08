@@ -679,16 +679,45 @@ Ranked by how much they can change the plan.
 
 1. Which models does the lab actually need? The subset in §8 is chosen from
    the ML benchmark suite; a robot with meshes changes M4 and forces M8 early.
+   **M7 answer:** all three benchmark models step at parity (hopper, walker,
+   humanoid, 1000 of 1000 steps within 1e-8 against recorded MuJoCo states, with
+   the active-set rows and the contacts matching at every state). A
+   quadruped-sized model with capsules and spheres stands and walks in the
+   viewer. What is missing is not a model but a *shape*: 54 candidate geom pairs
+   in 8 type pairs need the convex path (`Collision.unsupported_pairs` names
+   them), and every heightfield does. So M8 is needed for meshes and terrain, and
+   only for those.
 2. Is GPU a requirement in year one, or is batched CPU enough?
+   **M7 answer:** batched CPU is enough to do the work, and the GPU is worth
+   1.4-7× on top of it. Measured, whole step: humanoid 124.66 us/env-step at
+   1024 lanes on the iGPU against 330.04 on the host; hopper 5.81 against 10.60.
+   At one environment the GPU loses outright (2.1 ms against 238 us for hopper),
+   because launch overhead is the whole step. So: the CPU path is the product,
+   the GPU is a batch multiplier, and `doc/perf.md` §14 is the table.
 3. Does the plan need to read MJCF, or is a converted format acceptable?
    This is worth one month and should be decided before M10.
 4. Does the port aim at long-horizon trajectory equivalence with the C engine,
    or at "same physics, different rounding"? The first requires matching
    MuJoCo's solver defaults exactly, the second only the algorithms.
+   **M7 answer:** the first, and it is met for 1000 steps: at every state of a
+   1000-step recording the row set and the contact set match, the positions
+   agree to a worst case of 4.35e-10 (humanoid), 8.77e-11 (walker), 1.10e-11
+   (hopper), and the step resynchronises from MuJoCo's state at each of those
+   1000 states within 1e-8. This is why the active-set Newton solver was ported
+   with its exact ratio test rather than approximated: "same physics, different
+   rounding" would not have produced matching rows.
 5. Should `mjc` depend on `geom` for rotations, or carry its own rigid-body
    math (needed if `geom` stays float32)? Leaning to its own, for v1.
+   **M7 answer:** its own. `lib/rigid.ml` and `lib/pose.ml` carry the math, which
+   is what makes the parity corpus bit-comparable with MuJoCo's own conventions
+   (quaternion order, `mat` vs `quat` storage) rather than whatever a general
+   geometry library chose.
 6. Does the lab want `mjc` to expose `mj_forward` stage by stage (needed for
    debugging against the C engine) or only `step`?
+   **M7 answer:** both, and the stages earn their keep: `Kinematics`, `Bias`,
+   `Mass`, `Passive`, `Collision`, `Constraint` and `Solver` are separately
+   exported and separately tested, and every parity bug of M1-M4 was found by
+   comparing one stage rather than a whole step.
 7. Can Raven compile a factorization faster? The measurements in §3.3 say the
    first call of a program holding one 39×39 `cholesky` takes ~2 s, and 111 s
    at 80×80, because the lowering unrolls the factorization at trace time; the
@@ -699,6 +728,13 @@ Ranked by how much they can change the plan.
    first call takes 10 ms at every size up to 60×60, so the compile-time half
    of this question is answered; the steady-state half is not. See
    `doc/spike-la.md`.
+   **M7 answer:** the steady state is the factorization's, and the answer is
+   86%/2.36×. 86% of a device step is one Cholesky per solver round (34.9 us for
+   rows=24 against 1.25 us per isolated round times 24); a blocked factorization
+   that reuses one factorization across rows is 2.36x on humanoid (353.24 ->
+   149.58 us/env-step) and is a documented option rather than the default,
+   because it is not bit-identical to MuJoCo (hopper shadow 878 against 980).
+   `doc/perf.md` §12.
 
 ---
 

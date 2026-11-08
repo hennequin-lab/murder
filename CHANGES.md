@@ -7,11 +7,44 @@ changes do not need an entry.
 
 ### mjc
 
-- New package: a differentiable physics engine on Nx and Rune, private until
-  its API settles. Forward kinematics, the mass matrix, the velocity stage and
-  the Euler step match MuJoCo 3.17 on a recorded parity corpus, to 1e-12 per
-  stage and 1e-10 over ten steps; the `.mjcb` interchange format loads
-  compiled models without linking MuJoCo. See `packages/mjc/README.md`.
+- New package: a differentiable physics engine on Nx and Rune, private until its
+  API settles. What it does, and what it was measured against:
+
+  - **Parity with MuJoCo 3.17**, not resemblance. Every stage (forward
+    kinematics, mass matrix, bias, passive forces, collision, constraint
+    assembly) is compared against the C engine's own arrays on a recorded corpus,
+    and the whole step is compared against `mj_step`. On hopper, walker and
+    humanoid, 1000 of 1000 recorded states resynchronise within 1e-8, with the
+    active-set rows and the contacts matching at every state; worst cases are
+    1.10e-11, 8.77e-11 and 4.35e-10.
+  - **Joints** hinge, slide, ball, free; **geoms** plane, sphere, capsule, box,
+    cylinder; joints limits and tendon limits; equality constraints; contacts
+    with per-contact `condim`, friction loss and exclusions. Models whose
+    geom pairs have no implementation (all convex pairs, every heightfield) are
+    refused *by name* by `Collision.unsupported_pairs` rather than silently
+    ignored.
+  - **Actuators, transmissions, tendons, sensors**, with MuJoCo's position,
+    velocity, general, motor and damper gains.
+  - **Differentiable**: `Rune.value_and_grad` over the step, with respect to
+    both the state and the model's parameters, since the model is a tree of
+    tensors like the state. Contact geometry is deliberately not differentiated;
+    the KKT rule supplies the trajectory derivative, as MuJoCo and MJX do.
+  - **Device polymorphism**: the compiled step runs on the host or on the
+    machine's AMD iGPU, bit-identically, with the same code. 4.44e-15 (hopper)
+    and 3.63e-16 (walker) of relative difference over 100/50 steps.
+  - **Throughput**: one whole step over a batch, `doc/perf.md` §14. Humanoid
+    (nv = 27) 124.66 us/env-step at 1024 lanes on the iGPU, 8022 env-steps/s,
+    7x one MuJoCo core; hopper 5.81 us at the same batch. Single-environment
+    use is slower than MuJoCo (82-11400 us), which is what the batch buys.
+  - **The `.mjcb` interchange**: compiled models load without linking or
+    installing MuJoCo; the converter is a development-time Python module
+    (`tools/mjcb.py`) and the format is documented with its field list.
+  - The README carries a five-step worked example — write a model, load it, step
+    it, differentiate it, checkpoint it — which CI builds and runs.
+
+  Not yet: float32 (the engine is float64 throughout; the measured payoff is
+  1.40x end-to-end and the tolerance story is in `doc/perf.md`), the convex
+  contact path beyond the eight implemented geom pairs, and heightfields.
 
 ### geom
 
