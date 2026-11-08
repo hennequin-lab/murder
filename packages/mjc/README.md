@@ -53,6 +53,79 @@ too slow to run on every edit and too important to drop: the box-box manifold
 comparison (800 pairs, every contact matched as a set) and hopper, walker and
 humanoid against 1000 recorded MuJoCo states each. It runs nightly.
 
+## Your first model, in five steps
+
+**1. Write it** in MJCF, as you would for MuJoCo. A cart on a rail with a pole:
+
+```xml
+<mujoco model="cartpole">
+  <option timestep="0.005"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="2 2 0.1"/>
+    <body name="cart" pos="0 0 0.1">
+      <joint name="slide" type="slide" axis="1 0 0"/>
+      <geom type="box" size="0.1 0.05 0.05" mass="1"/>
+      <body name="pole" pos="0 0 0.05">
+        <joint name="hinge" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.5" size="0.02" mass="0.1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator><motor joint="slide" ctrlrange="-10 10"/></actuator>
+</mujoco>
+```
+
+**2. Compile it** with MuJoCo, once, at development time. The converter is a
+library, not a binary, so this is the whole of it — `mjc` itself never needs
+MuJoCo installed:
+
+```sh
+python3 -c "import mujoco, sys; sys.path.insert(0, 'packages/mjc/tools'); \
+            import mjcb; m = mujoco.MjModel.from_xml_path('cartpole.xml'); \
+            mujoco.mj_setConst(m, mujoco.MjData(m)); \
+            mjcb.write_model(m, 'cartpole.mjcb')"
+```
+
+**3. Load and step it.** `packages/mjc/example/hello.ml` is a complete program that
+does the five things, and CI builds and runs it:
+
+```sh
+dune exec packages/mjc/example/hello.exe -- /tmp/cartpole.mjcb
+```
+
+```text
+loaded /tmp/cartpole.mjcb: nq = 2, nv = 2, nbody = 3, timestep = 0.005 s
+after 100 steps: t = 0.500 s, qpos = [0.0000, 0.0000]
+  d(sum qpos)/d(gravity) = [2.5e-05, -0, -0]
+  d(sum qpos)/d(dof_damping) = [0, -0]
+  d(sum qpos)/d(body_mass) = [0, 0, 0]
+  (the step it differentiated reached sum qpos = 0.000000000)
+  check: d(sum qpos)/d(gravity_z): central difference 0, reverse mode -0, relative 0
+checkpoint /tmp/hello-checkpoint.mjcb: shape key matches, dof_damping matches
+```
+
+The two lines that matter, with the comments stripped:
+
+```ocaml
+(* stepping: the step is a pure function of state *)
+let d = Mjc.Step.step_with (Mjc.Step.config m) m d in
+
+(* differentiating: the model is a tree of tensors, so the same primitive that
+   differentiates a network differentiates the simulator *)
+let v, g = Rune.value_and_grad (Mjc.Model.ptree ()) scalar m in
+```
+
+**4. Differentiate it.** `scalar` is any function of the step; `g` is a
+model-shaped tree holding the derivative with respect to every parameter, which
+is why the example can print `d/d(gravity)` and `d/d(body_mass)` without a line
+of backward pass. Gradients the solver's contact decisions make non-smooth are
+reported, not smoothed over; the stance is in
+[`doc/adr/0013-convex-path.md`](doc/adr/0013-convex-path.md).
+
+**5. Checkpoint it.** A checkpoint is the model — `Mjc.Mjcb.write` / `read`, and a
+round trip is bit-exact. The state is a tree of `Nx` tensors the caller owns, so
+saving it is `Nx`'s business, not a second format's.
+
 | Document | What it is |
 | --- | --- |
 | [`PLAN.md`](PLAN.md) | the design note: what MuJoCo does, what Raven gives us, measured costs, feasibility per subsystem, risks |

@@ -1,0 +1,16 @@
+(executable
+ (name hello)
+ (libraries base mjc nx rune))
+
+; The README's worked example, run as a test so that it cannot rot: if the API
+; moves, this fails in CI instead of in someone's first ten minutes.
+
+(rule
+ (alias runtest)
+ (deps
+  (glob_files ../test/fixtures/*)
+  %{exe:hello.exe})
+ (action
+  (chdir
+   %{workspace_root}/packages/mjc
+   (run %{exe:hello.exe}))))

@@ -720,7 +720,7 @@ tested, CI split, docs complete.
    and overnight commands cannot drift.
 5. `odoc` builds with warnings as errors, and every public value in `lib/*.mli`
    has a doc comment.
-6. A user can write a model, load it, step it, differentiate it and save a
+6. ✅ A user can write a model, load it, step it, differentiate it and save a
    checkpoint using only the README.
 
 **Gate G7.** Whether to continue into M8–M11. The rule: continue with meshes
