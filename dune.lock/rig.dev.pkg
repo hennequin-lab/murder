@@ -10,6 +10,6 @@
 (source
  (fetch
   (url
-   git+https://github.com/raven-ml/raven.git#68e295cb560188c73cf994283fda7d182284d853)))
+   git+https://github.com/raven-ml/raven.git#720448679a36de9a6dfde022eee8dde6e73302e6)))
 
 (dev)
