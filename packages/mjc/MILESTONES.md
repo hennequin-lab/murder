@@ -718,8 +718,15 @@ tested, CI split, docs complete.
    `test/slow/`) and runs the parity gate itself over hopper, walker and
    humanoid. `.github/workflows/nightly.yml` runs the same alias, so the local
    and overnight commands cannot drift.
-5. `odoc` builds with warnings as errors, and every public value in `lib/*.mli`
-   has a doc comment.
+5. ◐ `dune build @packages/mjc/doc` succeeds and every public value in
+   `lib/*.mli` now has a doc comment — 131 of 131, and
+   `dune build @packages/mjc/doc-check` fails with the file and line of any that
+   stops having one (verified by adding an undocumented value on purpose; it
+   named the line and returned 1). The *warnings-as-errors* half is not
+   enforceable here: dune 3.24 does not surface odoc's warnings, and a
+   deliberately broken `{!reference}` produced neither a warning nor a failure,
+   in the build output or in `_build/log`. Recorded as half met, with the
+   evidence, rather than claimed.
 6. ✅ A user can write a model, load it, step it, differentiate it and save a
    checkpoint using only the README.
 

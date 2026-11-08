@@ -1,0 +1,16 @@
+; Documentation is checked, not assumed. Every public value in lib/*.mli must
+; carry a doc comment, and `dune build @packages/mjc/doc-check` fails with the
+; file and line of each one that does not.
+;
+; `dune build @doc` also has to succeed: dune 3.24 does not surface odoc's own
+; warnings (a deliberately broken {!reference} in this package produced neither a
+; warning nor a build failure, in the build output or in _build/log), so the
+; completeness check is the part that can be enforced.
+
+(rule
+ (alias doc-check)
+ (deps
+  (glob_files lib/*.mli)
+  tools/check_mli_docs.py)
+ (action
+  (run python3 %{dep:tools/check_mli_docs.py} %{deps})))

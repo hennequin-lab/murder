@@ -22,11 +22,23 @@
 (** The type codes of [efc_type], matching MuJoCo's [mjtConstraint]. *)
 val type_equality : int
 
+(** [dof_frictionloss], per degree of freedom: one row per direction. *)
 val type_friction_dof : int
+
+(** [tendon_frictionloss], one row per tendon per direction. *)
 val type_friction_tendon : int
+
+(** A joint limit, one row per violated side. *)
 val type_limit_joint : int
+
+(** A tendon length limit. *)
 val type_limit_tendon : int
+
+(** A contact in the frictionless cone: the normal row only. *)
 val type_contact_frictionless : int
+
+(** A contact in the pyramidal cone: a normal row and two one-sided tangential
+    rows per axis. *)
 val type_contact_pyramidal : int
 
 (** {1:structure Structure}
@@ -84,4 +96,9 @@ val contact : config -> 'a Model.model -> 'a Data.data -> 'a Data.data
     stays positive definite. *)
 val tendon_limits : 'a Model.model -> 'a Data.data -> 'a Data.data
 
+(** [impedance ?dt c m d] is the constraint solver's impedance, the [R] of
+    [J M⁻¹ Jᵀ + R]: MuJoCo's [solref]/[solimp] converted to stiffness and damping
+    at the step's own [dt], which is why the timestep is a parameter of
+    {!config}. Rows keep the values the solver needs, not the ones the model
+    stores. *)
 val impedance : ?dt:float -> config -> 'a Model.model -> 'a Data.data -> 'a Data.data

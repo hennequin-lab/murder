@@ -77,6 +77,9 @@ jobs:
         run: dune build @all @install
       - name: Test
         run: dune runtest
+      - name: Documentation
+        if: runner.os == 'Linux'
+        run: dune build @packages/mjc/doc @packages/mjc/doc-check
       - name: Check generated files are committed
         if: runner.os == 'Linux'
         run: git diff --exit-code
