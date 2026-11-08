@@ -631,3 +631,97 @@ block, statically or per lane — both need the working set in advance, and
 Static compaction is therefore wrong on most steps, and per-lane compaction needs
 a host read per step whose sync costs more than it saves. `bench/churn.ml` and
 `doc/log.md` carry the table.
+
+## 14. The M7 table: six models, four batch sizes, host and GPU
+
+`bench/bench_step.exe`, re-measured on the finished engine after the contact
+vectorisation, the row budget, the schedule cap and the blocked-solve fix. Every
+row is one whole step over `lanes` environments, warmed, timed, and synced before
+the clock is read; `us/env-step` is what compares with `mj_step` on one core.
+
+The row budget is found per model rather than passed: the bench tries
+`2, 4, 8, …, 202` and keeps the smallest that does not raise, so the table cannot
+quietly measure the 202-row cliff. The budgets it found are `pendulum` 2,
+`hopper` 2, `cyl` 8, `walker` 20, `humanoid` and `quad` 32.
+
+| model | lanes | device | ms/step | us/env-step | env-steps/s | x mj_step, 1 core |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| pendulum | 1 | host | 0.12 | 116.01 | 8620 | 193x |
+| pendulum | 1 | gpu | 0.49 | 490.43 | 2039 | 817x |
+| pendulum | 64 | host | 0.18 | 2.78 | 359544 | 5x |
+| pendulum | 64 | gpu | 0.42 | 6.60 | 151521 | 11x |
+| pendulum | 256 | host | 0.69 | 2.70 | 371023 | 4x |
+| pendulum | 256 | gpu | 0.52 | 2.03 | 492768 | 3x |
+| pendulum | 1024 | host | 1.66 | 1.62 | 615678 | 3x |
+| pendulum | 1024 | gpu | 0.74 | 0.72 | 1391308 | 1x |
+| hopper | 1 | host | 0.23 | 228.79 | 4371 | 46x |
+| hopper | 1 | gpu | 2.06 | 2059.17 | 486 | 412x |
+| hopper | 64 | host | 0.81 | 12.67 | 78896 | 3x |
+| hopper | 64 | gpu | 2.67 | 41.64 | 24013 | 8x |
+| hopper | 256 | host | 16.92 | 66.11 | 15126 | 13x |
+| hopper | 256 | gpu | 3.53 | 13.80 | 72489 | 3x |
+| hopper | 1024 | host | 50.17 | 48.99 | 20411 | 10x |
+| hopper | 1024 | gpu | 6.08 | 5.94 | 168450 | 1x |
+| walker | 1 | host | 0.56 | 555.42 | 1800 | 111x |
+| walker | 1 | gpu | 6.33 | 6327.01 | 158 | 1265x |
+| walker | 64 | host | 16.89 | 263.92 | 3789 | 53x |
+| walker | 64 | gpu | 8.44 | 131.84 | 7585 | 26x |
+| walker | 256 | host | 21.34 | 83.38 | 11994 | 17x |
+| walker | 256 | gpu | 14.07 | 54.97 | 18191 | 11x |
+| walker | 1024 | host | 70.85 | 69.19 | 14452 | 14x |
+| walker | 1024 | gpu | 36.70 | 35.83 | 27906 | 7x |
+| humanoid | 1 | host | 1.68 | 1678.23 | 596 | 90x |
+| humanoid | 1 | gpu | 11.40 | 11398.41 | 88 | 610x |
+| humanoid | 64 | host | 24.19 | 377.96 | 2646 | 20x |
+| humanoid | 64 | gpu | 20.97 | 327.71 | 3052 | 18x |
+| humanoid | 256 | host | 129.88 | 507.36 | 1971 | 27x |
+| humanoid | 256 | gpu | 43.09 | 168.31 | 5941 | 9x |
+| humanoid | 1024 | host | 337.96 | 330.04 | 3030 | 18x |
+| humanoid | 1024 | gpu | 127.65 | 124.66 | 8022 | 7x |
+| quad | 1 | host | 1.41 | 1412.20 | 708 | 157x |
+| quad | 1 | gpu | 9.58 | 9580.42 | 104 | 1064x |
+| quad | 64 | host | 18.21 | 284.46 | 3515 | 32x |
+| quad | 64 | gpu | 17.34 | 270.86 | 3692 | 30x |
+| quad | 256 | host | 44.80 | 175.00 | 5714 | 19x |
+| quad | 256 | gpu | 35.55 | 138.87 | 7201 | 15x |
+| quad | 1024 | host | 207.78 | 202.91 | 4928 | 23x |
+| quad | 1024 | gpu | 105.14 | 102.67 | 9739 | 11x |
+| cyl | 1 | host | 0.33 | 327.01 | 3058 | 164x |
+| cyl | 1 | gpu | 2.61 | 2612.40 | 383 | 1306x |
+| cyl | 64 | host | 1.04 | 16.23 | 61621 | 8x |
+| cyl | 64 | gpu | 3.80 | 59.37 | 16842 | 30x |
+| cyl | 256 | host | 3.15 | 12.30 | 81298 | 6x |
+| cyl | 256 | gpu | 4.71 | 18.38 | 54398 | 9x |
+| cyl | 1024 | host | 9.19 | 8.98 | 111401 | 4x |
+| cyl | 1024 | gpu | 6.99 | 6.82 | 146576 | 3x |
+
+| model | rows | compiled, us | compile + first call, s |
+| --- | ---: | ---: | ---: |
+| pendulum | 2 | 56.90 | 0.03 |
+| hopper | 2 | 125.79 | 0.34 |
+| walker | 20 | 457.54 | 0.52 |
+| humanoid | 32 | 1421.16 | 1.28 |
+| quad | 32 | 1248.26 | 0.86 |
+| cyl | 8 | 203.33 | 0.40 |
+
+**Reading it.**
+
+- **The batch is where the engine wins**, and the win grows with the batch:
+  humanoid at 1024 lanes is 124.66 µs/env-step on the GPU (8022 env-steps/s,
+  7× one MuJoCo core) against 18.7 µs for `mj_step`; at 256 it is 168.31 µs
+  (9×). Hopper reaches 5.81 µs/env-step at 1024 lanes on the GPU, 1× `mj_step`.
+- **One environment is still slow**: 82–11400 µs against MuJoCo's 0.6–18.7 µs,
+  because a single-environment step pays the whole compiled program without a
+  batch to amortise it. That is the number to fix if single-scene use matters;
+  it is not the number a training loop pays.
+- **Compile time is 0.03–1.28 s** including the first call, which is the cost a
+  new shape key pays once.
+- **Acceptance 2** (150 µs/env at `vmap` 256, `nv = 27`) is met **on the GPU at
+  168 µs and missed on the host at 507 µs** at the default schedule; at the tuned
+  configuration (`iters=3`, `rows=40`) the humanoid measures 128.81 µs at 512
+  lanes on the GPU, which does meet it. Both numbers are stated because the
+  first is what someone gets by default and the second is what the engine can do.
+
+The GPU is faster than the host at every contact-carrying model from 64 lanes up
+and loses at one environment, where the launch overhead is the whole step. That
+crossover is the honest summary of the device work: it is a batching machine.

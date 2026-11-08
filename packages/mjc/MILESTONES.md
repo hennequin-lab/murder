@@ -702,10 +702,13 @@ tested, CI split, docs complete.
 
 **Acceptance.**
 
-1. The benchmark table exists with CPU and (if available) one GPU column,
-   and the MuJoCo C row on the same machine.
-2. Steady-state step time meets G2's conditional threshold (150 µs/env at
-   `vmap` 256, `nv = 27`), or the miss is explained in `doc/perf.md`.
+1. ✅ The benchmark table exists with CPU and GPU columns and the MuJoCo C row
+   on the same machine: `bench/bench_step.exe`, six models, four batch sizes,
+   in `doc/perf.md` §14. `--json` emits the same as data.
+2. ◐ Steady-state step time meets G2's conditional threshold at the tuned
+   configuration (128.81 µs/env at `vmap` 512, `nv = 27`, GPU) and misses it at
+   the default (168 µs GPU / 507 µs host at `vmap` 256). Both stated in
+   `doc/perf.md` §14.
 3. float32 passes the same acceptance tests as float64 at `1e-4` relative,
    including the contact benchmarks.
 4. `dune build @packages/mjc/runtest` under 2 minutes warm;
