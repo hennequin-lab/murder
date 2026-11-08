@@ -38,7 +38,7 @@ val config
   :  ?linear:Solver.linear
   -> ?iters:int
   -> ?rows:int
-  -> Nx.host Model.model
+  -> ('s, Nx.host) Model.m
   -> config
 
 (** [config_dt c] is the timestep [c] holds. *)
@@ -47,7 +47,7 @@ val config_dt : config -> float
 (** [step_with c m d] is one step with [c]'s structure and [m]'s *parameters*,
     read as tensors: it is the function a gradient with respect to a model
     parameter goes through, and it never reads one. *)
-val step_with : config -> 'a Model.model -> 'a Data.data -> 'a Data.data
+val step_with : config -> ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d
 
 (** [compile m] is [m]'s step, ready to run. The time step and the damping
     test are read here, not per call, because a traced program may not read a

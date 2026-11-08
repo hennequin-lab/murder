@@ -19,10 +19,10 @@
 
     [moment] is [[nu;nv]]: row [i] is the arm actuator [i] has on each degree
     of freedom. [length] and [velocity] are [[nu]]. *)
-type 'a t =
-  { moment : 'a Nx.float64_t
-  ; length : 'a Nx.float64_t
-  ; velocity : 'a Nx.float64_t
+type ('s, 'a) t =
+  { moment : ('s, 'a) Rigid.f
+  ; length : ('s, 'a) Rigid.f
+  ; velocity : ('s, 'a) Rigid.f
   }
 
 (** [forward m d] is the transmission geometry at [d]'s configuration.
@@ -30,7 +30,7 @@ type 'a t =
     Raises [Invalid_argument] for a transmission v1 does not have: a tendon
     (the moment needs [ten_J], which arrives with {!Tendon}) and anything the
     loader did not already reject. *)
-val forward : 'a Model.model -> 'a Data.data -> 'a t
+val forward : ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) t
 
 (** [pretty t] is the transmission, for a log line or a test failure. *)
-val pp : Stdlib.Format.formatter -> 'a t -> unit
+val pp : Stdlib.Format.formatter -> ('s, 'a) t -> unit

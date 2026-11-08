@@ -44,7 +44,7 @@ type linear =
 
 (** The type for row arrays at [float64] on the device ['d] a row set lives
     on. *)
-type 'd f = 'd Nx.float64_t
+type ('s, 'd) f = ('s, 'd) Rigid.f
 
 (** The type for a row set: the quadratic, the box, and the warm start.
     Polymorphic in its arrays, as {!Model.Params} is, so the same description
@@ -60,11 +60,11 @@ type ('a, 'd) rows_ =
   }
 
 (** The type for a float64 row set on the device ['d]. *)
-type 'd rows = ('d Nx.float64_t, 'd) rows_
+type ('s, 'd) rows = (('s, 'd) Rigid.f, 'd) rows_
 
 (** [rows_ptree] describes a row set to the transformations: its arrays are
     leaves at [float64] on the host. *)
-val rows_ptree : unit -> ('d rows, 'd) Nx.Ptree.t
+val rows_ptree : unit -> (('s, 'd) rows, 'd) Nx.Ptree.t
 
 (** [solve_rows ?implicit ~linear ~iters ~boxed r] is the minimiser over [r]'s
     box.
@@ -80,8 +80,8 @@ val solve_rows
   -> linear:linear
   -> iters:int
   -> boxed:bool
-  -> 'd rows
-  -> 'd f
+  -> ('s, 'd) rows
+  -> ('s, 'd) f
 
 (** {1:solve Solve} *)
 
@@ -105,6 +105,6 @@ val forward
   -> ?implicit:bool
   -> ?iters:int
   -> ?rows:int
-  -> 'a Model.model
-  -> 'a Data.data
-  -> 'a Data.data
+  -> ('s, 'a) Model.m
+  -> ('s, 'a) Data.d
+  -> ('s, 'a) Data.d

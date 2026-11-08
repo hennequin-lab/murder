@@ -21,10 +21,10 @@ let local2global ~xpos ~xquat ~pos ~quat =
   let m = flat 9 (Rigid.quat_to_mat q) in
   x, m
 
-let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let forward (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   let t = m.topo
   and p = m.params in
-  let f64 = Nx.float64 in
+  let f64 = Model.dtype m in
   (* Constants are taken from the argument's own tensors rather than made on
      the host, so the whole body is traceable by [vmap] and [jit]. *)
   let xpos = ref (Nx.zeros_like d.xpos) in
@@ -154,7 +154,7 @@ let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   ; site_xmat = !site_xmat
   }
 
-let check (m : 'a Model.model) : (unit, string) Result.t =
+let check (m : ('s, 'a) Model.m) : (unit, string) Result.t =
   let t = m.topo in
   let problems =
     List.filter_map (List.range 0 t.njnt) ~f:(fun j ->

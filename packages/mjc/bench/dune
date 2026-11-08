@@ -27,7 +27,8 @@
   churn
   pairs
   wig
-  tstep)
+  tstep
+  f32)
  (modules
   spike_la
   bench_step
@@ -56,7 +57,8 @@
   churn
   pairs
   wig
-  tstep)
+  tstep
+  f32)
  (libraries base mjc nx rune unix rig rig.amd rig.amd.amdgpu))
 
 ; The iLQR demo is the one executable that links dilqr, so the rest of the

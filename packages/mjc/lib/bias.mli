@@ -19,4 +19,4 @@
     needs [d.cinert] and [d.cdof] from {!Mass.forward}, and the poses from
     {!Kinematics.forward}. Gravity enters through the world body's
     acceleration, as in the C engine, so [qfrc_bias] contains it. *)
-val forward : 'a Model.model -> 'a Data.data -> 'a Data.data
+val forward : ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d

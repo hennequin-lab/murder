@@ -9,9 +9,9 @@ let forward
       ?iters
       ?dt
       ?rows
-      (m : (d Nx.float64_t, d) Model.t)
-      (d : d Data.data)
-  : d Data.data
+      (m : ((float, 's, d) Nx.t, d) Model.t)
+      (d : ((float, 's, d) Nx.t, d) Data.t)
+  : ((float, 's, d) Nx.t, d) Data.t
   =
   let d = Kinematics.forward m d in
   let d = Mass.forward m d in

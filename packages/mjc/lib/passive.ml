@@ -7,7 +7,7 @@ open Base
 open Nx
 open Topo
 
-let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let forward (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   let t = m.topo
   and p = m.params in
   let spring = ref (Nx.zeros_like d.qvel) in

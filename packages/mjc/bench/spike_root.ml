@@ -85,7 +85,7 @@ let op_cg ~iters op b =
 (* [free] and the bound a row sits at, as functions of the argument: comparisons
    and selects, so their derivatives are zero and the residual's Jacobian is the
    active-set matrix. *)
-let residual_of (r : Nx.host Mjc.Solver.rows) lambda =
+let residual_of (r : (Nx.float64_elt, Nx.host) Mjc.Solver.rows) lambda =
   let at_hi = Nx.greater_equal lambda r.Mjc.Solver.hi in
   let at_lo = Nx.less_equal lambda r.Mjc.Solver.lo in
   let at_bound =
@@ -100,7 +100,7 @@ let residual_of (r : Nx.host Mjc.Solver.rows) lambda =
   let grad = Nx.add (Nx.matmul r.Mjc.Solver.a lambda) r.Mjc.Solver.b in
   Nx.add (Nx.mul free grad) (Nx.mul (Nx.sub (Nx.ones_like free) free) (Nx.sub lambda bnd))
 
-let solve_root ?linear_solve (r : Nx.host Mjc.Solver.rows) =
+let solve_root ?linear_solve (r : (Nx.float64_elt, Nx.host) Mjc.Solver.rows) =
   let solve () =
     Mjc.Solver.solve_rows ~implicit:false ~linear:`Cholesky ~iters:20 ~boxed:false r
   in
@@ -147,7 +147,7 @@ let () =
     let _, g =
       Rune.value_and_grad
         (Mjc.Solver.rows_ptree ())
-        (fun (r : Nx.host Mjc.Solver.rows) -> Nx.sum (solve r))
+        (fun (r : (Nx.float64_elt, Nx.host) Mjc.Solver.rows) -> Nx.sum (solve r))
         r
     in
     Nx.to_array g.Mjc.Solver.b
@@ -173,7 +173,7 @@ let () =
          let _, g =
            Rune.value_and_grad
              (Mjc.Solver.rows_ptree ())
-             (fun (r : Nx.host Mjc.Solver.rows) ->
+             (fun (r : (Nx.float64_elt, Nx.host) Mjc.Solver.rows) ->
                 Nx.sum
                   (Mjc.Solver.solve_rows
                      ~implicit:true

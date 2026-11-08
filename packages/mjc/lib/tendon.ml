@@ -5,10 +5,10 @@
 
 open Base
 
-type 'a t =
-  { jac : 'a Nx.float64_t
-  ; length : 'a Nx.float64_t
-  ; velocity : 'a Nx.float64_t
+type ('s, 'a) t =
+  { jac : ('s, 'a) Rigid.f
+  ; length : ('s, 'a) Rigid.f
+  ; velocity : ('s, 'a) Rigid.f
   }
 
 let check (t : Topo.t) =
@@ -52,14 +52,14 @@ let ints at f xs =
        [| List.length xs |]
        (fun i -> Int64.of_int (f (List.nth_exn xs i.(0)))))
 
-let forward (m : 'a Model.model) (d : 'a Data.data) =
+let forward (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) =
   let at = Nx.placement d.qpos in
   let t = m.topo in
   let ntendon = t.ntendon in
   if Int.equal ntendon 0
   then (
-    let z = Nx.zeros_at (Nx.placement d.qpos) Nx.float64 [| 0 |] in
-    { jac = Nx.zeros_at (Nx.placement d.qpos) Nx.float64 [| 0; t.nv |]
+    let z = Nx.zeros_at (Nx.placement d.qpos) (Nx.dtype d.qpos) [| 0 |] in
+    { jac = Nx.zeros_at (Nx.placement d.qpos) (Nx.dtype d.qpos) [| 0; t.nv |]
     ; length = z
     ; velocity = z
     })
@@ -69,13 +69,13 @@ let forward (m : 'a Model.model) (d : 'a Data.data) =
     let n = List.length rows in
     let coef =
       if Int.equal n 0
-      then Nx.zeros_at (Nx.placement d.qpos) Nx.float64 [| 0 |]
+      then Nx.zeros_at (Nx.placement d.qpos) (Nx.dtype d.qpos) [| 0 |]
       else
         Nx.stack ~axis:0 (List.map ids ~f:(fun w -> Nx.slice [ I w ] m.params.wrap_prm))
     in
     let jac =
       if Int.equal n 0
-      then Nx.zeros_at (Nx.placement d.qpos) Nx.float64 [| ntendon; t.nv |]
+      then Nx.zeros_at (Nx.placement d.qpos) (Nx.dtype d.qpos) [| ntendon; t.nv |]
       else (
         let lin =
           ints
@@ -90,11 +90,11 @@ let forward (m : 'a Model.model) (d : 'a Data.data) =
              ~axis:0
              lin
              coef
-             (Nx.zeros_at (Nx.placement d.qpos) Nx.float64 [| ntendon * t.nv |])))
+             (Nx.zeros_at (Nx.placement d.qpos) (Nx.dtype d.qpos) [| ntendon * t.nv |])))
     in
     let length =
       if Int.equal n 0
-      then Nx.zeros_at (Nx.placement d.qpos) Nx.float64 [| ntendon |]
+      then Nx.zeros_at (Nx.placement d.qpos) (Nx.dtype d.qpos) [| ntendon |]
       else (
         let qpos_at =
           Nx.take ~axis:0 (ints at (List.nth_exn qposadr) (List.range 0 n)) d.qpos
@@ -106,7 +106,7 @@ let forward (m : 'a Model.model) (d : 'a Data.data) =
              ~axis:0
              (ints at (List.nth_exn rows) (List.range 0 n))
              (Nx.mul coef qpos_at)
-             (Nx.zeros_at (Nx.placement d.qpos) Nx.float64 [| ntendon |])))
+             (Nx.zeros_at (Nx.placement d.qpos) (Nx.dtype d.qpos) [| ntendon |])))
     in
     let velocity = Nx.sum ~axes:[ 1 ] (Nx.mul jac (Nx.reshape [| 1; t.nv |] d.qvel)) in
     { jac; length; velocity })

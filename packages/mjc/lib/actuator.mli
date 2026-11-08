@@ -31,15 +31,19 @@
 
     Raises [Invalid_argument] for an actuator kind v1 does not have, naming
     it, rather than silently producing a zero force. *)
-val forward : 'a Model.model -> 'a Data.data -> 'a Data.data
+val forward : ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d
 
 (** [damping m d] is [[nu]]: the derivative of each actuator's force with
     respect to its transmission velocity, [biasprm.[2] + gainprm.[2] * input].
     The implicit integrator needs it because a velocity servo's [kv] is a
     damping term by another name, and integrating it explicitly is the
     difference between a servo that tracks and one that rings. *)
-val damping : ?force_limited:bool -> 'a Model.model -> 'a Data.data -> 'a Nx.float64_t
+val damping
+  :  ?force_limited:bool
+  -> ('s, 'a) Model.m
+  -> ('s, 'a) Data.d
+  -> ('s, 'a) Rigid.f
 
 (** [qfrc m d] is the generalized actuator force alone, without touching [d].
     It is what a test compares against the engine's [qfrc_actuator]. *)
-val qfrc : 'a Model.model -> 'a Data.data -> 'a Nx.float64_t
+val qfrc : ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Rigid.f

@@ -107,18 +107,27 @@ type ('a, 'd) t =
 (** The type for [float64] data whose values live on the device ['d]. *)
 type 'd data = ('d Nx.float64_t, 'd) t
 
+(** The type for data whose leaves are stored as ['s] on the device set ['d]. *)
+type ('s, 'd) d = ((float, 's, 'd) Nx.t, 'd) t
+
+(** The same state in [float32]. *)
+type 'd f32 = (Nx.Dtype.float32_elt, 'd) d
+
 (** The type for [float64] data on the host. *)
 type host = Nx.host data
+
+(** [dtype d] is the storage dtype of the state, read from the state itself. *)
+val dtype : ('s, 'd) d -> (float, 's) Nx.dtype
 
 (** {1:structure Structure} *)
 
 (** [ptree] describes a {!t} to the transformations. *)
-val ptree : unit -> ('d data, 'd) Nx.Ptree.t
+val ptree : unit -> (('s, 'd) d, 'd) Nx.Ptree.t
 
 (** [place p x] is [x] with every array, its topology's fixed ones included, at
     [p]; the whole value moves in one walk. This is how a state built on the
     host is put on a device, and how a result comes back. *)
-val place : 'e Nx.Placement.t -> 'd data -> 'e data
+val place : 'e Nx.Placement.t -> ('s, 'd) d -> ('s, 'e) d
 
 (** {1:construction Construction and accessors} *)
 
@@ -126,23 +135,23 @@ val place : 'e Nx.Placement.t -> 'd data -> 'e data
     [at]: [qpos] is [m.qpos0], every other leaf is zero, and [time] is zero with
     a zero time step. A creation has no operand to take a placement from, so a
     caller that wants the state on a device names it here. *)
-val create_at : 'd Nx.Placement.t -> ('d Nx.float64_t, 'd) Model.t -> 'd data
+val create_at : 'd Nx.Placement.t -> ('s, 'd) Model.m -> ('s, 'd) d
 
 (** [create m] is [create_at Nx.Host.on m]. *)
-val create : Nx.host Model.model -> host
+val create : ('s, Nx.host) Model.m -> ('s, Nx.host) d
 
 (** [nq m] and [nv m] are the model's counts, repeated for convenience. *)
-val nq : 'd Model.model -> int
+val nq : (_, _) Model.m -> int
 
 (** [nv m] is the number of velocity coordinates. *)
-val nv : 'd Model.model -> int
+val nv : (_, _) Model.m -> int
 
 (** {1:checks Checks} *)
 
 (** [validate m d] is [Ok ()] when every leaf of [d] has the shape [m]'s
     topology implies, and [Error message] otherwise, naming the field, the
     expected shape and the shape found. *)
-val validate : 'd Model.model -> 'd data -> (unit, string) result
+val validate : ('s, 'd) Model.m -> ('s, 'd) d -> (unit, string) result
 
 (** [pp] formats the state's counts and the time. *)
 val pp : Format.formatter -> Nx.host data -> unit

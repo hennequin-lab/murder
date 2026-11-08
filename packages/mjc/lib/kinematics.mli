@@ -31,7 +31,7 @@
 
     Leaves that a later stage computes ([cvel], [com], the force vectors,
     [M]) are left as they were. *)
-val forward : 'a Model.model -> 'a Data.data -> 'a Data.data
+val forward : ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d
 
 (** {1:checks Checks} *)
 
@@ -40,4 +40,4 @@ val forward : 'a Model.model -> 'a Data.data -> 'a Data.data
     feature in v1 is a free joint on a body whose parent is not the world.
     {!Model.validate} catches the malformed cases; this catches the ones that
     are legal in MuJoCo and out of scope here. *)
-val check : 'a Model.model -> (unit, string) result
+val check : ('s, 'a) Model.m -> (unit, string) result

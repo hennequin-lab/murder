@@ -412,7 +412,10 @@ let test_points_match_point () =
       Float.max acc (Float.abs (x -. y) /. Float.max 1.0 (Float.abs x)))
   in
   let masks =
-    Mjc.Jacobian.body_dof_masks ~at:(Nx.placement d.Mjc.Data.qpos) m.Mjc.Model.topo
+    Mjc.Jacobian.body_dof_masks
+      ~dtype:(Nx.dtype d.Mjc.Data.qpos)
+      ~at:(Nx.placement d.Mjc.Data.qpos)
+      m.Mjc.Model.topo
   in
   let batch = Mjc.Jacobian.points ~masks m d ~bodies ~positions in
   Array.iteri bodies ~f:(fun k body ->

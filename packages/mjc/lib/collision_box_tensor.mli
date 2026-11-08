@@ -27,14 +27,14 @@
 (** The type for a batch of pairs: [pos] is [[n;3]], [mat] [[n;9]] row-major and
     [size] [[n;3]], the layout of [Data.geom_xpos], [Data.geom_xmat] and
     [Params.geom_size] sliced to the pairs. *)
-type 'a batch =
-  { pos1 : 'a Nx.float64_t
-  ; mat1 : 'a Nx.float64_t
-  ; size1 : 'a Nx.float64_t
-  ; pos2 : 'a Nx.float64_t
-  ; mat2 : 'a Nx.float64_t
-  ; size2 : 'a Nx.float64_t
-  ; margin : 'a Nx.float64_t (** [[n]] *)
+type ('s, 'a) batch =
+  { pos1 : ('s, 'a) Rigid.f
+  ; mat1 : ('s, 'a) Rigid.f
+  ; size1 : ('s, 'a) Rigid.f
+  ; pos2 : ('s, 'a) Rigid.f
+  ; mat2 : ('s, 'a) Rigid.f
+  ; size2 : ('s, 'a) Rigid.f
+  ; margin : ('s, 'a) Rigid.f (** [[n]] *)
   }
 
 (** The type for the separating-axis decision, per pair.
@@ -42,23 +42,23 @@ type 'a batch =
     [code] is [0..2] a face of one box, [3..5] a face of the other, [6 + 3i + j]
     an edge cross; [sep] is the separation along the winner. [separated] pairs
     have no contact and the rest is meaningless for them. *)
-type 'a sat =
-  { code : 'a Nx.float64_t (** [[n]], as a float for arithmetic. *)
-  ; sep : 'a Nx.float64_t (** [[n]] *)
-  ; separated : 'a Nx.float64_t (** [[n]], 1. is separated. *)
+type ('s, 'a) sat =
+  { code : ('s, 'a) Rigid.f (** [[n]], as a float for arithmetic. *)
+  ; sep : ('s, 'a) Rigid.f (** [[n]] *)
+  ; separated : ('s, 'a) Rigid.f (** [[n]], 1. is separated. *)
   }
 
 (** [sat b] is the separating-axis result of each pair in [b]. *)
-val sat : 'a batch -> 'a sat
+val sat : ('s, 'a) batch -> ('s, 'a) sat
 
 (** {1:manifold Manifold} *)
 
 (** The type for a batch of manifolds: up to twelve contacts per pair. *)
-type 'a manifold =
-  { dist : 'a Nx.float64_t (** [[n;12]], signed distance along the normal. *)
-  ; pos : 'a Nx.float64_t (** [[n;12;3]], world. *)
-  ; normal : 'a Nx.float64_t (** [[n;12;3]], unit, from box 1 to box 2. *)
-  ; live : 'a Nx.float64_t (** [[n;12]], 1. where the slot holds a contact. *)
+type ('s, 'a) manifold =
+  { dist : ('s, 'a) Rigid.f (** [[n;12]], signed distance along the normal. *)
+  ; pos : ('s, 'a) Rigid.f (** [[n;12;3]], world. *)
+  ; normal : ('s, 'a) Rigid.f (** [[n;12;3]], unit, from box 1 to box 2. *)
+  ; live : ('s, 'a) Rigid.f (** [[n;12]], 1. where the slot holds a contact. *)
   }
 
 (** [manifold b] is the contacts of each pair in [b].
@@ -68,11 +68,11 @@ type 'a manifold =
     the order the candidates are generated rather than the engine's clip order:
     the geometry is the engine's, the row order is not, which reaches the solver
     only through the warm start. *)
-val manifold : 'a batch -> 'a manifold
+val manifold : ('s, 'a) batch -> ('s, 'a) manifold
 
 (** [debug b] is [(max face separation, max edge separation, tolerance)], for a
     test that has to see why the separating-axis decision differs. *)
-val debug : 'a batch -> 'a Nx.float64_t * 'a Nx.float64_t * 'a Nx.float64_t
+val debug : ('s, 'a) batch -> ('s, 'a) Rigid.f * ('s, 'a) Rigid.f * ('s, 'a) Rigid.f
 
 (** Twelve: a four-gon clipped by four half-planes has at most eight vertices,
     and the C engine allows twelve. *)

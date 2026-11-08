@@ -5,17 +5,17 @@
 
 open Base
 
-let f64 = Nx.float64
-
 (* [column x j] is column [j] of a [nu;k] parameter tensor, as [nu]. *)
-let column (x : 'a Nx.float64_t) j = Nx.slice [ A; I j ] x
+let column (x : ('s, 'a) Rigid.f) j = Nx.slice [ A; I j ] x
 
 (* A [nu] 0/1 flag tensor, from a [nu] tensor of flags. *)
-let flag (x : 'a Nx.float64_t) =
+let flag (x : ('s, 'a) Rigid.f) =
   Nx.where (Nx.greater_s x 0.5) (Nx.ones_like x) (Nx.zeros_like x)
 
-let const at (m : 'a Model.model) f =
-  Nx.place at (Nx.init f64 [| m.topo.nu |] (fun i -> f i.(0)))
+let const at (m : ('s, 'a) Model.m) f =
+  Nx.place
+    at
+    (Nx.init (Nx.dtype m.params.actuator_gear) [| m.topo.nu |] (fun i -> f i.(0)))
 
 let clamp x lo hi = Nx.minimum (Nx.maximum x lo) hi
 
@@ -23,7 +23,7 @@ let clamp x lo hi = Nx.minimum (Nx.maximum x lo) hi
 let select mask a b = Nx.add (Nx.mul mask a) (Nx.mul (Nx.sub (Nx.ones_like mask) mask) b)
 let minval = 1e-15
 
-let check (m : 'a Model.model) =
+let check (m : ('s, 'a) Model.m) =
   let t = m.topo in
   for i = 0 to t.nu - 1 do
     (match t.actuator_trntype.(i) with
@@ -58,11 +58,11 @@ let check (m : 'a Model.model) =
 (* The activation each actuator reads: its state at the address the loader
    recorded, or zero when it has none. A stateful actuator is identified by a
    non-negative address, which is the same thing MuJoCo's [actnum > 0] says. *)
-let activation (m : 'a Model.model) (d : 'a Data.data) =
+let activation (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) =
   let at = Nx.placement d.act in
   let t = m.topo in
   if Int.equal t.na 0
-  then Nx.zeros_at at f64 [| t.nu |]
+  then Nx.zeros_at at (Nx.dtype m.params.actuator_gear) [| t.nu |]
   else (
     let idx = Array.init t.nu ~f:(fun i -> max 0 t.actuator_actadr.(i)) in
     let values =
@@ -74,14 +74,14 @@ let activation (m : 'a Model.model) (d : 'a Data.data) =
     let has = const at m (fun i -> if t.actuator_actadr.(i) >= 0 then 1. else 0.) in
     Nx.mul values has)
 
-type 'a parts =
-  { ctrl : 'a Nx.float64_t (** [nu], after the control range *)
-  ; act : 'a Nx.float64_t (** [nu], zero where there is no state *)
-  ; length : 'a Nx.float64_t
-  ; velocity : 'a Nx.float64_t
+type ('s, 'a) parts =
+  { ctrl : ('s, 'a) Rigid.f (** [nu], after the control range *)
+  ; act : ('s, 'a) Rigid.f (** [nu], zero where there is no state *)
+  ; length : ('s, 'a) Rigid.f
+  ; velocity : ('s, 'a) Rigid.f
   }
 
-let parts (m : 'a Model.model) (d : 'a Data.data) (tr : 'a Transmission.t) =
+let parts (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) (tr : ('s, 'a) Transmission.t) =
   let p = m.params in
   let ctrl =
     select
@@ -95,12 +95,12 @@ let parts (m : 'a Model.model) (d : 'a Data.data) (tr : 'a Transmission.t) =
   ; velocity = tr.Transmission.velocity
   }
 
-let affine (s : 'a parts) prm =
+let affine (s : ('s, 'a) parts) prm =
   Nx.add
     (column prm 0)
     (Nx.add (Nx.mul (column prm 1) s.length) (Nx.mul (column prm 2) s.velocity))
 
-let force (m : 'a Model.model) (s : 'a parts) =
+let force (m : ('s, 'a) Model.m) (s : ('s, 'a) parts) =
   let at = Nx.placement s.ctrl in
   let p = m.params in
   let g =
@@ -124,7 +124,7 @@ let force (m : 'a Model.model) (s : 'a parts) =
       Array.for_all m.topo.actuator_biastype ~f:(function
         | Topo.Bias_none -> true
         | Topo.Bias_affine -> false)
-    then Nx.zeros_at at f64 [| m.topo.nu |]
+    then Nx.zeros_at at (Nx.dtype m.params.actuator_gear) [| m.topo.nu |]
     else (
       let mask =
         const at m (fun i ->
@@ -132,7 +132,10 @@ let force (m : 'a Model.model) (s : 'a parts) =
           | Topo.Bias_affine -> 1.
           | Topo.Bias_none -> 0.)
       in
-      select mask (affine s p.actuator_biasprm) (Nx.zeros_at at f64 [| m.topo.nu |]))
+      select
+        mask
+        (affine s p.actuator_biasprm)
+        (Nx.zeros_at at (Nx.dtype m.params.actuator_gear) [| m.topo.nu |]))
   in
   let stateful = Array.exists m.topo.actuator_actadr ~f:(fun a -> a >= 0) in
   let input =
@@ -150,7 +153,7 @@ let force (m : 'a Model.model) (s : 'a parts) =
     (clamp raw (column p.actuator_forcerange 0) (column p.actuator_forcerange 1))
     raw
 
-let act_dot (m : 'a Model.model) (d : 'a Data.data) (s : 'a parts) =
+let act_dot (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) (s : ('s, 'a) parts) =
   let at = Nx.placement s.ctrl in
   let t = m.topo in
   if Int.equal t.na 0
@@ -186,7 +189,7 @@ let act_dot (m : 'a Model.model) (d : 'a Data.data) (s : 'a parts) =
          ~axis:0
          idx
          per_actuator
-         (Nx.zeros_at at f64 [| t.na + 1 |])))
+         (Nx.zeros_at at (Nx.dtype m.params.actuator_gear) [| t.na + 1 |])))
 
 (* The velocity derivative of each actuator's force:
    [biasprm.[2] + gainprm.[2] * input], MuJoCo's [mjd_actuatorVelDeriv] for the
@@ -197,7 +200,7 @@ let act_dot (m : 'a Model.model) (d : 'a Data.data) (s : 'a parts) =
    only place that knows, and asking the model means reading a parameter
    tensor, which the differentiable entry point cannot do inside its program;
    so it is an argument, defaulting to the read. *)
-let damping ?force_limited (m : 'a Model.model) (d : 'a Data.data) =
+let damping ?force_limited (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) =
   let at = Nx.placement d.qvel in
   let tr = Transmission.forward m d in
   let s = parts m d tr in
@@ -207,7 +210,7 @@ let damping ?force_limited (m : 'a Model.model) (d : 'a Data.data) =
       Array.for_all m.topo.actuator_biastype ~f:(function
         | Topo.Bias_none -> true
         | Topo.Bias_affine -> false)
-    then Nx.zeros_at at f64 [| m.topo.nu |]
+    then Nx.zeros_at at (Nx.dtype m.params.actuator_gear) [| m.topo.nu |]
     else (
       let mask =
         const at m (fun i ->
@@ -222,7 +225,7 @@ let damping ?force_limited (m : 'a Model.model) (d : 'a Data.data) =
       Array.for_all m.topo.actuator_gaintype ~f:(function
         | Topo.Gain_fixed -> true
         | Topo.Gain_affine -> false)
-    then Nx.zeros_at at f64 [| m.topo.nu |]
+    then Nx.zeros_at at (Nx.dtype m.params.actuator_gear) [| m.topo.nu |]
     else (
       let mask =
         const at m (fun i ->
@@ -270,16 +273,16 @@ let damping ?force_limited (m : 'a Model.model) (d : 'a Data.data) =
     let skip = Nx.mul lim at_bound in
     Nx.mul k (Nx.sub (Nx.ones_like skip) skip))
 
-let qfrc_of (m : 'a Model.model) (moment : 'a Nx.float64_t) (f : 'a Nx.float64_t) =
+let qfrc_of (m : ('s, 'a) Model.m) (moment : ('s, 'a) Rigid.f) (f : ('s, 'a) Rigid.f) =
   Nx.reshape
     [| m.topo.nv |]
     (Nx.matmul (Nx.matrix_transpose moment) (Nx.reshape [| m.topo.nu; 1 |] f))
 
-let qfrc (m : 'a Model.model) (d : 'a Data.data) =
+let qfrc (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) =
   let tr = Transmission.forward m d in
   qfrc_of m tr.Transmission.moment (force m (parts m d tr))
 
-let forward (m : 'a Model.model) (d : 'a Data.data) =
+let forward (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) =
   check m;
   let tr = Transmission.forward m d in
   let s = parts m d tr in

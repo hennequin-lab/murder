@@ -78,7 +78,9 @@ type ('a, 'd) t =
   }
 [@@deriving ptree]
 
-type 'd data = ('d Nx.float64_t, 'd) t
+type ('s, 'd) d = ((float, 's, 'd) Nx.t, 'd) t
+type 'd data = (Nx.Dtype.float64_elt, 'd) d
+type 'd f32 = (Nx.Dtype.float32_elt, 'd) d
 type host = Nx.host data
 type ('a, 'd) desc = ('a, 'd) t
 
@@ -92,15 +94,22 @@ end
    restriction fixes it, and a program compiled from it may run on any device. *)
 let ptree () = Nx.Ptree.instantiate (module Desc)
 
-let place : type e d. e Nx.Placement.t -> d data -> e data =
+let place
+  : type s e d. e Nx.Placement.t -> ((float, s, d) Nx.t, d) t -> ((float, s, e) Nx.t, e) t
+  =
   fun p x -> Nx.Ptree.place (module Desc) p x
 
-let nq (m : 'a Model.model) = m.topo.nq
-let nv (m : 'a Model.model) = m.topo.nv
+let dtype (d : ('s, _) d) = Nx.dtype d.time
+let nq (m : (_, _) Model.m) = m.topo.nq
+let nv (m : (_, _) Model.m) = m.topo.nv
 
-let create_at (type d) (at : d Nx.Placement.t) (m : (d Nx.float64_t, d) Model.t) : d data =
+let create_at
+  : type s d.
+    d Nx.Placement.t -> ((float, s, d) Nx.t, d) Model.t -> ((float, s, d) Nx.t, d) t
+  =
+  fun at m ->
   let t = m.topo in
-  let f64 = Nx.float64 in
+  let f64 = Model.dtype m in
   let zeros shape = Nx.zeros_at at f64 shape in
   let int32 s = Nx.zeros_at at Nx.int32 s in
   { time = Nx.scalar_at at f64 0.0
@@ -175,7 +184,7 @@ let create_at (type d) (at : d Nx.Placement.t) (m : (d Nx.float64_t, d) Model.t)
 
 let create m = create_at Nx.Host.on m
 
-let validate (m : 'a Model.model) (d : 'a data) : (unit, string) Result.t =
+let validate (m : (_, _) Model.m) (d : (_, _) d) : (unit, string) Result.t =
   let t = m.topo in
   let problems = ref [] in
   let want name expected x =

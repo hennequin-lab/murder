@@ -6,8 +6,6 @@
 open Base
 open Nx
 
-let f64 = Nx.float64
-
 let check (t : Topo.t) =
   Array.iteri t.sensor_refid ~f:(fun i refid ->
     if refid >= 0
@@ -22,7 +20,7 @@ let check (t : Topo.t) =
 (* A body's velocity at a point: MuJoCo's [mj_objectVelocity] for a point
    [origin] on body [b], [v = cvel_tran - (origin - subtree_com(root)) x cvel_rot]. The object type decides which origin MuJoCo uses: a body sensor
    measures at the inertial frame, a body-frame sensor at [xpos]. *)
-let point_vel (m : 'a Model.model) (d : 'a Data.data) ~body ~origin =
+let point_vel (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) ~body ~origin =
   let cv = Nx.get [ body ] d.cvel in
   let rot = Nx.reshape [| 3 |] (Nx.slice [ R (0, 3) ] cv)
   and tran = Nx.reshape [| 3 |] (Nx.slice [ R (3, 6) ] cv) in
@@ -31,7 +29,7 @@ let point_vel (m : 'a Model.model) (d : 'a Data.data) ~body ~origin =
 
 let three v = Array.init 3 ~f:(fun k -> Nx.get [ k ] v)
 
-let compute (m : 'a Model.model) (d : 'a Data.data) (i : int) =
+let compute (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) (i : int) =
   let t = m.topo in
   let id = t.sensor_objid.(i) in
   let reject what =
@@ -106,13 +104,15 @@ let compute (m : 'a Model.model) (d : 'a Data.data) (i : int) =
   | Topo.Sens_framelinvel -> three (Nx.slice [ R (3, 6) ] (frame_vel ()))
   | Topo.Sens_frameangvel -> three (Nx.slice [ R (0, 3) ] (frame_vel ()))
 
-let forward (m : 'a Model.model) (d : 'a Data.data) =
+let forward (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) =
   let t = m.topo in
   if Int.equal t.nsensor 0
   then d
   else (
     check t;
-    let block = ref (Nx.zeros_at (Nx.placement d.qpos) f64 [| t.nsensordata |]) in
+    let block =
+      ref (Nx.zeros_at (Nx.placement d.qpos) (Nx.dtype d.qpos) [| t.nsensordata |])
+    in
     Array.iteri t.sensor_type ~f:(fun i _ ->
       let parts = compute m d i in
       Array.iteri parts ~f:(fun k v ->

@@ -15,7 +15,8 @@
   test_grad
   test_linalg
   test_convex
-  test_gjk)
+  test_gjk
+  test_dtype)
  (modules
   support
   test_mjcb
@@ -33,7 +34,8 @@
   test_grad
   test_linalg
   test_convex
-  test_gjk)
+  test_gjk
+  test_dtype)
  (deps
   (glob_files fixtures/*))
  (libraries base mjc nx rune windtrap))

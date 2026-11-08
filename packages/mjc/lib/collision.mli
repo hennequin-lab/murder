@@ -20,14 +20,14 @@ type cand =
 
 (** [candidates m] is the geom pairs v1 can solve, in MuJoCo's order. It is host
     data and is empty when the model disables contacts. *)
-val candidates : 'a Model.model -> cand array
+val candidates : ('s, 'a) Model.m -> cand array
 
 (** [unsupported_pairs m] is the geom-type pairs [m] can produce and the engine
     cannot solve, each with the number of candidate pairs it accounts for. Empty
     for every model that steps; a model with contacts the engine does not have
     refuses in {!candidates}, and this says which ones and how many before it
     does. *)
-val unsupported_pairs : 'a Model.model -> ((Topo.geom_type * Topo.geom_type) * int) list
+val unsupported_pairs : ('s, 'a) Model.m -> ((Topo.geom_type * Topo.geom_type) * int) list
 
 (** [contacts m d] is [d] with the contacts of the current pose: [ncon] and
     the [contact_*] arrays, compacted to the contacts that actually exist.
@@ -35,4 +35,4 @@ val unsupported_pairs : 'a Model.model -> ((Topo.geom_type * Topo.geom_type) * i
     v1 computes plane-sphere, plane-capsule, sphere-sphere and sphere-capsule.
     Any other pair a model can produce is a port bug, not a silent omission:
     the candidate list is only built from those four. *)
-val contacts : 'a Model.model -> 'a Data.data -> 'a Data.data
+val contacts : ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d

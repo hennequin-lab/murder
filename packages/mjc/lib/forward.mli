@@ -32,6 +32,6 @@ val forward
   -> ?iters:int
   -> ?dt:float
   -> ?rows:int
-  -> 'd Model.model
-  -> 'd Data.data
-  -> 'd Data.data
+  -> ('s, 'd) Model.m
+  -> ('s, 'd) Data.d
+  -> ('s, 'd) Data.d

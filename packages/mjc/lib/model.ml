@@ -77,6 +77,83 @@ module Params = struct
     ; tolerance : 'a
     }
   [@@deriving ptree]
+
+  (* Casting is a per-field walk, not a payload map: the function
+     [Nx.Ptree.map] takes has to be polymorphic in the dtype, and this one
+     is fixed at ['s2] by construction. *)
+  let cast
+    : type s2 d.
+      (float, s2) Nx.dtype -> ((float, 's, d) Nx.t, d) t -> ((float, s2, d) Nx.t, d) t
+    =
+    fun dt p ->
+    { body_pos = Nx.cast dt p.body_pos
+    ; body_quat = Nx.cast dt p.body_quat
+    ; body_ipos = Nx.cast dt p.body_ipos
+    ; body_iquat = Nx.cast dt p.body_iquat
+    ; body_mass = Nx.cast dt p.body_mass
+    ; body_inertia = Nx.cast dt p.body_inertia
+    ; body_subtreemass = Nx.cast dt p.body_subtreemass
+    ; body_invweight0 = Nx.cast dt p.body_invweight0
+    ; jnt_axis = Nx.cast dt p.jnt_axis
+    ; jnt_pos = Nx.cast dt p.jnt_pos
+    ; jnt_range = Nx.cast dt p.jnt_range
+    ; jnt_limited = Nx.cast dt p.jnt_limited
+    ; jnt_margin = Nx.cast dt p.jnt_margin
+    ; jnt_solref = Nx.cast dt p.jnt_solref
+    ; jnt_solimp = Nx.cast dt p.jnt_solimp
+    ; jnt_stiffness = Nx.cast dt p.jnt_stiffness
+    ; dof_armature = Nx.cast dt p.dof_armature
+    ; dof_damping = Nx.cast dt p.dof_damping
+    ; dof_frictionloss = Nx.cast dt p.dof_frictionloss
+    ; dof_solref = Nx.cast dt p.dof_solref
+    ; dof_solimp = Nx.cast dt p.dof_solimp
+    ; dof_invweight0 = Nx.cast dt p.dof_invweight0
+    ; qpos0 = Nx.cast dt p.qpos0
+    ; qpos_spring = Nx.cast dt p.qpos_spring
+    ; geom_pos = Nx.cast dt p.geom_pos
+    ; geom_quat = Nx.cast dt p.geom_quat
+    ; geom_size = Nx.cast dt p.geom_size
+    ; geom_condim = Nx.cast dt p.geom_condim
+    ; geom_rbound = Nx.cast dt p.geom_rbound
+    ; geom_rgba = Nx.cast dt p.geom_rgba
+    ; geom_friction = Nx.cast dt p.geom_friction
+    ; geom_margin = Nx.cast dt p.geom_margin
+    ; geom_gap = Nx.cast dt p.geom_gap
+    ; geom_solmix = Nx.cast dt p.geom_solmix
+    ; geom_solref = Nx.cast dt p.geom_solref
+    ; geom_solimp = Nx.cast dt p.geom_solimp
+    ; site_pos = Nx.cast dt p.site_pos
+    ; site_quat = Nx.cast dt p.site_quat
+    ; site_size = Nx.cast dt p.site_size
+    ; eq_obj1id = Nx.cast dt p.eq_obj1id
+    ; eq_obj2id = Nx.cast dt p.eq_obj2id
+    ; eq_data = Nx.cast dt p.eq_data
+    ; eq_solref = Nx.cast dt p.eq_solref
+    ; eq_solimp = Nx.cast dt p.eq_solimp
+    ; eq_active0 = Nx.cast dt p.eq_active0
+    ; wrap_prm = Nx.cast dt p.wrap_prm
+    ; ten_range = Nx.cast dt p.ten_range
+    ; ten_margin = Nx.cast dt p.ten_margin
+    ; ten_length0 = Nx.cast dt p.ten_length0
+    ; ten_invweight0 = Nx.cast dt p.ten_invweight0
+    ; ten_solref = Nx.cast dt p.ten_solref
+    ; ten_solimp = Nx.cast dt p.ten_solimp
+    ; actuator_gear = Nx.cast dt p.actuator_gear
+    ; actuator_gainprm = Nx.cast dt p.actuator_gainprm
+    ; actuator_biasprm = Nx.cast dt p.actuator_biasprm
+    ; actuator_dynprm = Nx.cast dt p.actuator_dynprm
+    ; actuator_ctrlrange = Nx.cast dt p.actuator_ctrlrange
+    ; actuator_forcerange = Nx.cast dt p.actuator_forcerange
+    ; actuator_ctrllimited = Nx.cast dt p.actuator_ctrllimited
+    ; actuator_forcelimited = Nx.cast dt p.actuator_forcelimited
+    ; gravity = Nx.cast dt p.gravity
+    ; timestep = Nx.cast dt p.timestep
+    ; integrator = Nx.cast dt p.integrator
+    ; cone = Nx.cast dt p.cone
+    ; disableflags = Nx.cast dt p.disableflags
+    ; iterations = Nx.cast dt p.iterations
+    ; tolerance = Nx.cast dt p.tolerance
+    }
 end
 
 type ('a, 'd) t =
@@ -85,7 +162,9 @@ type ('a, 'd) t =
   }
 [@@deriving ptree]
 
-type 'd model = ('d Nx.float64_t, 'd) t
+type ('s, 'd) m = ((float, 's, 'd) Nx.t, 'd) t
+type 'd model = (Nx.Dtype.float64_elt, 'd) m
+type 'd f32 = (Nx.Dtype.float32_elt, 'd) m
 type host = Nx.host model
 type ('a, 'd) desc = ('a, 'd) t
 
@@ -99,8 +178,16 @@ end
    restriction fixes it, and a program compiled from it may run on any device. *)
 let ptree () = Nx.Ptree.instantiate (module Desc)
 
-let place : type e d. e Nx.Placement.t -> d model -> e model =
+let place
+  : type s e d. e Nx.Placement.t -> ((float, s, d) Nx.t, d) t -> ((float, s, e) Nx.t, e) t
+  =
   fun p x -> Nx.Ptree.place (module Desc) p x
+
+(* Any parameter names the dtype: they are all of it. *)
+let dtype (m : ('s, _) m) = Nx.dtype m.params.timestep
+
+let cast : type s2 d. (float, s2) Nx.dtype -> (_, d) m -> (s2, d) m =
+  fun dt m -> { m with params = Params.cast dt m.params }
 
 let nq (m : _ t) = m.topo.nq
 let nv (m : _ t) = m.topo.nv

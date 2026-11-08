@@ -122,6 +122,22 @@ of backward pass. Gradients the solver's contact decisions make non-smooth are
 reported, not smoothed over; the stance is in
 [`doc/adr/0013-convex-path.md`](doc/adr/0013-convex-path.md).
 
+**4b. Run it in float32, if half the memory matters more than the last digit.**
+The engine is one engine at two widths — every module is dtype-generic, and the
+dtype is a property of the model:
+
+```ocaml
+let m32 = Mjc.Model.cast Nx.float32 m in     (* the same model, float32 *)
+let d32 = Mjc.Data.create m32 in
+let d32 = Mjc.Step.step_with c m32 d32 in    (* c is the structure, unchanged *)
+```
+
+It tracks float64 to 1.5e-7 to 6.1e-5 over 30 steps depending on the model
+(`doc/adr/0014-dtype-polymorphism.md`). One thing to know before using it: contact
+activation is a hard threshold, so a float32 run is not bit-comparable with a
+float64 one — a pose within a rounding of the margin can differ about *which
+contacts exist*, and `bench/f32.ml` prints both cases.
+
 **5. Checkpoint it.** A checkpoint is the model — `Mjc.Mjcb.write` / `read`, and a
 round trip is bit-exact. The state is a tree of `Nx` tensors the caller owns, so
 saving it is `Nx`'s business, not a second format's.

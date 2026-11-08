@@ -7,7 +7,6 @@ open Base
 open Nx
 open Topo
 
-let f64 = Nx.float64
 let cols xs = Nx.stack ~axis:1 xs
 
 (* mju_inertCom: the inertia of one body about the point [dif] from its
@@ -55,7 +54,7 @@ let inert_com ~inertia ~mat ~dif ~mass =
 let zeros3 like =
   Nx.zeros_like (Nx.reshape [| 3 |] (Nx.slice [ R (0, 3) ] (Nx.get [ 0 ] like)))
 
-let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let forward (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   let t = m.topo
   and p = m.params in
   let nbody = t.nbody
@@ -91,7 +90,7 @@ let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   done;
   (* cdof: each dof's motion axis in the same frame. *)
   let at = Nx.placement d.qpos in
-  let cdof = ref (Nx.zeros_at at f64 [| nv; 6 |]) in
+  let cdof = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| nv; 6 |]) in
   let unit = zeros3 d.xpos in
   for b = 1 to nbody - 1 do
     for j = t.body_jntadr.(b) to t.body_jntadr.(b) + t.body_jntnum.(b) - 1 do
@@ -151,7 +150,7 @@ let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
       := Nx.set [ I parent ] (Nx.add (Nx.get [ parent ] !crb) (Nx.get [ b ] !crb)) !crb
   done;
   let at = Nx.placement d.qpos in
-  let mass_matrix = ref (Nx.zeros_at at f64 [| nv; nv |]) in
+  let mass_matrix = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| nv; nv |]) in
   for v = 0 to nv - 1 do
     let buf =
       Rigid.mul_inert_vec (Nx.get [ t.dof_bodyid.(v) ] !crb) (Nx.get [ v ] !cdof)
@@ -170,10 +169,10 @@ let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   done;
   { d with subtree_com; com; cinert = !cinert; cdof = !cdof; mass_matrix = !mass_matrix }
 
-type 'd factor = 'd Nx.float64_t
+type ('s, 'd) factor = ('s, 'd) Rigid.f
 
-let factor (a : 'd Nx.float64_t) : 'd factor = Nx.cholesky a
+let factor (a : ('s, 'd) Rigid.f) : ('s, 'd) factor = Nx.cholesky a
 
-let solve (l : 'a factor) b =
+let solve (l : ('s, 'a) factor) b =
   let y = Nx.solve_triangular ~triangle:Lower l b in
   Nx.solve_triangular ~triangle:Lower ~transpose:Transpose l y

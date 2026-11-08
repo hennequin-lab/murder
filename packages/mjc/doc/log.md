@@ -2081,3 +2081,49 @@ closed forms -- is what remains.
 The note for next time is in the ADR: check that the seed polytope contains the
 origin before expanding, and consider Minkowski Portal Refinement, which needs no
 containing polytope, which is why MuJoCo keeps it as the libccd fallback.
+
+## float32, which the type system said no to twice
+
+M7 asked for float32 and M7 got it, but not the way the ADR first said. Two
+things the types refused, both worth writing down.
+
+**A dtype field is impossible.** The plan was to record the dtype in the model as
+`dtype : (float, 's) Nx.dtype`. `ppx_ptree` refuses: "a tensor's element types
+cannot mention a parameter; a position of the payload is the payload parameter
+alone", and `[@ptree.skip]` "copies field [dtype], whose type mentions a
+parameter". The derivation only understands a payload parameter, so the dtype
+cannot live beside it. The answer was to put the dtype in the *aliases* — big
+records keep one payload parameter, the public types name it —
+`type ('s, 'd) m = ((float, 's, 'd) Nx.t, 'd) t` — and to read the dtype value
+from the model's own tensors: `Model.dtype m` is `Nx.dtype m.params.timestep`.
+Because aliases substitute, that tensor is concrete inside every function whose
+signature says `('s, 'd) Model.m`, so 166 creation sites each became "the dtype
+of the thing I already have".
+
+**`Nx.Ptree.map` cannot cast.** Its function argument must be polymorphic in the
+dtype, and a cast is fixed at one dtype by construction. So `Model.cast` is not a
+payload map at all: it is a 67-field walk, generated from the field list rather
+than typed by hand, because a hand-typed 67-field record is 67 chances to
+transpose two fields.
+
+The refactor itself was additive where it counted: `'d model` still means
+float64, so `bench/`, `test/` and the parity fixtures compiled unchanged and the
+gates were re-run unmodified — hopper 1.10e-11, walker 8.77e-11, humanoid 4.35e-10,
+the same digits as before. That is the only real evidence that a refactor of this
+kind moved types and not numbers.
+
+**What float32 costs, measured.** Seeded from recorded mid-trajectory states,
+30 steps, worst relative difference and the active set: hopper 1.47e-07, walker
+4.38e-06, humanoid 1.71e-06, bounce 4.36e-07, boxes2 6.13e-05, every one with
+`nefc`/`ncon` matching at every step.
+
+**What it breaks, measured.** Start the same models from rest and the walker's
+active set diverges at step 1 — float32 finds four contacts where float64 finds
+none — and boxes2's contacts vanish by step 2. The reason is that contact
+activation is a hard threshold on a distance: a resting pose can sit within one
+rounding of the margin, and then the two dtypes are not computing the same
+contact problem. The first table's "walker 0.95 relative" was this, and the
+relative column hid it: 0.95 relative was 1.76e-04 absolute, because that model
+starts with every coordinate within a rounding of zero. Both columns are now
+printed, and the test states its claim over states where the active set is
+unambiguous — which is the only comparison that means anything.

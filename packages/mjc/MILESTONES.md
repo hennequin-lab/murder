@@ -714,28 +714,26 @@ tested, CI split, docs complete.
    configuration (128.81 µs/env at `vmap` 512, `nv = 27`, GPU) and misses it at
    the default (168 µs GPU / 507 µs host at `vmap` 256). Both stated in
    `doc/perf.md` §14.
-3. ❌ **Not met, and deliberately not started.** float32 cannot currently be
-   instantiated at all: `Model.model` is `('d Nx.float64_t, 'd) t`, and the pin is
-   not stylistic — `Nx.Placement.t` carries the device brand and *not* the dtype,
-   so every `Nx.scalar_at at Nx.float64 0.0` would need a dtype value threaded
-   beside the placement it already threads. Measured size: 47 `float64_t`
-   signatures in `lib/*.mli` and 166 `Nx.float64` creation sites in 20 `lib/*.ml`
-   (56 in `constraint.ml`). That is the ADR 0012 refactor again, at equal size,
-   and it was started at the end of a milestone, which is when such a refactor
-   should not be started. What *is* measured is the payoff and the accuracy:
-   `bench/dtype.ml` gives 1.5-1.8× per solve on the GPU (1.40× end-to-end, since
-   86% of a step is the Cholesky) and a per-solve error of 2-4e-8, i.e. 2500×
-   inside the 1e-4 the acceptance asks for. So the tolerance half would pass and
-   the plumbing is what is missing. `doc/perf.md` records the numbers; the type
-   error that blocks it (`Nx.Ptree.map (Model.ptree ()) (fun _ x -> Nx.cast
-   Nx.float32 x)`) is the evidence.
+3. ✅ **Met** (ADR 0014). float32 instantiates the whole engine and passes a
+   tolerance test rather than a resemblance test: seeded from recorded
+   mid-trajectory states, float32 tracks float64 for 30 steps to 1.47e-07
+   (hopper), 1.71e-06 (humanoid), 4.38e-06 (walker), 4.36e-07 (bounce) and
+   6.13e-05 (boxes2, the contact-heavy model), with `nefc` and `ncon` agreeing at
+   every step — `test/test_dtype.ml`, which is the gate, and `bench/f32.ml`,
+   which is where the numbers come from. The float64 gates are unchanged to the
+   digit, which is what says the refactor moved types and not numerics.
 
-   **The substitute measurement.** The acceptance asks that float32 be *shown*
-   to pass, and what can be shown without the refactor is that the solver is not
-   the precision problem: `bench/dtype.ml` runs the constraint solve itself at
-   both widths and reports the residual, and the error is two orders inside the
-   gate. A user who needs the 1.4× today gets it from the schedule and the row
-   budget (`doc/perf.md` §13), which cost nothing.
+   **The caveat, measured and reported.** A float32 run is not bit-comparable
+   with a float64 one, and the disagreement is a *decision*, not a tolerance:
+   starting a model from its resting pose can put a contact distance within one
+   rounding of the margin, and then the two dtypes disagree about which contacts
+   exist. Measured at rest: walker's active set diverges at step 1 (float32 finds
+   4 contacts, float64 none; 1.76e-04 absolute over 20 steps) and boxes2's
+   contacts vanish in float32 by step 2 (`nefc` 8 against 0). That is a property
+   of a hard threshold, not of the integrator, and MuJoCo has the same threshold;
+   the gate is therefore stated over states where the active set is unambiguous,
+   which is the only comparison that means anything.
+
 4. ✅ `dune build @packages/mjc/runtest` is 27 s with `--force` (recompiling and
    rerunning everything) and 1 s with nothing to rebuild, against the 2-minute
    budget; `dune build @packages/mjc/runtest-slow` is 115 s against 20 minutes.

@@ -106,9 +106,17 @@ type ('a, 'd) t =
   }
 [@@deriving ptree]
 
+(** The type for a model whose parameters are stored as ['s] on the device set
+    ['d]: the payload parameter of {!t} named, since the engine's signatures have
+    to say which dtype they create constants in. *)
+type ('s, 'd) m = ((float, 's, 'd) Nx.t, 'd) t
+
 (** The type for a [float64] model whose parameters live on the device ['d],
     which is what a program compiled for that device takes. *)
-type 'd model = ('d Nx.float64_t, 'd) t
+type 'd model = (Nx.Dtype.float64_elt, 'd) m
+
+(** The same model in [float32]. *)
+type 'd f32 = (Nx.Dtype.float32_elt, 'd) m
 
 (** The type for a [float64] model on the host. *)
 type host = Nx.host model
@@ -117,12 +125,23 @@ type host = Nx.host model
 
 (** [ptree] describes a {!t} to the transformations: its parameters are
     leaves, its topology is a constant. *)
-val ptree : unit -> ('d model, 'd) Nx.Ptree.t
+val ptree : unit -> (('s, 'd) m, 'd) Nx.Ptree.t
+
+(** [dtype m] is the storage dtype of the model's tensors. It is recorded in the
+    model rather than passed beside it: every parameter is a tensor of one dtype,
+    and a program that creates a constant has to create it in that dtype. *)
+val dtype : ('s, 'd) m -> (float, 's) Nx.dtype
+
+(** [cast dt m] is [m] with every parameter cast to [dt], which is how a
+    [float32] model is made from the [float64] one the file holds. Casting is a
+    property of the storage, not of the physics: nothing downstream knows which
+    dtype it is running. *)
+val cast : (float, 's2) Nx.dtype -> ('s, 'd) m -> ('s2, 'd) m
 
 (** [place p x] is [x] with every array, its topology's fixed ones included, at
     [p]; the whole value moves in one walk. This is how a state built on the
     host is put on a device, and how a result comes back. *)
-val place : 'e Nx.Placement.t -> 'd model -> 'e model
+val place : 'e Nx.Placement.t -> ('s, 'd) m -> ('s, 'e) m
 
 (** {1:accessors Accessors} *)
 

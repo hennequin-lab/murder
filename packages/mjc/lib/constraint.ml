@@ -8,7 +8,7 @@ open Nx
 module Int32 = Stdlib.Int32
 open Topo
 
-type 'd f = 'd Nx.float64_t
+type ('s, 'd) f = ('s, 'd) Rigid.f
 
 let type_equality = 0
 let type_friction_dof = 1
@@ -52,31 +52,31 @@ let slice3 at v = Nx.slice [ R (at, at + 3) ] v
 (** A constraint row: the object it names, what it measures, the inverse
     inertia that sets its regularisation, its solver parameters and its
     Jacobian. *)
-type 'a row =
+type ('s, 'a) row =
   { kind : int
   ; id : int
-  ; pos : 'a f (** 0-d, the violation. *)
-  ; margin : 'a f (** 0-d. *)
-  ; posnorm : 'a f (** 0-d, what the impedance reads. *)
-  ; diagA : 'a f (** 0-d, [1/J M⁻¹ Jᵀ] at the reference configuration. *)
-  ; solref : 'a f (** [[2]] *)
-  ; solimp : 'a f (** [[5]] *)
-  ; jdotv : 'a f (** 0-d, the row's [Jdot qvel]. *)
-  ; frictionloss : 'a f (** 0-d, zero but on a friction row. *)
-  ; jac : 'a f (** [[nv]] *)
+  ; pos : ('s, 'a) f (** 0-d, the violation. *)
+  ; margin : ('s, 'a) f (** 0-d. *)
+  ; posnorm : ('s, 'a) f (** 0-d, what the impedance reads. *)
+  ; diagA : ('s, 'a) f (** 0-d, [1/J M⁻¹ Jᵀ] at the reference configuration. *)
+  ; solref : ('s, 'a) f (** [[2]] *)
+  ; solimp : ('s, 'a) f (** [[5]] *)
+  ; jdotv : ('s, 'a) f (** 0-d, the row's [Jdot qvel]. *)
+  ; frictionloss : ('s, 'a) f (** 0-d, zero but on a friction row. *)
+  ; jac : ('s, 'a) f (** [[nv]] *)
   }
 
-let keep_before (m : 'a Model.model) (d : 'a Data.data) (at : 'a Nx.float64_t) =
+let keep_before (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) (at : ('s, 'a) Rigid.f) =
   let rows =
     Nx.arange_f_at
       (Nx.placement d.efc_type)
-      Nx.float64
+      (Nx.dtype d.qpos)
       0.0
       (Float.of_int m.topo.nefcmax)
       1.0
   in
   let keep = Nx.less rows at in
-  let keep_rows = Nx.reshape [| m.topo.nefcmax; 1 |] (Nx.cast Nx.float64 keep) in
+  let keep_rows = Nx.reshape [| m.topo.nefcmax; 1 |] (Nx.cast (Nx.dtype d.qpos) keep) in
   let keep_i x = Nx.where keep x (Nx.zeros_like x) in
   let keep_f x = Nx.where keep x (Nx.zeros_like x) in
   { d with
@@ -98,7 +98,7 @@ let keep_before (m : 'a Model.model) (d : 'a Data.data) (at : 'a Nx.float64_t) =
   ; efc_J = Nx.mul d.efc_J keep_rows
   }
 
-let set_row (d : 'a Data.data) ~at (r : 'a row) =
+let set_row (d : ('s, 'a) Data.d) ~at (r : ('s, 'a) row) =
   let i = [ I at ] in
   let i32 = Nx.scalar_at (Nx.placement d.efc_type) Nx.int32 in
   { d with
@@ -122,8 +122,8 @@ let set_row (d : 'a Data.data) ~at (r : 'a row) =
    their row indices are host values; which equalities are on comes from the
    model's [eq_active0], not from the data. *)
 
-let body_xmat (d : 'a Data.data) b = quat_mat (row b d.xquat)
-let body_xpos (d : 'a Data.data) b = row b d.xpos
+let body_xmat (d : ('s, 'a) Data.d) b = quat_mat (row b d.xquat)
+let body_xpos (d : ('s, 'a) Data.d) b = row b d.xpos
 
 (* Everything the row builders need that decides *which* rows exist and which
    objects they touch -- as opposed to what their numbers are. A traced program
@@ -138,7 +138,7 @@ type config =
   ; eq_active : bool array (** [[neq]], whether each equality is on. *)
   }
 
-let config (m : 'a Model.model) : config =
+let config (m : ('s, 'a) Model.m) : config =
   let t = m.topo
   and p = m.params in
   { cone = Float.( > ) (Nx.item [] p.cone) 0.5
@@ -152,7 +152,7 @@ let config (m : 'a Model.model) : config =
 (* The world position and orientation of one side of an equality, and the body
    that carries it. A body anchor is [data]'s slice in the body's frame; a site
    is its own frame, which is the body frame turned by the site's quaternion. *)
-let eq_object (cfg : config) (m : 'a Model.model) (d : 'a Data.data) i which =
+let eq_object (cfg : config) (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) i which =
   let t = m.topo
   and p = m.params in
   let data = row i p.eq_data in
@@ -180,7 +180,15 @@ let eq_object (cfg : config) (m : 'a Model.model) (d : 'a Data.data) i which =
 (* [Jdot qvel] of the constraint: the time derivative the reference
    acceleration must cancel, so that a constraint held at zero velocity stays
    at zero. Only connect and weld have one: a joint coupling has none. *)
-let equality_jdotv (m : 'a Model.model) (d : 'a Data.data) kind ~body1 ~pos1 ~body2 ~pos2 =
+let equality_jdotv
+      (m : ('s, 'a) Model.m)
+      (d : ('s, 'a) Data.d)
+      kind
+      ~body1
+      ~pos1
+      ~body2
+      ~pos2
+  =
   match kind with
   | Weld | Connect ->
     let j1 = Jacobian.jdotv m d ~body:body1 ~pos:pos1 in
@@ -188,7 +196,8 @@ let equality_jdotv (m : 'a Model.model) (d : 'a Data.data) kind ~body1 ~pos1 ~bo
     Some (Nx.sub j1 j2)
   | Joint | Tendon -> None
 
-let equality (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let equality (cfg : config) (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d
+  =
   let at = Nx.placement d.qpos in
   let t = m.topo
   and p = m.params in
@@ -210,9 +219,9 @@ let equality (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
              { kind = type_equality
              ; id = i
              ; pos
-             ; margin = Nx.scalar_at at Nx.float64 0.0
+             ; margin = Nx.scalar_at at (Nx.dtype d.qpos) 0.0
              ; posnorm
-             ; frictionloss = Nx.scalar_at at Nx.float64 0.0
+             ; frictionloss = Nx.scalar_at at (Nx.dtype d.qpos) 0.0
              ; diagA
              ; solref
              ; solimp
@@ -238,7 +247,7 @@ let equality (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
         let jdotv =
           match jdotv with
           | Some v -> v
-          | None -> Nx.zeros_at at Nx.float64 [| 6 |]
+          | None -> Nx.zeros_at at (Nx.dtype d.qpos) [| 6 |]
         in
         let diff = Nx.sub pos1 pos2 in
         let norm v = Nx.sqrt (Nx.sum (Nx.mul v v)) in
@@ -284,7 +293,7 @@ let equality (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
         in
         let jdotv =
           match equality_jdotv m d kind ~body1:b1 ~pos1 ~body2:b2 ~pos2 with
-          | None -> Nx.zeros_at at Nx.float64 [| 6 |]
+          | None -> Nx.zeros_at at (Nx.dtype d.qpos) [| 6 |]
           | Some jd ->
             let dv = Nx.slice [ R (0, 3) ] jd in
             let djrdv = Nx.slice [ R (3, 6) ] jd in
@@ -349,10 +358,10 @@ let equality (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
         let e dof =
           Nx.set
             [ I dof ]
-            (Nx.scalar_at at Nx.float64 1.0)
-            (Nx.zeros_at at Nx.float64 [| nv |])
+            (Nx.scalar_at at (Nx.dtype d.qpos) 1.0)
+            (Nx.zeros_at at (Nx.dtype d.qpos) [| nv |])
         in
-        let dif = if j2 >= 0 then coord j2 else Nx.scalar_at at Nx.float64 0.0 in
+        let dif = if j2 >= 0 then coord j2 else Nx.scalar_at at (Nx.dtype d.qpos) 0.0 in
         let sq = Nx.mul dif dif in
         let sq_sq = Nx.mul sq sq in
         let cube = Nx.mul sq dif in
@@ -379,10 +388,15 @@ let equality (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
             (Nx.get [ dof1 ] p.dof_invweight0)
             (if j2 >= 0
              then Nx.get [ t.jnt_dofadr.(j2) ] p.dof_invweight0
-             else Nx.scalar_at at Nx.float64 0.0)
+             else Nx.scalar_at at (Nx.dtype d.qpos) 0.0)
         in
         let pos = Nx.sub (Nx.sub (coord j1) (c 0)) poly in
-        add ~pos ~posnorm:(Nx.abs pos) ~diagA ~jdotv:(Nx.scalar_at at Nx.float64 0.0) ~jac
+        add
+          ~pos
+          ~posnorm:(Nx.abs pos)
+          ~diagA
+          ~jdotv:(Nx.scalar_at at (Nx.dtype d.qpos) 0.0)
+          ~jac
       | Tendon ->
         (* The same cubic coupling, with tendon lengths in place of joint
            coordinates. A tendon's length is measured from its value at the
@@ -402,7 +416,7 @@ let equality (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
         let jac0 = jac_of obj1 in
         let pos0 = len obj1 in
         let inv obj = Nx.get [ obj ] p.ten_invweight0 in
-        let dif = if obj2 >= 0 then len obj2 else Nx.scalar_at at Nx.float64 0.0 in
+        let dif = if obj2 >= 0 then len obj2 else Nx.scalar_at at (Nx.dtype d.qpos) 0.0 in
         let sq = Nx.mul dif dif in
         let sq_sq = Nx.mul sq sq in
         let cube = Nx.mul sq dif in
@@ -425,9 +439,14 @@ let equality (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
         let pos =
           if obj2 >= 0 then Nx.sub (Nx.sub pos0 (c 0)) poly else Nx.sub pos0 (c 0)
         in
-        add ~pos ~posnorm:(Nx.abs pos) ~diagA ~jdotv:(Nx.scalar_at at Nx.float64 0.0) ~jac)
+        add
+          ~pos
+          ~posnorm:(Nx.abs pos)
+          ~diagA
+          ~jdotv:(Nx.scalar_at at (Nx.dtype d.qpos) 0.0)
+          ~jac)
   done;
-  let d = keep_before m !out (Nx.scalar_at at Nx.float64 (Float.of_int !rows)) in
+  let d = keep_before m !out (Nx.scalar_at at (Nx.dtype d.qpos) (Float.of_int !rows)) in
   { d with nefc = Nx.scalar_at at Nx.int32 (Int32.of_int !rows) }
 
 (* {1 Joint limits}
@@ -459,7 +478,7 @@ let limit_candidates (t : Topo.t) : cand array =
   done;
   Array.of_list (List.rev !cands)
 
-let limits (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let limits (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   let at = Nx.placement d.qpos in
   let t = m.topo
   and p = m.params in
@@ -467,11 +486,11 @@ let limits (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   let nb = t.nefcmax in
   let cands = limit_candidates t in
   let ncand = Array.length cands in
-  let scalar_like x = Nx.scalar_at at Nx.float64 x in
-  let dists = ref (Nx.zeros_at at Nx.float64 [| ncand |])
-  and margins = ref (Nx.zeros_at at Nx.float64 [| ncand |])
-  and active = ref (Nx.zeros_at at Nx.float64 [| ncand |])
-  and jac = ref (Nx.zeros_at at Nx.float64 [| ncand; nv |]) in
+  let scalar_like x = Nx.scalar_at at (Nx.dtype d.qpos) x in
+  let dists = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| ncand |])
+  and margins = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| ncand |])
+  and active = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| ncand |])
+  and jac = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| ncand; nv |]) in
   for i = 0 to ncand - 1 do
     let c = cands.(i) in
     let value = Nx.get [ t.jnt_qposadr.(c.joint) ] d.qpos in
@@ -487,7 +506,7 @@ let limits (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
     active := Nx.set [ I i ] (Nx.where on (scalar_like 1.0) (scalar_like 0.0)) !active;
     jac := Nx.set [ I i; I c.dof ] (Nx.scalar_like dist (-.c.side)) !jac
   done;
-  let start = Nx.cast Nx.float64 d.nefc in
+  let start = Nx.cast (Nx.dtype d.qpos) d.nefc in
   let before = Nx.sub (Nx.cumsum ~axis:0 !active) !active in
   let far = Nx.full_like before (Float.of_int nb) in
   let idx =
@@ -509,7 +528,7 @@ let limits (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   in
   let take k x = Nx.take ~axis:0 (Nx.cast Nx.int64 k) x in
   let types = Nx.full_at at Nx.int32 [| ncand |] (Int32.of_int type_limit_joint) in
-  let zero = Nx.zeros_at at Nx.float64 [| ncand |] in
+  let zero = Nx.zeros_at at (Nx.dtype d.qpos) [| ncand |] in
   (* Rows from earlier stages survive; anything at or past this stage's offset
      is stale and is cleared before the scatter. *)
   let d = keep_before m d start in
@@ -520,7 +539,8 @@ let limits (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
     ; efc_pos = put !dists d.efc_pos
     ; efc_margin = put !margins d.efc_margin
     ; efc_posnorm = put !dists d.efc_posnorm
-    ; efc_frictionloss = put (Nx.zeros_at at Nx.float64 [| ncand |]) d.efc_frictionloss
+    ; efc_frictionloss =
+        put (Nx.zeros_at at (Nx.dtype d.qpos) [| ncand |]) d.efc_frictionloss
     ; efc_diagA = put (take dof p.dof_invweight0) d.efc_diagA
     ; efc_solref = put_cols (take jnt p.jnt_solref) d.efc_solref
     ; efc_solimp = put_cols (take jnt p.jnt_solimp) d.efc_solimp
@@ -555,7 +575,7 @@ let tendon_candidates (t : Topo.t) : tcand array =
   done;
   Array.of_list (List.rev !cands)
 
-let tendon_limits (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let tendon_limits (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   let at = Nx.placement d.qpos in
   let t = m.topo
   and p = m.params in
@@ -567,11 +587,11 @@ let tendon_limits (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   then d
   else (
     let jac_tendon = (Tendon.forward m d).Tendon.jac in
-    let scalar_like x = Nx.scalar_at at Nx.float64 x in
-    let dists = ref (Nx.zeros_at at Nx.float64 [| ncand |])
-    and margins = ref (Nx.zeros_at at Nx.float64 [| ncand |])
-    and active = ref (Nx.zeros_at at Nx.float64 [| ncand |])
-    and jac = ref (Nx.zeros_at at Nx.float64 [| ncand; nv |]) in
+    let scalar_like x = Nx.scalar_at at (Nx.dtype d.qpos) x in
+    let dists = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| ncand |])
+    and margins = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| ncand |])
+    and active = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| ncand |])
+    and jac = ref (Nx.zeros_at at (Nx.dtype d.qpos) [| ncand; nv |]) in
     for i = 0 to ncand - 1 do
       let c = cands.(i) in
       let value = Nx.get [ c.tendon ] d.ten_length in
@@ -587,7 +607,7 @@ let tendon_limits (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
       active := Nx.set [ I i ] (Nx.where on (scalar_like 1.0) (scalar_like 0.0)) !active;
       jac := Nx.set [ I i ] (Nx.mul_s (Nx.get [ c.tendon ] jac_tendon) (-.c.side)) !jac
     done;
-    let start = Nx.cast Nx.float64 d.nefc in
+    let start = Nx.cast (Nx.dtype d.qpos) d.nefc in
     let before = Nx.sub (Nx.cumsum ~axis:0 !active) !active in
     let far = Nx.full_like before (Float.of_int nb) in
     let idx =
@@ -606,7 +626,7 @@ let tendon_limits (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
     in
     let take k x = Nx.take ~axis:0 (Nx.cast Nx.int64 k) x in
     let types = Nx.full_at at Nx.int32 [| ncand |] (Int32.of_int type_limit_tendon) in
-    let zero = Nx.zeros_at at Nx.float64 [| ncand |] in
+    let zero = Nx.zeros_at at (Nx.dtype d.qpos) [| ncand |] in
     { d with
       efc_type = put types d.efc_type
     ; efc_id = put ids d.efc_id
@@ -676,12 +696,14 @@ let getimpedance ~solimp ~pos ~margin =
 (* [dt] is the model's timestep. It is read from the model when the caller does
    not say; the differentiable entry point passes it, for the reason
    {!Solver.forward}'s budget is passed. *)
-let impedance ?dt (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let impedance ?dt (cfg : config) (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d)
+  : ('s, 'a) Data.d
+  =
   let at = Nx.placement d.qpos in
   let t = m.topo in
   let nb = t.nefcmax in
-  let rows = Nx.arange_f_at at Nx.float64 0.0 (Float.of_int nb) 1.0 in
-  let mask = Nx.less rows (Nx.cast Nx.float64 d.nefc) in
+  let rows = Nx.arange_f_at at (Nx.dtype d.qpos) 0.0 (Float.of_int nb) 1.0 in
+  let mask = Nx.less rows (Nx.cast (Nx.dtype d.qpos) d.nefc) in
   let solimp =
     let clamp = Nx.clamp ~min:min_imp ~max:max_imp in
     let s = d.efc_solimp in
@@ -758,7 +780,7 @@ let impedance ?dt (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Da
 (* The rows an equality contributes, which is also where the friction stage
    starts. It is a property of the model, so it is a host count: the equality
    stage writes its rows at host indices. *)
-let equality_row_count (cfg : config) (m : 'a Model.model) =
+let equality_row_count (cfg : config) (m : ('s, 'a) Model.m) =
   let t = m.topo in
   let n = ref 0 in
   for i = 0 to t.neq - 1 do
@@ -774,7 +796,8 @@ let equality_row_count (cfg : config) (m : 'a Model.model) =
   done;
   !n
 
-let friction (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let friction (cfg : config) (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d
+  =
   let at = Nx.placement d.qpos in
   let t = m.topo
   and p = m.params in
@@ -791,8 +814,8 @@ let friction (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
       let jac =
         Nx.set
           [ I dof ]
-          (Nx.scalar_at at Nx.float64 1.0)
-          (Nx.zeros_at at Nx.float64 [| nv |])
+          (Nx.scalar_at at (Nx.dtype d.qpos) 1.0)
+          (Nx.zeros_at at (Nx.dtype d.qpos) [| nv |])
       in
       out
       := set_row
@@ -800,19 +823,19 @@ let friction (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
            ~at:!rows
            { kind = type_friction_dof
            ; id = dof
-           ; pos = Nx.scalar_at at Nx.float64 0.0
-           ; margin = Nx.scalar_at at Nx.float64 0.0
-           ; posnorm = Nx.scalar_at at Nx.float64 0.0
+           ; pos = Nx.scalar_at at (Nx.dtype d.qpos) 0.0
+           ; margin = Nx.scalar_at at (Nx.dtype d.qpos) 0.0
+           ; posnorm = Nx.scalar_at at (Nx.dtype d.qpos) 0.0
            ; frictionloss = loss
            ; diagA = Nx.get [ dof ] p.dof_invweight0
            ; solref
            ; solimp
-           ; jdotv = Nx.scalar_at at Nx.float64 0.0
+           ; jdotv = Nx.scalar_at at (Nx.dtype d.qpos) 0.0
            ; jac
            };
       Int.incr rows)
   done;
-  let d = keep_before m !out (Nx.scalar_at at Nx.float64 (Float.of_int !rows)) in
+  let d = keep_before m !out (Nx.scalar_at at (Nx.dtype d.qpos) (Float.of_int !rows)) in
   { d with nefc = Nx.scalar_at at Nx.int32 (Int32.of_int !rows) }
 
 (* {1 Contacts}
@@ -827,7 +850,9 @@ let friction (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.da
    compiled step keeps small — a per-contact prefix sum in the graph is correct
    and much slower to compile — and it is what every model but the humanoid
    corpus exercises. *)
-let contact_uniform (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let contact_uniform (cfg : config) (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d)
+  : ('s, 'a) Data.d
+  =
   let at = Nx.placement d.qpos in
   let t = m.topo
   and p = m.params in
@@ -853,17 +878,19 @@ let contact_uniform (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a 
   if size > 4
   then raise (Invalid_argument "contact friction (condim > 3) is not implemented yet");
   let nb = t.nconmax in
-  let start = Nx.cast Nx.float64 d.nefc in
-  let slots = Nx.arange_f_at at Nx.float64 0.0 (Float.of_int nb) 1.0 in
-  let live = Nx.less slots (Nx.cast Nx.float64 d.ncon) in
+  let start = Nx.cast (Nx.dtype d.qpos) d.nefc in
+  let slots = Nx.arange_f_at at (Nx.dtype d.qpos) 0.0 (Float.of_int nb) 1.0 in
+  let live = Nx.less slots (Nx.cast (Nx.dtype d.qpos) d.ncon) in
   let far = Nx.full_like slots (Float.of_int t.nefcmax) in
   let row_index k =
-    let stride = Nx.mul slots (Nx.scalar_at at Nx.float64 (Float.of_int size)) in
+    let stride = Nx.mul slots (Nx.scalar_at at (Nx.dtype d.qpos) (Float.of_int size)) in
     Nx.cast
       Nx.int64
       (Nx.where
          live
-         (Nx.add start (Nx.add stride (Nx.scalar_at at Nx.float64 (Float.of_int k))))
+         (Nx.add
+            start
+            (Nx.add stride (Nx.scalar_at at (Nx.dtype d.qpos) (Float.of_int k))))
          far)
   in
   let put idx v x = Nx.scatter ~combine:Set ~axis:0 idx v x in
@@ -882,11 +909,11 @@ let contact_uniform (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a 
   let tran_weight = Nx.add (weight 0 0) (weight 1 0) in
   let rot_weight = Nx.add (weight 0 1) (weight 1 1) in
   let ids = Nx.place at (Nx.init Nx.int32 [| nb |] (fun i -> Int32.of_int i.(0))) in
-  let zero = Nx.zeros_at at Nx.float64 [| nb |] in
-  let spin = Nx.zeros_at at Nx.float64 [| nb |] in
+  let zero = Nx.zeros_at at (Nx.dtype d.qpos) [| nb |] in
+  let spin = Nx.zeros_at at (Nx.dtype d.qpos) [| nb |] in
   ignore spin;
   let base = keep_before m d start in
-  let write (out : 'a Data.data ref) idx kind diagA jac =
+  let write (out : ('s, 'a) Data.d ref) idx kind diagA jac =
     { !out with
       efc_type =
         put idx (Nx.full_at at Nx.int32 [| nb |] (Int32.of_int kind)) !out.efc_type
@@ -921,7 +948,7 @@ let contact_uniform (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a 
       let diagA =
         Nx.mul
           tran_weight
-          (Nx.mul (Nx.mul_s mu2 2.0) (Nx.add (Nx.scalar_at at Nx.float64 1.0) mu2))
+          (Nx.mul (Nx.mul_s mu2 2.0) (Nx.add (Nx.scalar_at at (Nx.dtype d.qpos) 1.0) mu2))
       in
       for side = 0 to 1 do
         let sign = if Int.equal side 0 then 1.0 else -1.0 in
@@ -939,7 +966,9 @@ let contact_uniform (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a 
    is one row for a frictionless contact and [2*(dim-1)] for a pyramidal one, so
    a model that mixes condim-1 and condim-3 geoms — a humanoid against its
    floor — needs a running sum over the blocks, not a stride. *)
-let contact_mixed (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let contact_mixed (cfg : config) (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d)
+  : ('s, 'a) Data.d
+  =
   let at = Nx.placement d.qpos in
   let t = m.topo
   and p = m.params in
@@ -967,11 +996,11 @@ let contact_mixed (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Da
   if 2 * (max_dim - 1) > 4
   then raise (Invalid_argument "contact friction (condim > 3) is not implemented yet");
   let nb = t.nconmax in
-  let start = Nx.cast Nx.float64 d.nefc in
-  let slots = Nx.arange_f_at at Nx.float64 0.0 (Float.of_int nb) 1.0 in
-  let live = Nx.less slots (Nx.cast Nx.float64 d.ncon) in
+  let start = Nx.cast (Nx.dtype d.qpos) d.nefc in
+  let slots = Nx.arange_f_at at (Nx.dtype d.qpos) 0.0 (Float.of_int nb) 1.0 in
+  let live = Nx.less slots (Nx.cast (Nx.dtype d.qpos) d.ncon) in
   let far = Nx.full_like slots (Float.of_int t.nefcmax) in
-  let dims = Nx.cast Nx.float64 d.contact_dim in
+  let dims = Nx.cast (Nx.dtype d.qpos) d.contact_dim in
   let frictionless = Nx.equal_s dims 1.0 in
   let needed =
     Nx.where
@@ -986,7 +1015,7 @@ let contact_mixed (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Da
      per-slot counts times an [nb;nb] mask. *)
   let lower =
     Nx.cast
-      Nx.float64
+      (Nx.dtype d.qpos)
       (Nx.greater (Nx.reshape [| nb; 1 |] slots) (Nx.reshape [| 1; nb |] slots))
   in
   let offset =
@@ -995,7 +1024,10 @@ let contact_mixed (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Da
   let row_index k exists =
     Nx.cast
       Nx.int64
-      (Nx.where exists (Nx.add offset (Nx.scalar_at at Nx.float64 (Float.of_int k))) far)
+      (Nx.where
+         exists
+         (Nx.add offset (Nx.scalar_at at (Nx.dtype d.qpos) (Float.of_int k)))
+         far)
   in
   let put idx v x = Nx.scatter ~combine:Set ~axis:0 idx v x in
   let put_cols idx v x =
@@ -1012,9 +1044,9 @@ let contact_mixed (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Da
   in
   let tran_weight = Nx.add (weight 0 0) (weight 1 0) in
   let ids = Nx.place at (Nx.init Nx.int32 [| nb |] (fun i -> Int32.of_int i.(0))) in
-  let zero = Nx.zeros_at at Nx.float64 [| nb |] in
+  let zero = Nx.zeros_at at (Nx.dtype d.qpos) [| nb |] in
   let base = keep_before m d start in
-  let write (out : 'a Data.data ref) idx kind diagA jac =
+  let write (out : ('s, 'a) Data.d ref) idx kind diagA jac =
     { !out with
       efc_type = put idx kind !out.efc_type
     ; efc_id = put idx ids !out.efc_id
@@ -1039,7 +1071,7 @@ let contact_mixed (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Da
   let pyramid_diagA =
     Nx.mul
       tran_weight
-      (Nx.mul (Nx.mul_s mu2 2.0) (Nx.add (Nx.scalar_at at Nx.float64 1.0) mu2))
+      (Nx.mul (Nx.mul_s mu2 2.0) (Nx.add (Nx.scalar_at at (Nx.dtype d.qpos) 1.0) mu2))
   in
   let out = ref base in
   (* One host iteration per possible slot: a tangent block is a slice, so the
@@ -1071,5 +1103,5 @@ let all_same_condim t =
   let first = t.geom_condim.(0) in
   Array.for_all t.geom_condim ~f:(Int.equal first)
 
-let contact (cfg : config) (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let contact (cfg : config) (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   if all_same_condim m.topo then contact_uniform cfg m d else contact_mixed cfg m d

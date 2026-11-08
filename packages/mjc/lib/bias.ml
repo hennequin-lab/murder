@@ -26,7 +26,7 @@ let body_dofnum t b =
   done;
   !num
 
-let com_vel (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let com_vel (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   let t = m.topo in
   let cvel = ref (Nx.zeros_like d.cvel) in
   let cdof_dot = ref (Nx.zeros_like d.cdof_dot) in
@@ -69,7 +69,7 @@ let com_vel (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   done;
   { d with cvel = !cvel; cdof_dot = !cdof_dot }
 
-let rne (m : 'a Model.model) (d : 'a Data.data) =
+let rne (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) =
   let t = m.topo
   and p = m.params in
   let cacc = ref (Nx.zeros_like d.cvel) in
@@ -119,12 +119,13 @@ let rne (m : 'a Model.model) (d : 'a Data.data) =
    accumulate up the tree — linear momentum first, converted to a velocity by
    the subtree mass at the end, and angular momentum through the offset from
    the subtree's centre of mass. *)
-let subtree_vel (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let subtree_vel (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   let t = m.topo in
   let n = t.nbody in
   let at = Nx.placement d.qpos in
-  let body_lin = ref (Nx.zeros_at at Nx.float64 [| n; 3 |])
-  and body_rot = ref (Nx.zeros_at at Nx.float64 [| n; 3 |]) in
+  let dt = Nx.dtype d.qpos in
+  let body_lin = ref (Nx.zeros_at at dt [| n; 3 |])
+  and body_rot = ref (Nx.zeros_at at dt [| n; 3 |]) in
   for b = 0 to n - 1 do
     let cv = Nx.get [ b ] d.cvel in
     let rot = Nx.reshape [| 3 |] (Nx.slice [ R (0, 3) ] cv)
@@ -148,7 +149,7 @@ let subtree_vel (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   let mass = Nx.maximum_s m.params.body_subtreemass 1e-15 in
   let linvel = Nx.div !lin (Nx.reshape [| n; 1 |] mass) in
   (* angular momentum about each subtree's centre of mass *)
-  let ang = ref (Nx.zeros_at (Nx.placement d.qpos) Nx.float64 [| n; 3 |]) in
+  let ang = ref (Nx.zeros_at (Nx.placement d.qpos) (Nx.dtype d.qpos) [| n; 3 |]) in
   for b = 0 to n - 1 do
     let rot = Nx.get [ b ] body_rot in
     let ximat = Nx.reshape [| 3; 3 |] (Nx.get [ b ] d.ximat) in
@@ -174,7 +175,7 @@ let subtree_vel (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   done;
   { d with subtree_linvel = linvel; subtree_angmom = !ang }
 
-let forward (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let forward (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   let d = com_vel m d in
   let d = subtree_vel m d in
   { d with qfrc_bias = rne m d }

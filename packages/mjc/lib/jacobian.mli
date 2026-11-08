@@ -14,13 +14,17 @@
 (** {1:types Types} *)
 
 (** A [float64] tensor on the host. *)
-type 'd f = 'd Nx.float64_t
+type ('s, 'd) f = ('s, 'd) Rigid.f
 
 (** [body_dof_masks ~at t] is the `[nbody; nv]` table of which degrees of
     freedom move which body. It is structure, so a caller that asks for many
     points at once -- the contact stage does, once per candidate -- should build
     it once and pass it as [~masks]. *)
-val body_dof_masks : at:'a Nx.Placement.t -> Topo.t -> 'a Nx.float64_t
+val body_dof_masks
+  :  dtype:(float, 's) Nx.dtype
+  -> at:'a Nx.Placement.t
+  -> Topo.t
+  -> ('s, 'a) Rigid.f
 
 (** {1:jacobians Jacobians} *)
 
@@ -29,12 +33,12 @@ val body_dof_masks : at:'a Nx.Placement.t -> Topo.t -> 'a Nx.float64_t
     shape [[nv;3]]. Rows outside the body's ancestor chain are zero, which is
     what makes the product with a velocity a world velocity of that point. *)
 val point
-  :  ?masks:'a Nx.float64_t
-  -> 'a Model.model
-  -> 'a Data.data
+  :  ?masks:('s, 'a) Rigid.f
+  -> ('s, 'a) Model.m
+  -> ('s, 'a) Data.d
   -> body:int
-  -> pos:'a f
-  -> 'a f * 'a f
+  -> pos:('s, 'a) f
+  -> ('s, 'a) f * ('s, 'a) f
 
 (** [points ~masks m d ~bodies ~positions] is the same pair of Jacobians for a
     batch of points: [bodies] a `[k]` array of body indices and [positions]
@@ -43,23 +47,28 @@ val point
     which is the difference between a program that compiles and one that does
     not. *)
 val points
-  :  ?masks:'a Nx.float64_t
-  -> 'a Model.model
-  -> 'a Data.data
+  :  ?masks:('s, 'a) Rigid.f
+  -> ('s, 'a) Model.m
+  -> ('s, 'a) Data.d
   -> bodies:int array
-  -> positions:'a Nx.float64_t
-  -> 'a Nx.float64_t * 'a Nx.float64_t
+  -> positions:('s, 'a) Rigid.f
+  -> ('s, 'a) Rigid.f * ('s, 'a) Rigid.f
 
 (** [point_dot m d ~body ~pos] is the time derivative of {!point} along the
     current velocity, [dq/dt] held constant: [Jdot] in MuJoCo's notation. *)
 val point_dot
-  :  ?masks:'a Nx.float64_t
-  -> 'a Model.model
-  -> 'a Data.data
+  :  ?masks:('s, 'a) Rigid.f
+  -> ('s, 'a) Model.m
+  -> ('s, 'a) Data.d
   -> body:int
-  -> pos:'a f
-  -> 'a f * 'a f
+  -> pos:('s, 'a) f
+  -> ('s, 'a) f * ('s, 'a) f
 
 (** [jdotv m d ~body ~pos] is [Jdot qvel] for the same point, shape [[6]]:
     translation first, then rotation, the same order as {!Data.cvel} uses. *)
-val jdotv : 'a Model.model -> 'a Data.data -> body:int -> pos:'a f -> 'a f
+val jdotv
+  :  ('s, 'a) Model.m
+  -> ('s, 'a) Data.d
+  -> body:int
+  -> pos:('s, 'a) f
+  -> ('s, 'a) f

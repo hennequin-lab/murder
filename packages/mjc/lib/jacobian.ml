@@ -7,7 +7,7 @@ open Base
 open Nx
 open Topo
 
-type 'd f = 'd Nx.float64_t
+type ('s, 'd) f = ('s, 'd) Rigid.f
 
 let dof_width = function
   | Hinge | Slide -> 1
@@ -35,10 +35,10 @@ let rec last_dof (t : Topo.t) b =
    chain. The old form built `nv`-many graph nodes per candidate contact, and a
    model with a thousand candidates spent minutes tracing before it ran; this is
    one node, whatever the chain length. *)
-let body_dof_masks ~at (t : Topo.t) =
+let body_dof_masks ~dtype ~at (t : Topo.t) =
   Nx.place
     at
-    (Nx.init Nx.float64 [| t.nbody; t.nv |] (fun i ->
+    (Nx.init dtype [| t.nbody; t.nv |] (fun i ->
        let body = i.(0)
        and dof = i.(1) in
        let rec walks j =
@@ -47,10 +47,11 @@ let body_dof_masks ~at (t : Topo.t) =
        walks (last_dof t body)))
 
 (* A mask over the dofs that move [body], as a row of that table. *)
-let chain_mask ~at (t : Topo.t) body = Nx.slice [ I body; A ] (body_dof_masks ~at t)
+let chain_mask ~dtype ~at (t : Topo.t) body =
+  Nx.slice [ I body; A ] (body_dof_masks ~dtype ~at t)
 
 (* The offset of a point from the reference point of the motion subspace. *)
-let offset (t : Topo.t) (d : 'a Data.data) body pos =
+let offset (t : Topo.t) (d : ('s, 'a) Data.d) body pos =
   let com = Nx.slice [ I t.body_rootid.(body); A ] d.subtree_com in
   Nx.sub pos com
 
@@ -63,13 +64,13 @@ let mask_rows mask x =
 
 let as_row v = Nx.reshape [| 1; (Nx.shape v).(0) |] v
 
-let point ?masks (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
+let point ?masks (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) ~body ~pos =
   let t = m.topo in
   let r = offset t d body pos in
   let mask =
     match masks with
     | Some table -> Nx.slice [ I body; A ] table
-    | None -> chain_mask ~at:(Nx.placement d.qpos) t body
+    | None -> chain_mask ~dtype:(Nx.dtype d.qpos) ~at:(Nx.placement d.qpos) t body
   in
   let ang = ang6 d.cdof
   and lin = lin6 d.cdof in
@@ -85,10 +86,10 @@ let point ?masks (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
    candidates is a program no compiler finishes. *)
 let points
       ?masks
-      (m : 'a Model.model)
-      (d : 'a Data.data)
+      (m : ('s, 'a) Model.m)
+      (d : ('s, 'a) Data.d)
       ~(bodies : int array)
-      ~(positions : 'a Nx.float64_t)
+      ~(positions : ('s, 'a) Rigid.f)
   =
   let t = m.topo in
   let k = Array.length bodies in
@@ -109,7 +110,7 @@ let points
   let mask =
     match masks with
     | Some table -> Nx.take ~axis:0 idx table
-    | None -> Nx.zeros_at at Nx.float64 [| k; t.nv |]
+    | None -> Nx.zeros_at at (Nx.dtype d.qpos) [| k; t.nv |]
   in
   let ang = ang6 d.cdof
   and lin = lin6 d.cdof in
@@ -156,7 +157,7 @@ let cross6 vel u =
    joint: it recomputes it from the body's *final* velocity, where
    [mj_comVel] had used the velocity before the joint's own contribution.
    The two differ whenever the joint is not first in its body. *)
-let cdof_dot_jac (t : Topo.t) (d : 'a Data.data) =
+let cdof_dot_jac (t : Topo.t) (d : ('s, 'a) Data.d) =
   let out = ref d.cdof_dot in
   for dof = 0 to t.nv - 1 do
     let j = t.dof_jntid.(dof) in
@@ -174,13 +175,13 @@ let cdof_dot_jac (t : Topo.t) (d : 'a Data.data) =
   done;
   !out
 
-let point_dot ?masks (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
+let point_dot ?masks (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) ~body ~pos =
   let t = m.topo in
   let r = offset t d body pos in
   let mask =
     match masks with
     | Some table -> Nx.slice [ I body; A ] table
-    | None -> chain_mask ~at:(Nx.placement d.qpos) t body
+    | None -> chain_mask ~dtype:(Nx.dtype d.qpos) ~at:(Nx.placement d.qpos) t body
   in
   let cvel = Nx.slice [ I body; A ] d.cvel in
   let omega = Nx.slice [ R (0, 3) ] cvel
@@ -198,7 +199,7 @@ let point_dot ?masks (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
   in
   jacp, jacr
 
-let jdotv (m : 'a Model.model) (d : 'a Data.data) ~body ~pos =
+let jdotv (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) ~body ~pos =
   let t = m.topo in
   let jacp, jacr = point_dot m d ~body ~pos in
   let v = Nx.reshape [| t.nv; 1 |] d.qvel in

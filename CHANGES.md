@@ -39,12 +39,21 @@ changes do not need an entry.
   - **The `.mjcb` interchange**: compiled models load without linking or
     installing MuJoCo; the converter is a development-time Python module
     (`tools/mjcb.py`) and the format is documented with its field list.
+  - **float32 as well as float64**, one engine at two widths. Every module is
+    dtype-generic; `Model.cast` moves a model between them, and the dtype is read
+    off the model rather than passed beside it. Accuracy, from recorded
+    mid-trajectory states over 30 steps: 1.47e-07 (hopper), 1.71e-06 (humanoid),
+    4.38e-06 (walker), 6.13e-05 (a contact-heavy stacking model), with the active
+    set agreeing at every step. A caveat that matters: float32 is not
+    bit-comparable with float64, because contact activation is a hard threshold,
+    so a model whose resting pose puts a distance within one rounding of the
+    margin can disagree about which contacts exist (`bench/f32.ml` shows both
+    cases). The float64 parity gates are unchanged.
   - The README carries a five-step worked example — write a model, load it, step
     it, differentiate it, checkpoint it — which CI builds and runs.
 
-  Not yet: float32 (the engine is float64 throughout; the measured payoff is
-  1.40x end-to-end and the tolerance story is in `doc/perf.md`), the convex
-  contact path beyond the eight implemented geom pairs, and heightfields.
+  Not yet: the convex contact path beyond the eight implemented geom pairs, and
+  heightfields.
 
 ### geom
 

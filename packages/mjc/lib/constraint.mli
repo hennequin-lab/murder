@@ -51,30 +51,30 @@ val type_contact_pyramidal : int
 type config
 
 (** [config m] is [m]'s structure, read from it once. *)
-val config : 'a Model.model -> config
+val config : ('s, 'a) Model.m -> config
 
 (** [equality m d] writes the rows of every active equality constraint, from
     row 0, and sets [nefc] to their number. It is the first stage to run: the
     limit and contact stages append after it. *)
-val equality : config -> 'a Model.model -> 'a Data.data -> 'a Data.data
+val equality : config -> ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d
 
 (** [limits m d] appends one row per active joint limit after the rows already
     in the buffer, and adds their count to [nefc]. It reads [d.qpos] and the
     model's ranges, margins and limit flags. A row that does not fit in the
     model's [nefcmax] budget raises through [Nx.check] rather than being
     dropped silently. *)
-val limits : 'a Model.model -> 'a Data.data -> 'a Data.data
+val limits : ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d
 
 (** [friction m d] appends one row per dof whose friction loss is non-zero,
     after the rows already in the buffer. The force on such a row is bounded
     by the loss, so the solver treats it as linear outside the bound. *)
-val friction : config -> 'a Model.model -> 'a Data.data -> 'a Data.data
+val friction : config -> ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d
 
 (** [contact m d] appends one row per contact, after the rows already in the
     buffer. v1 computes frictionless contacts only, so a model whose geoms ask
     for one with friction is refused here rather than solved with rows that do
     not match MuJoCo's. *)
-val contact : config -> 'a Model.model -> 'a Data.data -> 'a Data.data
+val contact : config -> ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d
 
 (** {1:impedance Impedance} *)
 
@@ -94,11 +94,16 @@ val contact : config -> 'a Model.model -> 'a Data.data -> 'a Data.data
     [solref.0 >= 2 dt] and its standard-versus-direct reference rule. Rows
     beyond [nefc] are given [R = 1] and [D = 0] so that a fixed-size system
     stays positive definite. *)
-val tendon_limits : 'a Model.model -> 'a Data.data -> 'a Data.data
+val tendon_limits : ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d
 
 (** [impedance ?dt c m d] is the constraint solver's impedance, the [R] of
     [J M⁻¹ Jᵀ + R]: MuJoCo's [solref]/[solimp] converted to stiffness and damping
     at the step's own [dt], which is why the timestep is a parameter of
     {!config}. Rows keep the values the solver needs, not the ones the model
     stores. *)
-val impedance : ?dt:float -> config -> 'a Model.model -> 'a Data.data -> 'a Data.data
+val impedance
+  :  ?dt:float
+  -> config
+  -> ('s, 'a) Model.m
+  -> ('s, 'a) Data.d
+  -> ('s, 'a) Data.d

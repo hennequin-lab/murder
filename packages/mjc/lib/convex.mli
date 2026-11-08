@@ -44,8 +44,8 @@ type shape =
     its positive corner, the cylinder its top rim, the ellipsoid its [x] extent. *)
 val support
   :  shape
-  -> pos:'a Nx.float64_t
-  -> mat:'a Nx.float64_t
-  -> size:'a Nx.float64_t
-  -> dir:'a Nx.float64_t
-  -> 'a Nx.float64_t
+  -> pos:('s, 'a) Rigid.f
+  -> mat:('s, 'a) Rigid.f
+  -> size:('s, 'a) Rigid.f
+  -> dir:('s, 'a) Rigid.f
+  -> ('s, 'a) Rigid.f

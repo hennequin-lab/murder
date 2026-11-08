@@ -21,19 +21,19 @@
 
     Reads [d.xpos d.xquat d.xipos d.ximat d.xanchor d.xaxis] and the model's
     masses, inertias, joint axes and armature. *)
-val forward : 'a Model.model -> 'a Data.data -> 'a Data.data
+val forward : ('s, 'a) Model.m -> ('s, 'a) Data.d -> ('s, 'a) Data.d
 
 (** {1:factor Factorization} *)
 
 (** The type for a factored mass matrix. *)
-type 'd factor
+type ('s, 'd) factor
 
 (** [factor m] is the Cholesky factor of the symmetric positive definite
     matrix [m], which [solve] reuses. It takes the matrix rather than the data
     so that a step can factor [M + h diag(B)], the implicit-damping metric,
     with the same code. [Nx.cholesky] raises on a matrix that is not positive
     definite. *)
-val factor : 'd Nx.float64_t -> 'd factor
+val factor : ('s, 'd) Rigid.f -> ('s, 'd) factor
 
 (** [solve f b] is [M^-1 b] using the factor [f]. *)
-val solve : 'd factor -> 'd Nx.float64_t -> 'd Nx.float64_t
+val solve : ('s, 'd) factor -> ('s, 'd) Rigid.f -> ('s, 'd) Rigid.f

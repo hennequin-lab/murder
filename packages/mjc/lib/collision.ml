@@ -114,7 +114,7 @@ let filtered_pair t g1 g2 =
       && (Int.equal weld1 (weldparent t t.geom_bodyid.(g2))
           || Int.equal weld2 (weldparent t t.geom_bodyid.(g1))))
 
-let candidates (m : 'a Model.model) : cand array =
+let candidates (m : ('s, 'a) Model.m) : cand array =
   let t = m.topo in
   let out = ref [] in
   if t.contacts_enabled
@@ -152,7 +152,7 @@ let candidates (m : 'a Model.model) : cand array =
    {!candidates} refuses rather than dropping a contact silently, and this is the
    report that says how far the geometry reaches on a given model. It is what
    made the quadruped's remaining work a list rather than a guess. *)
-let unsupported_pairs (m : 'a Model.model) =
+let unsupported_pairs (m : ('s, 'a) Model.m) =
   let t = m.topo in
   let out = ref [] in
   if t.contacts_enabled
@@ -408,6 +408,7 @@ let plane_cylinder ~pos1 ~normal ~pos2 ~mat2 ~r2 ~l2 ~slot =
   dist, pos, normal
 
 let sphere_box ~pos1 ~r1 ~pos2 ~mat2 ~half =
+  let dt = Nx.dtype pos1 in
   (* [mjraw_SphereBox]: the sphere centre in the box frame, clamped to the
      half-sizes; inside the box the nearest face sets the normal. *)
   let centre = matvec_t mat2 (Nx.sub pos1 pos2) in
@@ -435,12 +436,7 @@ let sphere_box ~pos1 ~r1 ~pos2 ~mat2 ~half =
   let pick0 = Nx.logical_and (Nx.less_equal g0 g1) (Nx.less_equal g0 g2) in
   let pick1 = Nx.logical_and (Nx.logical_not pick0) (Nx.less_equal g1 g2) in
   let pick2 = Nx.logical_not (Nx.logical_or pick0 pick1) in
-  let onehot =
-    stack3
-      (Nx.cast Nx.float64 pick0)
-      (Nx.cast Nx.float64 pick1)
-      (Nx.cast Nx.float64 pick2)
-  in
+  let onehot = stack3 (Nx.cast dt pick0) (Nx.cast dt pick1) (Nx.cast dt pick2) in
   let nearest = smul onehot sign in
   let closest = Nx.minimum g0 (Nx.minimum g1 g2) in
   let inside_pos = Nx.add centre (smul nearest (Nx.mul_s (Nx.sub r1 closest) 0.5)) in
@@ -525,21 +521,22 @@ let capsule_capsule ~pos1 ~axis1 ~r1 ~l1 ~pos2 ~axis2 ~r2 ~l2 ~slot =
    tensor operations are allowed on one. So the same arithmetic is written as
    gathers and [where]s, one row per candidate contact. *)
 
-type 'a mixed =
+type ('s, 'a) mixed =
   { dim : 'a Nx.int32_t (** [[ncand]] *)
-  ; friction : 'a Nx.float64_t (** [[ncand;5]] *)
-  ; solref : 'a Nx.float64_t (** [[ncand;2]] *)
-  ; solimp : 'a Nx.float64_t (** [[ncand;5]] *)
-  ; includemargin : 'a Nx.float64_t (** [[ncand]] *)
-  ; reach : 'a Nx.float64_t
+  ; friction : ('s, 'a) Rigid.f (** [[ncand;5]] *)
+  ; solref : ('s, 'a) Rigid.f (** [[ncand;2]] *)
+  ; solimp : ('s, 'a) Rigid.f (** [[ncand;5]] *)
+  ; includemargin : ('s, 'a) Rigid.f (** [[ncand]] *)
+  ; reach : ('s, 'a) Rigid.f
     (** [[ncand]], the bounding radius: the margin plus the two bounds. *)
   }
 
-let mixed_params ~at (m : 'a Model.model) (cands : cand array) : 'a mixed =
+let mixed_params ~at (m : ('s, 'a) Model.m) (cands : cand array) : ('s, 'a) mixed =
   let p = m.params in
   let n = Array.length cands in
   let minval = 1e-15 in
-  let sc x = Nx.scalar_at at Nx.float64 x in
+  let dt = Model.dtype m in
+  let sc x = Nx.scalar_at at dt x in
   let g side =
     Nx.place
       at
@@ -552,7 +549,7 @@ let mixed_params ~at (m : 'a Model.model) (cands : cand array) : 'a mixed =
   let prio side =
     Nx.place
       at
-      (Nx.init Nx.float64 [| n |] (fun i ->
+      (Nx.init dt [| n |] (fun i ->
          let c = cands.(i.(0)) in
          Float.of_int m.topo.geom_priority.(if Int.equal side 0 then c.g1 else c.g2)))
   in
@@ -635,9 +632,9 @@ let mixed_params ~at (m : 'a Model.model) (cands : cand array) : 'a mixed =
    the candidate list: {!Collision_box_tensor} wants a batch, so every box pair
    in the list is gathered once, solved once, and read back slot by slot. *)
 
-type 'a box_manifold =
+type ('s, 'a) box_manifold =
   { row : (int, int) Hashtbl.t (** [g1 * ngeom + g2] to the pair's row in the batch *)
-  ; manifold : 'a Collision_box_tensor.manifold
+  ; manifold : ('s, 'a) Collision_box_tensor.manifold
   }
 
 let is_box_pair (t : Topo.t) g1 g2 =
@@ -645,7 +642,7 @@ let is_box_pair (t : Topo.t) g1 g2 =
   | Box, Box -> true
   | _ -> false
 
-let box_box (m : 'a Model.model) (d : 'a Data.data) (cands : cand array) =
+let box_box (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) (cands : cand array) =
   let t = m.topo in
   let pairs =
     Array.filter cands ~f:(fun c -> is_box_pair t c.g1 c.g2 && Int.equal c.slot 0)
@@ -685,7 +682,7 @@ let box_box (m : 'a Model.model) (d : 'a Data.data) (cands : cand array) =
     done;
     Some { row; manifold = man })
 
-let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
+let contacts (m : ('s, 'a) Model.m) (d : ('s, 'a) Data.d) : ('s, 'a) Data.d =
   let at = Nx.placement d.qpos in
   let t = m.topo in
   let cands = candidates m in
@@ -697,7 +694,7 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
   else (
     let mix = mixed_params ~at m cands in
     let boxes = box_box m d cands in
-    let masks = Jacobian.body_dof_masks ~at t in
+    let masks = Jacobian.body_dof_masks ~dtype:(Nx.dtype d.qpos) ~at t in
     (* No per-candidate loop is left in this stage. What the candidate list
        says -- which geoms, which body, which slot -- is read here on the host,
        where it is model structure, and the arithmetic runs once per geom-type
@@ -714,7 +711,7 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
         (Nx.init Nx.int64 [| Array.length ix |] (fun i -> Int64.of_int ix.(i.(0))))
     in
     let take ix (x : _ Nx.t) = Nx.take ~axis:0 (idx_of ix) x in
-    let scatter ix (v : 'a Nx.float64_t) (base : 'a Nx.float64_t) =
+    let scatter ix (v : ('s, 'a) Rigid.f) (base : ('s, 'a) Rigid.f) =
       if Int.equal (Array.length (Nx.shape v)) 1
       then Nx.scatter ~combine:Set ~axis:0 (idx_of ix) v base
       else (
@@ -731,15 +728,15 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
     let zaxis = Nx.slice [ A; A; I 2 ] gmat in
     let size ix k = Nx.take ~axis:0 (idx_of ix) (Nx.slice [ A; I k ] gsize) in
     let scalars ix f =
-      Nx.place at (Nx.init Nx.float64 [| Array.length ix |] (fun i -> f ix.(i.(0))))
+      Nx.place at (Nx.init (Model.dtype m) [| Array.length ix |] (fun i -> f ix.(i.(0))))
     in
     (* A candidate that produces nothing is dropped by distance, so the base
        values only have to be finite and far; they are the ones the scalar
        formulation returned for an unsupported pair. *)
-    let dist = ref (Nx.zeros_at at Nx.float64 [| ncand |])
+    let dist = ref (Nx.zeros_at at (Model.dtype m) [| ncand |])
     and pos = ref (take g1s gpos)
     and normal = ref (take g1s gpos)
-    and tangent = ref (Nx.zeros_at at Nx.float64 [| ncand; 3 |]) in
+    and tangent = ref (Nx.zeros_at at (Model.dtype m) [| ncand; 3 |]) in
     (* One geom-type pair's candidates, all at once. Every formula is the same
        function the single-point path used, so this is batching, not a second
        implementation. *)
@@ -774,7 +771,7 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
           Nx.place
             at
             (Nx.init
-               Nx.float64
+               (Model.dtype m)
                [| Array.length ix; 3 |]
                (fun i ->
                   let slot = slots.(ix.(i.(0))) in
@@ -890,12 +887,12 @@ let contacts (m : 'a Model.model) (d : 'a Data.data) : 'a Data.data =
        dist
        := scatter
             ix
-            (Nx.where dead (Nx.scalar_at at Nx.float64 1e30) (take flat dist_f))
+            (Nx.where dead (Nx.scalar_at at (Model.dtype m) 1e30) (take flat dist_f))
             !dist;
        pos
        := scatter
             ix
-            (wsel dead (Nx.zeros_at at Nx.float64 [| k; 3 |]) (take flat pos_f))
+            (wsel dead (Nx.zeros_at at (Model.dtype m) [| k; 3 |]) (take flat pos_f))
             !pos;
        normal := scatter ix (take flat normal_f) !normal
      | _ -> ());
