@@ -1,0 +1,8 @@
+; A reproduction of a tolk bug, not a test: it fails on purpose at horizon 2 and
+; up. README.md is the report. Nothing here is installed or run by @ci.
+
+(executable
+ (name repro)
+ (libraries dilqr nx rune stdio base)
+ (preprocess
+  (pps ppx_ptree)))
