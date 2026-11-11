@@ -224,6 +224,23 @@ changes do not need an entry.
 
 ### sofo
 
+- A sketch's directions hang off a subkey of the key it is given (lane `i` is
+  `fold_in (fold_in key 0) i`), so a caller's own draw from that key cannot
+  coincide with a lane. Before, the lanes were `fold_in key i`, and the
+  minibatch key the examples derive — `fold_in state.key 0` — was exactly
+  lane 0: one lane of every sketch was a function of the batch it measured,
+  not a random direction. The examples now split the root into a direction
+  stream and a data stream, and `Optim.directions` documents the guarantee.
+  A given key draws a different subspace than it did.
+- `Optim.coordinates` raises instead of returning infinities or NaNs when the
+  damped spectrum is not strictly positive: a sketch with a zero GGN under a
+  relative damping mode — usually a loss whose little losses were never
+  marked — and an undamped singular sketch, whose inverse needs a full rank.
+  `Absolute` damping with a positive value still solves a zero GGN.
+- `Sofo.sse`'s shape error names `Sofo.sse`, not `Sofo.mse`.
+- The linear example and the README's loop build the parameter step once with
+  `Optim.update_jit`, as the API note asks, instead of calling `Optim.update`
+  — which compiles it again on every iteration.
 - The subspace solve is documented as the one part of a step that stays on the
   host, and the reason has moved twice. It was that an eigendecomposition could
   not be compiled; then that Raven compiles one (`Nx.eigh` lowers to Jacobi

@@ -254,6 +254,25 @@ let test_directions_reject_bad_custom () =
   raises_match Exn.invalid_arg (fun () ->
     ignore (Sofo.Optim.directions params_ptree ~key ~custom:mismatched ~k:4 p))
 
+let test_a_caller_draw_is_never_a_lane () =
+  (* The state key is the direction stream's root and a caller derives keys of
+     its own from it — the examples' minibatch key is [fold_in state.key c].
+     None of those draws may be a lane the sketch already spent, or the
+     "random" subspace would be a function of the data it measures. *)
+  let p = params () in
+  let dirs = thetas_of p in
+  let lanes = List.init k (fun i -> to_array (slice [ Nx.I i ] dirs.w)) in
+  List.iter
+    (fun c ->
+       let drawn = to_array (Nx.Rng.normal ~key:(Nx.Rng.fold_in key c) f64 [| d * o |]) in
+       List.iteri
+         (fun i lane ->
+            is_false
+              ~msg:(Printf.sprintf "fold_in(key, %d) is not lane %d" c i)
+              (Array.equal Float.equal lane drawn))
+         lanes)
+    [ 0; 1; 2; 3 ]
+
 (* ── the solve ───────────────────────────────────────────────────────────── *)
 
 let test_coordinates_identity () =
@@ -330,7 +349,30 @@ let test_coordinates_survives_a_singular_direction () =
   check_arr ~msg:"from the top on a singular sketch" [| 1.0 /. 3.0; 1.0; 1.0 |] z;
   (* and the one that does says so *)
   raises_match Exn.invalid_arg (fun () ->
-    ignore (Sofo.Optim.coordinates ~damping:(`Relative_from_bottom 0.5) ggn c))
+    ignore (Sofo.Optim.coordinates ~damping:(`Relative_from_bottom 0.5) ggn c));
+  (* an undamped inverse needs the rank the singular sketch lacks *)
+  raises_match Exn.invalid_arg (fun () ->
+    ignore (Sofo.Optim.coordinates ~damping:(`Absolute 0.0) ggn c))
+
+let test_coordinates_rejects_a_spectrum_it_cannot_invert () =
+  (* A sketch with no curvature at all — a loss whose little losses were never
+     marked, say — leaves `Relative_from_top nothing to scale its damping by,
+     so the damped diagonal is zero and the solve has no finite answer. It
+     raises instead of returning NaNs; absolute damping has a scale of its own
+     and still solves. *)
+  let ggn = zeros f64 [| k; k |] in
+  let c = create f64 [| k |] [| 1.0; -2.0; 0.5 |] in
+  raises_match Exn.invalid_arg (fun () -> ignore (Sofo.Optim.coordinates ggn c));
+  raises_match Exn.invalid_arg (fun () ->
+    ignore (Sofo.Optim.coordinates ~preconditioner:`Inverse_sqrt ggn c));
+  check_arr
+    ~msg:"absolute damping solves a zero GGN"
+    [| 1000.0; -2000.0; 500.0 |]
+    (Sofo.Optim.coordinates ~damping:(`Absolute 1e-3) ggn c);
+  check_arr
+    ~msg:"a zero gradient under absolute damping is a zero step"
+    [| 0.0; 0.0; 0.0 |]
+    (Sofo.Optim.coordinates ~damping:(`Absolute 1e-3) ggn (zeros f64 [| k |]))
 
 (* ── the update ──────────────────────────────────────────────────────────── *)
 
@@ -830,6 +872,7 @@ let tests =
       ; test "custom lanes are completed" test_directions_completes_custom
       ; test "custom lanes can fill k" test_directions_custom_fills_k
       ; test "bad custom sets are rejected" test_directions_reject_bad_custom
+      ; test "a caller's key derives no lane" test_a_caller_draw_is_never_a_lane
       ]
   ; group
       "the solve"
@@ -838,6 +881,9 @@ let tests =
       ; test
           "a singular direction is damped"
           test_coordinates_survives_a_singular_direction
+      ; test
+          "an uninvertible spectrum raises"
+          test_coordinates_rejects_a_spectrum_it_cannot_invert
       ]
   ; group
       "the update"
