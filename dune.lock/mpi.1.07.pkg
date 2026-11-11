@@ -1,0 +1,37 @@
+(version 1.07)
+
+(install
+ (all_platforms
+  (run %{make} install)))
+
+(build
+ (all_platforms
+  ((action
+    (progn
+     (run
+      %{make}
+      all
+      MPIINCDIR=%{pkg:conf-mpi:includedir}
+      MPILIBDIR=%{pkg:conf-mpi:libdir}
+      MPICC=%{pkg:conf-mpi:binpath}mpicc
+      MPIRUN=%{pkg:conf-mpi:binpath}mpirun)
+     (when
+      %{pkg:ocaml:native}
+      (run
+       %{make}
+       opt
+       MPIINCDIR=%{pkg:conf-mpi:includedir}
+       MPILIBDIR=%{pkg:conf-mpi:libdir}
+       MPICC=%{pkg:conf-mpi:binpath}mpicc
+       MPIRUN=%{pkg:conf-mpi:binpath}mpirun)))))))
+
+(depends
+ (all_platforms
+  (ocaml base-bigarray conf-mpi ocamlfind)))
+
+(source
+ (fetch
+  (url
+   https://codeload.github.com/xavierleroy/ocamlmpi/tar.gz/refs/tags/v1.17)
+  (checksum
+   sha512=a16f20ea13a26e18bb6ca51b2a2ad109079f963cce1f34d683e05588b2298778e3f93e69fb66e4af211b8bb5886a08af1833e010fdd78ac023754663efd96828)))

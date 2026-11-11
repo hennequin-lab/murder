@@ -204,6 +204,12 @@ changes do not need an entry.
   `n_steps` of the recognition — so the model reads them from there and only
   checks that the components agree. `Recognition.dims` is still the source of
   the horizon, which no other component knows.
+- New sublibrary `ilqr-vae.mpi` (`Ilqr_vae_mpi`): a data-parallel training
+  driver. One mini-batch is split over MPI ranks, each rank differentiates the
+  bound of its own trials, and the root averages the gradients over the batch,
+  updates the parameters and broadcasts them. The batch's key is split per
+  trial, so the estimate does not depend on the number of ranks. It needs the
+  `mpi` package and an MPI implementation.
 
 ### symo
 
