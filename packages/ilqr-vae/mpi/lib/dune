@@ -1,0 +1,4 @@
+(library
+ (name ilqr_vae_mpi)
+ (public_name ilqr-vae.mpi)
+ (libraries base ilqr_vae mpi nx rune))

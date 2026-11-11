@@ -122,6 +122,7 @@
   rune
   (dilqr
    (= :version))
+  mpi
   ppx_ptree
   (windtrap :with-test)))
 

@@ -133,6 +133,56 @@ LFADS-style posterior from collapsing onto the prior before the decoder has
 learned to read the data; iLQR-VAE needs it less, because its control cost
 already contains the encoder prior.
 
+## Training over MPI
+
+The `Ilqr_vae_mpi` library spreads one mini-batch's trials over MPI ranks: each
+rank estimates and differentiates the bound of its own trials, the ranks'
+gradients are averaged over the mini-batch, the root takes the optimizer step,
+and the new parameters are broadcast. The step's key is split into one subkey
+per trial, as a batched `Elbo.loss_fixed` splits it, so a run's numbers do not
+depend on how many ranks ran it; the ranks change the wall-clock time, not the
+estimate.
+
+```ocaml
+open Ilqr_vae
+open Ilqr_vae_mpi
+
+let () =
+  let model = … in
+  let params = Model.init ~at:Nx.Host.on ~key:(Nx.Rng.key 0) model in
+  let driver = make model ~iters:4 ~n_samples:16 () in
+  let sgd lr params grads =
+    Rune.Ptree.map2
+      (Model.structure model)
+      (fun _ p g ->
+         Nx.Infix.(p - (Nx.cast (Nx.dtype p) (Nx.scalar Nx.float64 lr) * g)))
+      params
+      grads
+  in
+  let _params, losses =
+    run
+      driver
+      params
+      ~steps:2000
+      ~key:(Nx.Rng.key 1)
+      ~data:(fun i -> batches.(i mod Array.length batches))
+      ~report:(fun i loss -> Printf.printf "step %d  loss %.4f\n%!" i loss)
+      (sgd 1e-3)
+  in
+  if is_root driver then Printf.printf "final loss %.4f\n%!" losses.(1999)
+```
+
+Launch it with `mpirun -np 4 ./train.exe` (or `srun`). A program run without a
+launcher is a world of one rank, so the same executable trains on a laptop.
+Every rank holds the whole mini-batch and slices its share; `partition` is that
+split, and it is also what a data pipeline calls to read only the trials its
+rank needs. The `update` function runs on the root only, so an optimizer that
+keeps state keeps it there; `rank`, `size` and `is_root` say where a call is
+running.
+
+The sublibrary needs the `mpi` opam package and an MPI implementation (OpenMPI
+or MPICH) on the machine.
+
 ## Status
 
 The library is **implemented**: the `.mli` files in `lib/` are the design, the
@@ -145,4 +195,12 @@ the [`dilqr` repository](https://github.com/hennequin-lab/dilqr-raven) for
 ```sh
 dune build @packages/ilqr-vae/check @packages/ilqr-vae/fmt   # interfaces and formatting
 dune build @packages/ilqr-vae/runtest                        # the suite
+```
+
+The MPI driver's suite runs as one rank under `runtest`; the distributed case
+needs a launcher:
+
+```sh
+dune build packages/ilqr-vae/test/mpi/test_mpi.exe
+mpirun -np 4 ./_build/default/packages/ilqr-vae/test/mpi/test_mpi.exe
 ```
