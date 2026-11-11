@@ -14,6 +14,6 @@
 (source
  (fetch
   (url
-   https://codeload.github.com/yallop/ocaml-ctypes/tar.gz/refs/tags/0.24.0)
+   https://github.com/yallop/ocaml-ctypes/archive/refs/tags/0.24.0.tar.gz)
   (checksum
    sha256=249c5604c8554659761a7282db4ad200aa8c0fdc408cdb53102bd70feeb51955)))

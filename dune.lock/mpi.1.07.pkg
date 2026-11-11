@@ -32,6 +32,6 @@
 (source
  (fetch
   (url
-   https://codeload.github.com/xavierleroy/ocamlmpi/tar.gz/refs/tags/v1.17)
+   https://github.com/xavierleroy/ocamlmpi/archive/refs/tags/v1.17.tar.gz)
   (checksum
    sha512=a16f20ea13a26e18bb6ca51b2a2ad109079f963cce1f34d683e05588b2298778e3f93e69fb66e4af211b8bb5886a08af1833e010fdd78ac023754663efd96828)))
