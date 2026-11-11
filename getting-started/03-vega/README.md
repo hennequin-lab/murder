@@ -17,7 +17,7 @@ dune exec getting-started/03-vega/ex01_optimizers.exe
 - The same recursive loop drives SGD, Adam, and AdamW; only `init` and `step`
   change. Parameters and optimizer state are threaded as a pair, so the loop
   needs no `ref`.
-- `Vega.lr` makes the learning rate explicit. Schedules are values too.
+- `Vega.rate` makes the learning rate explicit. Schedules are values too.
 - Gradient clipping is a transformation: `Vega.clip_by_global_norm p ~max_norm`.
 
 ## Exercises
