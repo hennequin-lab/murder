@@ -13,3 +13,5 @@ runs/
 # Local tutorial scratch space
 getting-started/**/scratch/
 
+# Internal design notes for symo: not for publication
+packages/symo/doc/

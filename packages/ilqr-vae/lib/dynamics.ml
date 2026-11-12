@@ -188,21 +188,22 @@ module Linear = struct
     let identity = eye_at (beside w) (Nx.dtype w) (Array.get (shape w) 0) in
     Infix.(identity + ((w - identity) *$ dt_over_tau))
 
-  let dyn p ~k ~x ~u =
-    let u =
+  let dyn p ~k:_ ~x ~u =
+    let open Infix in
+    let net_input = (x *@ p.w) - x in
+    let net_input =
       match p.b with
-      | None -> u
-      | Some b -> Infix.(u *@ b)
+      | None -> net_input + u
+      | Some b -> net_input + (u *@ b)
     in
-    let input = input_term ~dt_over_tau:(`Scalar p.dt_over_tau) ~k ~u in
-    Infix.((x *@ matrix p) + input)
+    x + (net_input *$ p.dt_over_tau)
 
   (* [dt_over_tau] is not learned, so the constructor takes it. The reference
      implementation's default, one tenth, is what [make] uses when the caller
      says nothing. *)
   let default_dt_over_tau = 0.1
 
-  let make (type w) ~at ?(alpha = 1.0) ?(dt_over_tau = default_dt_over_tau) ~n ~m () =
+  let make (type w) ~at ?(alpha = 0.5) ?(dt_over_tau = default_dt_over_tau) ~n ~m () =
     if n <= 0 then invalid_arg "Dynamics.Linear.make: n must be positive";
     if m <= 0 then invalid_arg "Dynamics.Linear.make: m must be positive";
     if not (Float.( > ) dt_over_tau 0.0)
