@@ -112,6 +112,19 @@ changes do not need an entry.
   shift gives exactly those terms, so a damped pass costs one diagonal
   addition per step. `mu` may hold one strength per batch member.
   `Regularisation.floor` names the floor of a schedule.
+- New `Lqr.Laplace`: the local quadratic model's Gaussian over its whole latent
+  trajectory, `(x₀, u)`. The model's Hessian factorizes exactly along the
+  horizon — the value quadratic in `x₀` plus one form per step in the
+  innovation `(u_k − ū_k) − k_k − K_k (x_k − x̄_k)` — so `make` and
+  `make_fixed` read it from one tape and the factors a pass already computes,
+  `mean` is the model's minimizer, `sample` draws the innovations and rolls the
+  linear response out, and `log_prob` is the innovations' density, whose map to
+  the trajectory has a unit Jacobian. None of the three needs a dense
+  covariance: a draw costs one scan and a density one triangular solve per
+  step, and for a linear dynamics with Gaussian losses the Gaussian is the
+  posterior itself. `log_scale` is one scalar for every block, and `?mu` damps
+  the pass, which is what gives a model whose `Q_uu` is not positive definite
+  a Gaussian at all.
 - `Problem.t` gains `free_initial`: the step-0 running loss prices the initial
   state, so a solve optimizes it jointly with the controls instead of starting
   from the one it was given. The solve's initial state is then a starting point

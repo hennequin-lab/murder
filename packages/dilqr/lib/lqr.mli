@@ -448,6 +448,144 @@ val rollout_linearized
   -> x0:(float, 'b, 'd) Nx.t
   -> (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
 
+(** The Gaussian the local model puts on its whole latent trajectory.
+
+    The local quadratic model of one linearization — the {!tape} — is quadratic
+    in [z = (x₀, u₀ … u_{K−1})] once the dynamics has been eliminated, and its
+    Hessian factorizes exactly along the horizon:
+
+    {[
+      J (z) − J (z⋆) = ½ Δx₀ᵀ P Δx₀ + Σ_k ½ ‖U_k Δw_k‖²
+      Δw_k = (u_k − ū_k) − k_k − K_k (x_k − x̄_k)
+    ]}
+
+    with [z⋆] the model's minimizer, [P] the precision of the initial state
+    ([V₀], with the prior the tape already carries, or [V₀ + Λ] for one passed
+    in), [U_k] the Cholesky factor of [Q_uu,k = l_uu + BᵀV B], [K] the
+    feedback gain, [k] the feedforward one, and [(x̄, ū)] the nominal
+    trajectory the tape was linearized at. The innovations [(Δx₀, Δw)] are
+    therefore independent Gaussians of covariances [(P⁻¹, Q_uu,k⁻¹)], and the
+    map between them and [(z − z⋆)] is triangular with a unit diagonal: its
+    Jacobian is one.
+
+    Three things follow, and none of them needs a dense covariance or an
+    inverse beyond one triangular solve per block:
+
+    - {!val-mean} is [z⋆]: the policy's rollout from the initial state's mean;
+    - {!val-sample} draws the innovations and rolls the linear response out;
+    - {!val-log_prob} is the innovations' density, so it needs no log
+      determinant of the joint.
+
+    This is the truncation point's message of the Riccati pass read the other
+    way round: for a linear dynamics with Gaussian losses the model is exact
+    and this is the posterior itself; for a nonlinear one it is the
+    Gauss-Newton (Laplace) approximation at whatever trajectory the tape was
+    linearized at. The factors are the ones the primal pass computes anyway
+    ({!backward_common}'s [quu_chol] and [feedback], {!backward_lin}'s
+    feedforward gain), so a caller that already ran them pays one extra scan.
+
+    Nothing here is stopped: a caller that wants the Gaussian to be a value of
+    the local model — as a variational covariance is — detaches the record's
+    tensors and the one scale it passes to {!val-sample} and {!val-log_prob}.
+    The tape's nominal is what carries the gradient in that case. *)
+module Laplace : sig
+  type ('a, 'b, 'd) t =
+    { nominal : ('a, 'b, 'd) solution
+      (** the trajectory the tape was linearized at: [(x̄, ū)]. The Gaussian's
+          mean is {!val-mean}'s, which is this plus the policy's rollout. *)
+    ; feedback : ('a, 'b, 'd) Nx.t (** [K_k], [horizon; m; n] *)
+    ; feedforward : ('a, 'b, 'd) Nx.t (** [k_k], [horizon; m] *)
+    ; quu_chol : ('a, 'b, 'd) Nx.t
+      (** [U_k], the upper Cholesky factor of [Q_uu,k], [horizon; m; m] *)
+    ; initial : ('a, 'b, 'd) initial option
+      (** the initial state's block, [None] when it is fixed to the nominal's:
+          then there is no factor over [x₀] and every draw starts there *)
+    }
+
+  (** [make ?mu tape ~nominal ~prior] is the local model's Gaussian when the
+      initial state is a latent. [prior] is [(mean, precision)] of a Gaussian
+      on the absolute state when the caller holds one outside the tape, and
+      [None] when the tape's own step-0 cost already holds it — which is how a
+      solve with a free initial state prices it.
+
+      The undamped [Q_uu] must be positive definite: where the model's
+      curvature leaves it indefinite its factor is NaN and so is every draw and
+      every density, as in {!val-initial_condition}. [mu] is the escape hatch
+      — it damps the pass as a solve's regularization does, so the Gaussian is
+      then the damped model's, a different (stricter) model rather than an
+      approximation to the undamped one. The undamped model is the default.
+
+      The tape must be the linearization at [nominal], and neither carries
+      batch axes: this is one trajectory's Gaussian. *)
+  val make
+    :  ?mu:(float, 'b, 'd) Nx.t
+    -> (float, 'b, 'd) tape
+    -> nominal:(float, 'b, 'd) solution
+    -> prior:((float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t) option
+    -> (float, 'b, 'd) t
+
+  (** [make_fixed ?mu tape ~nominal] is the same Gaussian when the initial
+      state is not a latent: it is the nominal's, there is no factor over
+      [x₀], and the Gaussian is over the controls alone. *)
+  val make_fixed
+    :  ?mu:(float, 'b, 'd) Nx.t
+    -> (float, 'b, 'd) tape
+    -> nominal:(float, 'b, 'd) solution
+    -> (float, 'b, 'd) t
+
+  (** [mean ~tape t] is the Gaussian's mean: the local model's minimizer, which
+      is the control law's rollout from the initial state's mean (or from the
+      nominal's initial state when that one is fixed). One scan; the same
+      [tape] the Gaussian was built from. *)
+  val mean : tape:(float, 'b, 'd) tape -> (float, 'b, 'd) t -> (float, 'b, 'd) solution
+
+  (** [sample ~tape t ~log_scale ~key ~n_samples] draws from the Gaussian with
+      every covariance scaled by [exp (2 · log_scale)]: the innovations
+      [(Δx₀, Δw_k)] are drawn independently with covariances
+      [(e^{2s} P⁻¹, e^{2s} Q_uu,k⁻¹)] and the linear response to them is rolled
+      out, so a draw is
+
+      {[
+        x₀ = x₀⋆ + e^s U_P⁻¹ ξ₀,  u_k = u⋆_k + k_k + K_k δx_k + e^s U_k⁻¹ ξ_k
+      ]}
+
+      with [δx] the linearized dynamics' response. [s = 0] is the Laplace
+      approximation; one scalar for every block keeps the family stationary in
+      the horizon, which is the one parameter worth learning — a shape the
+      local model gets wrong can be widened or narrowed without giving [q] a
+      covariance per step.
+
+      The result is a {!solution} with a sample axis between the horizon and
+      the dimensions: [xs] is [[horizon + 1; n_samples; n]] and [us]
+      [[horizon; n_samples; m]], so row 0 of [xs] is the batch of initial
+      states. Raises [Invalid_argument] if [n_samples] is not positive. *)
+  val sample
+    :  tape:(float, 'b, 'd) tape
+    -> (float, 'b, 'd) t
+    -> log_scale:(float, 'b, 'd) Nx.t
+    -> key:'d Nx.Rng.key
+    -> n_samples:int
+    -> (float, 'b, 'd) solution
+
+  (** [log_prob ~tape t ~log_scale ~x0 ~us] is the log density of that Gaussian
+      at [(x0, us)], summed over the latents: one value per member of a batch.
+      [x0] is [[batch…; n]] and [us] is [[horizon; batch…; m]], the shapes a
+      recognition holds its draws in; [x0] is read against the initial state's
+      mean and [us] against the nominal's controls.
+
+      The density is the innovations' — no determinant of the joint — because
+      the map between the two is triangular with a unit diagonal. Each factor
+      is scaled by [e^{-s}], which is the precision factor of [e^{2s} Σ]: the
+      scale needs no case of its own. *)
+  val log_prob
+    :  tape:(float, 'b, 'd) tape
+    -> (float, 'b, 'd) t
+    -> log_scale:(float, 'b, 'd) Nx.t
+    -> x0:(float, 'b, 'd) Nx.t
+    -> us:(float, 'b, 'd) Nx.t
+    -> (float, 'b, 'd) Nx.t
+end
+
 (** The per-step inputs of the tangent backward pass, with the horizon as their
     leading axis. A composition that streams the linearization instead of
     materializing a {!tangent} (as [Dilqr.Solver.tangent_solve] does) fills one

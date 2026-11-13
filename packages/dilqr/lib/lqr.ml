@@ -378,6 +378,304 @@ let rollout_linearized
   in
   concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] x0; dx_next ], du
 
+(* {2 The local model's Gaussian} *)
+
+let log_2pi = Float.log (2.0 *. Float.pi)
+
+(* [last_dim t] is the extent of [t]'s last axis: the dimension of the
+   distribution a row of it lives in. *)
+let last_dim t =
+  let shape = Nx.shape t in
+  shape.(Array.length shape - 1)
+
+(* [precision_logp ~upper z] is [log N (z; 0, (UᵀU)⁻¹)] summed over the last
+   axis, one value per row of [z], for [upper] the upper Cholesky factor of the
+   precision: the quadratic form is one product with the factor and the
+   determinant is the factor's diagonal. [upper] is one matrix — [d; d] — and
+   [z]'s leading axes broadcast against it. *)
+let precision_logp ~upper z =
+  let open Infix in
+  let whitened = z *@ matrix_transpose upper in
+  let quadratic = sum ~axes:[ -1 ] (whitened * whitened) in
+  let log_det = sum ~axes:[ -1 ] (log (diag upper) *$ -2.0) in
+  let normalizer = scalar_like z (Float.of_int (last_dim z) *. log_2pi) in
+  (quadratic + (log_det + normalizer)) *$ -0.5
+
+(* [rollout_controls ~tape ~x0 us] is the state path the linearized dynamics
+   reach from [x0] under the given controls: [x_0 = x0] and
+   [x_{k+1} = A_k x_k + B_k u_k], as one scan. It is {!rollout_linearized}
+   without the feedback law. [us] is [horizon; m] with any batch axes between
+   the horizon and the dimension, and [x0] carries the same ones. *)
+let rollout_controls ~(tape : ('a, 'b, 'd) tape) ~(x0 : ('a, 'b, 'd) Nx.t) us =
+  let _, xs_next =
+    Rune.scan
+      Nx.Ptree.tensor
+      Nx.Ptree.(pair (pair tensor tensor) tensor)
+      Nx.Ptree.tensor
+      (fun x ((a, b), u) ->
+         let x' = Infix.(matvec a x + matvec b u) in
+         x', x')
+      ~init:x0
+      ((tape.blocks.a, tape.blocks.b), us)
+  in
+  concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] x0; xs_next ]
+
+(* The per-step inputs of the innovation scan of {!Laplace.log_prob}: the
+   deviation of a sample's controls from the nominal, the deviation the
+   linearized dynamics reach, and the factors. Construct the structure with
+   [Nx.Ptree.instantiate (module Innovation_rows)]. *)
+module Innovation_rows = struct
+  type ('a, _) t =
+    { du : 'a (** [horizon; batch…; m] *)
+    ; dx : 'a (** [horizon; batch…; n] *)
+    ; ff : 'a (** [horizon; m] *)
+    ; fb : 'a (** [horizon; m; n] *)
+    ; chol : 'a (** [horizon; m; m] *)
+    }
+  [@@deriving ptree]
+end
+
+(* [row0 xs] is the state a path starts from. *)
+let row0 xs = slice [ I 0 ] xs
+
+(** The Gaussian the local model puts on its whole latent trajectory.
+
+    The local quadratic model of one linearization — the {!tape} — is
+    quadratic in [z = (x₀, u₀ … u_{K−1})] once the dynamics has been
+    eliminated, and its Hessian factorizes exactly along the horizon:
+
+    {[
+      J (z) − J (z⋆) = ½ Δx₀ᵀ P Δx₀ + Σ_k ½ ‖U_k Δw_k‖²
+      Δw_k = (u_k − ū_k) − k_k − K_k (x_k − x̄_k)
+    ]}
+
+    with [z⋆] the model's minimizer, [P] the precision of the initial state
+    ([V₀] with the prior the tape already carries, and [V₀ + Λ] for a prior
+    passed in), [U_k] the Cholesky factor of [Q_uu,k = l_uu + BᵀV B], [K] the
+    feedback gain and [k] the feedforward one, and [(x̄, ū)] the nominal
+    trajectory the tape was linearized at. The innovations [(Δx₀, Δw)] are
+    therefore independent Gaussians of covariances [(P⁻¹, Q_uu,k⁻¹)], and the
+    map between them and [(z − z⋆)] is triangular with a unit diagonal: its
+    Jacobian is one.
+
+    Three things follow, and all three are cheap — no dense covariance, no
+    inverse beyond one triangular solve per block:
+
+    - {!mean} is [z⋆]: the policy's rollout from the initial state's mean;
+    - {!sample} draws the innovations and rolls the linear response out;
+    - {!log_prob} is the innovations' density, which needs no log determinant
+      of the joint.
+
+    This is the truncation-point message of the Riccati pass read the other
+    way round: for a linear dynamics with Gaussian losses the model is exact
+    and this is the posterior itself, and for a nonlinear one it is the
+    Gauss-Newton (Laplace) approximation at whatever trajectory the tape was
+    linearized at. *)
+module Laplace = struct
+  type ('a, 'b, 'd) t =
+    { nominal : ('a, 'b, 'd) solution
+      (** the trajectory the tape was linearized at: [(x̄, ū)]. The Gaussian's
+          mean is {!mean}'s, which is this plus the policy's rollout. *)
+    ; feedback : ('a, 'b, 'd) Nx.t (** [K_k], [horizon; m; n] *)
+    ; feedforward : ('a, 'b, 'd) Nx.t (** [k_k], [horizon; m] *)
+    ; quu_chol : ('a, 'b, 'd) Nx.t
+      (** [U_k], the upper Cholesky factor of [Q_uu,k], [horizon; m; m]. The
+          undamped one: a solve's regularization is a device that finds the
+          trajectory, not part of the model whose posterior this is. *)
+    ; initial : ('a, 'b, 'd) initial option
+      (** the initial state's block, [None] when it is fixed to the nominal's:
+          then there is no factor over [x₀] and every draw starts there. *)
+    }
+
+  (* [law t] is the control law the Gaussian is centred on. *)
+  let law (t : ('a, 'b, 'd) t) : ('a, 'b, 'd) gains =
+    { feedback = t.feedback; feedforward = t.feedforward }
+
+  (** [mean ~tape t] is the Gaussian's mean: the local model's minimizer,
+      which is the control law's rollout from the initial state's mean (or
+      from the nominal's initial state when that one is fixed). One scan; the
+      same [tape] the Gaussian was built from. *)
+  let mean ~(tape : ('a, 'b, 'd) tape) (t : ('a, 'b, 'd) t) : ('a, 'b, 'd) solution =
+    let nominal_x0 = row0 t.nominal.xs in
+    let dx0 =
+      match t.initial with
+      | None -> zeros_like nominal_x0
+      | Some init -> Infix.(init.mean - nominal_x0)
+    in
+    let dxs, dus = rollout_linearized ~tape ~gains:(law t) ~x0:dx0 in
+    { xs = Infix.(t.nominal.xs + dxs); us = Infix.(t.nominal.us + dus) }
+
+  (* [build ~nominal ~law ~common ~initial] is the Gaussian of the local model,
+     linearized at [nominal], from the pass's own factors. *)
+  let build ~nominal ~(law : ('a, 'b, 'd) gains) ~(common : ('a, 'b, 'd) common) ~initial =
+    { nominal
+    ; feedback = law.feedback
+    ; feedforward = law.feedforward
+    ; quu_chol = common.quu_chol
+    ; initial
+    }
+
+  (** [make ?mu ~tape ~nominal ~prior] is the local model's Gaussian when the
+      initial state is a latent. [prior] is [(mean, precision)] of a Gaussian
+      on the absolute state when the caller holds one outside the tape, and
+      [None] when the tape's own step-0 cost already holds it — which is how a
+      solve with a free initial state prices it. [mu] damps the pass as a
+      solve's regularization does: the Gaussian is then the damped model's,
+      which is a different (stricter) model, not an approximation to the
+      undamped one, so it is the escape hatch for a model whose [Q_uu] is not
+      positive definite rather than a default. The undamped model is the
+      default.
+
+      The tape must be the linearization at [nominal], and neither carries
+      batch axes: this is one trajectory's Gaussian. *)
+  let make
+        ?mu
+        (tape : ('a, 'b, 'd) tape)
+        ~(nominal : ('a, 'b, 'd) solution)
+        ~(prior : (('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t) option)
+    =
+    let common = backward_common ?mu tape in
+    let law, _, _, value_grad = backward_lin ~common ~tape ~lin:(lin_of_tape tape) in
+    let initial =
+      initial_condition ~common ~value_grad ~nominal:(row0 nominal.xs) ~prior
+    in
+    build ~nominal ~law ~common ~initial:(Some initial)
+
+  (** [make_fixed ?mu ~tape ~nominal] is the same Gaussian when the initial
+      state is not a latent: it is the nominal's, there is no factor over
+      [x₀], and the Gaussian is over the controls alone. *)
+  let make_fixed ?mu (tape : ('a, 'b, 'd) tape) ~(nominal : ('a, 'b, 'd) solution) =
+    let common = backward_common ?mu tape in
+    let law, _, _, _ = backward_lin ~common ~tape ~lin:(lin_of_tape tape) in
+    build ~nominal ~law ~common ~initial:None
+
+  (** [sample ~tape t ~log_scale ~key ~n_samples] draws from the Gaussian with
+      every covariance scaled by [exp (2 · log_scale)]: the innovations
+      [(Δx₀, Δw_k)] are drawn independently with covariances
+      [(e^{2s} P⁻¹, e^{2s} Q_uu,k⁻¹)] and the linear response to them is
+      rolled out, so a draw is
+
+      {[
+        x₀ = x₀⋆ + e^s U_P⁻¹ ξ₀,  u_k = u⋆_k + k_k + K_k δx_k + e^s U_k⁻¹ ξ_k
+      ]}
+
+      with [δx] the linearized dynamics' response. [s = 0] is the Laplace
+      approximation; one scalar for every block keeps the family stationary in
+      the horizon, and is the one parameter worth learning — a shape that the
+      local model gets wrong can be widened or narrowed without giving [q] a
+      covariance per step.
+
+      The result is a {!solution} with a sample axis between the horizon and
+      the dimensions: [xs] is [[horizon + 1; n_samples; n]] and [us]
+      [[horizon; n_samples; m]], so row 0 of [xs] is the batch of initial
+      states. *)
+  let sample
+        ~(tape : ('a, 'b, 'd) tape)
+        (t : ('a, 'b, 'd) t)
+        ~(log_scale : ('a, 'b, 'd) Nx.t)
+        ~key
+        ~n_samples
+    : ('a, 'b, 'd) solution
+    =
+    if n_samples <= 0
+    then invalid_arg "Dilqr.Lqr.Laplace.sample: n_samples must be positive";
+    let dtype = Nx.dtype t.feedforward in
+    let at = beside t.feedforward in
+    let horizon = (Nx.shape t.feedforward).(0) in
+    let m = last_dim t.feedforward in
+    let n = last_dim t.nominal.xs in
+    let scale = exp log_scale in
+    let keys = Nx.Rng.split ~n:2 key in
+    (* One innovation per step, drawn row by row: [U_k⁻¹ ξ] is a triangular
+       solve with the draws as its columns, so the horizon is a batch axis of
+       one call. *)
+    let xi = Nx.Rng.normal_at at ~key:keys.(1) dtype [| horizon; n_samples; m |] in
+    let noise =
+      Infix.(
+        transpose
+          ~axes:[ 0; 2; 1 ]
+          (solve_triangular ~triangle:Upper t.quu_chol (transpose ~axes:[ 0; 2; 1 ] xi))
+        * scale)
+    in
+    let dx0 =
+      match t.initial with
+      | None -> zeros_at at dtype [| n_samples; n |]
+      | Some init ->
+        let xi0 = Nx.Rng.normal_at at ~key:keys.(0) dtype [| n_samples; n |] in
+        let upper = cholesky ~triangle:Upper init.precision in
+        let noise =
+          matrix_transpose (solve_triangular ~triangle:Upper upper (matrix_transpose xi0))
+        in
+        Infix.(noise * scale)
+    in
+    let mean = mean ~tape t in
+    let dxs, dus =
+      rollout_linearized
+        ~tape
+        ~gains:{ feedback = t.feedback; feedforward = noise }
+        ~x0:dx0
+    in
+    { xs = Infix.(unsqueeze ~axes:[ 1 ] mean.xs + dxs)
+    ; us = Infix.(unsqueeze ~axes:[ 1 ] mean.us + dus)
+    }
+
+  (** [log_prob ~tape t ~log_scale ~x0 ~us] is the log density of that
+      Gaussian at [(x0, us)], summed over the latents: one value per member of
+      a batch. [x0] is [[batch…; n]] and [us] is [[horizon; batch…; m]], the
+      shapes a recognition holds its draws in.
+
+      The density is the innovations' — no determinant of the joint — because
+      the map between the two is triangular with a unit diagonal. Each factor
+      is scaled by [e^{-s}], which is the precision factor of
+      [e^{2s} Σ]: the scale needs no case of its own. *)
+  let log_prob
+        ~(tape : ('a, 'b, 'd) tape)
+        (t : ('a, 'b, 'd) t)
+        ~(log_scale : ('a, 'b, 'd) Nx.t)
+        ~(x0 : ('a, 'b, 'd) Nx.t)
+        ~(us : ('a, 'b, 'd) Nx.t)
+    =
+    let horizon = (Nx.shape us).(0) in
+    let m = last_dim us in
+    (* The nominal's controls have no batch axis, so it takes one per sample
+       axis the caller's [us] has. *)
+    let batch_rank = Array.length (Nx.shape x0) - 1 in
+    let ones = Array.create ~len:batch_rank 1 in
+    let nominal_us =
+      reshape (Array.concat [ [| horizon |]; ones; [| m |] ]) t.nominal.us
+    in
+    let open Infix in
+    let du = us - nominal_us in
+    let dx0 = x0 - row0 t.nominal.xs in
+    let dxs = rollout_controls ~tape ~x0:dx0 du in
+    let dx = slice [ R (0, horizon) ] dxs in
+    let rows =
+      { Innovation_rows.du; dx; ff = t.feedforward; fb = t.feedback; chol = t.quu_chol }
+    in
+    let _, per_step =
+      Rune.scan
+        Nx.Ptree.unit
+        (Nx.Ptree.instantiate (module Innovation_rows))
+        Nx.Ptree.tensor
+        (fun () row ->
+           (* The innovation is measured from the nominal, so the feedforward
+              gain is part of it: it is what moves the mode off the nominal. *)
+           let dw = row.Innovation_rows.du - (row.ff + matvec row.fb row.dx) in
+           (), precision_logp ~upper:(row.chol * exp (log_scale *$ -1.0)) dw)
+        ~init:()
+        rows
+    in
+    let controls = sum ~axes:[ 0 ] per_step in
+    match t.initial with
+    | None -> controls
+    | Some init ->
+      let upper = cholesky ~triangle:Upper init.precision in
+      let initial =
+        precision_logp ~upper:(upper * exp (log_scale *$ -1.0)) (x0 - init.mean)
+      in
+      initial + controls
+end
+
 (* [initial_response ~common ~tape ~residual] is the trajectory perturbation a
    free initial state adds to a tangent solve: the local model's step in [x₀]
    that zeroes the leftover [residual] of the pinned system — the gradient the

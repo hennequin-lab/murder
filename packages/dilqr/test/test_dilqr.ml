@@ -1584,6 +1584,315 @@ let test_initial_condition_matches_dense () =
     reference_precision
 
 (* ──────────────────────────────────────────────────────────────────────────
+   The local model's Gaussian: the factorization the sampler and the density
+   rest on, checked against the tape's own quadratic cost. The reference is a
+   different route to the same number — the cost along an arbitrary trajectory
+   rather than the Riccati recursion — so a wrong factor, a wrong gain or a
+   missing term fails it.
+   ────────────────────────────────────────────────────────────────────────── *)
+
+let mv = Dilqr.Lqr.matvec
+
+(* [local_cost tape ~dx0 us] is the tape's quadratic cost along the trajectory
+   that starts at [dx0] under [us]: the deviation form, so the linear terms are
+   the tape's own gradients. Exactly quadratic, so nothing below depends on a
+   step size. *)
+let local_cost (tape : (float, Nx.float64_elt, Nx.host) Dilqr.Lqr.tape) ~dx0 us =
+  let horizon = (shape tape.Dilqr.Lqr.blocks.a).(0) in
+  let xs = Array.create ~len:(horizon + 1) dx0 in
+  for k = 0 to horizon - 1 do
+    xs.(k + 1)
+    <- Infix.(
+         mv (get [ k ] tape.Dilqr.Lqr.blocks.a) xs.(k)
+         + mv (get [ k ] tape.Dilqr.Lqr.blocks.b) (get [ k ] us))
+  done;
+  let total = ref 0.0 in
+  for k = 0 to horizon - 1 do
+    let x = xs.(k)
+    and u = get [ k ] us in
+    let step =
+      Infix.(
+        (sum (mv (get [ k ] tape.Dilqr.Lqr.blocks.lxx) x * x) *$ 0.5)
+        + (sum (mv (get [ k ] tape.Dilqr.Lqr.blocks.luu) u * u) *$ 0.5)
+        + sum (mv (get [ k ] tape.Dilqr.Lqr.blocks.lux) x * u)
+        + sum (get [ k ] tape.Dilqr.Lqr.blocks.lx * x)
+        + sum (get [ k ] tape.Dilqr.Lqr.blocks.lu * u))
+    in
+    total := !total +. item step
+  done;
+  let xk = xs.(horizon) in
+  !total
+  +. item
+       Infix.((sum (mv tape.Dilqr.Lqr.fxx xk * xk) *$ 0.5) + sum (tape.Dilqr.Lqr.fx * xk))
+
+(* [stacked ~x0 us] reads a trajectory as one vector: the initial state, then
+   every control, the order the joint Hessian is indexed in. *)
+let stacked ~x0 us =
+  create
+    float64
+    [| (shape x0).(0) + numel us |]
+    (Array.append (to_array x0) (to_array us))
+
+(* The joint Hessian of the local model over [(x₀, u)], by central differences
+   of its own cost. The cost is exactly quadratic, so any step is exact and the
+   step only trades round-off against the [1 / h²] amplification. *)
+let joint_hessian ~n ~m ~horizon tape =
+  let dim = n + (horizon * m) in
+  let value (z : float array) =
+    let x0 = create float64 [| n |] (Array.sub z ~pos:0 ~len:n) in
+    let us = create float64 [| horizon; m |] (Array.sub z ~pos:n ~len:(horizon * m)) in
+    local_cost tape ~dx0:x0 us
+  in
+  let h = 1e-2 in
+  let shift i j si sj =
+    Array.init dim ~f:(fun k ->
+      (if Int.equal k i then si else 0.0) +. if Int.equal k j then sj else 0.0)
+  in
+  create
+    float64
+    [| dim; dim |]
+    (Array.init (dim * dim) ~f:(fun idx ->
+       let i = idx / dim
+       and j = Int.rem idx dim in
+       (value (shift i j h h)
+        -. value (shift i j h (-.h))
+        -. (value (shift i j (-.h) h) -. value (shift i j (-.h) (-.h))))
+       /. (4.0 *. h *. h)))
+
+(* The identity the whole Gaussian rests on: around the model's minimizer the
+   cost is the value quadratic in [x₀] plus one quadratic form per step in the
+   innovation [(u_k − u⋆_k) − K_k (x_k − x⋆_k)]. *)
+let test_laplace_factorization () =
+  let n = 3
+  and m = 2
+  and horizon = 4 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let laplace = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let mode = Dilqr.Lqr.Laplace.mean ~tape laplace in
+  (* the tape's cost is in deviations from the nominal, the mode is absolute *)
+  let mode_x0 = Infix.(get [ 0 ] mode.Dilqr.Lqr.xs - get [ 0 ] nominal.Dilqr.Lqr.xs) in
+  let mode_us = Infix.(mode.Dilqr.Lqr.us - nominal.Dilqr.Lqr.us) in
+  let star = local_cost tape ~dx0:mode_x0 mode_us in
+  let precision =
+    (Option.value_exn laplace.Dilqr.Lqr.Laplace.initial).Dilqr.Lqr.precision
+  in
+  let check ~msg dx0 us =
+    let lhs = local_cost tape ~dx0 us -. star in
+    let d_x0 = Infix.(dx0 - mode_x0) in
+    let d_us = Infix.(us - mode_us) in
+    let d_xs = Array.create ~len:(horizon + 1) d_x0 in
+    for k = 0 to horizon - 1 do
+      d_xs.(k + 1)
+      <- Infix.(
+           mv (get [ k ] tape.Dilqr.Lqr.blocks.a) d_xs.(k)
+           + mv (get [ k ] tape.Dilqr.Lqr.blocks.b) (get [ k ] d_us))
+    done;
+    let rhs = ref (0.5 *. item Infix.(sum (mv precision d_x0 * d_x0))) in
+    for k = 0 to horizon - 1 do
+      let w =
+        Infix.(
+          get [ k ] d_us - mv (get [ k ] laplace.Dilqr.Lqr.Laplace.feedback) d_xs.(k))
+      in
+      let z = mv (get [ k ] laplace.Dilqr.Lqr.Laplace.quu_chol) w in
+      rhs := !rhs +. (0.5 *. item Infix.(sum (z * z)))
+    done;
+    check_close ~msg ~tol:1e-8 (scalar64 lhs) (scalar64 !rhs)
+  in
+  let draw seed shape =
+    Nx.Rng.normal_at Nx.Host.on ~key:(Nx.Rng.key seed) float64 shape
+  in
+  List.iter [ 1; 2; 3 ] ~f:(fun seed ->
+    check
+      ~msg:"the innovations reproduce the cost difference"
+      (draw seed [| n |])
+      (draw (seed + 100) [| horizon; m |]))
+
+(* The density: the innovations' product is the dense Gaussian of the joint
+   Hessian, normalisation included. The log determinant is what a wrong factor
+   or a missing block would move, so this is the test that says the density
+   integrates to one. *)
+let test_laplace_log_prob_matches_dense () =
+  let n = 2
+  and m = 1
+  and horizon = 3 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let laplace = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let mode = Dilqr.Lqr.Laplace.mean ~tape laplace in
+  let hessian = joint_hessian ~n ~m ~horizon tape in
+  let dim = n + (horizon * m) in
+  let _, log_det = Nx.slogdet float64 hessian in
+  let log_det = item log_det in
+  let check ~msg x0 us =
+    let delta =
+      Infix.(stacked ~x0 us - stacked ~x0:(get [ 0 ] mode.Dilqr.Lqr.xs) mode.Dilqr.Lqr.us)
+    in
+    let quadratic = item Infix.(sum (mv hessian delta * delta) *$ 0.5) in
+    let reference =
+      -.quadratic
+      +. (0.5 *. log_det)
+      -. (0.5 *. Float.of_int dim *. Float.log (2.0 *. Float.pi))
+    in
+    let got =
+      item (Dilqr.Lqr.Laplace.log_prob ~tape laplace ~log_scale:(scalar64 0.0) ~x0 ~us)
+    in
+    check_close ~msg ~tol:1e-6 (scalar64 got) (scalar64 reference)
+  in
+  let draw seed shape =
+    Nx.Rng.normal_at Nx.Host.on ~key:(Nx.Rng.key seed) float64 shape
+  in
+  List.iter [ 7; 8 ] ~f:(fun seed ->
+    check
+      ~msg:"the density is the dense Gaussian's"
+      (draw seed [| n |])
+      (draw (seed + 50) [| horizon; m |]))
+
+(* The sampler: the draws' mean is the mode and their covariance the joint
+   Hessian's inverse. Monte Carlo, so the tolerances are what the sample size
+   buys; the identity above is what pins the exact statement. *)
+let test_laplace_sample () =
+  let n = 2
+  and m = 1
+  and horizon = 3
+  and n_samples = 20_000 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let laplace = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let mode = Dilqr.Lqr.Laplace.mean ~tape laplace in
+  let draws =
+    Dilqr.Lqr.Laplace.sample
+      ~tape
+      laplace
+      ~log_scale:(scalar64 0.0)
+      ~key:(Nx.Rng.key 11)
+      ~n_samples
+  in
+  let dim = n + (horizon * m) in
+  let sample_x0 = get [ 0 ] draws.Dilqr.Lqr.xs in
+  let sample_us = Nx.transpose ~axes:[ 1; 0; 2 ] draws.Dilqr.Lqr.us in
+  let rows =
+    Array.init n_samples ~f:(fun i ->
+      to_array (stacked ~x0:(get [ i ] sample_x0) (get [ i ] sample_us)))
+  in
+  let zs = create float64 [| n_samples; dim |] (Array.concat (Array.to_list rows)) in
+  let centre = stacked ~x0:(get [ 0 ] mode.Dilqr.Lqr.xs) mode.Dilqr.Lqr.us in
+  let mean = Nx.mean ~axes:[ 0 ] zs in
+  let centred = Infix.(zs - reshape [| 1; dim |] mean) in
+  let covariance =
+    Infix.(matrix_transpose centred *@ centred /$ Float.of_int n_samples)
+  in
+  let expected = Nx.inv (joint_hessian ~n ~m ~horizon tape) in
+  let spread = item (Nx.sqrt (Nx.max (Nx.abs expected))) in
+  check_close
+    ~msg:"the draws' mean is the mode"
+    ~tol:(6.0 *. spread /. Float.sqrt (Float.of_int n_samples))
+    mean
+    centre;
+  check_close
+    ~msg:"the draws' covariance is the Hessian's inverse"
+    ~tol:0.06
+    covariance
+    expected
+
+(* With the initial state fixed there is no factor over [x₀]: the Gaussian is
+   over the controls alone, and it is the conditional law of the joint model
+   given that state. Its density is the joint one with the initial block's own
+   density taken out. *)
+let test_laplace_fixed_initial () =
+  let n = 2
+  and m = 1
+  and horizon = 3 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let free = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let fixed = Dilqr.Lqr.Laplace.make_fixed tape ~nominal in
+  require
+    ~msg:"a fixed initial state has no block"
+    (Option.is_none fixed.Dilqr.Lqr.Laplace.initial);
+  let x0 = get [ 0 ] nominal.Dilqr.Lqr.xs in
+  let us = Nx.Rng.normal_at Nx.Host.on ~key:(Nx.Rng.key 13) float64 [| horizon; m |] in
+  let log_prob t =
+    item (Dilqr.Lqr.Laplace.log_prob ~tape t ~log_scale:(scalar64 0.0) ~x0 ~us)
+  in
+  let initial = Option.value_exn free.Dilqr.Lqr.Laplace.initial in
+  let delta = Infix.(x0 - initial.Dilqr.Lqr.mean) in
+  let upper = cholesky ~triangle:Upper initial.Dilqr.Lqr.precision in
+  let whitened = Infix.(delta *@ matrix_transpose upper) in
+  let initial_log_prob =
+    -0.5
+    *. (item Infix.(sum (whitened * whitened))
+        -. (2.0 *. item (sum (log (diag upper))))
+        +. (Float.of_int n *. Float.log (2.0 *. Float.pi)))
+  in
+  check_close
+    ~msg:"the fixed density is the joint one without the initial block"
+    ~tol:1e-8
+    (scalar64 (log_prob fixed))
+    (scalar64 (log_prob free -. initial_log_prob));
+  let draws =
+    Dilqr.Lqr.Laplace.sample
+      ~tape
+      fixed
+      ~log_scale:(scalar64 0.0)
+      ~key:(Nx.Rng.key 14)
+      ~n_samples:4
+  in
+  check_close
+    ~msg:"every draw starts at the nominal's state"
+    ~tol:1e-12
+    (get [ 0 ] draws.Dilqr.Lqr.xs)
+    (broadcast_to [| 4; n |] x0)
+
+(* A local model whose curvature is not positive definite has no Gaussian:
+   the factor is NaN. Damping is the escape hatch — the Gaussian it gives is
+   the damped model's, and it exists where the undamped one does not. *)
+let test_laplace_damping () =
+  let n = 2
+  and m = 1
+  and horizon = 2 in
+  let i_n = eye float64 n in
+  let blocks =
+    { Dilqr.Lqr.Rows.a = broadcast_to [| horizon; n; n |] i_n
+    ; b = ones float64 [| horizon; n; m |]
+    ; lx = zeros float64 [| horizon; n |]
+    ; lu = zeros float64 [| horizon; m |]
+    ; lxx = zeros float64 [| horizon; n; n |]
+    ; luu = broadcast_to [| horizon; m; m |] Infix.(eye float64 m *$ 0.5)
+    ; lux = zeros float64 [| horizon; m; n |]
+    }
+  in
+  let tape =
+    ({ Dilqr.Lqr.blocks; fx = zeros float64 [| n |]; fxx = Infix.(i_n *$ -1.0) }
+     : (float, Nx.float64_elt, Nx.host) Dilqr.Lqr.tape)
+  in
+  (* the nominal is any trajectory the tape can be linearized at; this model's
+     own undamped solve is NaN, which is the point *)
+  let nominal : (float, Nx.float64_elt, Nx.host) Dilqr.Lqr.solution =
+    { xs = zeros float64 [| horizon + 1; n |]; us = zeros float64 [| horizon; m |] }
+  in
+  let finite t = item (all (isfinite t)) in
+  let undamped = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let initial = Option.value_exn undamped.Dilqr.Lqr.Laplace.initial in
+  require
+    ~msg:"a non-convex model has a NaN precision"
+    (not (Bool.equal (finite initial.Dilqr.Lqr.precision) true));
+  let damped = Dilqr.Lqr.Laplace.make ~mu:(scalar64 2.0) tape ~nominal ~prior:None in
+  let initial = Option.value_exn damped.Dilqr.Lqr.Laplace.initial in
+  require
+    ~msg:"damping gives a Gaussian"
+    (Bool.equal (finite initial.Dilqr.Lqr.precision) true);
+  let draws =
+    Dilqr.Lqr.Laplace.sample
+      ~tape
+      damped
+      ~log_scale:(scalar64 0.0)
+      ~key:(Nx.Rng.key 17)
+      ~n_samples:3
+  in
+  require ~msg:"and finite draws" (Bool.equal (finite draws.Dilqr.Lqr.us) true)
+
+(* ──────────────────────────────────────────────────────────────────────────
    A free initial state: the problem prices x₀ in its step-0 running loss, so
    the solve optimizes it jointly with the controls. The cost is quadratic and
    the dynamics linear, so the joint mode is exact and the derivative is the
@@ -1860,6 +2169,13 @@ let () =
        ; test "the local model is a fixed point" test_local_model_is_a_fixed_point
        ; test "value function matches dense" test_value_function_matches_dense
        ; test "initial condition matches dense" test_initial_condition_matches_dense
+       ; test "the local model's Gaussian factorizes" test_laplace_factorization
+       ; test
+           "the local model's density is the dense Gaussian's"
+           test_laplace_log_prob_matches_dense
+       ; test "the local model's sampler matches dense" test_laplace_sample
+       ; test "a fixed initial state has no block" test_laplace_fixed_initial
+       ; test "damping is the escape hatch" test_laplace_damping
        ; test "a free initial state is solved for" test_free_initial_is_solved_for
        ; test "a free initial state's derivative" test_free_initial_derivative
        ; test "a batched free initial state" test_free_initial_batched
