@@ -95,14 +95,15 @@ let step =
 
   `~infer_initial:true` makes the initial state a latent instead of fixing it
   at zero, and the model must then pass `~initial_prior`: that prior is the
-  boundary condition of the encoder's control problem, so the encoder solves
-  for `x_0` jointly with the inputs. Its mean is the joint mode of that
-  problem's local quadratic model, and its covariance is that model's Hessian
-  in `x_0` up to the scale — [Σ = exp (2 log_scale) · P⁻¹] with the Kronecker
-  covariance and the same scalar as every other block with the Laplace one.
-  All of it is taken stopped, in the draws and in the density, so the gradient
-  of the bound reaches the model through the solve's trajectory only;
-  `Recognition.Iilqr.posterior_initial` reports the initial state's pair.
+  step-0 running loss of the encoder's control problem, so the solve optimizes
+  `x_0` jointly with the inputs and one solve returns the joint mode. Its
+  covariance is the local model's Hessian in `x_0` up to the scale —
+  [Σ = exp (2 log_scale) · P⁻¹] with the Kronecker covariance and the same
+  scalar as every other block with the Laplace one. The precision is a value
+  of the local model, taken stopped in the draws and in the density; the mean
+  is the solve's own, so the bound's gradient reaches the model through the
+  solve's implicit VJP. `Recognition.Iilqr.posterior_initial` reports the
+  pair.
 - `Recognition.Lfads` — an LFADS-style recognition (Pandarinath et al.,
   2018). Bidirectional encoder RNNs infer a Gaussian posterior over the
   initial state and a second encoder–controller pair produces an

@@ -548,6 +548,7 @@ module Iilqr = struct
         (type w d l e)
         (gen : (w, d, l, e, 's) generative)
         ?(verbose = false)
+        ?(free_initial = false)
         (data : (w, 's) value)
     : (w, (w, d, l, e, 's) gparams, 's) Dilqr.Problem.t
     =
@@ -605,7 +606,7 @@ module Iilqr = struct
     ; n
     ; m
     ; horizon = t_steps
-    ; free_initial = false
+    ; free_initial
     ; verbose
     ; params = gparams_structure gen
     ; dynamics = (fun theta ~k ~x ~u -> Dynamics.dyn gen.dynamics theta.dynamics ~k ~x ~u)
@@ -667,6 +668,18 @@ module Iilqr = struct
       | Some _ -> Dilqr.Lqr.Laplace.make ?mu tape ~nominal ~prior:None
       | None -> Dilqr.Lqr.Laplace.make_fixed ?mu tape ~nominal
     in
+    (* The initial state's mean is the solve's own value of it: the local
+       model's stationarity gives the same number, and this one is the node
+       that carries the solve's gradient — the implicit VJP — rather than the
+       Cholesky factor and the Riccati recursion behind the precision. *)
+    let gaussian =
+      match gaussian.Dilqr.Lqr.Laplace.initial with
+      | None -> gaussian
+      | Some init ->
+        { gaussian with
+          Dilqr.Lqr.Laplace.initial = Some { init with Dilqr.Lqr.mean = Array.get xs 0 }
+        }
+    in
     gaussian, tape
 
   (* [solve_from problem gen gp ?u_init ?solve ~x0 data] is one encoder solve
@@ -726,63 +739,43 @@ module Iilqr = struct
         ~(params : ((w, 's) value, 's) params)
         ?u_init
         ?solve
-        ?(rounds = 2)
         (data : (w, 's) value)
     =
-    let p = problem gen data in
-    let rounds = if Option.is_none gp.initial_prior then 1 else Int.max 1 rounds in
+    let free_initial = Option.is_some gp.initial_prior in
+    let p = problem gen ~free_initial data in
     let laplace =
       match params with
       | Kron _ -> false
       | Laplace _ -> true
     in
-    let rec go i x0 =
-      let xs, us = solve_from p gen gp ?u_init ?solve ~x0 data in
-      (* The local model is built whenever something reads it: always for the
-         Laplace covariance, and for the Kronecker one exactly when the initial
-         state is a latent. *)
-      let local =
-        if laplace || Option.is_some gp.initial_prior
-        then Some (local p gp params ~xs ~us)
-        else None
-      in
-      let initial =
-        Option.bind local ~f:(fun (gaussian, _) ->
-          Option.map gaussian.Dilqr.Lqr.Laplace.initial ~f:of_dilqr)
-      in
-      let mean_x0, mean_u =
-        match laplace, local with
-        | true, Some (gaussian, tape) ->
-          let mode = Dilqr.Lqr.Laplace.mean ~tape gaussian in
-          slice [ I 0 ] mode.Dilqr.Lqr.xs, mode.Dilqr.Lqr.us
-        | _ ->
-          ( (match initial with
-             | Some init -> init.mean
-             | None -> zeros_at (beside data) gen.dtype [| gen.n |])
-          , stack ~axis:0 (Array.to_list us) )
-      in
-      let solved =
-        { mean_x0; mean_u; initial; local = (if laplace then local else None) }
-      in
-      if i <= 1
-      then solved
-      else (
-        let x0 =
-          match gp.initial_prior with
-          | None -> x0
-          | Some _ -> Rune.detach solved.mean_x0
-        in
-        go (i - 1) x0)
+    let x0 = initial_guess gen gp ~at:(beside data) in
+    let xs, us = solve_from p gen gp ?u_init ?solve ~x0 data in
+    (* The local model is built whenever something reads it: always for the
+       Laplace covariance, and for the Kronecker one exactly when the initial
+       state is a latent. *)
+    let local =
+      if laplace || free_initial then Some (local p gp params ~xs ~us) else None
     in
-    go rounds (initial_guess gen gp ~at:(beside data))
+    let initial =
+      Option.bind local ~f:(fun (gaussian, _) ->
+        Option.map gaussian.Dilqr.Lqr.Laplace.initial ~f:of_dilqr)
+    in
+    let mean_x0, mean_u =
+      match laplace, local with
+      | true, Some (gaussian, tape) ->
+        let mode = Dilqr.Lqr.Laplace.mean ~tape gaussian in
+        slice [ I 0 ] mode.Dilqr.Lqr.xs, mode.Dilqr.Lqr.us
+      | _ -> Array.get xs 0, stack ~axis:0 (Array.to_list us)
+    in
+    { mean_x0; mean_u; initial; local = (if laplace then local else None) }
 
   (** [posterior_mean gen gp ~params ?u_init ?solve data] is the mean of [q],
       of shape [[n_steps; m]] — the local model's mode with the Laplace
       covariance, and the iLQR solution with the Kronecker one. [u_init]
       ([n_steps; m], zeros when omitted) is the initial guess and carries no
       gradient: the idealized solve does not depend on it. *)
-  let posterior_mean gen gp ~params ?u_init ?solve ?rounds data =
-    let solved = solve_trial gen gp ~params ?u_init ?solve ?rounds data in
+  let posterior_mean gen gp ~params ?u_init ?solve data =
+    let solved = solve_trial gen gp ~params ?u_init ?solve data in
     solved.mean_u
 
   (** [posterior_initial gen gp ~params ?u_init ?solve data] is the Gaussian
@@ -797,8 +790,8 @@ module Iilqr = struct
       This is the diagnostic entry point as much as a component: it answers
       "what initial condition does the encoder want, given this trial", which
       is what the [u_0] channel of the fixed-zero encoder stood in for. *)
-  let posterior_initial gen gp ~params ?u_init ?solve ?rounds data =
-    let solved = solve_trial gen gp ~params ?u_init ?solve ?rounds data in
+  let posterior_initial gen gp ~params ?u_init ?solve data =
+    let solved = solve_trial gen gp ~params ?u_init ?solve data in
     solved.initial
 
   (* [kron_factors params] is the two factors of the Kronecker covariance, the
@@ -962,6 +955,13 @@ module Iilqr = struct
         "Recognition.Iilqr.laplace_log_scale: the Kronecker covariance has no Laplace \
          scale"
 
+  (* [sampling_initial init] is the Gaussian a draw comes from: the mean is the
+     solve's own value of the initial state, so it carries the gradient the
+     solve's implicit VJP gives it, and the precision is a value of the local
+     model, taken stopped as the factors are. *)
+  let sampling_initial (type w) (init : (w, 's) initial) : (w, 's) initial =
+    { mean = init.mean; precision = Rune.detach init.precision }
+
   let stopped_initial (type w) (init : (w, 's) initial) : (w, 's) initial =
     { mean = Rune.detach init.mean; precision = Rune.detach init.precision }
 
@@ -981,19 +981,20 @@ module Iilqr = struct
     | Laplace { log_scale; damping } ->
       Laplace { log_scale = Rune.detach log_scale; damping }
 
-  (* [detach_gaussian ~keep_nominal gaussian] is the local model's Gaussian
-     with every tensor detached: a value, as the Kronecker factors are, so that
-     the gradient of the bound reaches the model through the sampled latents
-     only. [keep_nominal] is what a draw keeps: the solve's trajectory carries
-     the gradient the mean of [q] must pass on, and the factors do not. *)
+  (* [detach_gaussian ~live_mean gaussian] is the local model's Gaussian with
+     its factors detached: a value, as the Kronecker factors are, so that the
+     gradient of the bound reaches the model through the sampled latents only.
+     [live_mean] is what a draw keeps live — the solve's trajectory and the
+     initial state's mean, which are the solve's own outputs and carry its
+     implicit VJP — and the density stops. *)
   let detach_gaussian
-        ~(keep_nominal : bool)
+        ~(live_mean : bool)
         (type w)
         (gaussian : (float, w, 's) Dilqr.Lqr.Laplace.t)
     : (float, w, 's) Dilqr.Lqr.Laplace.t
     =
     let nominal : (float, w, 's) Dilqr.Lqr.solution =
-      if keep_nominal
+      if live_mean
       then gaussian.Dilqr.Lqr.Laplace.nominal
       else
         { xs = Rune.detach gaussian.Dilqr.Lqr.Laplace.nominal.Dilqr.Lqr.xs
@@ -1008,7 +1009,10 @@ module Iilqr = struct
         Option.map
           gaussian.Dilqr.Lqr.Laplace.initial
           ~f:(fun (init : (float, w, 's) Dilqr.Lqr.initial) ->
-            { Dilqr.Lqr.mean = Rune.detach init.Dilqr.Lqr.mean
+            { Dilqr.Lqr.mean =
+                (if live_mean
+                 then init.Dilqr.Lqr.mean
+                 else Rune.detach init.Dilqr.Lqr.mean)
             ; precision = Rune.detach init.Dilqr.Lqr.precision
             })
     }
@@ -1038,7 +1042,7 @@ module Iilqr = struct
       let draws =
         Dilqr.Lqr.Laplace.sample
           ~tape
-          (detach_gaussian ~keep_nominal:true gaussian)
+          (detach_gaussian ~live_mean:true gaussian)
           ~log_scale
           ~key
           ~n_samples
@@ -1048,7 +1052,7 @@ module Iilqr = struct
       let log_prob =
         Dilqr.Lqr.Laplace.log_prob
           ~tape
-          (detach_gaussian ~keep_nominal:false gaussian)
+          (detach_gaussian ~live_mean:false gaussian)
           ~log_scale:(Rune.detach log_scale)
           ~x0
           ~us:u
@@ -1074,15 +1078,13 @@ module Iilqr = struct
          (* One subkey per draw group, so the initial state and the inputs are
             independent draws. *)
          let keys = Nx.Rng.split ~n:2 key in
-         (* The mean and the precision are values of the local model, not
-            functions of the parameters the bound follows: draw from them
-            stopped, as the density does, and let [log_scale] carry the
-            gradient. Following them would mean differentiating the Riccati
-            recursion behind [P], and the term that misses — the bound's
-            derivative in the distribution's own parameters — vanishes where
-            the bound is stationary in [q]. *)
+         (* The precision is a value of the local model, not a function of the
+            parameters the bound follows: draw from it stopped, as the density
+            does, and let [log_scale] carry the gradient of the block's own
+            parameters. The mean is the solve's, and reaches the model through
+            its implicit VJP. *)
          let x0 =
-           sample_initial (stopped_initial init) ~log_scale ~n_samples ~key:keys.(0)
+           sample_initial (sampling_initial init) ~log_scale ~n_samples ~key:keys.(0)
          in
          let u = sample_u gen ~space ~time ~mu:mu_u ~n_samples ~key:keys.(1) in
          let log_prob =

@@ -2166,6 +2166,42 @@ let test_initial_state_is_the_mode () =
     done
   done
 
+(* A free initial state is a solve output, so its draw carries the solve's
+   gradient: the bound's derivative in the model's parameters reaches the
+   initial state's channel, not only the inputs'. It did not while the state
+   was the fixed point of an outer loop — the draw detached its mean, and
+   `∂Σx₀/∂θ` was exactly zero. *)
+let test_initial_state_gradient () =
+  let n = 2
+  and m = 1
+  and t_steps = 3 in
+  let model, params = setup_initial ~n ~m ~t_steps ~n_output:2 () in
+  let data =
+    (Ilqr_vae.sample_generative model params ~key:(Nx.Rng.key 101)).Ilqr_vae.observations
+  in
+  let structure = M.structure model in
+  let solve = fixed 8 in
+  let key = Nx.Rng.key 102 in
+  let drawn field =
+    let g =
+      Rune.grad
+        structure
+        (fun p -> sum (field (M.infer model p ~solve ~n_samples:2 ~key data)))
+        params
+    in
+    max_abs g.M.dynamics.D.Linear.w
+  in
+  greater
+    ~msg:"the initial state's draw carries a gradient"
+    float_exact
+    ~than:1e-6
+    (drawn (fun (s : (Nx.float64_elt, Nx.host) R.posterior) -> s.R.x0));
+  greater
+    ~msg:"and so does the inputs'"
+    float_exact
+    ~than:1e-6
+    (drawn (fun (s : (Nx.float64_elt, Nx.host) R.posterior) -> s.R.u))
+
 (* The bound trains with a free initial state: the prior is a term of the ELBO
    and of the encoder's cost, and the gradient reaches both through the solve. *)
 let test_initial_state_training_smoke () =
@@ -2855,6 +2891,7 @@ let () =
        ; test "initial-state recognition" test_initial_state_recognition
        ; test "initial state is the mode" test_initial_state_is_the_mode
        ; test "initial-state training smoke" test_initial_state_training_smoke
+       ; test "the initial state's gradient" test_initial_state_gradient
        ; test "the Laplace covariance is the local model's" test_laplace_covariance
        ; test "one scalar scales every block" test_laplace_scale
        ; test "the Laplace bound has no noise" test_laplace_bound_has_no_noise

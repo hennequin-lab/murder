@@ -339,10 +339,9 @@ val gparams_structure
     {b The initial state.} With [infer_initial] (default [false]) the initial
     state is a latent and [x_0 = 0] is replaced by "x_0 is free, priced by the
     model's {!Initial} prior", which the encoder's problem then carries as its
-    step-0 running loss. The mean is not a variable of the solve: it is a
-    variational parameter whose value is the joint mode of the local quadratic
-    model, reached in a fixed number of rounds of "solve from the current
-    estimate, then take the mode the new local model implies". Its covariance
+    step-0 running loss. The solve then optimizes [x_0] jointly with the
+    inputs — {!Dilqr.Problem.t}'s [free_initial] — so one solve returns the
+    joint mode and [x_0] is a solve output like the controls. Its covariance
     is [exp (2 log_scale) · P⁻¹] with [P] the Hessian of the encoder's cost in
     [x_0], which is the exact posterior precision of a linear model and the
     Gauss-Newton one otherwise.
@@ -357,9 +356,8 @@ val gparams_structure
 
     The parameters are learned by the ELBO's gradient, and the gradient
     reaches the model's dynamics, likelihood, encoder prior and initial-state
-    prior through {!Dilqr}'s implicit VJP of the solve. Circularity is
-    confined to the rounds: [x_0] is held fixed while the solve is
-    differentiated. *)
+    prior through {!Dilqr}'s implicit VJP of the solve — the mean of [q],
+    initial state included, is what the VJP differentiates. *)
 module Iilqr : sig
   (** Which covariance [q] carries over the latents. *)
   type kind =
@@ -408,17 +406,25 @@ module Iilqr : sig
     -> (('w, 's) value, 's) params
     -> (('w, 'e) value, 'e) params
 
-  (** [problem gen ?verbose data] is the encoder's control problem for one
-      trial, as a {!Dilqr.Problem.t} whose parameters are {!type-gparams}.
-      [verbose] is the solver's, off by default. *)
+  (** [problem gen ?verbose ?free_initial data] is the encoder's control
+      problem for one trial, as a {!Dilqr.Problem.t} whose parameters are
+      {!type-gparams}. [verbose] is the solver's, off by default.
+
+      [free_initial] (default [false]) says that the step-0 running loss prices
+      the initial state, so that a solve of the problem optimizes it too. The
+      recognition's own calls pass it exactly when the model has an
+      initial-state prior — that prior is the step-0 loss — and a caller
+      assembling the problem itself must say the same thing, or the solve will
+      pin a state the model meant to infer. *)
   val problem
     :  ('w, 'd, 'l, 'e, 's) generative
     -> ?verbose:bool
+    -> ?free_initial:bool
     -> ('w, 's) value
     -> ('w, ('w, 'd, 'l, 'e, 's) gparams, 's) Dilqr.Problem.t
 
-  (** [posterior_mean gen gp ~params ?u_init ?solve ?rounds data] is the mean
-      of [q], of shape [[n_steps; m]]: the local model's mode with the Laplace
+  (** [posterior_mean gen gp ~params ?u_init ?solve data] is the mean of [q],
+      of shape [[n_steps; m]]: the local model's mode with the Laplace
       covariance, and the iLQR solution with the Kronecker one. [u_init]
       ([n_steps; m], zeros when omitted) is the initial guess and carries no
       gradient: the idealized solve does not depend on it. Differentiable
@@ -430,20 +436,19 @@ module Iilqr : sig
     -> params:(('w, 's) value, 's) params
     -> ?u_init:('w, 's) value
     -> ?solve:solve
-    -> ?rounds:int
     -> ('w, 's) value
     -> ('w, 's) value
 
-  (** [posterior_initial gen gp ~params ?u_init ?solve ?rounds data] is the
-      Gaussian the local quadratic model implies for the initial state — the
-      mean and the precision of it — when the model has an initial-state
-      prior, and [None] when it fixes [x_0 = 0].
+  (** [posterior_initial gen gp ~params ?u_init ?solve data] is the Gaussian
+      the local quadratic model implies for the initial state — the mean and
+      the precision of it — when the model has an initial-state prior, and
+      [None] when it fixes [x_0 = 0].
 
       The mean is the joint mode of the encoder's cost over [x_0] and the
-      inputs, i.e. the value the trajectory starts from once [rounds] rounds
-      (default 2) of solve-then-replace have converged; the precision is the
-      same cost's Hessian in [x_0], so its inverse is the covariance the
-      analogous linear model's posterior would have, up to [exp (2 log_scale)].
+      inputs, which the solve returns because that cost prices [x_0]; the
+      precision is the same cost's Hessian in [x_0], so its inverse is the
+      covariance the analogous linear model's posterior would have, up to
+      [exp (2 log_scale)].
 
       This is the diagnostic entry point as much as a component: it answers
       "what initial condition does the encoder want, given this trial", which
@@ -454,7 +459,6 @@ module Iilqr : sig
     -> params:(('w, 's) value, 's) params
     -> ?u_init:('w, 's) value
     -> ?solve:solve
-    -> ?rounds:int
     -> ('w, 's) value
     -> ('w, 's) initial option
 

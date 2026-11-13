@@ -157,6 +157,14 @@ changes do not need an entry.
 - `Recognition.Iilqr.posterior_mean` and `posterior_initial` take `~params`:
   with the local model's covariance the mean is that model's mode rather than
   the last solve's trajectory, so what the mean is depends on the parameters.
+- A free initial state is one solve, not two: the encoder's problem sets
+  `Dilqr.Problem.t`'s `free_initial`, so `x₀` is optimized with the controls and
+  `?rounds` is gone from `Recognition.Iilqr.posterior_mean` and
+  `posterior_initial` (and from their docs). The initial state's mean is now a
+  solve output, so its draw carries the solve's implicit VJP — the bound's
+  gradient in the model's parameters no longer loses the `x₀` channel, which
+  the old fixed-point rounds detached. A trial with a free initial state costs
+  about 1.3 times one without instead of 2.7.
 - The fixed inner solve runs at most the recognition's iteration count and
   stops earlier when it has converged, so a fixed recognition is a budget
   rather than an exact count. `Recognition.fixed` takes `?conv_threshold` for
@@ -183,14 +191,12 @@ changes do not need an entry.
   `Dilqr.Problem.t`) carries the model's `initial_prior`, which is then the
   step-0 running loss of the encoder's control problem — the boundary
   condition that makes `x_0` free. The recognition's posterior over `x_0` is
-  the local model's Laplace posterior: its mean is the joint mode, reached in
-  `?rounds` rounds of solve-then-replace, and its covariance is
-  `exp (2 initial_log_scale) · P⁻¹`. Both are values of the local model, taken
-  stopped in the draws and in the density the bound differentiates, so the
-  block's one free parameter — and its one gradient — is the log scale;
-  `Recognition.Iilqr.posterior_initial` reports the pair. A
-  model with such a recognition must pass `~initial_prior`; one with the
-  fixed-zero recognition must not, as before.
+  the local model's Laplace posterior: its mean is the joint mode, which the
+  solve returns, and its covariance is `exp (2 initial_log_scale) · P⁻¹`.
+  The precision is a value of the local model, taken stopped in the draws and
+  in the density the bound differentiates; `Recognition.Iilqr.posterior_initial`
+  reports the pair. A model with such a recognition must pass
+  `~initial_prior`; one with the fixed-zero recognition must not, as before.
 - `Elbo.batch_loss_fixed` is gone: `Elbo.loss_fixed` already takes a tensor mini-batch, and the two names differed by a rank check and documentation only.
 - `Recognition.solve` selects the iLQR inner solver: `Recognition.adaptive` and
   `Recognition.fixed` replace the `?iters` argument of every recognition call,
