@@ -249,14 +249,23 @@ primitive for every contact against every geom is the part that scales worst
 
 The honest difficulty: it makes collision a function of `(qpos, qvel)` rather
 than `qpos` alone, which is a structural change to `Forward`'s stage boundary,
-and the port is already 50–2000× slower than the C engine with collision and
-the solver's fixed schedule as the two costs (`doc/perf.md` §3–§4). A swept
-filter that costs +20% of collision on a contact-rich model, to buy a timestep
-2–3× larger, is a good trade; the same filter on top of a 64-round solve that
-was never needed is not. **So: priced, not scheduled.** It goes on the list
-after the solver schedule stops being fixed, and it is worth doing on the
-primitive pairs first (plane, sphere, capsule, box, cylinder) where distances
-are analytic, with the convex path left to M8.
+and the port is 50-700× slower than the C engine with collision and the row
+buffer as the two remaining costs (`doc/perf.md` §2–§4). A swept filter that
+costs +20% of collision on a contact-rich model, to buy a timestep 2-3× larger,
+is a good trade on that balance; the same filter on top of a solve that ran
+rounds it never needed was not.
+
+**The gate is cleared.** This item was gated on the row solve stopping on its
+own KKT condition instead of running a fixed schedule, because until then the
+engine's cost was rounds that no problem asked for. That landed (`doc/perf.md`
+§3): the loop is a `Rune.iterate` whose carry holds the residual, the compiled
+step is 9-14x faster on `boxes2`, `hopper` and `walker`, the answer agrees with
+the fixed schedule's to 2.2e-12 relative over the recorded corpus, and `iters`
+no longer changes a result.
+So P5 below is no longer blocked, and the order of work is a choice rather than
+a consequence: it is worth doing on the primitive pairs first (plane, sphere,
+capsule, box, cylinder) where distances are analytic, with the convex path left
+to M8.
 
 ### 4.4 RK4, when RK4 lands (item 5)
 
@@ -310,7 +319,7 @@ Recorded here because the audit is the only place they have been written down.
 | `jnt_stiffnesspoly`, `dof_dampingpoly`, `tendon_*poly`, `actuator_dampingpoly` exist in 3.17 (`<joint stiffness="a b c">` takes 1 + `mjNPOLY` values) and `tools/mjcb.py` writes only the linear coefficient | a model with a quadratic or cubic spring or damper is **silently** simulated linear. The same silent-drop risk applies to the tendon and actuator variants | carry the poly arrays in `.mjcb` and add them to `Passive`/`dof_damping`, or reject nonzero coefficients at load the way unsupported pairs are rejected |
 | `README.md` says v1 has "Euler, RK4 and implicit integrators" | the loader rejects both `RK4` and `implicit` (`lib/topo.mli`: Euler and `Implicit_fast`); `MILESTONES.md` §11 does not list them as omissions | correct the README, and add the two rows to the omissions table |
 | `lib/collision.mli` says "v1 computes plane-sphere, plane-capsule, sphere-sphere and sphere-capsule" | `Collision.supported` has ten pairs including `Box, Box`, `Plane, Cylinder` and `Sphere, Cylinder`, and `test_contact.ml` exercises them | correct the doc comment |
-| `MILESTONES.md` §11 lists continuous collision as "never" | 4.0 ships a cheap form (§4.3) and the row no longer states the cost of omitting it | change the row to "not in v1; priced in `doc/mujoco-4.0.md` §4.3" |
+| `MILESTONES.md` §11 lists continuous collision as "never" | 4.0 ships a cheap form (§4.3), and its gate — the fixed solver schedule — is now gone | change the row to "not in v1; priced in `doc/mujoco-4.0.md` §4.3, unblocked" |
 | `test/fixtures/cyl.xml` is rank-deficient (§2.2) | the cylinder path is only covered where it cannot change: frictionless, gravity-free, zero Jacobian | add a `condim="6"`, gravity-on cylinder fixture; keep `cyl` for the contact geometry it does test |
 
 ## 7. Plan
@@ -388,11 +397,12 @@ Replace §2.2's fixture gap: a cylinder with gravity, `condim="6"`, at least one
 translational dof, recorded under 4.0.1, checked against `contact_*` and
 `efc_force`. This is the only item that tests something 4.0 actually changed.
 
-### P5 — Speculative contacts (3 weeks, gated)
+### P5 — Speculative contacts (3 weeks, unblocked)
 
-**Gate:** not before the solver schedule stops being a fixed 64 rounds
-(`doc/perf.md` §3), because the feature's value is a larger timestep and the
-engine's cost is a fixed schedule. Order within the milestone:
+**Gate: cleared** — the row solve stopped on its KKT condition
+(`doc/perf.md` §3), which was the condition this item was waiting on, so the
+feature's value is no longer offset by a fixed schedule. Order within the
+milestone:
 
 1. Distance queries for the ten supported primitive pairs, and a distance form
    of `Gjk` (witness points, normal, no EPA).

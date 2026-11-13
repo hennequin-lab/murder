@@ -16,7 +16,7 @@ changes do not need an entry.
     and the whole step is compared against `mj_step`. On hopper, walker and
     humanoid, 1000 of 1000 recorded states resynchronise within 1e-8, with the
     active-set rows and the contacts matching at every state; worst cases are
-    1.10e-11, 8.77e-11 and 4.35e-10.
+    8.46e-12, 3.89e-11 and 4.35e-10.
   - **Joints** hinge, slide, ball, free; **geoms** plane, sphere, capsule, box,
     cylinder; joints limits and tendon limits; equality constraints; contacts
     with per-contact `condim`, friction loss and exclusions. Models whose
@@ -32,6 +32,11 @@ changes do not need an entry.
   - **Device polymorphism**: the compiled step runs on the host or on the
     machine's AMD iGPU, bit-identically, with the same code. 4.44e-15 (hopper)
     and 3.63e-16 (walker) of relative difference over 100/50 steps.
+  - **The row solve stops when its KKT conditions hold**, so a solve costs one
+    or two rounds of its `iters × 8` budget instead of all of them: 9-14x on the
+    compiled step for `boxes2`, `hopper` and `walker`, at an answer that agrees
+    with a full-budget solve to 2.2e-12 relative. `Solver.kkt_tolerance` is the
+    threshold; `~stop:0.` restores the fixed schedule.
   - **Throughput**: one whole step over a batch, `doc/perf.md` §14. Humanoid
     (nv = 27) 124.66 us/env-step at 1024 lanes on the iGPU, 8022 env-steps/s,
     7x one MuJoCo core; hopper 5.81 us at the same batch. Single-environment

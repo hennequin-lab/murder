@@ -26,12 +26,15 @@
     Then the joint-limit rows are assembled, their impedance computed, and
     {!Solver.forward} solves for the row forces and the final [qacc]. With no
     active row it returns the smooth acceleration unchanged, as the C engine
-    does. [linear] picks how the solver inverts the reduced system. *)
+    does. [linear] picks how the solver inverts the reduced system, and [stop]
+    is {!Solver.solve_rows}'s stopping residual: [0.] runs the whole budget,
+    which is what a measurement of the stopping test compares against. *)
 val forward
   :  ?linear:Solver.linear
   -> ?iters:int
   -> ?dt:float
   -> ?rows:int
+  -> ?stop:float
   -> ('s, 'd) Model.m
   -> ('s, 'd) Data.d
   -> ('s, 'd) Data.d

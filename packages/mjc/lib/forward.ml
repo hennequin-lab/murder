@@ -9,6 +9,7 @@ let forward
       ?iters
       ?dt
       ?rows
+      ?stop
       (m : ((float, 's, d) Nx.t, d) Model.t)
       (d : ((float, 's, d) Nx.t, d) Data.t)
   : ((float, 's, d) Nx.t, d) Data.t
@@ -71,7 +72,7 @@ let forward
       let d = Constraint.tendon_limits m d in
       let d = Constraint.contact cfg m d in
       let d = Constraint.impedance ?dt cfg m d in
-      Solver.forward ?linear ?iters ?rows m d)
+      Solver.forward ?linear ?iters ?rows ?stop m d)
   in
   (* The sensor block reads the solved state, as MuJoCo's does. *)
   Sensor.forward m d

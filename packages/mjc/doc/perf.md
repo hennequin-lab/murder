@@ -8,11 +8,11 @@ warm-up then a timed loop, both engines starting from the same state.
 compiled physics engine on a GPU), what it gave up for it, and which of its
 answers we should and should not copy.*
 
-**The headline, said plainly:** `mjc` is between fifty and two thousand times
+**The headline, said plainly:** `mjc` is between fifty and seven hundred times
 slower per step than MuJoCo on these models, and the gap is not in the physics
 — the rows, contact sets and trajectories agree to 1e-10 or better — but in how
 much tensor work a step does, almost all of it fixed-cost and most of it
-solver schedule. Sections 3 and 4 size that.
+collision and the row buffer. Sections 3 and 4 size that.
 
 ## 1. Method
 
@@ -43,55 +43,93 @@ Per step, microseconds. `compiled` is `Step.compile` + `Step.run`; `eager` is
 
 | model | nv | rows | nefcmax | dt | mjc eager | mjc compiled | mjc per env (vmap 8) | MuJoCo `mj_step` | compiled / MuJoCo |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| pendulum | 1 | 0 | 4 | 0.001 | 474 us | **54 us** | 12 us | **1 us** | 54x |
-| chain6 | 6 | 0 | 48 | 0.001 | 9195 us | **4856 us** | 9941 us | **3 us** | 1619x |
-| boxes2 | 30 | 16 | 176 | 0.002 | 38173 us | **152877 us** | 87737 us | **11 us** | 13898x |
-| hopper | 7 | 1 | 64 | 0.005 | 10320 us | **10151 us** | 7882 us | **5 us** | 2030x |
-| walker | 9 | 0 | 76 | 0.0025 | 9242 us | **9060 us** | 20225 us | **5 us** | 1812x |
+| pendulum | 1 | 0 | 4 | 0.001 | 487 us | **54 us** | 10 us | **1 us** | 54x |
+| chain6 | 6 | 0 | 48 | 0.001 | 3204 us | **219 us** | 170 us | **3 us** | 73x |
+| boxes2 | 30 | 16 | 176 | 0.002 | 13772 us | **7320 us** | 1979 us | **11 us** | 665x |
+| hopper | 7 | 1 | 64 | 0.005 | 3590 us | **625 us** | 248 us | **5 us** | 125x |
+| walker | 9 | 0 | 76 | 0.0025 | 3991 us | **561 us** | 414 us | **5 us** | 112x |
+
+Measured after the row solve began stopping on its KKT condition (§3). Three of
+the five `mjc` rows are nine to fourteen times lower than the ones this table
+carried before and two do not move, because at this state `pendulum` and
+`chain6` have no rows to solve; the C column is unchanged, because nothing in
+this engine touches MuJoCo.
 
 Three things in that table are facts about this engine rather than about the
 physics, and each is worth its own measurement before anyone plans work:
 
 - **`pendulum` is fast and everything with geometry is not.** One hinge, no
   rows, 54 us compiled — the per-step floor of the library, within 54× of C.
-  Every model with capsules or boxes is a thousand times off, which says the
-  cost is in collision and the solver, not in the integrator.
-- **`boxes2`'s compiled step is *slower* than its eager one** (153 ms against
-  38 ms). The box-box tensor path is evaluated for every candidate pair and
-  the compiler has made it worse, not better. This is the one number on the
-  sheet that looks like a defect rather than a cost.
-- **Batching pays on `pendulum` and loses on everything else.** Per
-  environment `pendulum` is 4.5x cheaper batched (12 us against 54 us) and
-  `walker` is 2.2x dearer (20 ms against 9 ms). Section 5 shows why: it is the
-  batched factorisation, and the two sizes that decide it are on this table.
+  Every model with capsules or boxes is 70-700× off, which says the cost is in
+  collision, not in the integrator.
+- **Batching pays everywhere.** Per environment, eight lanes are 1.3× cheaper
+  than one lane on `chain6` and 5.4× on `pendulum`, where the previous
+  recording of this table had `walker` 2.2× *dearer* batched than single.
+  Section 5 had the mechanism right — the batched factorisation stops paying
+  past about forty rows — and §3 removed most of it by removing the rounds that
+  paid it.
+- **`boxes2` is the outlier now.** 7.3 ms compiled for five boxes, where
+  `hopper` is 0.6 ms for seven bodies. Its cost is the box-box manifold over
+  every candidate pair, which §3 does not touch; it is the largest single entry
+  left in the table.
 
-## 3. Where the time goes: the solver's schedule
+## 3. Where the time went: the solver's schedule, and its end
 
-The row solve runs a **fixed** schedule: `max_iterations = 8` outer passes of
-`inner_rounds = 8` active-set rounds each, as one `Rune.scan` — 64 rounds per
-solve whether the problem needs one or sixty. The measured cost of that
-schedule, by timing the same forward pass at `iters = 1` and at `iters = 8`:
+Until this section was acted on, the row solve ran a **fixed** schedule:
+`iters x inner_rounds` active-set rounds as one `Rune.scan` — 64 rounds per
+solve when `max_iterations` was 8, 32 after it was cut to 4 — whether the
+problem needed one or sixty. Timing the same forward pass at `iters = 1` and at
+`iters = 8` said a third to a half of a step was rounds that were never needed
+(`boxes2` 55%, `walker` 47%, `hopper` 37%), and the solver's own measurement
+(`bench/spike_solver_iter.ml`, `doc/grad-report.md`) said the corpus models
+settle in **one iteration**, two for `looped` and `blocks`.
 
-| model | forward, iters 1 | forward, iters 8 | share the schedule costs |
-| --- | ---: | ---: | ---: |
-| pendulum | 447 us | 448 us | 0% |
-| chain6 | 6041 us | 9181 us | 34% |
-| hopper | 6775 us | 10711 us | 37% |
-| walker | 5130 us | 9709 us | 47% |
-| boxes2 | 58498 us | 130735 us | 55% |
+The loop now stops when the KKT conditions of the box-constrained quadratic
+hold. `Solver.iterate` is a `Rune.iterate` whose carry holds the residual, and
+the residual is measured against the driving term's magnitude, so the threshold
+is dimensionless; the test is on the gradient rather than on the cost, because
+a blocked round makes no progress and is not a converged one. `iters` stays as
+a *budget* — a loop has to terminate — and `Solver.kkt_tolerance` is the
+threshold.
 
-So a third to a half of a step is rounds that were never needed. The solver's
-own measurement (`bench/spike_solver_iter.ml`, `doc/grad-report.md`) says the
-corpus models settle in **one iteration**, two for `looped` and `blocks`. The
-schedule is 64 rounds against a need of 2–16 depending on the model and its
-`iters` option — the worst kind of waste, a fixed cost for a variable job.
+What it costs and what it buys, from `bench/spike_stop.ml` and `perf.exe` on
+the same machine and the same state:
 
-The scan made this worse before it made anything else better: it exists
-because the *unrolled* loop made compile time grow with the budget (four
-rounds: 8 s, eight rounds: nearly seven minutes), so the budget had to be
-small. The scan bought a flat compile cost and an exact budget, and the price
-is that run time is now proportional to the schedule — which is only
-affordable if the schedule stops early.
+| model | forward, iters 1 | forward, iters 8 | compiled before | compiled after | eager before | eager after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| pendulum | 464 us | 465 us | 54 us | 54 us | 508 us | 487 us |
+| chain6 | 3165 us | 3126 us | 218 us | 219 us | 3199 us | 3204 us |
+| boxes2 | 12952 us | 12869 us | 104042 us | **7320 us** | 47205 us | 13772 us |
+| hopper | 3455 us | 3347 us | 5810 us | **625 us** | 5308 us | 3590 us |
+| walker | 3785 us | 3727 us | 5162 us | **561 us** | 5938 us | 3991 us |
+
+Two of those columns say the whole thing: `iters` no longer changes the forward
+pass (1 and 8 agree to within noise), and the compiled step is 9-14x faster on
+the three models whose rows needed work. `boxes2`, whose compiled step was
+*slower* than its eager one in the previous recording of §2, is 14x faster and
+is now the faster of the two compositions. `pendulum` and `chain6` have no rows
+at this state and do not move.
+
+What it does not cost: **the answer**. The round solves its free block exactly,
+so at the correct working set the next round's step is zero and the iterate is
+already the answer. On every corpus model's reached state, every threshold from
+`1e-8` down to `1e-14` returns the fixed schedule's forces to 2.3e-16 relative
+at worst and its accelerations to 2.2e-12, over the 160 recorded states of the five models it checks
+— four orders inside the 1e-8 step gate — and the reached states
+`bench/spike_stop.ml` uses differ by nothing at all. The
+constraint and dynamics parity suites pass at every threshold, and the slow gate
+still reads 1000/1000 within 1e-8 with the shadowing horizons unchanged (878,
+507, 266) and worst cases 8.46e-12 (hopper), 3.89e-11 (walker) and 4.35e-10
+(humanoid) — a thousand-step trajectory whose worst state moved in its last three
+digits, which is what a 1e-16 difference per step buys and costs.
+Compile time is unchanged as well: `perf.exe`'s first-call column reads
+0.07-0.98 s both ways.
+
+The scan existed because an *unrolled* loop made compile time grow with the
+budget (four rounds: 8 s, eight rounds: nearly seven minutes) and a data-
+dependent exit was not available to it. `Rune.iterate` traces its body once and
+compiles the stop as part of the loop, so the budget stays flat in the compile
+and stops being flat in the run.
 
 ## 4. Where the rest of it goes
 
@@ -108,10 +146,12 @@ Not yet measured to the level of section 3; named with what is known.
   a model whose geoms can touch *traces* for minutes, because each candidate
   walks its dof chain with one traced `set` per degree of freedom.
 - **A fixed-size row buffer.** The solver factorises an `[nefcmax; nefcmax]`
-  matrix every round, and `nefcmax` is a per-model bound rather than the
-  number of rows this step produced. A step with zero rows still pays the
-  whole schedule: `chain6` and `walker` show `rows = 0` at the reference pose
-  and still cost 4.8 and 9 ms.
+  matrix in each round it runs, and `nefcmax` is a per-model bound rather than
+  the number of rows this step produced. §3 took the empty steps from 32 rounds
+  to one (`chain6` 219 us, `walker` 561 us), so what is left is the buffer: a
+  step with 2 rows and `nefcmax` 176 pays an 176² factorisation twice. Trimming
+  the factor to `nefc` is the next measurement on this list, and `boxes2`
+  (16 rows of a 176-row buffer, 7.3 ms) is what sizes it.
 - **Not measured at all:** the humanoid. `perf.exe humanoid` did not finish
   inside a 55-minute budget at these step costs (≈10 ms/step × 550 steps ×
   8 vmap lanes, plus 200 forward passes at `iters = 8`), so it is left out
@@ -125,7 +165,7 @@ the answer decides whether the loss is structural or fixable. The guess is that
 `Rune.vmap` over a `Rune.scan` unrolls the loop per lane, so batching a solver
 would multiply its rounds by the lane count.
 
-**It does not unroll.** `Rune.scan` lowers to a real loop (`Ops.range` with
+**It does not unroll.** `Rune.scan` and `Rune.iterate` lower to a real loop (`Ops.range` with
 carried buffers), and a map around it keeps one loop whose buffers carry a lane
 axis. A loop of 64 cheap steps costs 137-154 us on one lane and 166-191 us for
 eight: **0.13-0.17x per lane**, six times cheaper to batch than to repeat, and
@@ -137,13 +177,17 @@ about 0.03 (`bench/spike_batch.exe`):
 
 | model | `nefcmax` | solve stage | whole step, interpreted | whole step, compiled |
 | --- | ---: | ---: | ---: | ---: |
-| pendulum | 4 | **0.18x** | **0.33x** | **0.20x** |
-| chain6 | 48 | 0.88x | **0.55x** | **2.02x** |
-| walker | 76 | **2.51x** | 1.55x | **2.24x** |
+| pendulum | 4 | 1.00x | 0.33x | 0.31x |
+| chain6 | 48 | 0.98x | 0.42x | 0.87x |
+| walker | 76 | **2.29x** | 0.52x | 0.73x |
 
-Every other stage batches well and consistently: kinematics 0.31-0.37x, mass
-0.36-0.37x, contacts 0.30-0.33x, passive and bias 0.30-0.40x per lane. The
-solver is the only stage that does not, and it is 40-60% of the step.
+Every other stage batches well and consistently: kinematics 0.33-0.37x, mass
+0.36-0.44x, contacts 0.23-0.38x, passive and bias 0.39-0.40x per lane. The
+solver is the only stage that does not, and it used to be 40-60% of the step.
+These are the numbers after §3: the solve now runs one or two rounds instead
+of 32, so its per-lane ratio stopped mattering much and the whole-step column
+improved to 0.7-0.9x per lane. The ratios that follow are about a single round
+and are unchanged by it.
 
 Two separate effects are visible in that table, and the second one is the
 surprise:
@@ -155,19 +199,22 @@ surprise:
   at every size. So a solver round, which is a small matmul and a Cholesky on
   an `[nefcmax; nefcmax]` matrix, inherits that cliff exactly where the corpus
   models sit (48, 64, 76, 176, 202).
-- **Compiling the batched step is much worse than interpreting it.**
+- **Compiling the batched step is worse than interpreting it.**
   `Rune.vmap f` and `Rune.vmap (Rune.jit f)` are the same program when `f` is a
   small loop (measured equal to the microsecond), but not when `f` is the
-  engine's step: on `chain6` the interpreted batched step is **0.55x** per lane
-  and the compiled one **2.02x** — the compiled form is 3.7x slower per lane
-  than the form the jit is supposed to improve. `perf.exe`'s per-env column
-  measures the compiled form, which is why section 2's batching numbers look
-  uniformly bad. They are the numbers for the worst of the two compositions.
+  engine's step: on `chain6` the interpreted batched step is 0.42x per lane and
+  the compiled one 0.87x, on `walker` 0.52x and 0.73x — the compiled form is
+  about twice as slow per lane as the form the jit is supposed to improve.
+  `perf.exe`'s per-env column measures the compiled form, so section 2's
+  batching numbers are the numbers for the worse of the two compositions.
 
-So: batching is not at odds with the scan, it is at odds with (a) a
+So: batching is not at odds with the loop, it is at odds with (a) a
 factorisation whose batched kernels stop paying at our buffer sizes and (b) a
 jit codegen path that does worse on a batched step than the interpreter does.
 The first is ours to fix; the second should be reported and possibly avoided.
+After §3 neither costs much on the corpus — the whole step batches at 0.7-0.9x
+per lane — so the pressure is off both, and the batched factorisation matters
+again only if a model's row buffer is large and its rows are many.
 
 ### What happened when it was built
 
@@ -218,57 +265,51 @@ None of these changes a physics result; the G4 parity tests
 (`test_rows_of`, `g4.exe`) are the guard, and they must stay at 1e-12 / 1e-8
 across all of them.
 
-1. **Stop the schedule when the KKT test holds.** `Rune.iterate` is exactly
-   this: the body is traced once like `scan`'s, and the loop runs until a
-   traced predicate says the solve is done. Needs a scalar KKT residual to
-   test — the maximum absolute gradient on free rows and the worst inward
-   gradient at a bound are both reductions the solver already computes
-   pieces of. Expected: removes most of the 34–55% in section 3, because the
-   measured need is 1–2 outer passes. Check: `g4.exe` unchanged to 1e-8,
-   `u/i` in `bench_grad` unchanged, `perf.exe` before/after.
-2. **Skip the solve when there is nothing to solve.** `nefc = 0` is a scalar
-   the step knows; a `Rune.switch` around the schedule would make a
-   contact-free pose free. `chain6` and `walker` sit at `rows = 0` at the
-   reference pose and pay the full 64 rounds. Expected: those two models drop
-   to the non-constraint floor (tens of microseconds to low hundreds).
-   Check: same as above, plus a test that a model whose rows appear later in
-   a run still solves.
+1. **Stop the schedule when the KKT test holds.** *Done, §3.* The loop is a
+   `Rune.iterate` whose carry holds the residual; `iters` is a budget and
+   `Solver.kkt_tolerance` is the threshold. The compiled step is 9-14x faster on
+   the three models whose rows needed work, the answers are the certified
+   iterate rather than a step past it, and `iters` no longer changes a result.
+   `doc/mujoco-4.0.md` §4.3 had this as the gate on speculative contacts; it is
+   cleared.
+2. **Skip the solve when there is nothing to solve.** Largely absorbed by item
+   1: a step with no rows now pays one round rather than 32 (`chain6` 219 us,
+   `walker` 561 us at the reference pose). What is left is the `Rune.switch`
+   that would remove that one round too; on the evidence it is worth a few tens
+   of microseconds and not a milestone.
 3. **Make the row buffer follow the rows.** Section 5 puts a number on this:
    the solver's matrix is `[nefcmax; nefcmax]` (4 for `pendulum`, 48 for
-   `chain6`, 76 for `walker`, 202 for `humanoid`) while a step usually has
-   under sixteen rows, and the batched factorisation stops paying at 48. Sizing
-   the solve to the live rows — host-known in the eager path, bucketed and
-   padded in the compiled one — moves most steps under that cliff and shrinks
-   every round as well.
-
-4. **Fix `boxes2`.** 153 ms compiled against 38 ms eager is a defect, not a
-   cost: find what the compiler did to the box-box path, then reduce the work
-   to the pairs that can actually touch (the broadphase result is already a
-   host-known set at these sizes). This is the M7 box-box item; the target is
-   "no worse than the capsule path per body", i.e. single-digit milliseconds.
+   `chain6`, 76 for `walker`, 176 for `boxes2`) while a step usually has under
+   sixteen rows, and it is now factored once or twice per step instead of 32
+   times. That changed the value of this item: it used to shrink every one of
+   32 rounds, and now it shrinks two. `boxes2` — 16 rows of a 176-row buffer,
+   7.3 ms — is what sizes what is left.
+4. **Fix `boxes2`.** 7.3 ms compiled for five boxes against 0.6 ms for
+   `hopper`'s seven bodies is the one entry in §2 that is not a factorisation or
+   a schedule: the box-box manifold is evaluated for every candidate pair when
+   the broadphase result is already a host-known set at these sizes. This is the
+   M7 box-box item; the target is "no worse than the capsule path per body".
+   Note that the number used to be 153 ms compiled against 38 ms eager, and
+   item 1 took 14x off it, so this is now the largest *remaining* single cost
+   rather than the embarrassment it was.
 5. **Batch the solver the way the measurements say.** Two of the three levers
    are done and one is a finding:
    - *Factorisation*: `lib/linalg.ml` implements the batch-friendly factor and
      solve, `test/test_linalg.ml` pins it to the kernels at 1e-12, and
      `Solver.forward ~linear:\`Batched` selects it. It fixes the per-lane
      scaling (walker 2.56x -> 0.36x at 8 lanes) and does not yet pay in absolute
-     terms (its constant is 10x the kernel's). It becomes a win once the round
-     count is sane — the previous subsection carries the arithmetic — so it
-     lands with item 1, not before it.
+     terms (its constant is 10x the kernel's). With two rounds per solve instead
+     of 32 it is further from paying, not closer, which is worth knowing before
+     anyone spends a week on it.
    - *Composition*: for batched runs, `Rune.vmap (fun d -> Step.step m d)` beats
-     `Rune.vmap (Step.run (Step.compile m))` by 3.7x per lane on `chain6`
-     (0.55x against 2.02x). Call-site change; `bench/perf.ml` keeps both
+     `Rune.vmap (Step.run (Step.compile m))` by about 2x per lane on `chain6`
+     (0.42x against 0.87x). Call-site change; `bench/perf.ml` keeps both
      compositions honest until the jit's batched codegen is fixed.
-   - *Report the jit gap upstream*: a compiled batched step 3.7x slower per lane
-     than the interpreted one is a codegen finding, not an engine one, and
+   - *Report the jit gap upstream*: a compiled batched step twice as slow per
+     lane as the interpreted one is a codegen finding, not an engine one, and
      `spike_batch.exe` is the reproduction.
-6. **Run the solver on the rows in play, not the bound.** `nefcmax` is the
-   compile-time worst case (48-202 on these models); a typical step has fewer
-   than sixteen rows and some have none. Sizing the solve to the live rows —
-   host-known in the eager path, bucketed and padded in the compiled one —
-   would put most steps under the cliff of section 5 as well as shrinking the
-   schedule's per-round cost. This is item 2's neighbour: skipping the solve
-   when there are no rows removes the worst cases, this one shrinks the rest.
+6. **Run the solver on the rows in play, not the bound.** The same lever as item
+   3, stated twice in the first version of this sheet; read them as one item.
 7. **Eager path: only if users feel it.** The demos run at 4 steps a frame;
    the viewer is not the bottleneck. Revisit after 1–4, and only with a
    measurement showing the viewer's frame time is dominated by the step.
@@ -278,8 +319,10 @@ rows is a larger change than any of the above and should follow, not precede,
 the algorithmic wins. And nothing here should be allowed to touch the
 differentiable path's guarantees: the implicit rule freezes the KKT active
 set, so an early-exiting solver must still return the same `λ` the full
-schedule would — which is what `doc/grad-report.md`'s budget-invariance test
-checks, and it stays.
+schedule would. Item 1 kept that: the stopping test moved no force on the
+corpus by more than 2.3e-16 relative, `doc/grad-report.md`'s budget-invariance
+test still passes, and the slow gate's 1000-step figures are the ones it
+recorded.
 
 ## 7. What this sheet is not
 

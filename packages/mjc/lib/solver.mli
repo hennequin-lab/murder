@@ -66,8 +66,17 @@ type ('s, 'd) rows = (('s, 'd) Rigid.f, 'd) rows_
     leaves at [float64] on the host. *)
 val rows_ptree : unit -> (('s, 'd) rows, 'd) Nx.Ptree.t
 
-(** [solve_rows ?implicit ~linear ~iters ~boxed r] is the minimiser over [r]'s
-    box.
+(** [solve_rows ?implicit ?stop ~linear ~iters ~boxed r] is the minimiser over
+    [r]'s box.
+
+    [iters] × {!inner_rounds} is the *budget* of active-set rounds, not the work
+    done: the loop stops as soon as the KKT conditions of the box-constrained
+    quadratic hold, so a problem that settles in two rounds costs two and a
+    problem that does not costs [iters] × {!inner_rounds}. [stop] is the
+    residual at which it stops, relative to the driving term's magnitude, and
+    defaults to [1e-12]; [0.] disables the test and reproduces the fixed
+    schedule that the parity corpus was recorded against, which is what a
+    measurement of "what did stopping cost" compares against.
 
     [implicit] selects the derivative only. It defaults to [true], which
     differentiates the minimiser as the solution of its KKT conditions with the
@@ -77,6 +86,7 @@ val rows_ptree : unit -> (('s, 'd) rows, 'd) Nx.Ptree.t
     and what a caller must not use to learn anything but cost. *)
 val solve_rows
   :  ?implicit:bool
+  -> ?stop:float
   -> linear:linear
   -> iters:int
   -> boxed:bool
@@ -85,7 +95,23 @@ val solve_rows
 
 (** {1:solve Solve} *)
 
-(** [max_iterations] is the largest budget a compiled step will unroll. *)
+(** [kkt_tolerance] is the residual, relative to the driving term's magnitude
+    at which the row solve stops by default: the largest violation may be
+    [kkt_tolerance] times [1 + ‖b‖∞]. It is the residual of the KKT conditions of the
+    box-constrained quadratic — a free row whose gradient is not zero, or a row
+    held at a bound whose gradient points back into the box — not a change in
+    the cost, because a blocked round makes no progress and is not a converged
+    one. *)
+val kkt_tolerance : float
+
+(** [inner_rounds] is the number of active-set rounds per unit of [iters]: the
+    budget is [iters * inner_rounds] rounds, and the block boundary at which
+    the working set is rebuilt from the gradient falls on every [inner_rounds]
+    of them. *)
+val inner_rounds : int
+
+(** [max_iterations] is the largest budget a step will run: [iters] is capped
+    here, so the most rounds a solve can take is [max_iterations * inner_rounds]. *)
 val max_iterations : int
 
 (** [forward ?linear ?implicit ?iters m d] is [d] with [efc_force],
@@ -99,12 +125,13 @@ val max_iterations : int
     differentiates the row solve as the fixed point of its KKT conditions, so
     the gradient does not depend on [iters]; [false] differentiates through the
     iteration, which is what {!solve_rows}'s cost sheet measures the rule
-    against. *)
+    against. [stop] is {!solve_rows}'s stopping residual. *)
 val forward
   :  ?linear:linear
   -> ?implicit:bool
   -> ?iters:int
   -> ?rows:int
+  -> ?stop:float
   -> ('s, 'a) Model.m
   -> ('s, 'a) Data.d
   -> ('s, 'a) Data.d

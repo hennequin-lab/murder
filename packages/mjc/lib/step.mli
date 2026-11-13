@@ -33,11 +33,18 @@ type config
     factorisation, which is composed of matmuls and is 1.25-4.3x faster on a
     device at the corpus's row counts, at answers that differ by up to 9e-5 on
     the corpus's stiffest limit state (`doc/perf.md`). It is not the default for
-    that reason, not for speed. *)
+    that reason, not for speed.
+
+    [stop] is the row solve's stopping residual, {!Solver.kkt_tolerance} by
+    default: the solve stops when its KKT conditions hold, which on the corpus
+    is after one or two of the rounds [iters] budgets. [0.] makes it run the
+    whole budget, which is the schedule the parity corpus was recorded against
+    and what a measurement of the stopping test compares against. *)
 val config
   :  ?linear:Solver.linear
   -> ?iters:int
   -> ?rows:int
+  -> ?stop:float
   -> ('s, Nx.host) Model.m
   -> config
 

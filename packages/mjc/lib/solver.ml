@@ -113,36 +113,60 @@ let system (r : ('s, 'a) rows) (free : ('s, 'a) f) =
 
 (* The iteration itself: a Gauss-Seidel warm start when the rows are box
    constrained, then active-set Newton with a monotone line search. *)
-(* The iteration itself: a Gauss-Seidel warm start when the rows are box
-   constrained, then active-set Newton with a monotone line search. *)
-(* Active-set rounds per outer iteration. The whole search is one
-   {!Rune.scan} of [iters * inner_rounds] steps, so the traced body is ONE
-   round whatever the budgets are: the compile cost is flat in both, and
-   exactness no longer has to be traded against the compiled step's size.
-   Four rounds made a two-row limit solve at a violently accelerated humanoid
-   state stall until the next boundary rebuild; eight solve every recorded
-   state of the corpus to MuJoCo's optimum, and that is the budget.
+(* Active-set rounds per outer iteration. The search is one {!Rune.iterate} of
+   at most [iters * inner_rounds] steps, so the traced body is ONE round
+   whatever the budgets are: the compile cost is flat in both, and exactness no
+   longer has to be traded against the compiled step's size. Four rounds made a
+   two-row limit solve at a violently accelerated humanoid state stall until the
+   next boundary rebuild; eight solve every recorded state of the corpus to
+   MuJoCo's optimum, and that is the cap.
 
-   The schedule's exact fixed point is one pass shorter again, and it is per
-   model: at [iters = 3] hopper and humanoid reproduce the four-pass answer to
-   the digit (same worst error, same shadowing horizon, 1000/1000) while walker
-   has one state in a thousand that needs the fourth pass and lands 9.9e-3 away.
-   So 4 stays the default and 3 is a caller's choice, worth 1.30x on the GPU at
-   512 lanes where it holds (45.3 -> 34.9 us per env-step on hopper).
-
-   The scan does not make the round free at run time: a step costs roughly
-   what one unrolled round cost, so a longer schedule costs correspondingly
-   more, and the cost sheet in [doc/grad-report.md] carries both budgets'
-   numbers. Converging early out of the scan — {!Rune.iterate}, whose body is
-   traced once too but stops when the KKT test holds instead of after the
-   budget — is the obvious next step and belongs to M7. *)
+   The cap is a budget, not a schedule: the loop stops as soon as the KKT
+   conditions hold ([kkt_tolerance]), which on the corpus is after one or two
+   rounds. The budget still bounds the work, because a compiled program unrolls
+   nothing and a loop must terminate; the difference between the two is the
+   difference between [doc/perf.md] §3's "a third to a half of a step is rounds
+   that were never needed" and paying for the rounds taken. *)
 
 let inner_rounds = 8
 
-(** A row set and its brand, named so that the scan's traced body can annotate
+(** [kkt_tolerance] is the residual at which the iteration stops, relative to
+    the driving term's own magnitude: the largest violation may be
+    [kkt_tolerance] times [1 + ‖b‖∞]. The violation is the largest way a row
+    breaks the KKT conditions of the box-constrained quadratic — a free row
+    whose gradient is not zero, or a row held at a bound whose gradient points
+    back into the box.
+
+    The test is on the gradient, not on the cost improvement, because a blocked
+    round makes no progress and is not a converged one: it pins a row and the
+    next round rebuilds the set. A gradient residual cannot be fooled that way.
+
+    [1e-12] is a measurement. The round solves its free block exactly, so at the
+    correct working set the next round's step is zero and the iterate is already
+    the answer; the loop returns the iterate it certified, and what that costs is
+    the last digits. Over the 160 recorded states of the five models
+    `test/test_constraint.ml` checks, the forces agree with a solve that spends
+    its whole budget to [2.3e-16] relative and the accelerations to [2.2e-12] —
+    four orders inside the [1e-8] a step is gated at and six inside the [1e-6] a
+    row force is. Every threshold from [1e-8] down to [1e-14] passes the
+    constraint and dynamics parity suites. It is tight enough that the corpus
+    cannot tell the two apart, and loose enough that a badly conditioned contact
+    — where the exact solve's floor is [1e-13] to [1e-11] of [‖b‖∞] — still
+    certifies instead of paying its budget. *)
+let kkt_tolerance = 1e-12
+
+(** A row set and its brand, named so that the loop's traced body can annotate
     the values it carries: an annotation inside the body would otherwise have to
     name a concrete device. *)
-let iterate (type d) ~(linear : linear) ~iters ~boxed (r : ('s, d) rows) : ('s, d) f =
+let iterate
+      (type d)
+      ?(stop = kkt_tolerance)
+      ~(linear : linear)
+      ~iters
+      ~boxed
+      (r : ('s, d) rows)
+  : ('s, d) f
+  =
   let nb = (Nx.shape r.a).(0) in
   let at = Nx.placement r.a in
   let dt = Nx.dtype r.a in
@@ -167,120 +191,133 @@ let iterate (type d) ~(linear : linear) ~iters ~boxed (r : ('s, d) rows) : ('s, 
         lambda := Nx.set [ I i ] fresh !lambda
       done
     done);
-  (* The scan. A step's phase says which working-set rule it starts from:
-     0 is the first one, which takes every live row; 1 a later block
-     boundary, which rebuilds from the gradient; 2 a round inside a block,
-     which keeps the carried set. Whatever the phase, the same round then
-     runs. The phase vector is host-computed — it is schedule, not data. *)
+  (* The loop. A round's phase says which working-set rule it starts from: 0 is
+     the first one, which takes every live row; 1 a later block boundary, which
+     rebuilds from the gradient; 2 a round inside a block, which keeps the
+     carried set. The phase is a function of the round's index, which the loop
+     carries and the boundary rule reads — schedule, not data, but the loop has
+     no row to read it from. *)
   let length = iters * inner_rounds in
-  (* The scan folds over the rows of this array; each row is the phase of one
-     round, as a [1]-shaped value. *)
-  let phases =
-    Nx.place
-      at
-      (Nx.create
-         Nx.float64
-         [| length; 1 |]
-         (Array.init length ~f:(fun i ->
-            if Int.equal i 0
-            then 0.0
-            else if Int.equal (Int.rem i inner_rounds) 0
-            then 1.0
-            else 2.0)))
-  in
-  let mask_f = Nx.where mask (Nx.ones_like rows_idx) zero in
-  let cost v = Nx.add (Nx.mul_s (Nx.dot v (Nx.matmul r.a v)) 0.5) (Nx.dot r.b v) in
-  let round (lambda, free) (phase : d Nx.float64_t) : _ * _ =
-    (* The working set this round starts from. *)
-    let grad = Nx.add (Nx.matmul r.a lambda) r.b in
-    let at_hi = Nx.greater_equal lambda (Nx.sub r.hi (slack 1.0 r.hi)) in
-    let at_lo = Nx.less_equal lambda (Nx.add r.lo (slack 1.0 r.lo)) in
-    let at_bound =
-      Nx.logical_and (Nx.logical_not bilateral) (Nx.logical_or at_hi at_lo)
+  if Int.( <= ) length 0
+  then !lambda
+  else (
+    let period = Float.of_int inner_rounds in
+    let last = Float.of_int (length - 1) in
+    let mask_f = Nx.where mask (Nx.ones_like rows_idx) zero in
+    let cost v = Nx.add (Nx.mul_s (Nx.dot v (Nx.matmul r.a v)) 0.5) (Nx.dot r.b v) in
+    (* The scale the residual is measured against: the driving term, which is
+       the constraint-space acceleration the rows are asked to supply. Adding
+       one keeps an unloaded problem's threshold absolute rather than zero. *)
+    let threshold = Nx.mul_s (Nx.add_s (Nx.max (Nx.abs r.b)) 1.0) stop in
+    let round (lambda, free, idx, done_) =
+      (* The working set this round starts from. *)
+      let grad = Nx.add (Nx.matmul r.a lambda) r.b in
+      let at_hi = Nx.greater_equal lambda (Nx.sub r.hi (slack 1.0 r.hi)) in
+      let at_lo = Nx.less_equal lambda (Nx.add r.lo (slack 1.0 r.lo)) in
+      let at_bound =
+        Nx.logical_and (Nx.logical_not bilateral) (Nx.logical_or at_hi at_lo)
+      in
+      let wants_in =
+        Nx.logical_or
+          (Nx.logical_and at_hi (Nx.greater_s grad 0.0))
+          (Nx.logical_and at_lo (Nx.less_s grad 0.0))
+      in
+      let rebuilt =
+        Nx.logical_and
+          mask
+          (Nx.logical_or bilateral (Nx.logical_or (Nx.logical_not at_bound) wants_in))
+      in
+      let as_float x = Nx.where x (Nx.ones_like lambda) (Nx.zeros_like lambda) in
+      let is_first = Nx.equal_s idx 0.0 in
+      let at_boundary = Nx.logical_or is_first (Nx.equal_s (Nx.mod_s idx period) 0.0) in
+      let wide v = Nx.broadcast_to [| nb |] v in
+      let free_start_f =
+        Nx.where
+          (wide at_boundary)
+          (Nx.where (wide is_first) mask_f (as_float rebuilt))
+          free
+      in
+      (* free_start_f is 0/1-valued already; the round works on the boolean view. *)
+      let free_start = Nx.greater_s free_start_f 0.5 in
+      (* One round: Newton on the free block, exact ratio test, pin. *)
+      let am = system r (as_float free_start) in
+      let rhs = Nx.where free_start (Nx.neg grad) zero in
+      let step =
+        match linear with
+        | `Cholesky -> Mass.solve (Mass.factor am) rhs
+        | `Batched ->
+          (* {!Linalg.solve} takes a *factor*, not a matrix: passing it [am] solved
+             with an unfactored matrix, which is why this path diverged outright
+             (hopper reached worst 2.0 over a thousand steps) while the blocked
+             factorisation itself was as accurate as the kernel on every corpus
+             state. {!Linalg.solve_spd} factors first. *)
+          Linalg.solve_spd am (Nx.reshape [| nb; 1 |] rhs)
+          |> fun x -> Nx.reshape [| nb |] x
+        | `Cg -> cg ~iters:nb am rhs
+      in
+      let target = Nx.where (Nx.greater_s step 0.0) r.hi r.lo in
+      let pushing = Nx.logical_and (Nx.logical_not bilateral) free_start in
+      let outside =
+        Nx.logical_or
+          (Nx.logical_and (Nx.greater_s step 0.0) (Nx.greater (Nx.add lambda step) r.hi))
+          (Nx.logical_and (Nx.less_s step 0.0) (Nx.less (Nx.add lambda step) r.lo))
+      in
+      (* A row whose step is zero is not blocking anything: it is either pinned
+         or it has nothing to move. Letting it into the ratio would divide zero
+         by zero, and a NaN alpha leaves the iterate exactly where it was. *)
+      let cross = Nx.logical_and pushing outside in
+      let ratio =
+        Nx.where cross (Nx.div (Nx.sub target lambda) step) (Nx.full_like rows_idx 1.0)
+      in
+      let alpha =
+        Nx.minimum_s
+          (Nx.maximum_s (Nx.min (Nx.minimum ratio (Nx.full_like rows_idx 1.0))) 0.0)
+          1.0
+      in
+      let candidate = Nx.add lambda (Nx.mul step alpha) in
+      let candidate =
+        Nx.where bilateral candidate (Nx.minimum (Nx.maximum candidate r.lo) r.hi)
+      in
+      let lambda' = Nx.where (Nx.less (cost candidate) (cost lambda)) candidate lambda in
+      let blocked = Nx.logical_and cross (Nx.less_equal ratio (Nx.add_s alpha 1e-12)) in
+      let free' = as_float (Nx.logical_and free_start (Nx.logical_not blocked)) in
+      (* The KKT test, on the set a rebuild would take rather than on the one
+         this round works with: [rebuilt] is a function of [lambda] alone, so a
+         zero residual on it says [lambda] solves the problem, whatever set the
+         round happened to carry. *)
+      let violation =
+        Nx.where
+          rebuilt
+          (Nx.abs grad)
+          (Nx.where
+             at_lo
+             (Nx.maximum (Nx.neg grad) zero)
+             (Nx.where at_hi (Nx.maximum grad zero) (Nx.abs grad)))
+      in
+      let converged = Nx.less_equal (Nx.max violation) threshold in
+      (* A certified iterate is the answer: take no step past it. The test is on
+         the set a rebuild would take, and a round in the middle of a block
+         works with the set it carried, so its step can move a converged [lambda]
+         by a couple of rounding units. Stopping before that step is what makes
+         the loop's result the iterate it certified. *)
+      let lambda' = Nx.where converged lambda lambda' in
+      let done' =
+        Nx.logical_or done_ (Nx.logical_or converged (Nx.greater_equal_s idx last))
+      in
+      lambda', free', Nx.add_s idx 1.0, done'
     in
-    let wants_in =
-      Nx.logical_or
-        (Nx.logical_and at_hi (Nx.greater_s grad 0.0))
-        (Nx.logical_and at_lo (Nx.less_s grad 0.0))
+    let carry =
+      Nx.Ptree.quad Nx.Ptree.tensor Nx.Ptree.tensor Nx.Ptree.tensor Nx.Ptree.tensor
     in
-    let rebuilt =
-      Nx.logical_and
-        mask
-        (Nx.logical_or bilateral (Nx.logical_or (Nx.logical_not at_bound) wants_in))
+    let final_lambda, _free, _idx, _done =
+      Rune.iterate
+        carry
+        ~max:length
+        ~until:(fun (_, _, _, done_) -> done_)
+        round
+        (!lambda, mask_f, Nx.scalar_at at dt 0.0, Nx.scalar_at at Nx.bool false)
     in
-    let as_float x = Nx.where x (Nx.ones_like lambda) (Nx.zeros_like lambda) in
-    (* The schedule is arithmetic, not data: phase 0 is the first boundary —
-       which takes every live row — phase 1 a later boundary, which rebuilds
-       from the gradient, phase 2 a round inside a block, which keeps the set
-       the scan carried in. The comparisons are broadcast elementwise ops, not
-       a branch on a scalar, which a traced step cannot take. *)
-    let p = Nx.broadcast_to [| nb; 1 |] phase in
-    let is_first = Nx.equal_s p 0.0 in
-    let at_boundary = Nx.logical_or is_first (Nx.equal_s p 1.0) in
-    (* A phase is one value per step; the masks it decides cover every row. *)
-    let flag f = Nx.broadcast_to [| nb |] (Nx.slice [ I 0; A ] f) in
-    let free_start_f =
-      Nx.where
-        (flag at_boundary)
-        (Nx.where (flag is_first) mask_f (as_float rebuilt))
-        free
-    in
-    (* free_start_f is 0/1-valued already; the round works on the boolean view. *)
-    let free_start = Nx.greater_s free_start_f 0.5 in
-    (* One round: Newton on the free block, exact ratio test, pin. *)
-    let am = system r (as_float free_start) in
-    let rhs = Nx.where free_start (Nx.neg grad) zero in
-    let step =
-      match linear with
-      | `Cholesky -> Mass.solve (Mass.factor am) rhs
-      | `Batched ->
-        (* {!Linalg.solve} takes a *factor*, not a matrix: passing it [am] solved
-           with an unfactored matrix, which is why this path diverged outright
-           (hopper reached worst 2.0 over a thousand steps) while the blocked
-           factorisation itself was as accurate as the kernel on every corpus
-           state. {!Linalg.solve_spd} factors first. *)
-        Linalg.solve_spd am (Nx.reshape [| nb; 1 |] rhs) |> fun x -> Nx.reshape [| nb |] x
-      | `Cg -> cg ~iters:nb am rhs
-    in
-    let target = Nx.where (Nx.greater_s step 0.0) r.hi r.lo in
-    let pushing = Nx.logical_and (Nx.logical_not bilateral) free_start in
-    let outside =
-      Nx.logical_or
-        (Nx.logical_and (Nx.greater_s step 0.0) (Nx.greater (Nx.add lambda step) r.hi))
-        (Nx.logical_and (Nx.less_s step 0.0) (Nx.less (Nx.add lambda step) r.lo))
-    in
-    (* A row whose step is zero is not blocking anything: it is either pinned
-       or it has nothing to move. Letting it into the ratio would divide zero
-       by zero, and a NaN alpha leaves the iterate exactly where it was. *)
-    let cross = Nx.logical_and pushing outside in
-    let ratio =
-      Nx.where cross (Nx.div (Nx.sub target lambda) step) (Nx.full_like rows_idx 1.0)
-    in
-    let alpha =
-      Nx.minimum_s
-        (Nx.maximum_s (Nx.min (Nx.minimum ratio (Nx.full_like rows_idx 1.0))) 0.0)
-        1.0
-    in
-    let candidate = Nx.add lambda (Nx.mul step alpha) in
-    let candidate =
-      Nx.where bilateral candidate (Nx.minimum (Nx.maximum candidate r.lo) r.hi)
-    in
-    let lambda' = Nx.where (Nx.less (cost candidate) (cost lambda)) candidate lambda in
-    let blocked = Nx.logical_and cross (Nx.less_equal ratio (Nx.add_s alpha 1e-12)) in
-    let free' = as_float (Nx.logical_and free_start (Nx.logical_not blocked)) in
-    (lambda', free'), Nx.reshape [| 1 |] (cost lambda')
-  in
-  let carry_ptree = Nx.Ptree.pair Nx.Ptree.tensor Nx.Ptree.tensor in
-  let (final_lambda, _free), _outs =
-    Rune.scan
-      carry_ptree
-      Nx.Ptree.tensor
-      Nx.Ptree.tensor
-      round
-      ~init:(!lambda, mask_f)
-      phases
-  in
-  final_lambda
+    final_lambda)
 
 (* The implicit rule. On the free block the minimiser solves a *linear* system,
    [A_FF λ_F = -b_F], so its derivative is
@@ -321,6 +358,7 @@ let implicit_transpose (r : ('s, 'a) rows) ~lambda (w : ('s, 'a) f) : ('s, 'a) r
 let solve_rows
       (type d)
       ?(implicit = true)
+      ?stop
       ~(linear : linear)
       ~iters
       ~boxed
@@ -328,7 +366,7 @@ let solve_rows
   : ('s, d) f
   =
   if not implicit
-  then iterate ~linear ~iters ~boxed r
+  then iterate ?stop ~linear ~iters ~boxed r
   else
     (* The rule computes the value and the tangent map in one visit: the
        iteration runs once, and the [λ] the tangent is taken at is the one the
@@ -339,7 +377,7 @@ let solve_rows
       (rows_ptree ())
       Nx.Ptree.tensor
       (fun r ->
-         let lambda = iterate ~linear ~iters ~boxed r in
+         let lambda = iterate ?stop ~linear ~iters ~boxed r in
          ( lambda
          , fun d ->
              Rune.custom_transpose
@@ -360,6 +398,7 @@ let forward
       ?(implicit = true)
       ?iters
       ?rows
+      ?stop
       (m : ('s, 'a) Model.m)
       (d : ('s, 'a) Data.d)
   : ('s, 'a) Data.d
@@ -443,7 +482,7 @@ let forward
     ; lambda0 = select (take1 d.efc_force)
     }
   in
-  let lambda = solve_rows ~implicit ~linear ~iters ~boxed rows in
+  let lambda = solve_rows ~implicit ?stop ~linear ~iters ~boxed rows in
   let qfrc_constraint = Nx.matmul jt lambda in
   let qacc = Nx.add d.qacc (Mass.solve l qfrc_constraint) in
   (* Dead rows are left at zero, so a stale force from a previous step cannot

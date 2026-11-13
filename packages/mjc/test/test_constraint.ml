@@ -267,6 +267,37 @@ let test_friction_quadratic () =
   (* The corpus is only worth its name if the row really stays quadratic. *)
   equal ~msg:"no saturated row" int 0 !saturated
 
+(* The stopping test must not change the answer. The round solves its free block
+   exactly, so once the working set is the KKT set the next round's step is
+   zero and the iterate is already the answer; what the loop returns is the
+   iterate it certified. The 160 states of the five models below then agree with
+   a solve that spends its whole budget to 2.3e-16 relative on the forces and
+   2.2e-12 on the accelerations, which is four orders inside the 1e-8 gate
+   `MILESTONES.md` §9.4 sets for a step. 1e-10 leaves room for a platform whose
+   summation order differs. *)
+let test_stopping () =
+  List.iter [ "limited"; "looped"; "stiff"; "blocks"; "boxes2" ] ~f:(fun which ->
+    let m = model which in
+    let f = fixture which in
+    let qpos = tensor f "qpos"
+    and qvel = tensor f "qvel" in
+    for s = 0 to f.nstates - 1 do
+      let d0 = { (data_with_qpos m (row qpos s)) with qvel = vec1 (row qvel s) } in
+      let stopped = Mjc.Forward.forward m d0 in
+      let full = Mjc.Forward.forward ~stop:0.0 m d0 in
+      let name k = Printf.sprintf "%s state %d %s" which s k in
+      parity
+        ~tol:1e-10
+        ~name:(name "efc_force")
+        (Nx.to_array stopped.efc_force)
+        (Nx.to_array full.efc_force);
+      parity
+        ~tol:1e-10
+        ~name:(name "qacc")
+        (Nx.to_array stopped.qacc)
+        (Nx.to_array full.qacc)
+    done)
+
 let () =
   Stdlib.exit
     (run
@@ -279,4 +310,5 @@ let () =
        ; test "equality rows" test_equality
        ; test "equality trajectory" test_equality_trajectory
        ; test "friction, quadratic branch" test_friction_quadratic
+       ; test "the solve stops when it converges" test_stopping
        ])

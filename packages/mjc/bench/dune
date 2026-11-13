@@ -6,6 +6,7 @@
   spike_contact_grad
   spike_param_grad
   spike_solver_iter
+  spike_stop
   bench_grad
   spike_root
   g4lib
@@ -36,6 +37,7 @@
   spike_contact_grad
   spike_param_grad
   spike_solver_iter
+  spike_stop
   bench_grad
   spike_root
   g4lib

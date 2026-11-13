@@ -2127,3 +2127,67 @@ relative column hid it: 0.95 relative was 1.76e-04 absolute, because that model
 starts with every coordinate within a rounding of zero. Both columns are now
 printed, and the test states its claim over states where the active set is
 unambiguous — which is the only comparison that means anything.
+
+## The solver stops when it has converged
+
+The row solve ran a fixed schedule: `iters × inner_rounds` active-set rounds as
+one `Rune.scan`, 32 rounds per solve after `max_iterations` came down to 4, and
+the corpus needs one or two. `doc/perf.md` §3 measured the waste at a third to a
+half of a step and named the fix — a `Rune.iterate` whose stop is a traced
+predicate — and `doc/mujoco-4.0.md` §4.3 then made it the gate on the one
+engine feature worth taking from MuJoCo 4.0, speculative contacts. So it stopped
+being a nice-to-have.
+
+The predicate is the KKT residual of the box-constrained quadratic, not the cost
+improvement. The cost test is the obvious one and it is wrong here: a blocked
+round pins a row and makes no progress, so "the cost did not improve" fires on a
+round that has not converged, and it fired on exactly the case §3 recorded (a
+two-row limit solve stalling until the next boundary rebuild). The residual
+cannot be fooled that way: a free row must have a zero gradient and a row at a
+bound must have the gradient pointing into the bound, and a blocked round leaves
+the pinned row violating neither while the rest of the set still violates it.
+It is measured against the driving term's magnitude so the threshold is
+dimensionless, and the loop also carries its round index so the budget still
+terminates it — `Rune.iterate` raises if its stop is false after `max` steps,
+so a loop that could not certify convergence had to be able to say "budget
+spent" instead.
+
+What it costs: the last two digits, and one bug that the test for it found. The
+round solves its free block exactly, so at the correct working set the next
+round's step is zero and the iterate is already the answer. But the test is on
+the set a *rebuild* would take, and a round in the middle of a block works with
+the set it carried, so its step could move a converged `lambda` by two rounding
+units after certification. The round now returns the iterate it certified rather
+than stepping past it, and what is left is the threshold: over the 160 recorded
+states the test checks, the forces agree with a full-budget solve to 2.3e-16
+relative and the accelerations to 2.2e-12, `bench/spike_stop.ml`'s reached states
+differ by nothing, the constraint and
+dynamics parity suites pass at every threshold from `1e-8` down to `1e-14`, the
+gradient's budget-invariance test still passes, and the slow gate still reads
+1000/1000 within 1e-8 with the shadowing horizons unchanged — 878, 507 and 266 —
+at worst cases 8.46e-12 (hopper), 3.89e-11 (walker) and 4.35e-10 (humanoid).
+Those worst cases are the last three digits of a thousand-step trajectory, which
+is the honest size of the change: returning the certified iterate instead of
+stepping past it moved each of them, in this case in the better direction, and
+moved none of the horizons. Compile time is unchanged, which was the open
+question: the scan existed because an unrolled loop made compile time grow with
+the budget, and the traced stop does not count against it, so `perf.exe`'s
+first-call column reads 0.07-1.00 s either way.
+
+What it buys: the compiled step is 54 → 54 us on `pendulum`, 218 → 219 on
+`chain6` (both have no rows at the reference pose), **104042 → 7320 us** on
+`boxes2`, **5810 → 625 us** on `hopper`, **5162 → 561 us** on `walker`; eager
+is 47205 → 13772, 5308 → 3590 and 5938 → 3991. Two consequences were not the
+point and are worth more than the numbers. `iters` no longer changes a forward
+pass — 1 and 8 agree to within noise — so the budget is a cap and not a
+schedule, which is what the option always claimed to be. And batching stopped
+losing: the batched factorisation's cliff at forty rows was paid 32 times a
+step, and now it is paid twice, so eight lanes are cheaper per environment than
+one on every model in the table (1.3-5.4x) where `walker` used to be 2.2x
+dearer. `boxes2`'s compiled step, the one entry that "looked like a defect
+rather than a cost" at 153 ms against its own eager 38 ms, is now the faster of
+the two compositions.
+
+`Solver.kkt_tolerance` is `1e-12` and `~stop:0.` restores the fixed schedule;
+`Step.config ?stop` and `Forward.forward ?stop` carry it. `doc/perf.md` §2, §3
+and §5 carry the new tables, and §6's first item is the one this closes.
