@@ -147,6 +147,7 @@ saving it is `Nx`'s business, not a second format's.
 | [`PLAN.md`](PLAN.md) | the design note: what MuJoCo does, what Raven gives us, measured costs, feasibility per subsystem, risks |
 | [`MILESTONES.md`](MILESTONES.md) | the execution plan: milestones, acceptance tests, gates, stop-losses, parity strategy |
 | [`VIZ.md`](VIZ.md) | the live viewer: requirements, library survey, scene model, backend milestones |
+| [`doc/mujoco-4.0.md`](doc/mujoco-4.0.md) | what MuJoCo 4.0 changed, what of it this port should take, and in what order |
 
 Read `PLAN.md` §2–§3 for the problem, `MILESTONES.md` §1–§4 for the order of
 work, and `VIZ.md` §3–§4 for the viewer decision.
