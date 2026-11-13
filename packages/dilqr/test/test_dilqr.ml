@@ -103,6 +103,7 @@ module Integrator = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
@@ -159,6 +160,7 @@ module Pendulum = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
@@ -213,6 +215,7 @@ module Batched = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
@@ -249,6 +252,7 @@ module Concave = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
@@ -1153,6 +1157,7 @@ let test_streaming_jvp_matches_tape_jvp () =
       ~costate:(Dilqr.Lqr.costate tape)
       ~tangent
       ~dx0
+      ~free_initial:false
   in
   check_close
     ~msg:"streaming jvp xs"
@@ -1578,6 +1583,201 @@ let test_initial_condition_matches_dense () =
     initial.Dilqr.Lqr.precision
     reference_precision
 
+(* ──────────────────────────────────────────────────────────────────────────
+   A free initial state: the problem prices x₀ in its step-0 running loss, so
+   the solve optimizes it jointly with the controls. The cost is quadratic and
+   the dynamics linear, so the joint mode is exact and the derivative is the
+   one the implicit function theorem gives — finite differences of a converged
+   solve are the reference for both.
+   ────────────────────────────────────────────────────────────────────────── *)
+
+module Anchored = struct
+  module Params = struct
+    type ('a, _) t = { gain : 'a } [@@deriving ptree]
+  end
+
+  let n = 2
+  let m = 1
+  let horizon = 3
+  let verbose = false
+
+  (* The anchor: a Gaussian on the initial state, as the step-0 running loss.
+     It is what makes the block positive definite and the mode unique. *)
+  let anchor_mean = vec64 [| 1.0; -0.5 |]
+  let anchor_precision = 2.0
+  let target = vec64 [| 0.5; 0.0 |]
+
+  let dynamics { Params.gain } ~k:_ ~x ~u =
+    let open Infix in
+    let x0 = slice [ R (0, 1) ] x
+    and x1 = slice [ R (1, 2) ] x in
+    concatenate ~axis:0 [ (x0 *$ 0.9) + (x1 *$ 0.1); (x1 *$ 0.8) + (u * gain) ]
+
+  let running_loss _ ~k ~x ~u =
+    let open Infix in
+    let d = x - target in
+    let anchor = x - anchor_mean in
+    let zero = scalar_like k 0.0 in
+    let anchored =
+      where (Nx.equal k zero) (sum (anchor * anchor) *$ (0.5 *. anchor_precision)) zero
+    in
+    (sum (d * d) *$ 0.5) + (sum (u * u) *$ 0.5) + anchored
+
+  let final_loss _ ~x =
+    let open Infix in
+    let d = x - target in
+    sum (d * d)
+
+  let problem
+    : (Nx.float64_elt, (Nx.host Nx.float64_t, Nx.host) Params.t, Nx.host) Dilqr.Problem.t
+    =
+    { dtype = float64
+    ; n
+    ; m
+    ; horizon
+    ; free_initial = true
+    ; verbose
+    ; params = Nx.Ptree.instantiate (module Params)
+    ; dynamics
+    ; running_loss
+    ; final_loss
+    }
+end
+
+(* The problem's own cost at [(x₀, u)], stacked as one vector, along the true
+   dynamics. *)
+let anchored_cost theta (z : float array) =
+  let x0 = create float64 [| Anchored.n |] (Array.sub z ~pos:0 ~len:Anchored.n) in
+  let us =
+    Array.init Anchored.horizon ~f:(fun k ->
+      create float64 [| Anchored.m |] (Array.sub z ~pos:(Anchored.n + k) ~len:Anchored.m))
+  in
+  item (snd (Dilqr.Solver.rollout Anchored.problem theta x0 us))
+
+(* The solve moves the initial state, and the cost is stationary where it lands:
+   that is what "the solve optimizes x₀" means. A pinned solve of the same
+   problem keeps the state it was given. *)
+let test_free_initial_is_solved_for () =
+  let module P = Anchored in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { gain = scalar64 1.0 } in
+  let x0 = vec64 [| 0.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let solve = Dilqr.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-14 in
+  let xs, us = Dilqr.split_taus P.problem (solve { Dilqr.Inputs.theta; x0; us0 }) in
+  let solved_x0 = xs.(0) in
+  require
+    ~msg:"the solve moved the initial state"
+    Float.(item (Nx.max (Nx.abs Infix.(solved_x0 - x0))) > 1e-2);
+  let z =
+    Array.append (to_array solved_x0) (to_array (stack ~axis:0 (Array.to_list us)))
+  in
+  let value t = anchored_cost theta (to_array t) in
+  let grad = fd_grad ~eps:1e-6 value (create float64 [| Array.length z |] z) in
+  require
+    ~msg:"the joint mode is stationary in the initial state and the controls"
+    Float.(item (Nx.max (Nx.abs grad)) < 1e-5);
+  let pinned = { P.problem with free_initial = false } in
+  let xs, _ =
+    Dilqr.split_taus pinned (Dilqr.solve_fixed pinned ~max_iters:8 { theta; x0; us0 })
+  in
+  check_close ~msg:"a pinned solve keeps the state it was given" ~tol:1e-12 xs.(0) x0
+
+(* The implicit derivative of a free-initial solve, in both modes: reverse mode
+   against central differences of a converged solve, and the transpose law,
+   which also says that the input's initial state reaches nothing. *)
+let test_free_initial_derivative () =
+  let module P = Anchored in
+  let theta gain : (Nx.host Nx.float64_t, Nx.host) P.Params.t =
+    { gain = scalar64 gain }
+  in
+  let x0 = vec64 [| 0.2; 0.1 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.05 ])) in
+  let structure = Dilqr.inputs P.problem in
+  let inputs = { Dilqr.Inputs.theta = theta 1.0; x0; us0 } in
+  let solve = Dilqr.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-14 in
+  let ybar = pattern ~seed:0.4 ~like:(zeros float64 [| P.horizon + 1; P.n + P.m |]) in
+  let objective i = sum Infix.(ybar * solve i) in
+  let grads = Rune.grad structure objective inputs in
+  let eps = 1e-6 in
+  let fd =
+    (item (objective { inputs with theta = theta (1.0 +. eps) })
+     -. item (objective { inputs with theta = theta (1.0 -. eps) }))
+    /. (2.0 *. eps)
+  in
+  let got = item grads.Dilqr.Inputs.theta.P.Params.gain in
+  require
+    ~msg:(Printf.sprintf "implicit gradient %g vs finite differences %g" got fd)
+    Float.(Float.abs (got -. fd) <= 1e-5 +. (1e-4 *. Float.abs fd));
+  check_close
+    ~msg:"the initial state is a starting point, not an input"
+    ~tol:1e-12
+    grads.Dilqr.Inputs.x0
+    (zeros float64 [| P.n |]);
+  let dinputs = pattern_inputs ~seed:1.3 structure inputs in
+  let dtaus =
+    snd (Rune.jvp structure Nx.Ptree.tensor (fun i -> solve i) inputs dinputs)
+  in
+  check_close
+    ~msg:"<grad, v> = <cotangent, JVP v>"
+    ~tol:1e-8
+    (Nx.Ptree.dot structure float64 grads dinputs)
+    (sum Infix.(ybar * dtaus));
+  (* a tangent of the input's initial state moves nothing *)
+  let d0 = { dinputs with Dilqr.Inputs.x0 = pattern ~seed:2.7 ~like:x0 } in
+  check_close
+    ~msg:"the input's initial state tangent reaches nothing"
+    ~tol:1e-10
+    (snd (Rune.jvp structure Nx.Ptree.tensor (fun i -> solve i) inputs d0))
+    dtaus
+
+(* The batched free solve: one solve for two members, and each member's
+   gradient the one its own solve gives — the batch's layout, the initial
+   state's step and the implicit VJP included. *)
+let test_free_initial_batched () =
+  let module P = Anchored in
+  let b = 2 in
+  let solve = Dilqr.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-14 in
+  let objective i = sum (Dilqr.loss_of_taus P.problem i.Dilqr.Inputs.theta (solve i)) in
+  let structure = Dilqr.inputs P.problem in
+  let member i
+    : ( (Nx.host Nx.float64_t, Nx.host) P.Params.t
+        , (float, Nx.float64_elt, Nx.host) Nx.t )
+        Dilqr.Inputs.t
+    =
+    { theta = { P.Params.gain = scalar64 (1.0 +. (0.2 *. Float.of_int i)) }
+    ; x0 = vec64 [| 0.1 *. Float.of_int (i + 1); -0.2 |]
+    ; us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.01 *. Float.of_int (i + 1) ]))
+    }
+  in
+  let batched
+    : ( (Nx.host Nx.float64_t, Nx.host) P.Params.t
+        , (float, Nx.float64_elt, Nx.host) Nx.t )
+        Dilqr.Inputs.t
+    =
+    { theta =
+        { P.Params.gain = stack ~axis:0 (List.init b ~f:(fun i -> (member i).theta.gain))
+        }
+    ; x0 = stack ~axis:0 (List.init b ~f:(fun i -> (member i).x0))
+    ; us0 =
+        Array.init P.horizon ~f:(fun k ->
+          stack ~axis:0 (List.init b ~f:(fun i -> (member i).Dilqr.Inputs.us0.(k))))
+    }
+  in
+  let g = Rune.grad structure objective batched in
+  for i = 0 to b - 1 do
+    let g_i = Rune.grad structure objective (member i) in
+    check_close
+      ~msg:(Printf.sprintf "batched free grad, member %d" i)
+      ~tol:1e-9
+      (slice [ I i ] g.Dilqr.Inputs.theta.P.Params.gain)
+      g_i.Dilqr.Inputs.theta.P.Params.gain;
+    check_close
+      ~msg:(Printf.sprintf "batched free grad x0, member %d" i)
+      ~tol:1e-9
+      (slice [ I i ] g.Dilqr.Inputs.x0)
+      g_i.Dilqr.Inputs.x0
+  done
+
 (* [Dilqr.inputs] is a hand-written walk over the problem's parameter
    structure: its visits are the parameters under [theta], the initial state,
    then the controls' count and each control at its index. *)
@@ -1660,5 +1860,8 @@ let () =
        ; test "the local model is a fixed point" test_local_model_is_a_fixed_point
        ; test "value function matches dense" test_value_function_matches_dense
        ; test "initial condition matches dense" test_initial_condition_matches_dense
+       ; test "a free initial state is solved for" test_free_initial_is_solved_for
+       ; test "a free initial state's derivative" test_free_initial_derivative
+       ; test "a batched free initial state" test_free_initial_batched
        ; test "inputs structure" test_inputs_structure
        ])

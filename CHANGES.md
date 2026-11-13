@@ -112,6 +112,17 @@ changes do not need an entry.
   shift gives exactly those terms, so a damped pass costs one diagonal
   addition per step. `mu` may hold one strength per batch member.
   `Regularisation.floor` names the floor of a schedule.
+- `Problem.t` gains `free_initial`: the step-0 running loss prices the initial
+  state, so a solve optimizes it jointly with the controls instead of starting
+  from the one it was given. The solve's initial state is then a starting point
+  and the trajectory it returns starts where it found, its step 0 being the
+  answer. The step is `Lqr.initial_deviation`'s — Newton's, the model being
+  quadratic in `x₀` — and both implicit derivatives take it: `Dilqr.bwd`'s
+  perturbation gains the closed loop's response to it and returns no cotangent
+  on the input state, and `Lqr.solve_jvp` takes `~free_initial` for the same
+  reason, `Lqr.initial_response` being the piece the two share. A problem that
+  prices `x₀` without a proper prior on it leaves the block singular, and the
+  step NaN.
 
 ### ilqr-vae
 

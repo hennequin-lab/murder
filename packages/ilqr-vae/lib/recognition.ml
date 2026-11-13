@@ -561,6 +561,7 @@ module Iilqr = struct
     ; n
     ; m
     ; horizon = t_steps
+    ; free_initial = false
     ; verbose
     ; params = gparams_structure gen
     ; dynamics = (fun theta ~k ~x ~u -> Dynamics.dyn gen.dynamics theta.dynamics ~k ~x ~u)

@@ -41,6 +41,15 @@ type ('w, 'p, 'd) t =
   ; n : int (** state dimension *)
   ; m : int (** control dimension *)
   ; horizon : int (** number of control steps; states run from 0 to [horizon] *)
+  ; free_initial : bool
+    (** [true] when the step-0 running loss prices the initial state, so that a
+        solve optimizes it jointly with the controls instead of starting from
+        the one it was given. The initial state of the solve's inputs is then a
+        starting point, not an answer: the trajectory the solve returns starts
+        where it found, its step 0 being the answer. A model that prices [x₀]
+        — an encoder whose initial-state prior is its step-0 loss, say — is the
+        case this exists for, and the prior's precision is what keeps the block
+        positive definite. *)
   ; verbose : bool (** per-iteration diagnostics on stdout *)
   ; params : ('p, 'd) Nx.Ptree.t
     (** the parameter structure at [value], built with

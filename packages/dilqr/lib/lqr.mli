@@ -222,6 +222,34 @@ type ('a, 'b, 'd) initial =
   ; precision : ('a, 'b, 'd) Nx.t (** [n; n], with the same axes *)
   }
 
+(** [initial_deviation ~common ~value_grad] is the local model's minimizer in
+    [x₀], as a deviation from the point the tape was linearized at:
+    [−V₀⁻¹ Vx₀] with [V₀] the value Hessian, the prior the tape already carries
+    included. It is {!val-initial_condition} with no prior passed, and it is
+    what a solve whose initial state is a free variable steps by — the local
+    model is quadratic in [x₀], so the step is the Newton one.
+
+    [V₀] must be positive definite: without a prior in the step-0 cost the
+    block has nothing to regularize it, and a model whose curvature leaves it
+    indefinite gives a NaN step. *)
+val initial_deviation
+  :  common:(float, 'b, 'd) common
+  -> value_grad:(float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) Nx.t
+
+(** [initial_response ~common ~tape ~residual] is the trajectory perturbation a
+    free initial state adds to a tangent solve: the local model's step in [x₀]
+    that cancels [residual] — the leftover a pinned sweep leaves in the
+    stationarity condition of [x₀] — and the closed loop's response to it, with
+    no feedforward of its own. It is the transpose of what {!val-bwd} does for
+    a free initial state, and {!val-solve_jvp} and [Solver.tangent_solve] both
+    run it. *)
+val initial_response
+  :  common:(float, 'b, 'd) common
+  -> tape:(float, 'b, 'd) tape
+  -> residual:(float, 'b, 'd) Nx.t
+  -> (float, 'b, 'd) Nx.t * (float, 'b, 'd) Nx.t
+
 (** [initial_condition ~common ~value_grad ~nominal ~prior] is the Gaussian
     the local quadratic model implies for the initial state.
 
@@ -308,10 +336,14 @@ type ('a, 'b, 'd) tangent =
   ; dfx : ('a, 'b, 'd) Nx.t (** ∂(∂φ/∂x) at the final state, shape [n] *)
   }
 
-(** [solve_jvp ~common ~tape ~costate ~tangent ~dx0] is the tangent of
-    {!solve}'s solution for the data tangent {!tangent} and the initial state
-    tangent [dx0]: the derivative of the argmin along one direction in the
-    space of problems.
+(** [solve_jvp ~common ~tape ~costate ~tangent ~dx0 ~free_initial] is the
+    tangent of {!solve}'s solution for the data tangent {!tangent} and the
+    initial state tangent [dx0]: the derivative of the argmin along one
+    direction in the space of problems. [free_initial] says which argmin: with
+    it the initial state is a variable of the problem, so the tangent also
+    satisfies its stationarity and [dx0] reaches nothing — the third sweep adds
+    the local model's step in [x₀] and the closed loop's response to it, which
+    is the transpose of what {!val-bwd} does for a free initial state.
 
     Linear in the tangent data and in [dx0], which is what lets one call serve
     a whole batch of directions: give the {!tangent} tensors and [dx0] a
@@ -367,6 +399,7 @@ val solve_jvp
   -> costate:(float, 'b, 'd) Nx.t
   -> tangent:(float, 'b, 'd) tangent
   -> dx0:(float, 'b, 'd) Nx.t
+  -> free_initial:bool
   -> (float, 'b, 'd) solution
 
 (** [rollout ~dyn ~x0 ~xs ~us ~gains ~alpha] integrates the {e true}

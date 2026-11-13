@@ -53,6 +53,7 @@ let problem : (Nx.float64_elt, Mjc.Model.host, Nx.host) Dilqr.Problem.t =
   ; n
   ; m
   ; horizon
+  ; free_initial = false
   ; verbose = false
   ; params = Mjc.Model.ptree
   ; dynamics

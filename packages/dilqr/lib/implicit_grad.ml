@@ -103,32 +103,51 @@ let bwd p (res : ('p, ('w, 'd) Problem.value) residual) (ybar : ('w, 'd) Problem
     ; rfx = yx horizon
     }
   in
-  let gains, _, _, _ = Lqr.backward tape ~lin in
+  let common = Lqr.backward_common tape in
+  let gains, _, _, _ = Lqr.backward_lin ~common ~tape ~lin in
   let dx, du = Lqr.rollout_linearized ~tape ~gains ~x0:zero_n in
   (* Perturbed costates: δλ_K = C_xx,K δx_K + ȳ_x,K;
      δλ_k = Aᵀδλ_{k+1} + C_xx δx_k + C_uxᵀ δu_k + ȳ_x,k. One scan over the
      horizon, emitting the incoming carry so the stack is δλ_K … δλ_1 and flips
      to δλ_1 … δλ_K; the final carry is δλ_0, the gradient on x₀. *)
-  let dl0, dl1 =
-    Rune.scan
-      Nx.Ptree.tensor
-      Nx.Ptree.(
-        pair (pair tensor tensor) (pair tensor (pair tensor (pair tensor tensor))))
-      Nx.Ptree.tensor
-      (fun dl ((a, lxx), (lux, (dx_k, (du_k, yx_k)))) ->
-         let open Infix in
-         let dl_k =
-           matvec (matrix_transpose a) dl
-           + (matvec lxx dx_k + (matvec (matrix_transpose lux) du_k + yx_k))
-         in
-         dl_k, dl)
-      ~init:Infix.(matvec tape.fxx (row dx horizon) + yx horizon)
-      ( (flip tape.Lqr.blocks.a, flip tape.Lqr.blocks.lxx)
-      , ( flip tape.Lqr.blocks.lux
-        , ( flip (slice [ R (0, horizon) ] dx)
-          , (flip du, flip (slice [ R (0, horizon); R (0, n) ] ybar)) ) ) )
+  let costates ~dx ~du =
+    let dl0, dl1 =
+      Rune.scan
+        Nx.Ptree.tensor
+        Nx.Ptree.(
+          pair (pair tensor tensor) (pair tensor (pair tensor (pair tensor tensor))))
+        Nx.Ptree.tensor
+        (fun dl ((a, lxx), (lux, (dx_k, (du_k, yx_k)))) ->
+           let open Infix in
+           let dl_k =
+             matvec (matrix_transpose a) dl
+             + (matvec lxx dx_k + (matvec (matrix_transpose lux) du_k + yx_k))
+           in
+           dl_k, dl)
+        ~init:Infix.(matvec tape.fxx (row dx horizon) + yx horizon)
+        ( (flip tape.Lqr.blocks.a, flip tape.Lqr.blocks.lxx)
+        , ( flip tape.Lqr.blocks.lux
+          , ( flip (slice [ R (0, horizon) ] dx)
+            , (flip du, flip (slice [ R (0, horizon); R (0, n) ] ybar)) ) ) )
+    in
+    dl0, flip dl1
   in
-  let dl1 = flip dl1 in
+  let dl0, dl1 = costates ~dx ~du in
+  (* A free initial state: the perturbation must also satisfy its stationarity,
+     which the pinned system leaves as [dl0]. The correction is the model's step
+     in [x₀] and the closed loop's response, and the costates are recomputed on
+     the corrected perturbation — the recursion is linear, so this is the pinned
+     costates plus the homogeneous response's. *)
+  let dx, du, dl0, dl1 =
+    if not p.Problem.free_initial
+    then dx, du, dl0, dl1
+    else (
+      let dx1, du1 = Lqr.initial_response ~common ~tape ~residual:dl0 in
+      let dx = Infix.(dx + dx1)
+      and du = Infix.(du + du1) in
+      let dl0, dl1 = costates ~dx ~du in
+      dx, du, dl0, dl1)
+  in
   (* Step 2: block cotangents, following the reference formulation (the VJP of
      the fixed-point map). λ* are the solution costates of the problem's own
      losses; δτ = (δx, δu) and δλ the perturbation solve's response. Every
@@ -199,7 +218,7 @@ let bwd p (res : ('p, ('w, 'd) Problem.value) residual) (ybar : ('w, 'd) Problem
       theta
   in
   { Problem.Inputs.theta = grad_theta
-  ; x0 = grad_x0
+  ; x0 = (if p.Problem.free_initial then zeros_like grad_x0 else grad_x0)
   ; us0 = Array.map ~f:zeros_like res.us0
   }
 

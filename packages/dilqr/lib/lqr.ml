@@ -259,6 +259,12 @@ type ('a, 'b, 'd) initial =
    the factor computed here — is its covariance. A [P] that is not positive
    definite gives NaNs: the prior's precision, or without one the tape's
    step-0 cost, is the only thing that regularizes the block. *)
+let initial_deviation ~(common : ('a, 'b, 'd) common) ~(value_grad : ('a, 'b, 'd) Nx.t)
+  : ('a, 'b, 'd) Nx.t
+  =
+  let upper = cholesky ~triangle:Upper common.value_hessian in
+  Infix.(-chol_solve ~upper ~rhs:value_grad)
+
 let initial_condition
       ~(common : ('a, 'b, 'd) common)
       ~(value_grad : ('a, 'b, 'd) Nx.t)
@@ -266,16 +272,19 @@ let initial_condition
       ~(prior : (('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t) option)
   : ('a, 'b, 'd) initial
   =
-  let precision, rhs =
-    match prior with
-    | None -> common.value_hessian, value_grad
-    | Some (prior_mean, prior_precision) ->
-      ( Infix.(common.value_hessian + prior_precision)
-      , Infix.(value_grad + matvec prior_precision (nominal - prior_mean)) )
-  in
-  let upper = cholesky ~triangle:Upper precision in
-  let delta = chol_solve ~upper ~rhs in
-  { mean = Infix.(nominal - delta); precision }
+  match prior with
+  | None ->
+    (* No prior outside the tape: the value function is the cost, and its
+       stationary point is the deviation. *)
+    { mean = Infix.(nominal + initial_deviation ~common ~value_grad)
+    ; precision = common.value_hessian
+    }
+  | Some (prior_mean, prior_precision) ->
+    let precision = Infix.(common.value_hessian + prior_precision) in
+    let rhs = Infix.(value_grad + matvec prior_precision (nominal - prior_mean)) in
+    let upper = cholesky ~triangle:Upper precision in
+    let delta = chol_solve ~upper ~rhs in
+    { mean = Infix.(nominal - delta); precision }
 
 (* A solution trajectory, as one tensor per trajectory. *)
 type ('a, 'b, 'd) solution =
@@ -369,6 +378,24 @@ let rollout_linearized
   in
   concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] x0; dx_next ], du
 
+(* [initial_response ~common ~tape ~residual] is the trajectory perturbation a
+   free initial state adds to a tangent solve: the local model's step in [x₀]
+   that zeroes the leftover [residual] of the pinned system — the gradient the
+   stationarity condition of [x₀] must leave at zero — and the closed loop's
+   response to it. The step is Newton's (the model is quadratic in [x₀]) and
+   the response is the feedback law's, with no feedforward of its own. *)
+let initial_response
+      ~(common : ('a, 'b, 'd) common)
+      ~(tape : ('a, 'b, 'd) tape)
+      ~(residual : ('a, 'b, 'd) Nx.t)
+  : ('a, 'b, 'd) Nx.t * ('a, 'b, 'd) Nx.t
+  =
+  let d = initial_deviation ~common ~value_grad:residual in
+  rollout_linearized
+    ~tape
+    ~gains:{ feedback = common.feedback; feedforward = zeros_like tape.blocks.lu }
+    ~x0:d
+
 (* [solve ?mu ~tape ~x0] is the solution of the quadratic problem: the Riccati
    backward pass, then the gain rollout from [x0] under the linearized
    dynamics. *)
@@ -459,6 +486,7 @@ let solve_jvp
       ~(costate : ('a, 'b, 'd) Nx.t)
       ~(tangent : ('a, 'b, 'd) tangent)
       ~(dx0 : ('a, 'b, 'd) Nx.t)
+      ~(free_initial : bool)
   : ('a, 'b, 'd) solution
   =
   let horizon = (shape tape.blocks.a).(0) in
@@ -491,7 +519,9 @@ let solve_jvp
     }
   in
   let e_last = Infix.(tangent.dfx + matvec tape.fxx (slice [ I horizon ] g)) in
-  let _, q_hat =
+  (* The last carry is the tangent costate at step 0 — the tangent of the
+     initial state's gradient, which a free initial state must leave at zero. *)
+  let e0, q_hat =
     Rune.scan
       Nx.Ptree.tensor
       (Nx.Ptree.instantiate (module Tangent_rows))
@@ -520,4 +550,13 @@ let solve_jvp
       }
   in
   let v = concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] (zeros_like dx0); v_next ] in
-  { xs = Infix.(g + v); us = du }
+  let xs = Infix.(g + v) in
+  if not free_initial
+  then { xs; us = du }
+  else (
+    (* The initial state is a variable, so the tangent must also satisfy its
+       stationarity: the pinned tangent leaves [e0] there, and the correction is
+       the local model's step in [x₀] with the closed loop's response to it.
+       [V₀] is the block's marginal precision, so the step is Newton's. *)
+    let dx1, du1 = initial_response ~common ~tape ~residual:e0 in
+    { xs = Infix.(xs + dx1); us = Infix.(du + du1) })
