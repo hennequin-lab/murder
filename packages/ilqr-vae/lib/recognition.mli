@@ -359,9 +359,14 @@ val gparams_structure
     prior through {!Dilqr}'s implicit VJP of the solve — the mean of [q],
     initial state included, is what the VJP differentiates. *)
 module Iilqr : sig
-  (** Which covariance [q] carries over the latents. *)
+  (** Which covariance [q] carries over the latents, and what it starts
+      from: a description, as every component of this library is. *)
   type kind =
-    | Kron
+    | Kron of
+        { sigma2_time : float (** the variance the factor over the horizon starts at *)
+        ; sigma2_space : float
+          (** the variance the factor over the input dimensions starts at *)
+        }
     (** [Σ_time ⊗ Σ_space]: two learned factors, shared by every trial, and
         a scalar scale for the initial state's own Gaussian. *)
     | Laplace of { damping : float }
@@ -370,8 +375,11 @@ module Iilqr : sig
         [Q_uu] is not positive definite still has one; [0.] is the
         undamped Laplace, which is NaN there. *)
 
-  (** [kron] is the factorized covariance, the recognition's default. *)
-  val kron : kind
+  (** [kron ?sigma2_time ?sigma2_space ()] is the factorized covariance, whose
+      two factors start at [sigma2_time · I] and [sigma2_space · I] — [1.] each
+      by default, which is the recognition's. Raises [Invalid_argument] if
+      either is not positive. *)
+  val kron : ?sigma2_time:float -> ?sigma2_space:float -> unit -> kind
 
   (** [laplace ?damping ()] is the local model's covariance, with its pass
       damped by [damping] ([0.], the undamped model, by default). Raises
@@ -462,17 +470,16 @@ module Iilqr : sig
     -> ('w, 's) value
     -> ('w, 's) initial option
 
-  (** [make ?space_sigma2 ?time_sigma2 ?infer_initial ?covariance ~n ~m ~n_steps ~n_output ()] is the recognition. [covariance] (default
-      {!val-kron}) selects what [q]'s covariance is, and the two [sigma2]
-      arguments are the Kronecker factors' starting variances. [infer_initial]
-      (default [false]) makes the initial state a latent: the encoder then
-      prices it with the model's initial-state prior, and {!Model.make}
-      requires one. The dimensions are the model's; {!Model.make} checks them
-      against the other components and takes the horizon from here. *)
+  (** [make ?infer_initial ?covariance ~n ~m ~n_steps ~n_output ()] is the
+      recognition. [covariance] (default [kron ()]) selects what [q]'s
+      covariance is, and with it everything that covariance starts from.
+      [infer_initial] (default [false]) makes the initial state a latent: the
+      encoder then prices it with the model's initial-state prior, and
+      {!Model.make} requires one. The dimensions are the model's;
+      {!Model.make} checks them against the other components and takes the
+      horizon from here. *)
   val make
     :  at:'s Nx.Placement.t
-    -> ?space_sigma2:float
-    -> ?time_sigma2:float
     -> ?infer_initial:bool
     -> ?covariance:kind
     -> n:int

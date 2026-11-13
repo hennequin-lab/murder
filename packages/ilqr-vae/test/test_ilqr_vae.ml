@@ -341,6 +341,63 @@ let test_covariance () =
     (C.log_det p)
     (scalar (Float.log ((0.34 *. 4.0) -. (0.6 *. 0.6))))
 
+(* The covariance a recognition is built with is one description, so the
+   Kronecker factors' starting variances are its own arguments and a caller
+   that picks the local model's Gaussian cannot pass them at all. *)
+let test_recognition_kind () =
+  let n = 2
+  and m = 3
+  and t_steps = 4 in
+  let at = Nx.Host.on in
+  let model, params =
+    let recognition =
+      Il.make
+        ~at
+        ~covariance:(Il.kron ~sigma2_time:0.5 ~sigma2_space:2.0 ())
+        ~n
+        ~m
+        ~n_steps:t_steps
+        ~n_output:2
+        ()
+    in
+    let model =
+      M.make
+        dtype
+        ~dynamics:(D.Linear.make ~at ~n ~m ())
+        ~likelihood:(L.Gaussian.make ~at ~n ~n_output:2 ())
+        ~prior:(P.Gaussian.make ~at ~m ~spatial_std:1.0 ())
+        ~encoder_prior:(P.Gaussian.make ~at ~m ~spatial_std:1.0 ())
+        ~recognition
+        ()
+    in
+    model, M.init ~at ~key:(Nx.Rng.key 3) model
+  in
+  (match params.M.recognition with
+   | Il.Kron { space; time; initial_log_scale } ->
+     check_close
+       ~msg:"the input factor starts at its variance"
+       ~tol:1e-12
+       space.C.d
+       (vec [ Float.sqrt 2.0; Float.sqrt 2.0; Float.sqrt 2.0 ]);
+     check_close
+       ~msg:"and the time factor at its own"
+       ~tol:1e-12
+       time.C.d
+       (vec (List.init t_steps ~f:(fun _ -> Float.sqrt 0.5)));
+     equal
+       ~msg:"a fixed initial state has no scale"
+       bool
+       true
+       (Option.is_none initial_log_scale)
+   | Il.Laplace _ -> fail "the recognition was built with the Kronecker covariance");
+  ignore model;
+  raises_match
+    (Exn.invalid_arg ~sub:"sigma2_time and sigma2_space must be positive")
+    (fun () -> Il.kron ~sigma2_time:0.0 ());
+  raises_match
+    (Exn.invalid_arg ~sub:"sigma2_time and sigma2_space must be positive")
+    (fun () -> Il.kron ~sigma2_space:(-1.) ())
+
 (* ──────────────────────────────────────────────────────────────────────────
    Initial-state prior
    ────────────────────────────────────────────────────────────────────────── *)
@@ -2887,6 +2944,7 @@ let () =
        "ilqr_vae"
        [ test "covariance factors" test_covariance
        ; test "gaussian densities" test_density
+       ; test "recognition covariance kind" test_recognition_kind
        ; test "initial-state prior" test_initial_prior
        ; test "initial-state recognition" test_initial_state_recognition
        ; test "initial state is the mode" test_initial_state_is_the_mode

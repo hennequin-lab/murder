@@ -77,9 +77,11 @@ let step =
   solution of a finite-horizon optimal control problem solved with `dilqr`, and
   `dilqr`'s implicit VJP differentiates the solve without unrolling it.
 
-  `~covariance` picks the covariance. `Recognition.Iilqr.kron`, the default,
-  is the paper's: a Kronecker product of a learned factor over time and a
-  learned factor over input dimensions, shared by every trial.
+  `~covariance` picks the covariance, and the description carries what that
+  covariance starts from. `Recognition.Iilqr.kron ()`, the default, is the
+  paper's: a Kronecker product of a learned factor over time and a learned
+  factor over input dimensions, shared by every trial, with `?sigma2_time` and
+  `?sigma2_space` the variances they start at.
   `Recognition.Iilqr.laplace ()` is the local quadratic model's own Gaussian,
   one per trial, which the Riccati pass at the solution already holds — the
   same factors `Recognition.Iilqr.posterior_initial` reports for the initial

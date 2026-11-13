@@ -141,16 +141,21 @@ changes do not need an entry.
 
 - Imported from `hennequin-lab/ilqr-vae-raven`.
 - The iLQR recognition's covariance is a choice: `Recognition.Iilqr.make` takes
-  `?covariance`, `Recognition.Iilqr.kron` (the default, the two learned
-  factors) or `Recognition.Iilqr.laplace ()`. The second is the local model's
-  Gaussian, one per trial, read from the Riccati pass at the solution: its mean
-  is that model's mode, its factors the pass's `Q_uu` and gains, and its only
-  learned parameter is one scalar scaling every block — so it needs no
-  `n_steps × n_steps` factor and its family does not grow with the horizon.
-  The draws are joint over the initial state and the inputs, which two
-  independent factors were not, and on a linear-Gaussian model the covariance
-  is the exact posterior, so the bound carries no sampling noise. `?damping`
-  regularizes the pass for a model whose `Q_uu` is not positive definite.
+  `?covariance`, `Recognition.Iilqr.kron ()` (the default, the two learned
+  factors) or `Recognition.Iilqr.laplace ()`. A kind is one description, so
+  what a covariance starts from is its own argument — `kron`'s `?sigma2_time`
+  and `?sigma2_space`, `laplace`'s `?damping` — and `make` no longer takes the
+  `?space_sigma2` and `?time_sigma2` it used to, which a caller that picked
+  the local model's Gaussian could pass all the same. The second kind is the
+  local model's Gaussian, one per trial, read from the Riccati pass at the
+  solution: its mean is that model's mode, its factors the pass's `Q_uu` and
+  gains, and its only learned parameter is one scalar scaling every block —
+  so it needs no `n_steps × n_steps` factor and its family does not grow with
+  the horizon. The draws are joint over the initial state and the inputs,
+  which two independent factors were not, and on a linear-Gaussian model the
+  covariance is the exact posterior, so the bound carries no sampling noise.
+  `?damping` regularizes the pass for a model whose `Q_uu` is not positive
+  definite.
 - `Recognition.Iilqr.params` is a variant rather than a record: `Kron` holds
   the two factors and the initial state's scale, `Laplace` one scale and the
   pass's damping. A caller that builds one names the case.

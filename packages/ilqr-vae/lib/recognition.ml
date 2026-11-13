@@ -474,7 +474,11 @@ let diagonal_logp ~mean ~log_variances x =
 module Iilqr = struct
   (** Which covariance [q] carries over the latents. *)
   type kind =
-    | Kron
+    | Kron of
+        { sigma2_time : float (** the variance the factor over the horizon starts at *)
+        ; sigma2_space : float
+          (** the variance the factor over the input dimensions starts at *)
+        }
     (** [Σ_time ⊗ Σ_space]: two learned factors, shared by every trial, and
         a scalar scale for the initial state's own Gaussian. *)
     | Laplace of { damping : float }
@@ -515,8 +519,15 @@ module Iilqr = struct
         let walk = walk_params
       end)
 
-  (** [kron] is the factorized covariance, the recognition's default. *)
-  let kron : kind = Kron
+  (** [kron ?sigma2_time ?sigma2_space ()] is the factorized covariance, whose
+      two factors start at [sigma2_time · I] and [sigma2_space · I] — [1.] each
+      by default, which is the recognition's. Raises [Invalid_argument] if
+      either is not positive. *)
+  let kron ?(sigma2_time = 1.0) ?(sigma2_space = 1.0) () : kind =
+    if not (Float.( > ) sigma2_time 0.0 && Float.( > ) sigma2_space 0.0)
+    then
+      invalid_arg "Recognition.Iilqr.kron: sigma2_time and sigma2_space must be positive";
+    Kron { sigma2_time; sigma2_space }
 
   (** [laplace ?damping ()] is the local model's covariance, with the pass
       damped by [damping] ([0.], the undamped model, by default). *)
@@ -1285,20 +1296,18 @@ module Iilqr = struct
       in
       unflat_log_prob ~dims ~n_samples log_prob)
 
-  (** [make ?space_sigma2 ?time_sigma2 ?infer_initial ?covariance ~n ~m ~n_steps ~n_output ()] is the iLQR recognition. [covariance]
-      (default {!val-kron}) selects what [q]'s covariance is, and the two
-      [sigma2] arguments are the Kronecker factors' starting variances.
+  (** [make ?infer_initial ?covariance ~n ~m ~n_steps ~n_output ()] is the
+      iLQR recognition. [covariance] (default [kron ()]) selects what [q]'s
+      covariance is, and with it everything that covariance starts from.
       [infer_initial] (default [false]) makes the initial state a latent: the
       encoder then prices it with the model's initial-state prior, and
       {!Model.make} requires one. The dimensions are the model's;
       {!Model.make} checks them against the other components and takes the
-      horizon from here. {!init} draws the starting parameters. *)
+      horizon from here. *)
   let make
         ~at
-        ?space_sigma2
-        ?time_sigma2
         ?(infer_initial = false)
-        ?(covariance = kron)
+        ?(covariance = kron ())
         ~n
         ~m
         ~n_steps
@@ -1311,10 +1320,10 @@ module Iilqr = struct
     if n_output <= 0 then invalid_arg "Recognition.Iilqr.make: n_output must be positive";
     let init (type w) ?key:(_ : 's Nx.Rng.key option) (dtype : (float, w) Nx.dtype) =
       match covariance with
-      | Kron ->
+      | Kron { sigma2_time; sigma2_space } ->
         Kron
-          { space = Covariance.make ~at ?sigma2:space_sigma2 ~n:m dtype
-          ; time = Covariance.make ~at ?sigma2:time_sigma2 ~n:n_steps dtype
+          { space = Covariance.make ~at ~sigma2:sigma2_space ~n:m dtype
+          ; time = Covariance.make ~at ~sigma2:sigma2_time ~n:n_steps dtype
           ; initial_log_scale =
               (if infer_initial then Some (scalar_at at dtype 0.0) else None)
           }
@@ -1329,7 +1338,7 @@ module Iilqr = struct
       ~infers_inputs:true
       ~name:
         (match covariance with
-         | Kron -> "ilqr"
+         | Kron _ -> "ilqr"
          | Laplace _ -> "ilqr_laplace")
       ~structure:(structure ())
       ~init
