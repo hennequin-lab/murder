@@ -140,6 +140,23 @@ changes do not need an entry.
 ### ilqr-vae
 
 - Imported from `hennequin-lab/ilqr-vae-raven`.
+- The iLQR recognition's covariance is a choice: `Recognition.Iilqr.make` takes
+  `?covariance`, `Recognition.Iilqr.kron` (the default, the two learned
+  factors) or `Recognition.Iilqr.laplace ()`. The second is the local model's
+  Gaussian, one per trial, read from the Riccati pass at the solution: its mean
+  is that model's mode, its factors the pass's `Q_uu` and gains, and its only
+  learned parameter is one scalar scaling every block — so it needs no
+  `n_steps × n_steps` factor and its family does not grow with the horizon.
+  The draws are joint over the initial state and the inputs, which two
+  independent factors were not, and on a linear-Gaussian model the covariance
+  is the exact posterior, so the bound carries no sampling noise. `?damping`
+  regularizes the pass for a model whose `Q_uu` is not positive definite.
+- `Recognition.Iilqr.params` is a variant rather than a record: `Kron` holds
+  the two factors and the initial state's scale, `Laplace` one scale and the
+  pass's damping. A caller that builds one names the case.
+- `Recognition.Iilqr.posterior_mean` and `posterior_initial` take `~params`:
+  with the local model's covariance the mean is that model's mode rather than
+  the last solve's trajectory, so what the mean is depends on the parameters.
 - The fixed inner solve runs at most the recognition's iteration count and
   stops earlier when it has converged, so a fixed recognition is a budget
   rather than an exact count. `Recognition.fixed` takes `?conv_threshold` for

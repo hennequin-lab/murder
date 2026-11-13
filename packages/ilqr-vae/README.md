@@ -74,20 +74,35 @@ let step =
 ## Recognitions
 
 - `Recognition.Iilqr` — the iLQR-VAE recognition. The posterior mean is the
-  solution of a finite-horizon optimal control problem solved with `dilqr`;
-  the input covariance is a Kronecker product of a factor over time and a
-  factor over input dimensions. `dilqr`'s implicit VJP differentiates the
-  solve without unrolling it.
+  solution of a finite-horizon optimal control problem solved with `dilqr`, and
+  `dilqr`'s implicit VJP differentiates the solve without unrolling it.
+
+  `~covariance` picks the covariance. `Recognition.Iilqr.kron`, the default,
+  is the paper's: a Kronecker product of a learned factor over time and a
+  learned factor over input dimensions, shared by every trial.
+  `Recognition.Iilqr.laplace ()` is the local quadratic model's own Gaussian,
+  one per trial, which the Riccati pass at the solution already holds — the
+  same factors `Recognition.Iilqr.posterior_initial` reports for the initial
+  state. Its mean is that model's mode and its factors its Hessian in
+  `(x_0, u_0 …)`, so the draws are joint over the initial state and the
+  inputs, and the one learned parameter is a scalar scale for every block —
+  no `n_steps × n_steps` factor, and a family that does not grow with the
+  horizon. On a linear-Gaussian model it is the exact posterior and the bound
+  has no sampling noise; on a nonlinear one it is the Gauss-Newton
+  approximation, whose width the scale can correct.
+  `Recognition.Iilqr.laplace ~damping` regularizes the pass, which is what
+  gives a model whose `Q_uu` is not positive definite a covariance at all.
 
   `~infer_initial:true` makes the initial state a latent instead of fixing it
   at zero, and the model must then pass `~initial_prior`: that prior is the
   boundary condition of the encoder's control problem, so the encoder solves
   for `x_0` jointly with the inputs. Its mean is the joint mode of that
   problem's local quadratic model, and its covariance is that model's Hessian
-  in `x_0` up to one learned scale — [Σ = exp (2 log_scale) · P⁻¹] — so the
-  width is per trial and the scale is the block's only free parameter. Both
-  are taken stopped, in the draws and in the density, as the Kronecker factors
-  are; `Recognition.Iilqr.posterior_initial` reports them for diagnostics.
+  in `x_0` up to the scale — [Σ = exp (2 log_scale) · P⁻¹] with the Kronecker
+  covariance and the same scalar as every other block with the Laplace one.
+  All of it is taken stopped, in the draws and in the density, so the gradient
+  of the bound reaches the model through the solve's trajectory only;
+  `Recognition.Iilqr.posterior_initial` reports the initial state's pair.
 - `Recognition.Lfads` — an LFADS-style recognition (Pandarinath et al.,
   2018). Bidirectional encoder RNNs infer a Gaussian posterior over the
   initial state and a second encoder–controller pair produces an

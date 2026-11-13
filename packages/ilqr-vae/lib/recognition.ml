@@ -449,28 +449,62 @@ let diagonal_logp ~mean ~log_variances x =
 (* {1 iLQR recognition} *)
 
 (** The iLQR-VAE recognition: the mean is the solution of a finite-horizon
-    optimal control problem, and the covariance is the Kronecker product of a
-    factor over time and a factor over input dimensions.
+    optimal control problem, and the covariance is either the Kronecker product
+    of a factor over time and a factor over input dimensions, or the local
+    quadratic model's own Gaussian.
 
     {b The initial state.} The model either fixes [x_0 = 0] — the original
-    recognition, built without an initial-state prior — or infers it. A free
-    initial state is not a variable of the solve: it is a variational
-    parameter whose value is the joint mode of the local quadratic model,
-    reached by a fixed number of rounds of "solve from the current estimate,
-    then replace it with the Laplace mean the new model implies". The
-    covariance is [exp (2 log_scale) · P⁻¹], [P] the Hessian of the encoder's
-    cost in [x_0], which is the exact posterior covariance of a linear model
-    and the Gauss-Newton one otherwise. Both are stopped in the bound's
-    density, so the gradient reaches them through the sampled latents only;
-    the scalar [log_scale] is the one free parameter of the block. *)
+    recognition, built without an initial-state prior — or infers it, and then
+    the encoder's problem prices [x_0] in its step-0 running loss and the solve
+    optimizes it with the controls: one solve returns the joint mode, and
+    [x_0] is a solve output whose gradient is the solve's own implicit VJP.
+    Its covariance is [exp (2 log_scale) · P⁻¹], [P] the Hessian of the
+    encoder's cost in [x_0], which is the exact posterior covariance of a
+    linear model and the Gauss-Newton one otherwise.
+
+    {b The covariance.} {!type-kind} selects it. {!constructor-Kron} is the
+    paper's two learned factors, the same covariance for every trial;
+    {!constructor-Laplace} is the local model's, one per trial, built from the
+    factors the Riccati pass at the solution already holds
+    ({!Dilqr.Lqr.Laplace}) and scaled by one learned scalar.
+
+    Both are stopped in the bound's density, so the gradient reaches them
+    through the sampled latents only, and the scalar scale is the only part of
+    a covariance block that carries one. *)
 module Iilqr = struct
+  (** Which covariance [q] carries over the latents. *)
+  type kind =
+    | Kron
+    (** [Σ_time ⊗ Σ_space]: two learned factors, shared by every trial, and
+        a scalar scale for the initial state's own Gaussian. *)
+    | Laplace of { damping : float }
+    (** the local quadratic model's Gaussian, one per trial: the
+        truncation point's message of the Riccati pass, which the solve
+        computes anyway. [damping] regularizes that pass (a solve's own
+        device), so that a model whose [Q_uu] is not positive definite
+        still has a Gaussian; [0.] is the undamped Laplace, which is NaN
+        there. *)
+
+  (** The recognition's parameters: its covariance, whose scale is the only
+      part of it that is learned from the bound. *)
   type ('a, 's) params =
-    { space_cov : ('a, 's) Covariance.params (** the factor over input dimensions *)
-    ; time_cov : ('a, 's) Covariance.params (** the factor over the horizon *)
-    ; initial_log_scale : 'a option
-      (** a scalar: the log of the scale of the initial state's covariance,
-          [exp (2 log_scale) · P⁻¹]. Absent when the initial state is fixed. *)
-    }
+    | Kron of
+        { space : ('a, 's) Covariance.params
+          (** the factor over input dimensions, [m]-dimensional *)
+        ; time : ('a, 's) Covariance.params (** the factor over the horizon *)
+        ; initial_log_scale : 'a option
+          (** a scalar: the log of the scale of the initial state's covariance,
+              [exp (2 log_scale) · P⁻¹]. Absent when the initial state is
+              fixed. *)
+        }
+    | Laplace of
+        { log_scale : 'a
+          (** a scalar: one scale for every block of the local model's
+              Gaussian, [exp (2 log_scale) · (P⁻¹, Q_uu,0⁻¹ …)]. One scalar
+              rather than one per step keeps the family stationary in the
+              horizon, which is what the local model's shape already is. *)
+        ; damping : float [@ptree.skip] (** the pass's damping, not learned *)
+        }
   [@@deriving ptree]
 
   let structure () =
@@ -480,6 +514,16 @@ module Iilqr = struct
 
         let walk = walk_params
       end)
+
+  (** [kron] is the factorized covariance, the recognition's default. *)
+  let kron : kind = Kron
+
+  (** [laplace ?damping ()] is the local model's covariance, with the pass
+      damped by [damping] ([0.], the undamped model, by default). *)
+  let laplace ?(damping = 0.0) () : kind =
+    if Float.( < ) damping 0.0
+    then invalid_arg "Recognition.Iilqr.laplace: damping must not be negative";
+    Laplace { damping }
 
   let initial_controls (type w) (gen : (w, _, _, _, 's) generative) ~at u_init =
     match u_init with
@@ -587,45 +631,47 @@ module Iilqr = struct
   let of_dilqr (type w) (init : (float, w, 's) Dilqr.Lqr.initial) : (w, 's) initial =
     { mean = init.Dilqr.Lqr.mean; precision = init.Dilqr.Lqr.precision }
 
-  (* [laplace_initial problem gp ~xs ~us] is the Gaussian the local quadratic
-     model at the trajectory implies for the initial state, when the model has
-     a prior over it: mean the joint mode of the encoder's cost, precision its
-     Hessian in [x₀], from {!Dilqr.Lqr.initial_condition}. [None] when the
-     initial state is fixed at zero.
+  (* [damping_of params] is the local model's damping: zero for the Kronecker
+     covariance, which reads no factor of the local model. *)
+  let damping_of (type w) (params : ((w, 's) value, 's) params) =
+    match params with
+    | Kron _ -> None
+    | Laplace { damping; _ } -> if Float.equal damping 0.0 then None else Some damping
 
-     The record is a value, not a differentiable function of the model's
-     parameters: [initial_condition] goes through a Cholesky factor and through
-     the Riccati recursion that produced the value Hessian, and the recognition
-     stops both wherever it draws from the Gaussian or scores it. *)
-  let laplace_initial
+  (* [local problem gen gp params ~xs ~us] is the local quadratic model at the
+     trajectory: the tape, and the Gaussian q is centred on and scaled by. It
+     is what both covariances need — the Kronecker one only the initial state's
+     block, the Laplace one the whole thing.
+
+     No prior is passed to {!Dilqr.Lqr.Laplace}: when the model has an
+     initial-state prior it is the tape's step-0 running loss, so the value
+     function the pass leaves already carries it. *)
+  let local
         (type w d l e)
         (problem : (w, (w, d, l, e, 's) gparams, 's) Dilqr.Problem.t)
         (gp : (w, d, l, e, 's) gparams)
+        (params : ((w, 's) value, 's) params)
         ~(xs : (w, 's) value array)
         ~(us : (w, 's) value array)
     =
-    match gp.initial_prior with
-    | None -> None
-    | Some _ ->
-      (* No prior is passed: the prior is the step-0 running loss, so the value
-         function the pass leaves already carries it. *)
-      let tape = Dilqr.Solver.blocks problem gp xs us in
-      let common = Dilqr.Lqr.backward_common tape in
-      let _, _, _, value_grad =
-        Dilqr.Lqr.backward_lin ~common ~tape ~lin:(Dilqr.Lqr.lin_of_tape tape)
-      in
-      Some
-        (of_dilqr
-           (Dilqr.Lqr.initial_condition
-              ~common
-              ~value_grad
-              ~nominal:(Array.get xs 0)
-              ~prior:None))
+    let tape = Dilqr.Solver.blocks problem gp xs us in
+    let mu =
+      Option.map (damping_of params) ~f:(fun damping ->
+        scalar_like (Array.get xs 0) damping)
+    in
+    let nominal : (float, w, 's) Dilqr.Lqr.solution =
+      { xs = stack ~axis:0 (Array.to_list xs); us = stack ~axis:0 (Array.to_list us) }
+    in
+    let gaussian =
+      match gp.initial_prior with
+      | Some _ -> Dilqr.Lqr.Laplace.make ?mu tape ~nominal ~prior:None
+      | None -> Dilqr.Lqr.Laplace.make_fixed ?mu tape ~nominal
+    in
+    gaussian, tape
 
   (* [solve_from problem gen gp ?u_init ?solve ~x0 data] is one encoder solve
      from a given initial state: the trajectory's states and controls,
-     unstacked. The problem is built by the caller, so the rounds of
-     {!solve_trial} price the same tape. *)
+     unstacked. The problem is built by the caller. *)
   let solve_from
         (type w d l e)
         (p : (w, (w, d, l, e, 's) gparams, 's) Dilqr.Problem.t)
@@ -647,23 +693,37 @@ module Iilqr = struct
         p
         (Dilqr.solve_fixed p ~max_iters:iters ~damping ?alphas ?c1 ?conv_threshold inputs)
 
-  (* [solve_trial gen gp ?u_init ?solve ?rounds data] is one trial's encoder
-     solution: the Laplace posterior of the initial state, and the states and
-     controls of the last solve.
+  (* What one trial's encoder solve leaves q: the mean it is centred on, the
+     initial state's Gaussian when that state is a latent, and — when the
+     covariance is the local model's — the Gaussian itself with the tape it was
+     built from. The tape is kept only there: the Kronecker covariance reads the
+     local model for the initial state's block and nothing else. *)
+  type ('w, 's) solved =
+    { mean_x0 : ('w, 's) value (** [n] *)
+    ; mean_u : ('w, 's) value (** [n_steps; m] *)
+    ; initial : ('w, 's) initial option
+    ; local :
+        ((float, 'w, 's) Dilqr.Lqr.Laplace.t * (float, 'w, 's) Dilqr.Lqr.tape) option
+    }
 
-     A free initial state is not a variable of the iLQR solve. It is a
-     variational parameter whose value is the joint mode of the local model:
-     each round solves the control problem from the current estimate and
-     replaces it with the posterior mean the new local model implies. The
-     forward values are then the mode's while the derivative is the solve's
-     own, because the mean is detached and held fixed — the same treatment the
-     covariance gets. [rounds] is 1 when the initial state is fixed at zero;
-     two reach the fixed point of a linear model exactly and come to first
-     order for a nonlinear one. *)
+  (* [solve_trial gen gp ~params ?u_init ?solve data] is one trial's encoder
+     solution: the mean q is centred on, and the covariance's factors.
+
+     With an initial-state prior the encoder's problem prices [x₀] in its
+     step-0 running loss and the solve optimizes it with the controls, so one
+     solve is the joint mode of the local model — no outer loop, and [x₀] is a
+     solve output whose gradient is the solve's own implicit VJP. Without one
+     the state is fixed and the solve starts from zero.
+
+     The mean of the inputs is the local model's mode when the covariance is
+     the Laplace's — the centre the draws and the density share — and the
+     solve's own trajectory otherwise, which is the centre the Kronecker
+     covariance uses. *)
   let solve_trial
         (type w d l e)
         (gen : (w, d, l, e, 's) generative)
         (gp : (w, d, l, e, 's) gparams)
+        ~(params : ((w, 's) value, 's) params)
         ?u_init
         ?solve
         ?(rounds = 2)
@@ -671,47 +731,94 @@ module Iilqr = struct
     =
     let p = problem gen data in
     let rounds = if Option.is_none gp.initial_prior then 1 else Int.max 1 rounds in
+    let laplace =
+      match params with
+      | Kron _ -> false
+      | Laplace _ -> true
+    in
     let rec go i x0 =
       let xs, us = solve_from p gen gp ?u_init ?solve ~x0 data in
-      let initial = laplace_initial p gp ~xs ~us in
+      (* The local model is built whenever something reads it: always for the
+         Laplace covariance, and for the Kronecker one exactly when the initial
+         state is a latent. *)
+      let local =
+        if laplace || Option.is_some gp.initial_prior
+        then Some (local p gp params ~xs ~us)
+        else None
+      in
+      let initial =
+        Option.bind local ~f:(fun (gaussian, _) ->
+          Option.map gaussian.Dilqr.Lqr.Laplace.initial ~f:of_dilqr)
+      in
+      let mean_x0, mean_u =
+        match laplace, local with
+        | true, Some (gaussian, tape) ->
+          let mode = Dilqr.Lqr.Laplace.mean ~tape gaussian in
+          slice [ I 0 ] mode.Dilqr.Lqr.xs, mode.Dilqr.Lqr.us
+        | _ ->
+          ( (match initial with
+             | Some init -> init.mean
+             | None -> zeros_at (beside data) gen.dtype [| gen.n |])
+          , stack ~axis:0 (Array.to_list us) )
+      in
+      let solved =
+        { mean_x0; mean_u; initial; local = (if laplace then local else None) }
+      in
       if i <= 1
-      then xs, us, initial
+      then solved
       else (
         let x0 =
-          match initial with
+          match gp.initial_prior with
           | None -> x0
-          | Some init -> Rune.detach init.mean
+          | Some _ -> Rune.detach solved.mean_x0
         in
         go (i - 1) x0)
     in
     go rounds (initial_guess gen gp ~at:(beside data))
 
-  (** [posterior_mean gen gp ?u_init ?solve ?rounds data] is the iLQR
-      solution's controls, of shape [[n_steps; m]] — the recognition mean.
-      [u_init] ([n_steps; m], zeros when omitted) is the initial guess and
-      carries no gradient: the idealized solve does not depend on it. *)
-  let posterior_mean gen gp ?u_init ?solve ?rounds data =
-    let _, us, _ = solve_trial gen gp ?u_init ?solve ?rounds data in
-    stack ~axis:0 (Array.to_list us)
+  (** [posterior_mean gen gp ~params ?u_init ?solve data] is the mean of [q],
+      of shape [[n_steps; m]] — the local model's mode with the Laplace
+      covariance, and the iLQR solution with the Kronecker one. [u_init]
+      ([n_steps; m], zeros when omitted) is the initial guess and carries no
+      gradient: the idealized solve does not depend on it. *)
+  let posterior_mean gen gp ~params ?u_init ?solve ?rounds data =
+    let solved = solve_trial gen gp ~params ?u_init ?solve ?rounds data in
+    solved.mean_u
 
-  (** [posterior_initial gen gp ?u_init ?solve ?rounds data] is the Laplace
-      posterior of the initial state — its mean and precision — when the model
-      has an initial-state prior, and [None] when it fixes [x_0 = 0]. The mean
-      is the value the solve's trajectory starts from once the rounds have
-      converged, and the precision is the Hessian of the encoder's cost in
-      [x_0], so its inverse is the covariance the analogous linear model's
-      posterior would have. *)
-  let posterior_initial gen gp ?u_init ?solve ?rounds data =
-    let _, _, initial = solve_trial gen gp ?u_init ?solve ?rounds data in
-    initial
+  (** [posterior_initial gen gp ~params ?u_init ?solve data] is the Gaussian
+      the local model implies for the initial state — its mean and precision —
+      when the model has an initial-state prior, and [None] when it fixes
+      [x_0 = 0]. The mean is the joint mode of the encoder's cost over [x_0]
+      and the inputs, which the solve returns; the precision is the same cost's
+      Hessian in [x_0], so its inverse is the covariance the analogous linear
+      model's posterior would have, and the draws take it up to
+      [exp (2 · log_scale)].
 
-  (* [sample_u gen p ~mu ~n_samples ~key] draws [u = mu + L_time xi L_spaceᵀ] with [xi] standard normal: [L_time] acts on the time axis and
-     [L_spaceᵀ] on the input axis, so the draws have covariance
-     [Σ_time ⊗ Σ_space]. *)
+      This is the diagnostic entry point as much as a component: it answers
+      "what initial condition does the encoder want, given this trial", which
+      is what the [u_0] channel of the fixed-zero encoder stood in for. *)
+  let posterior_initial gen gp ~params ?u_init ?solve ?rounds data =
+    let solved = solve_trial gen gp ~params ?u_init ?solve ?rounds data in
+    solved.initial
+
+  (* [kron_factors params] is the two factors of the Kronecker covariance, the
+     only covariance that has them. *)
+  let kron_factors (type w) (params : ((w, 's) value, 's) params) =
+    match params with
+    | Kron { space; time; _ } -> space, time
+    | Laplace _ ->
+      invalid_arg
+        "Recognition.Iilqr: the Laplace covariance has no Kronecker factors to read"
+
+  (* [sample_u gen ~time ~space ~mu ~n_samples ~key] draws
+     [u = mu + L_time xi L_spaceᵀ] with [xi] standard normal: [L_time] acts on
+     the time axis and [L_spaceᵀ] on the input axis, so the draws have
+     covariance [Σ_time ⊗ Σ_space]. *)
   let sample_u
         (type w)
         (gen : (w, _, _, _, 's) generative)
-        (p : ((w, 's) value, 's) params)
+        ~(time : ((w, 's) value, 's) Covariance.params)
+        ~(space : ((w, 's) value, 's) Covariance.params)
         ~mu
         ~n_samples
         ~key
@@ -720,8 +827,8 @@ module Iilqr = struct
     then invalid_arg "Recognition.Iilqr.sample_u: n_samples must be positive";
     let t_steps = gen.n_steps
     and m = gen.m in
-    let l_time = Covariance.factor p.time_cov in
-    let l_space = Covariance.factor p.space_cov in
+    let l_time = Covariance.factor time in
+    let l_space = Covariance.factor space in
     let xi = Nx.Rng.normal_at (beside mu) ~key gen.dtype [| t_steps; n_samples; m |] in
     let cols = n_samples * m in
     let along_time = Infix.(l_time *@ reshape [| t_steps; cols |] xi) in
@@ -730,14 +837,15 @@ module Iilqr = struct
     in
     Infix.(unsqueeze ~axes:[ 1 ] mu + noise)
 
-  (* [log_prob_u gen p ~mu u] is log q(u) for one trial's input sequence of
-     shape [[n_steps; m]], or one value per sequence for a sample batch
-     [[n_steps; n_samples; m]]. The quadratic form is evaluated with two
+  (* [log_prob_u gen ~time ~space ~mu u] is log q(u) for one trial's input
+     sequence of shape [[n_steps; m]], or one value per sequence for a sample
+     batch [[n_steps; n_samples; m]]. The quadratic form is evaluated with two
      triangular solves against the Cholesky factors. *)
   let log_prob_u
         (type w)
         (gen : (w, _, _, _, 's) generative)
-        (p : ((w, 's) value, 's) params)
+        ~(time : ((w, 's) value, 's) Covariance.params)
+        ~(space : ((w, 's) value, 's) Covariance.params)
         ~mu
         u
     =
@@ -757,8 +865,8 @@ module Iilqr = struct
            (shape_string shape));
     let batch_dims = Array.sub shape ~pos:1 ~len:(rank - 2) in
     let batch = Array.fold batch_dims ~init:1 ~f:( * ) in
-    let l_time = Covariance.factor p.time_cov in
-    let l_space = Covariance.factor p.space_cov in
+    let l_time = Covariance.factor time in
+    let l_space = Covariance.factor space in
     let u3 = reshape (Array.append [| t_steps |] (Array.append [| batch |] [| m |])) u in
     let diff = Infix.(u3 - reshape [| t_steps; 1; m |] mu) in
     (* [(u − μ)ᵀ Σ⁻¹ (u − μ) = ‖L_time⁻¹ (u − μ) L_space⁻ᵀ‖²_F], two triangular
@@ -777,8 +885,8 @@ module Iilqr = struct
     in
     let log_det =
       Infix.(
-        (Covariance.log_det p.time_cov *$ Float.of_int m)
-        + (Covariance.log_det p.space_cov *$ Float.of_int t_steps))
+        (Covariance.log_det time *$ Float.of_int m)
+        + (Covariance.log_det space *$ Float.of_int t_steps))
     in
     let dim = Float.of_int (t_steps * m) in
     Infix.((quadratic + (log_det + scalar_at (beside u) dtype (dim *. log_2pi))) *$ -0.5)
@@ -827,20 +935,32 @@ module Iilqr = struct
     let factor = Infix.(initial_factor init * exp (log_scale *$ -1.0)) in
     Density.logp ~mean:init.mean ~covariance:(Density.Precision_cholesky { factor }) x
 
-  (* [stopped_initial init] is the same Gaussian with every tensor detached:
-     [infer] evaluates its density at it, so the gradient of the bound reaches
-     the local model only through the sampled latents. *)
-  (* [initial_log_scale params] is the scale of the Laplace covariance and the
-     block's only learned parameter. A recognition built with
-     [~infer_initial:true] has it; a hand-built parameter value for a model
-     with an initial-state prior may not, and that is what this reports. *)
+  (* [initial_log_scale params] is the scale of the Kronecker recognition's
+     initial-state covariance, the block's only learned parameter there. A
+     recognition built with [~infer_initial:true] has it; a hand-built
+     parameter value for a model with an initial-state prior may not, and that
+     is what this reports. *)
   let initial_log_scale (type w) (params : ((w, 's) value, 's) params) =
-    match params.initial_log_scale with
-    | Some scale -> scale
-    | None ->
+    match params with
+    | Kron { initial_log_scale = Some scale; _ } -> scale
+    | Kron _ ->
       invalid_arg
         "Recognition.Iilqr: the model has an initial-state prior but the recognition has \
          no initial scale; build it with ~infer_initial:true"
+    | Laplace _ ->
+      invalid_arg
+        "Recognition.Iilqr.initial_log_scale: the Laplace covariance has one scale for \
+         every block; read it from the parameters"
+
+  (* [laplace_log_scale params] is that one scale: every block of the local
+     model's Gaussian, the initial state's included. *)
+  let laplace_log_scale (type w) (params : ((w, 's) value, 's) params) =
+    match params with
+    | Laplace { log_scale; _ } -> log_scale
+    | Kron _ ->
+      invalid_arg
+        "Recognition.Iilqr.laplace_log_scale: the Kronecker covariance has no Laplace \
+         scale"
 
   let stopped_initial (type w) (init : (w, 's) initial) : (w, 's) initial =
     { mean = Rune.detach init.mean; precision = Rune.detach init.precision }
@@ -850,15 +970,47 @@ module Iilqr = struct
      reaches the recognition only through the sampled latents: the
      path-derivative (sticking-the-landing) estimator of the KL gradient. *)
   let stopped (type w) (params : ((w, 's) value, 's) params) : ((w, 's) value, 's) params =
-    { space_cov =
-        { Covariance.d = Rune.detach params.space_cov.d
-        ; Covariance.t = Rune.detach params.space_cov.t
+    match params with
+    | Kron { space; time; initial_log_scale } ->
+      Kron
+        { space =
+            { Covariance.d = Rune.detach space.d; Covariance.t = Rune.detach space.t }
+        ; time = { Covariance.d = Rune.detach time.d; Covariance.t = Rune.detach time.t }
+        ; initial_log_scale = Option.map initial_log_scale ~f:Rune.detach
         }
-    ; time_cov =
-        { Covariance.d = Rune.detach params.time_cov.d
-        ; Covariance.t = Rune.detach params.time_cov.t
+    | Laplace { log_scale; damping } ->
+      Laplace { log_scale = Rune.detach log_scale; damping }
+
+  (* [detach_gaussian ~keep_nominal gaussian] is the local model's Gaussian
+     with every tensor detached: a value, as the Kronecker factors are, so that
+     the gradient of the bound reaches the model through the sampled latents
+     only. [keep_nominal] is what a draw keeps: the solve's trajectory carries
+     the gradient the mean of [q] must pass on, and the factors do not. *)
+  let detach_gaussian
+        ~(keep_nominal : bool)
+        (type w)
+        (gaussian : (float, w, 's) Dilqr.Lqr.Laplace.t)
+    : (float, w, 's) Dilqr.Lqr.Laplace.t
+    =
+    let nominal : (float, w, 's) Dilqr.Lqr.solution =
+      if keep_nominal
+      then gaussian.Dilqr.Lqr.Laplace.nominal
+      else
+        { xs = Rune.detach gaussian.Dilqr.Lqr.Laplace.nominal.Dilqr.Lqr.xs
+        ; us = Rune.detach gaussian.Dilqr.Lqr.Laplace.nominal.Dilqr.Lqr.us
         }
-    ; initial_log_scale = Option.map params.initial_log_scale ~f:Rune.detach
+    in
+    { Dilqr.Lqr.Laplace.nominal
+    ; feedback = Rune.detach gaussian.Dilqr.Lqr.Laplace.feedback
+    ; feedforward = Rune.detach gaussian.Dilqr.Lqr.Laplace.feedforward
+    ; quu_chol = Rune.detach gaussian.Dilqr.Lqr.Laplace.quu_chol
+    ; initial =
+        Option.map
+          gaussian.Dilqr.Lqr.Laplace.initial
+          ~f:(fun (init : (float, w, 's) Dilqr.Lqr.initial) ->
+            { Dilqr.Lqr.mean = Rune.detach init.Dilqr.Lqr.mean
+            ; precision = Rune.detach init.Dilqr.Lqr.precision
+            })
     }
 
   let infer_one
@@ -872,54 +1024,90 @@ module Iilqr = struct
         data
     =
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
-    let _, us, initial = solve_trial gen gp ?solve data in
-    let mu_u = stack ~axis:0 (Array.to_list us) in
-    match initial with
-    | None ->
-      let x0 = zeros_at (beside data) gen.dtype [| gen.n |] in
-      let u = sample_u gen params ~mu:mu_u ~n_samples ~key in
-      let log_prob = log_prob_u gen (stopped params) ~mu:(Rune.detach mu_u) u in
-      { x0 = broadcast_to [| n_samples; gen.n |] x0; u; log_prob }
-    | Some init ->
-      let log_scale = initial_log_scale params in
-      (* One subkey per draw group, so the initial state and the inputs are
-         independent draws. *)
-      let keys = Nx.Rng.split ~n:2 key in
-      (* The mean and the precision are values of the local model, not
-         functions of the parameters the bound follows: draw from them
-         stopped, as the density does, and let [log_scale] carry the gradient.
-         Following them would mean differentiating the Riccati recursion behind
-         [P], and the term that misses — the bound's derivative in the
-         distribution's own parameters — vanishes where the bound is stationary
-         in [q]. *)
-      let x0 =
-        sample_initial (stopped_initial init) ~log_scale ~n_samples ~key:keys.(0)
+    let solved = solve_trial gen gp ~params ?solve data in
+    match solved.local with
+    | Some (gaussian, tape) ->
+      (* The local model's Gaussian. The draws take the solve's trajectory
+         live — it is what carries the gradient of the model's parameters
+         through the implicit VJP — and the factors and the initial state's
+         mean stopped: they are values of the local model, and following them
+         would mean differentiating the Riccati recursion and the Cholesky
+         factor behind them. The one thing that carries a gradient of its own
+         is the scale. *)
+      let log_scale = laplace_log_scale params in
+      let draws =
+        Dilqr.Lqr.Laplace.sample
+          ~tape
+          (detach_gaussian ~keep_nominal:true gaussian)
+          ~log_scale
+          ~key
+          ~n_samples
       in
-      let u = sample_u gen params ~mu:mu_u ~n_samples ~key:keys.(1) in
+      let x0 = slice [ I 0 ] draws.Dilqr.Lqr.xs in
+      let u = draws.Dilqr.Lqr.us in
       let log_prob =
-        Infix.(
-          log_prob_u gen (stopped params) ~mu:(Rune.detach mu_u) u
-          + log_prob_initial (stopped_initial init) ~log_scale:(Rune.detach log_scale) x0)
+        Dilqr.Lqr.Laplace.log_prob
+          ~tape
+          (detach_gaussian ~keep_nominal:false gaussian)
+          ~log_scale:(Rune.detach log_scale)
+          ~x0
+          ~us:u
       in
       { x0; u; log_prob }
+    | None ->
+      let mu_u = solved.mean_u in
+      (* The draws take the factors live, as the Kronecker draws always have,
+         and the density takes them stopped: the path derivative of the
+         covariance, without the term of the distribution's own parameters. *)
+      let space, time = kron_factors params in
+      let space_s, time_s = kron_factors (stopped params) in
+      (match solved.initial with
+       | None ->
+         let x0 = zeros_at (beside data) gen.dtype [| gen.n |] in
+         let u = sample_u gen ~space ~time ~mu:mu_u ~n_samples ~key in
+         let log_prob =
+           log_prob_u gen ~space:space_s ~time:time_s ~mu:(Rune.detach mu_u) u
+         in
+         { x0 = broadcast_to [| n_samples; gen.n |] x0; u; log_prob }
+       | Some init ->
+         let log_scale = initial_log_scale params in
+         (* One subkey per draw group, so the initial state and the inputs are
+            independent draws. *)
+         let keys = Nx.Rng.split ~n:2 key in
+         (* The mean and the precision are values of the local model, not
+            functions of the parameters the bound follows: draw from them
+            stopped, as the density does, and let [log_scale] carry the
+            gradient. Following them would mean differentiating the Riccati
+            recursion behind [P], and the term that misses — the bound's
+            derivative in the distribution's own parameters — vanishes where
+            the bound is stationary in [q]. *)
+         let x0 =
+           sample_initial (stopped_initial init) ~log_scale ~n_samples ~key:keys.(0)
+         in
+         let u = sample_u gen ~space ~time ~mu:mu_u ~n_samples ~key:keys.(1) in
+         let log_prob =
+           Infix.(
+             log_prob_u gen ~space:space_s ~time:time_s ~mu:(Rune.detach mu_u) u
+             + log_prob_initial
+                 (stopped_initial init)
+                 ~log_scale:(Rune.detach log_scale)
+                 x0)
+         in
+         { x0; u; log_prob })
 
   let mean_one
         (type w d l e)
         (gen : (w, d, l, e, 's) generative)
         (gp : (w, d, l, e, 's) gparams)
-        ~params:_
+        ~params
         ?solve
         data
     =
     check_data ~n_steps:gen.n_steps ~n_output:gen.n_output data;
-    let _, us, initial = solve_trial gen gp ?solve data in
-    let mu_u = stack ~axis:0 (Array.to_list us) in
-    let x0 =
-      match initial with
-      | None -> zeros_at (beside data) gen.dtype [| gen.n |]
-      | Some init -> init.mean
-    in
-    { x0 = reshape [| 1; gen.n |] x0; u = reshape [| gen.n_steps; 1; gen.m |] mu_u }
+    let solved = solve_trial gen gp ~params ?solve data in
+    { x0 = reshape [| 1; gen.n |] solved.mean_x0
+    ; u = reshape [| gen.n_steps; 1; gen.m |] solved.mean_u
+    }
 
   let log_prob_one
         (type w d l e)
@@ -937,15 +1125,27 @@ module Iilqr = struct
       ~n:gen.n
       ~m:gen.m
       samples;
-    let _, us, initial = solve_trial gen gp ?solve data in
-    let mu_u = stack ~axis:0 (Array.to_list us) in
-    let log_prob_u' = log_prob_u gen params ~mu:mu_u samples.u in
-    match initial with
-    | None -> log_prob_u'
-    | Some init ->
-      Infix.(
-        log_prob_u'
-        + log_prob_initial init ~log_scale:(initial_log_scale params) samples.x0)
+    let solved = solve_trial gen gp ~params ?solve data in
+    match solved.local with
+    | Some (gaussian, tape) ->
+      (* Nothing is stopped here: this is the diagnostic entry point, where a
+         caller may want the density's own derivative. *)
+      Dilqr.Lqr.Laplace.log_prob
+        ~tape
+        gaussian
+        ~log_scale:(laplace_log_scale params)
+        ~x0:samples.x0
+        ~us:samples.u
+    | None ->
+      let mu_u = solved.mean_u in
+      let space, time = kron_factors params in
+      let log_prob_u' = log_prob_u gen ~space ~time ~mu:mu_u samples.u in
+      (match solved.initial with
+       | None -> log_prob_u'
+       | Some init ->
+         Infix.(
+           log_prob_u'
+           + log_prob_initial init ~log_scale:(initial_log_scale params) samples.x0))
 
   (* One iLQR solve per trial. The solve itself is unbatched; [Rune.vmap] maps
      a fixed one over the flattened trial batch, and its implicit VJP is
@@ -1083,18 +1283,20 @@ module Iilqr = struct
       in
       unflat_log_prob ~dims ~n_samples log_prob)
 
-  (** [make ?space_sigma2 ?time_sigma2 ?infer_initial ~n ~m ~n_steps ~n_output ()] is the iLQR recognition whose covariance factors start at
-      [space_sigma2 · I] and [time_sigma2 · I]. [infer_initial] (default
-      [false]) makes the initial state a latent: the encoder then prices it
-      with the model's initial-state prior, and {!Model.make} requires one.
-      The dimensions are the model's; {!Model.make} checks them against the
-      other components and takes the horizon from here. {!init} draws the
-      starting factors. *)
+  (** [make ?space_sigma2 ?time_sigma2 ?infer_initial ?covariance ~n ~m ~n_steps ~n_output ()] is the iLQR recognition. [covariance]
+      (default {!val-kron}) selects what [q]'s covariance is, and the two
+      [sigma2] arguments are the Kronecker factors' starting variances.
+      [infer_initial] (default [false]) makes the initial state a latent: the
+      encoder then prices it with the model's initial-state prior, and
+      {!Model.make} requires one. The dimensions are the model's;
+      {!Model.make} checks them against the other components and takes the
+      horizon from here. {!init} draws the starting parameters. *)
   let make
         ~at
         ?space_sigma2
         ?time_sigma2
         ?(infer_initial = false)
+        ?(covariance = kron)
         ~n
         ~m
         ~n_steps
@@ -1106,17 +1308,27 @@ module Iilqr = struct
     if n_steps <= 0 then invalid_arg "Recognition.Iilqr.make: n_steps must be positive";
     if n_output <= 0 then invalid_arg "Recognition.Iilqr.make: n_output must be positive";
     let init (type w) ?key:(_ : 's Nx.Rng.key option) (dtype : (float, w) Nx.dtype) =
-      { space_cov = Covariance.make ~at ?sigma2:space_sigma2 ~n:m dtype
-      ; time_cov = Covariance.make ~at ?sigma2:time_sigma2 ~n:n_steps dtype
-      ; initial_log_scale =
-          (if infer_initial then Some (scalar_at at dtype 0.0) else None)
-      }
+      match covariance with
+      | Kron ->
+        Kron
+          { space = Covariance.make ~at ?sigma2:space_sigma2 ~n:m dtype
+          ; time = Covariance.make ~at ?sigma2:time_sigma2 ~n:n_steps dtype
+          ; initial_log_scale =
+              (if infer_initial then Some (scalar_at at dtype 0.0) else None)
+          }
+      | Laplace { damping } ->
+        (* One scalar for every block, the initial state's included, so that a
+           free initial state needs nothing else. *)
+        Laplace { log_scale = scalar_at at dtype 0.0; damping }
     in
     make
       ~dims:{ n; m; n_steps; n_output }
       ~infers_initial:infer_initial
       ~infers_inputs:true
-      ~name:"ilqr"
+      ~name:
+        (match covariance with
+         | Kron -> "ilqr"
+         | Laplace _ -> "ilqr_laplace")
       ~structure:(structure ())
       ~init
       ~infer
