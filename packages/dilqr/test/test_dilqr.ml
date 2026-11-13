@@ -2087,6 +2087,47 @@ let test_free_initial_batched () =
       g_i.Dilqr.Inputs.x0
   done
 
+(* The adaptive solve takes the initial state's step too, eagerly and with its
+   kernels compiled — the recognition's default solver is the adaptive one, so
+   it is the path a user reaches without asking. It finds the fixed solve's
+   joint mode and its derivative. *)
+let test_free_initial_adaptive () =
+  let module P = Anchored in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { gain = scalar64 1.0 } in
+  let x0 = vec64 [| 0.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let inputs = { Dilqr.Inputs.theta; x0; us0 } in
+  let mode_of solve =
+    let xs, us = Dilqr.split_taus P.problem (solve inputs) in
+    xs.(0), stack ~axis:0 (Array.to_list us)
+  in
+  let fixed = Dilqr.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-14 in
+  let adaptive = Dilqr.solve_adaptive P.problem in
+  let compiled = Dilqr.solve_adaptive P.problem ~parallel:1 in
+  let fixed_x0, fixed_us = mode_of fixed in
+  let adaptive_x0, adaptive_us = mode_of (adaptive ~max_iter:60 ~conv_threshold:1e-14) in
+  check_close
+    ~msg:"the adaptive solve finds the same initial state"
+    ~tol:1e-8
+    adaptive_x0
+    fixed_x0;
+  check_close ~msg:"and the same controls" ~tol:1e-8 adaptive_us fixed_us;
+  let compiled_x0, compiled_us = mode_of (compiled ~max_iter:60 ~conv_threshold:1e-14) in
+  check_close ~msg:"the compiled adaptive solve agrees" ~tol:1e-8 compiled_x0 adaptive_x0;
+  check_close ~msg:"and its controls" ~tol:1e-8 compiled_us adaptive_us;
+  let structure = Dilqr.inputs P.problem in
+  let objective solve i =
+    sum (Dilqr.loss_of_taus P.problem i.Dilqr.Inputs.theta (solve i))
+  in
+  let grad solve =
+    (Rune.grad structure (objective solve) inputs).Dilqr.Inputs.theta.P.Params.gain
+  in
+  check_close
+    ~msg:"the adaptive solve's gradient is the fixed one's"
+    ~tol:1e-6
+    (grad (adaptive ~max_iter:60 ~conv_threshold:1e-14))
+    (grad fixed)
+
 (* [Dilqr.inputs] is a hand-written walk over the problem's parameter
    structure: its visits are the parameters under [theta], the initial state,
    then the controls' count and each control at its index. *)
@@ -2179,5 +2220,6 @@ let () =
        ; test "a free initial state is solved for" test_free_initial_is_solved_for
        ; test "a free initial state's derivative" test_free_initial_derivative
        ; test "a batched free initial state" test_free_initial_batched
+       ; test "a free initial state, adaptively" test_free_initial_adaptive
        ; test "inputs structure" test_inputs_structure
        ])
