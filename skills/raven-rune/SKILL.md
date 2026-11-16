@@ -34,9 +34,10 @@ Read `references/entry-points.md` for signatures and contracts,
 - Test a derivative against a finite difference with `Rune.check_grads`, and
   a custom transpose with `Rune.check_transpose`. Use `float64` parameters for
   reliable differences.
-- A GPU set has no eager kernels. Initialise models, optimizer state, data and
-  keys on the host, and place them at the boundary of the jitted function that
-  consumes them; see `raven-rig`.
+- A GPU set minted without `~kernels` has no eager kernels. Initialise models,
+  optimizer state, data and keys on the host, and place them at the boundary
+  of the jitted function that consumes them; `nx.cuda` supplies kernels for
+  NVIDIA `sm_89`, but the lab's sets do not pass them. See `raven-rig`.
 
 ## The two families
 
@@ -65,7 +66,7 @@ more than their elements:
 | `cond b p t f` | `switch` on a boolean |
 | `root ?linear_solve x ~residual solve` | implicit function theorem |
 | `remat s f` | recompute in the backward pass to save memory |
-| `callback s ~like f` | run OCaml code inside a traced function |
+| `callback ?lanes s ~like f` | run OCaml code inside a traced function |
 
 The one-array forms (`grad'`, `value_and_grad'`, `jvp'`, `vjp'`, `jacfwd'`,
 `jacrev'`, `jit'`, `scan'`, `iterate'`, `vmap'`, `cond'`) are the same with
@@ -107,7 +108,7 @@ no elements. That means:
 (* [k] is a key the step captures; step [i] draws from its own key. *)
 Rune.scan Nx.Ptree.tensor Nx.Ptree.tensor Nx.Ptree.tensor
   (fun x i ->
-     Nx.Rng.with_key (Nx.Rng.fold_in_tensor k i) (fun () ->
+     Nx.Rng.with_key (Nx.Rng.fold_in_tensor k (Nx.cast Nx.int64 i)) (fun () ->
          let x = Nx.add x (Nx.Rng.normal Nx.float32 [| 3 |]) in
          (x, x)))
   ~init:x0
@@ -153,17 +154,19 @@ let step =
   compiles on up to `n` domains. Both make the first call much longer. Leave
   them off unless you are tuning a reused program.
 - A jitted call inside another `jit` compiles as the outer program does.
-- `RUNE_JIT_DEBUG=1` prints why a call retraced.
+- `RUNE_JIT_DEBUG=1` prints the first key difference on a retrace, and why
+  a program or variant was declined.
 
 ### Where values live
 
 A compiled call's results lie where eager computation places them. A GPU set
-has no eager kernels, so initialise on the host and cross to the device at the
-jitted boundary: place model parameters and optimizer state just before the
-first call of a recursive training loop, and the loop's jitted step returns
-them on the device and keeps them there. Place a key with
-`Nx.Rng.place D.on k` at the same boundary, not when it is created. Reading a
-device value with `Nx.item` waits; do it at the reporting interval.
+minted without `~kernels` has no eager kernels, so initialise on the host and
+cross to the device at the jitted boundary: place model parameters and
+optimizer state just before the first call of a recursive training loop, and
+the loop's jitted step returns them on the device and keeps them there.
+Place a key with `Nx.Rng.place D.on k` at the same boundary, not when it is
+created. Reading a device value with `Nx.item` waits; do it at the reporting
+interval.
 
 ```ocaml
 (* Host: build and initialise. *)
@@ -279,3 +282,7 @@ raises where it is made.
   retracing, debugging.
 - `references/custom-rules.md` — custom JVP/VJP/transpose, `root`, `remat`,
   totals, probes, callbacks.
+
+These notes follow the Raven commit pinned in this repository; `rune.mli`
+under `_build/_private/default/.pkg/rune.dev-*/source/packages/rune/lib/` is
+the API that compiles here. The public docs may describe a different API.

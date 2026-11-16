@@ -15,12 +15,17 @@ module Buffer : sig
   type device := t
   type kind = Device | Pinned | Mapped
 
+  val host_addresses : device -> bool
   val create : ?memory:kind -> device -> int -> t
   val of_string : string -> t
   val of_bigarray : ('a,'b,Bigarray.c_layout) Bigarray.Array1.t -> t
-  val of_io : device -> 'r Type.Id.t -> 'r -> access:access -> int -> t
+  val of_io :
+    device ->
+    (module Rig_edge.Io with type region = 'r) ->
+    'r -> access:access -> int -> t
   val view : t -> first:int -> length:int -> t
   val borrow : device -> t -> t option
+  val unborrow : ?why:string -> t -> bool
   val free : ?why:string -> t -> bool
 
   val device : t -> device
@@ -29,6 +34,7 @@ module Buffer : sig
   val dead : t -> string option
   val spans : t -> bool
   val overlaps : t -> t -> bool
+  val share_byte : t -> t -> bool
   val is_borrowed : t -> bool
   val aligned : t -> at:int -> int -> bool
   val offset : t -> int
@@ -38,19 +44,21 @@ end
 - `create d n` allocates `n` bytes on `d`. `n < 0` raises. An empty buffer
   allocates nothing. A non-empty one starts on the device's alignment; a host
   buffer of at least 64 KiB and four pages starts on a page, so devices can
-  borrow it.
+  borrow it. `host_addresses d` is true when the host addresses all of `d`'s
+  memory, as for `Rig.host` and `Rig.software`.
 - `of_string` and `of_bigarray` make a host buffer. `of_bigarray` does not
   copy: it keeps the array reachable, and its memory is outside the claims.
   Wrap an array once and share the buffer through `view`/`borrow`; two calls
   over the same bytes are two allocations and rig does not order work between
   them.
-- `of_io` wraps a region of an io device (a file's pages, say). The region's
-  memory is outside the claims.
+- `of_io d (module I) r ~access n` wraps the `n` bytes of a region `r` of the
+  io library `I`. The region's memory is outside the claims.
 - `view b ~first ~length` is a range of `b`'s bytes. It shares the
   allocation's stamps and claims, so work through it is work on the
   allocation.
 - `borrow d b` maps `b`'s memory on `d`, or is `None` if `d` cannot map it
-  (`Rig.reaches`). It shares the stamps and claims.
+  (`Rig.reaches`). It shares the stamps and claims. `unborrow b` ends a
+  borrow early when no claim or hold keeps it.
 - `free b` tries to return the memory early. It is `false`, changing
   nothing, if `b` does not span its memory, another claim holds it, or it is
   outside the claims. Otherwise it consumes the memory with the reason, and
@@ -59,8 +67,9 @@ end
 Compare buffers with `==`. Polymorphic comparison does not look at bytes:
 `compare` terminates with an order that says nothing about contents, and `=`
 raises for two buffers of one device and finds buffers of different devices
-unequal. `Hashtbl.hash` depends on addresses and state, which can change
-while a buffer lives.
+unequal. `overlaps` compares the words buffers share; `share_byte` compares
+bytes, which a copy refuses. `Hashtbl.hash` depends on addresses and state,
+which can change while a buffer lives.
 
 `Buffer.dead b` is `Some why` for a dead buffer. A call that takes a dead
 buffer raises `Invalid_argument`.
@@ -170,14 +179,14 @@ module Submission : sig
   val words  : Buffer.t -> part
 
   val make : ?keep:'a -> ?fixed:(Buffer.t * access) list -> device -> part array -> t
+  type block
   val block : t -> int -> block
   val address : t -> Buffer.t -> int
 
   module Run : sig
     type submission := t
     type t
-    val make    : submission -> t
-    val take    : t -> bool
+    val submission : t -> submission
     val release : t -> unit
     val groups  : t -> block -> int -> int -> int -> unit
     val threads : t -> block -> int -> int -> int -> unit
@@ -187,6 +196,8 @@ module Submission : sig
     val float32 : t -> block -> int -> float -> unit
     val float64 : t -> block -> int -> float -> unit
   end
+
+  val take : t -> Run.t
 end
 
 val submit : ?waits:Point.t array -> Submission.Run.t -> buffers:Buffer.t array -> Point.t
@@ -231,18 +242,19 @@ highest slot named.
 
 ### Runs and blocks
 
-`Run.make s` makes a run of `s`, taken by the calling thread. `Run.take r`
-reserves it; `Run.release r` ends the reservation keeping the bytes. A store
-into a run the thread has not taken raises.
+`Submission.take s` hands out a run of `s`, taken by the calling thread; it
+returns a free run, or makes one when every run is taken. `Run.release r`
+ends the reservation keeping the bytes. A store into a run the thread has
+not taken raises.
 
 `Run.groups r b x y z` sets the grid, `Run.threads r b x y z` the threads per
 group, `Run.shared r b n` the dynamic shared memory. `Run.int32`, `int64`,
 `float32`, `float64` store parameters. Bytes a run never stores read 0 and
 keep their last store across submits.
 
-A library that submits from several domains keeps a few runs beside each
-cached submission: take the first run whose `take` is true, otherwise make
-one and add it, and release it if the call raises before its submit.
+A library that submits from several domains calls `Submission.take` for
+each submit: it finds a free run or makes one. A caller that raises after
+taking a run and before submitting it must release the run.
 
 ### Submitting
 
@@ -260,20 +272,20 @@ wrong slot count, a write through a `Read` buffer, a copy whose ends differ
 in length, a ref into handle-only memory, ...), `Out_of_memory` if the queues
 must grow and the device has no memory, and `Lost`.
 
-### Example: a copy on a memory device
+### Example: a copy on a software device
 
 ```ocaml
 open Rig
 
 let () =
-  let device = Result.get_ok (memory_device "example") in
+  let device = Result.get_ok (software "example") in
   let src = Buffer.create device 4 in
   let dst = Buffer.create device 4 in
   Buffer.write src Bigarray.int32 (fun a -> a.{0} <- 42l);
   let work =
     Submission.(make device [| copy ~src:(Buffer src) ~dst:(Buffer dst) |])
   in
-  let run = Submission.Run.make work in
+  let run = Submission.take work in
   let done_ = submit run ~buffers:[||] in
   Point.wait done_;
   Buffer.read dst Bigarray.int32 (fun a -> Printf.printf "copied %ld\n" a.{0})
@@ -289,6 +301,7 @@ module Image : sig
   val load : device -> string -> (t, string) result
   val device : t -> device
   val resolve : t -> string -> func option
+  val prepare : t -> string -> unit
   val name : func -> string
   val image : func -> t
   val params : func -> int option
@@ -301,8 +314,9 @@ end
 PTX or cubin on NVIDIA, a code object on AMD, a relocatable ELF object for
 the host. Each call loads the binary again, so each image's module variables
 are its own. `resolve i "name"` finds a function and makes it ready to
-launch. `params fn` is the number of parameter bytes it reads; `threads fn`
-is the most threads a group may have.
+launch. `prepare i "name"` starts making it ready without waiting; the next
+`resolve` waits for it. `params fn` is the number of parameter bytes it
+reads; `threads fn` is the most threads a group may have.
 
 A launch's `params` must be at least `Image.params fn`. `Run.threads`
 refuses more than `Image.threads`.
@@ -321,17 +335,19 @@ Nx.Repr         (* crossing between Nx values and Nx_array, borrow/copy *)
 Application code should not need these. What matters:
 
 - `Nx.devices [d]` mints a set. A set whose devices all run on the host
-  computes eagerly through `nx.cpu`. Any other set has no eager kernels:
-  creations are made on the host and placed, and every other eager operation
-  raises, naming the placement or the compiler that would compute it.
+  computes eagerly through `nx.cpu`. Any other set minted without kernels has
+  no eager kernels: creations are made on the host and placed, and every other
+  eager operation raises, naming the placement or the compiler that would
+  compute it. `nx.cuda` supplies kernels for NVIDIA `sm_89` GPUs; the lab's
+  sets do not pass them.
 - `Rune.jit` compiles through tolk and runs on the device, so a GPU program
   is a jitted program. Its results lie where eager computation would place
   them.
-- Initialise on the host and place at the jitted boundary. A GPU set has no
-  eager kernels; a model, optimizer state or key placed at initialisation
-  cannot be used by host code. Place parameters, state, data and keys just
-  before the first jitted call. A jitted step returns device values, so a
-  recursive training loop keeps them there.
+- Initialise on the host and place at the jitted boundary. A GPU set minted
+  without kernels has no eager kernels; a model, optimizer state or key placed
+  at initialisation cannot be used by host code. Place parameters, state, data
+  and keys just before the first jitted call. A jitted step returns device
+  values, so a recursive training loop keeps them there.
 - `Nx.place` moves a value. Across sets it changes the brand; onto the host
   it waits on the source set; elsewhere it returns as `Buffer.submit_copy`
   returns. Each device holds its window over the source's memory where the

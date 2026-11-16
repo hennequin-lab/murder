@@ -44,25 +44,29 @@ val beside    : t -> 'd Placement.t
 ## Device sets
 
 ```ocaml
-type +'d devices
 type host
-val rigs    : 'd devices -> Rig.t list
+module Devices : sig
+  type +'d t
+  val to_list : 'd t -> Rig.t list
+end
 val devices : ?kernels:(module Nx_kernel.S) -> Rig.t list -> (module Devices)
 
 module Host : Devices with type d = host
 module Placement : sig
-  val on : 'd devices -> 'd t
-  val device : 'd devices -> Rig.t -> 'd t
-  val split : axis:int -> 'd devices -> 'd t
+  val on : 'd Devices.t -> 'd t
+  val device : 'd Devices.t -> Rig.t -> 'd t
+  val split : axis:int -> 'd Devices.t -> 'd t
   val mesh : 'd Mesh.t -> (int * string list) list -> 'd t
+  val partial : 'd Mesh.t -> string list -> (int * string list) list -> 'd t
+  val closed : 'd t -> 'd t
   val uncut : 'd t -> 'd t
-  val devices : 'd t -> 'd devices
+  val devices : 'd t -> 'd Devices.t
   val equal : 'd t -> 'e t -> bool
   val same : 'd t -> 'e t -> ('d,'e) Type.eq option
   val pp : Format.formatter -> 'd t -> unit
 end
 module Mesh : sig
-  val v : 'd devices -> (string * int) list -> 'd t
+  val v : 'd Devices.t -> (string * int) list -> 'd t
 end
 
 val place : 'e Placement.t -> t -> ('v,'s,'e) t
@@ -94,14 +98,18 @@ donate  t
 
 `_like` forms: `zeros_like`, `ones_like`, `full_like`, `scalar_like`.
 
-Random creation has `_at` forms that take `?key`:
+Random creation has `_at` forms that take `?key` for the host samplers
+`normal`, `uniform`, `exponential`, `gumbel` and `bits`:
 
 ```ocaml
 normal ?key dt shape        normal_at p ?key dt shape
 uniform ...                 uniform_at ...
-exponential, gumbel, randint, bernoulli, gamma, beta, von_mises,
-poisson, binomial, bits
 ```
+
+The other samplers take tensors as parameters and draw where those lie:
+`randint`, `bernoulli`, `gamma`, `beta`, `von_mises`, `poisson`, `binomial`,
+`truncated_normal`, `dirichlet`, `categorical`, `permutation`. `permute ~n i`
+is a keyed bijection of `[0, n)`.
 
 ## Reads and display
 
@@ -199,8 +207,13 @@ cumsum ?axis t
 cumprod ?axis t
 argmax ?axis ?keepdims t     (* returns 'd int64_t *)
 argmin ?axis ?keepdims t
-softmax ?axes ?scale t
-log_softmax ?axes ?scale t
+softmax ?axes ?scale ?where t
+log_softmax ?axes ?scale ?where t
+standardize ?axes ?eps ?scale ?shift t
+moments_ranges ~lo ~hi t
+histogram dims
+weighted_histogram ~weights dims
+rms_norm ?axes ?eps ?scale t
 all ?axes ?keepdims t | any ?axes ?keepdims t   (* 'd bool_t *)
 associative_scan ?axis s f x
 ```
@@ -210,10 +223,16 @@ A reduction's `~axes` is a list. `argmax` takes `~axis`.
 ## Linear algebra
 
 ```ocaml
-matmul a b                    (* Infix *@ *)
-dot a b
-contract ?sizes ?acc ?init dt pattern a b
-einsum ?sizes ?acc pattern tensors
+matmul ?sum a b               (* Infix *@ *)
+dot ?sum a b
+inner ?sum a b
+tensordot ?axes ?sum a b
+vdot ?sum a b
+vecdot ?axis ?sum a b
+attention ?scale ?lengths ?mask ?score ~acc ~kv q
+matmul_segments ?sum ids x w  (* routed experts *)
+contract ?sizes ?init ?sum dt pattern a b
+einsum ?sizes ?sum pattern tensors
 rearrange ?sizes pattern x
 Pattern.v : string -> Pattern.t
 Pattern.inverse : Pattern.t -> Pattern.t
@@ -243,6 +262,15 @@ lstsq ?rtol dt a b            (* (x, residuals, rank, s) *)
 
 `triangle = Lower | Upper`, `factors = Reduced | Complete`,
 `transpose = Transpose | Adjoint`.
+
+`~sum:true` on `matmul`, `dot`, `matmul_segments`, `inner`, `tensordot`,
+`vdot`, `vecdot`, `contract` or `einsum` leaves a product whose summed axis
+is cut across devices as a sum (`Placement.partial`); `Nx.place` onto a
+placement that is no sum, such as `Placement.closed p`, closes it.
+
+`attention ~acc ~kv q` returns `(o, lse)` for queries `q` and keys/values
+`kv`; `~acc` is the dtype of the log-sum-exp, such as `Nx.float32`, and
+`kv` is `Dense { k; v }` or `Paged { k; v; table }`.
 
 ## Infix
 
@@ -282,6 +310,10 @@ Nx.Prim        (* the operation language: interpretation, custom ops *)
 Nx_kernel.S    (* the contract a kernel library implements *)
 Nx_cpu         (* kernels for host memory, library nx.cpu *)
 ```
+
+`Nx.Prim` also carries the compiler-facing `has_kernels`, `partition`,
+`pieces`, `layouts`, `composite`, `apart`, `offset` and `position_rows`;
+application code should not need them.
 
 `Nx_array` is for code that needs strides, offsets or the `Rig.Buffer` under
 a value. Application code should not need it.

@@ -35,7 +35,7 @@ only place a driver and an index are named.
 | Device | Opener | Library |
 | --- | --- | --- |
 | host cores | `Rig.host` (no opener) | `rig` |
-| memory device | `Rig.memory_device "name"` | `rig` |
+| software device | `Rig.software "name"` | `rig` |
 | Apple GPU | `Rig_metal.gpu 0` | `rig.metal` |
 | NVIDIA, CUDA | `Rig_cuda.gpu 0` | `rig.cuda` |
 | NVIDIA, kernel driver | `Rig_nv_nvidia.gpu 0` | `rig.nv.nvidia` |
@@ -47,14 +47,14 @@ An opener is passed to `Rig.open_`. Two device families do not use one:
 
 | Device | How it opens | Library |
 | --- | --- | --- |
-| files (io device) | `Rig_disk.device`, then `Rig_disk.of_file path` for a buffer | `rig.disk` |
+| files (io device) | `Rig_disk.device`, then `Rig_disk.of_file` and `Rig_disk.buffer` | `rig.disk` |
 | another machine | `Rig_remote.connect ~key agents` opens a job and each machine's hosts | `rig.remote` |
 | ConnectX NIC | `Rig_mlx5.open_`, its own opener | `rig.mlx5` |
 | Broadcom NetXtreme NIC | `Rig_bnxt.open_`, its own opener | `rig.bnxt` |
 
 ```ocaml
 val open_   : ?machine:t -> 'a Rig_edge.opener -> (t, string) result
-val open_io : ?machine:t -> 'a Rig_edge.io_opener -> (t, string) result
+val open_io : ?machine:t -> string -> (t, string) result
 ```
 
 `Error why` means the device cannot be opened; `why` names the device and the
@@ -62,9 +62,10 @@ driver's reason. `Invalid_argument` means the call is misused. `open_` holds
 the name's lock while the opener runs, so opens of one name serialise and
 opens of other names do not.
 
-`Rig.memory_device name` is the test device: its memory is the host's and its
-work runs before `submit` returns. Use it for examples and tests that must run
-on any machine.
+`Rig.software name` is the test device: its memory is the host's and its
+work runs before `submit` returns. Use it for examples and tests that must
+run on any machine. The public docs call it a *memory device* and name it
+`Rig.memory_device`; the pinned `rig.mli` here has `Rig.software`.
 
 ## Properties
 
@@ -73,10 +74,13 @@ val name        : t -> string
 val equal       : t -> t -> bool
 val pp          : Format.formatter -> t -> unit
 val arch        : t -> string
+val instruction_set : t -> string
+val cache_bytes : t -> int option
 val bus         : t -> string option
 val computes    : t -> bool
 val runs_on_host: t -> bool
 val alignment   : t -> int
+val offers      : t -> Rig_edge.memory -> bool
 val capability  : t -> 'a Type.Id.t -> 'a option
 val host_of     : t -> t
 val reaches     : t -> t -> bool
@@ -87,9 +91,13 @@ val close       : t -> unit
 - `equal` is the comparison. Do not use `=`: a device is an abstract value.
 - `computes d` is false for an io device.
 - `runs_on_host d` is what `Nx.devices` uses to decide whether a set has
-  eager kernels. A host-backed set computes through `nx.cpu`; a GPU set needs
-  `Rune.jit`.
+  eager kernels. A host-backed set computes through `nx.cpu`; a GPU set
+  minted without kernels needs `Rune.jit` (or `nx.cuda` kernels on `sm_89`).
 - `alignment d` is the byte alignment of an allocation on `d`.
+- `offers d k` says whether `Buffer.create ~memory:k d n` makes that kind
+  of memory on `d`.
+- `instruction_set d` is `x86_64`, `arm64` or the architecture itself;
+  `cache_bytes d` is its last-level cache size where the driver states it.
 - `capability d k` is a driver-specific capability under a type key.
 - `host_of d` is the host of `d`'s machine.
 - `reaches a b` says whether `a` can map `b`'s memory. `Nx.place` and
@@ -241,13 +249,17 @@ Memory returns on its own once collected:
 ```ocaml
 val budget     : t -> int
 val allocated  : t -> int
+val charged    : ?memory:Rig_edge.memory -> t -> t
+val allocation : t -> int -> int
 val set_budget : t -> int -> unit
 val free_cache : t -> unit
 ```
 
 `budget` starts at `max_int` for the host and at the driver's budget for a
-GPU. `allocated` is what the device holds now. `set_budget` lowers or raises
-it; `free_cache` returns cached memory.
+GPU. `allocated` is what the device holds now. `charged d` is the device
+whose budget a buffer of `d`'s memory counts in, and `allocation d n` is
+what an `n`-byte buffer counts there. `set_budget` lowers or raises the
+budget; `free_cache` returns cached memory.
 
 A buffer kind changes what counts where:
 

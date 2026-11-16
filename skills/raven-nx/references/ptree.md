@@ -72,6 +72,8 @@ val v : ('a 'b. cursor -> 's -> 's) -> ('s,'d) t
 val tensor : (('v,'s,'d) tensor, 'd) t
 val unit : (unit, 'd) t
 val pair : ('a,'d) t -> ('b,'d) t -> ('a * 'b, 'd) t
+val triple : ('a,'d) t -> ('b,'d) t -> ('c,'d) t -> ('a * 'b * 'c, 'd) t
+val quad : ('a,'d) t -> ('b,'d) t -> ('c,'d) t -> ('e,'d) t -> ('a * 'b * 'c * 'e, 'd) t
 val option : ('a,'d) t -> ('a option, 'd) t
 val list : ('a,'d) t -> ('a list, 'd) t
 ```
@@ -92,7 +94,10 @@ Nx.Ptree.v (fun c { Inputs.theta; x0; us0 } ->
   { Inputs.theta; x0; us0 })
 ```
 
-- `pair`, `option`, `list` and `unit` compose descriptions without a module.
+- `pair`, `triple`, `quad`, `option`, `list` and `unit` compose descriptions
+  without a module. `triple` and `quad` walk the tuple's components at
+  `Index 0` to `Index 3`; a larger tuple is a record walked with `v` and
+  `Walk.field`.
 
 A description is at one dtype and one set, fixed by its first use.
 
@@ -141,9 +146,9 @@ keys at `Placement.uncut p` with `Nx.Rng.place`.
 
 `Nx.Ptree.place` is how a whole model or optimizer state crosses to a device.
 Place it at the boundary of the jitted function that consumes it, not at
-initialisation: a GPU set has no eager kernels, so host code cannot use a
-placed structure. Once a jitted step returns the structure, a recursive loop
-keeps it on the device. See `raven-rig`.
+initialisation: a GPU set minted without kernels has no eager kernels, so
+host code cannot use a placed structure. Once a jitted step returns the
+structure, a recursive loop keeps it on the device. See `raven-rig`.
 
 `Nx.Ptree.Payload.map/map2/fold` are for structures whose positions hold a
 payload (a mask, a learning rate per array, a plan), not arrays.
