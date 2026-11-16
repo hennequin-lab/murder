@@ -422,11 +422,15 @@ let coordinates
            smin
            gamma);
   let rhs = Infix.(vt *@ reshape [| k; 1 |] c) in
+  (* [s] is a row and [rhs] a column: shape the spectrum as a column, or the
+     elementwise solve broadcasts [k] against [k; 1] into a [k; k] matrix. *)
+  let s = reshape [| k; 1 |] s in
+  let damped = Infix.(s +$ gamma) in
   let rhs =
     match preconditioner with
-    | `Inverse -> Infix.(rhs / (s +$ gamma))
-    | `Inverse_sqrt -> Infix.(rhs / sqrt (s +$ gamma))
-    | `Pseudoinverse -> Infix.(rhs * sqrt s / (s +$ gamma))
+    | `Inverse -> Infix.(rhs / damped)
+    | `Inverse_sqrt -> Infix.(rhs / sqrt damped)
+    | `Pseudoinverse -> Infix.(rhs * sqrt s / damped)
   in
   let z = reshape [| k |] Infix.(u *@ rhs) in
   (* Back to the sketch's own coordinates, where [apply] contracts them: the
