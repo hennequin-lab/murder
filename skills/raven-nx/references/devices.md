@@ -20,6 +20,8 @@ let module B = (val Nx.devices [ Rig.host ]) in
 
 `Nx.Placement.same` and `Nx.Placement.equal` compare placements across
 brands; `same` returns a type equality when the brands name one set.
+`Nx.Devices.to_list s` is the device list of a set; the lab's tests use
+`Nx.devices (Nx.Devices.to_list Nx.Host.v)` to mint a second host set.
 
 ## Minting a set
 
@@ -33,15 +35,17 @@ val devices : ?kernels:(module Nx_kernel.S) -> Rig.t list -> (module Devices)
   the host and placed, and every other operation raises where it would make
   elements, naming the `place` onto a set with kernels or the compiler that
   would compute it. `Rune.jit` supplies that compiler.
-- `~kernels` must compute on every device of the set. Raven at this pin ships
-  `nx.cpu` (library `nx.cpu`, module `Nx_cpu`) for host memory; there is no
-  GPU kernel library, which is why the lab's GPU code is always compiled.
+- `~kernels` must compute on every device of the set. Raven at this pin
+  ships `nx.cpu` for host memory and `nx.cuda` for NVIDIA `sm_89` GPUs.
+  Without `~kernels`, a GPU set has no eager kernels, which is why the lab's
+  GPU code is always compiled. `Nx.Prim.has_kernels s` reports whether a
+  set computes eagerly.
 
 `module type Devices` is:
 
 ```ocaml
 type d
-val v : d devices
+val v : d Devices.t
 val on : d Placement.t
 val split : axis:int -> d Placement.t
 ```
@@ -62,12 +66,14 @@ This is the idiom in `packages/sofo/example/*.ml` and `packages/sofo/README.md`.
 ## Placements
 
 ```ocaml
-val on : 'd devices -> 'd t
-val device : 'd devices -> Rig.t -> 'd t
-val split : axis:int -> 'd devices -> 'd t
+val on : 'd Devices.t -> 'd t
+val device : 'd Devices.t -> Rig.t -> 'd t
+val split : axis:int -> 'd Devices.t -> 'd t
 val mesh : 'd Mesh.t -> (int * string list) list -> 'd t
+val partial : 'd Mesh.t -> string list -> (int * string list) list -> 'd t
+val closed : 'd t -> 'd t
 val uncut : 'd t -> 'd t
-val devices : 'd t -> 'd devices
+val devices : 'd t -> 'd Devices.t
 val equal : 'd t -> 'e t -> bool
 val same : 'd t -> 'e t -> ('d, 'e) Type.eq option
 val pp : Format.formatter -> 'd t -> unit
@@ -81,8 +87,15 @@ val pp : Format.formatter -> 'd t -> unit
 - `mesh m cuts` lays the devices over named axes, major first. An axis cut
   over several mesh axes is cut over the product of their extents, numbered
   major first.
+- `partial m sums cuts` is a `mesh` whose value is a sum over the mesh axes
+  `sums`: each device holds a term, and a group of devices holds the sum.
+  `closed p` marks it no longer a sum. A product asked for its sum, with
+  `Nx.contract ~sum:true`, `Nx.matmul ~sum:true` or `Nx.einsum ~sum:true`,
+  leaves such a partial; `Nx.place` onto a placement that is no sum closes
+  it. Application code sees a closed value; `partial` and `closed` are for
+  library code that delays the close.
 - `uncut p` is `p` with every axis whole, each mesh axis holding copies.
-  `Nx.beside x` is `uncut (placement x)`.
+  `Nx.beside x` is `uncut (placement x)` and no sum.
 - `with_leading_axis` / `without_leading_axis` are for interpreters that map
   over a new leading axis (what `Rune.vmap` does). Not for application code.
 
@@ -198,9 +211,11 @@ let p = Nx.Placement.mesh m [ 0, [ "row" ]; 1, [ "col" ] ] in
 ```
 
 A reduction over a cut axis produces a result cut nothing: the devices
-compute partials and the operation closes them. A broadcast's cotangent is
-summed over repeated axes first, so the gradient of a bias added to a cut
-batch moves no activation (see `rune.mli`, "Placement" under tangents).
+compute partials and the operation closes them. A product asked for its sum
+is the exception: it leaves a partial placement, and `Nx.place` closes it.
+A broadcast's cotangent is summed over repeated axes first, so the gradient
+of a bias added to a cut batch moves no activation (see `rune.mli`,
+"Placement" under tangents).
 
 ## Waiting
 

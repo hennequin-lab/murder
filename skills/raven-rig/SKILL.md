@@ -1,6 +1,6 @@
 ---
 name: raven-rig
-description: "Run Raven work on CPUs, GPUs, files and remote machines with Rig in the Hennequin lab monorepo (murder). Use when a task selects or opens a device, moves an Nx value to a GPU, adds a -dev flag, writes or reads Rig buffers, submits kernels through Rig.Submission/Rig.Image, handles a lost device, or explains why an eager Nx operation on a GPU set raises. Triggers: Rig.host, Rig.open_, Rig_cuda, Rig_metal, Rig_amd_amdgpu, Rig_nv_nvidia, Nx.devices, placement, GPU, device selection, buffer, submission, Point.wait, Lost."
+description: "Run Raven work on CPUs, GPUs, files and remote machines with Rig in the Hennequin lab monorepo (murder). Use when a task selects or opens a device, moves an Nx value to a GPU, adds a -dev flag, writes or reads Rig buffers, submits kernels through Rig.Submission/Rig.Image, handles a lost device, or explains why an eager Nx operation on a GPU set raises. Triggers: Rig.host, Rig.software, Rig.open_, Rig_cuda, Rig_metal, Rig_amd_amdgpu, Rig_nv_nvidia, Nx.devices, placement, GPU, device selection, buffer, submission, Point.wait, Lost."
 ---
 
 # Rig
@@ -40,10 +40,11 @@ let () = Stdio.printf "device: %s\n%!" (Rig.name device)
 
 ### Where values live
 
-A GPU set (AMD or NVIDIA) has no eager Nx kernels at this pin: creations are
+A GPU set minted without `~kernels` has no eager Nx kernels: creations are
 made on the host and placed, every other eager operation raises, and
-`Rune.jit` supplies the compiler. Host-only sets (`Rig.host`, or a set of host
-devices) compute eagerly through `nx.cpu`.
+`Rune.jit` supplies the compiler. `nx.cuda` supplies kernels for NVIDIA
+`sm_89` GPUs, but the lab's sets do not pass them. Host-only sets
+(`Rig.host`, or a set of host devices) compute eagerly through `nx.cpu`.
 
 So initialise models, optimizer state and data on the host, and move a value
 to the device only at the boundary of the jitted function that consumes it:
@@ -106,17 +107,20 @@ submits it. That is the rest of this skill.
 type t
 val host : t
 val open_    : ?machine:t -> 'a Rig_edge.opener -> (t, string) result
-val open_io  : ?machine:t -> 'a Rig_edge.io_opener -> (t, string) result
-val memory_device : string -> (t, string) result
+val open_io  : ?machine:t -> string -> (t, string) result
+val software : string -> (t, string) result
 val close : t -> unit
 val name : t -> string
 val equal : t -> t -> bool
 val pp : Format.formatter -> t -> unit
 val arch : t -> string
+val instruction_set : t -> string
+val cache_bytes : t -> int option
 val bus : t -> string option
 val computes : t -> bool
 val runs_on_host : t -> bool
 val alignment : t -> int
+val offers : t -> Rig_edge.memory -> bool
 val capability : t -> 'a Type.Id.t -> 'a option
 val host_of : t -> t
 val reaches : t -> t -> bool
@@ -130,23 +134,30 @@ machine.
 | Device | Open with |
 | --- | --- |
 | host cores | `Rig.host` |
-| memory device (host memory, work runs before the call returns) | `Rig.memory_device "name"` |
+| software device (host memory, work runs before the call returns) | `Rig.software "name"` |
 | Apple GPU (Metal) | `Rig.open_ (Rig_metal.gpu 0)` |
 | NVIDIA GPU (CUDA) | `Rig.open_ (Rig_cuda.gpu 0)` |
 | NVIDIA GPU (kernel driver) | `Rig.open_ (Rig_nv_nvidia.gpu 0)` |
 | NVIDIA GPU (no kernel driver, Linux) | `Rig.open_ (Rig_nv_pci.gpu 0)` |
 | AMD GPU (`amdgpu`) | `Rig.open_ (Rig_amd_amdgpu.gpu 0)` |
 | AMD GPU (no kernel driver, Linux) | `Rig.open_ (Rig_amd_pci.gpu 0)` |
-| files (io device) | `Rig_disk.device`, then `Rig_disk.of_file path` for a buffer |
+| files (io device) | `Rig_disk.device`, then `Rig_disk.of_file` and `Rig_disk.buffer` |
 | another machine | `Rig_remote.connect ~key agents` opens a job and each machine's hosts |
 | ConnectX NIC | `Rig_mlx5.open_`, its own opener |
 | Broadcom NetXtreme NIC | `Rig_bnxt.open_`, its own opener |
+
+The public docs call the software device a *memory device* and name it
+`Rig.memory_device`. The pinned `rig.mli` in this checkout has `Rig.software`;
+use that name here.
 
 Each driver is a separate library (`rig.metal`, `rig.cuda`, `rig.nv.nvidia`,
 `rig.nv.pci`, `rig.amd.amdgpu`, `rig.amd.pci`, `rig.remote`, `rig.disk`, ...).
 Add it beside `rig` in the executable's `libraries`.
 
 `Rig.name` is for logs. `Rig.equal` is the device comparison; do not use `=`.
+`Rig.instruction_set d` is `"x86_64"`, `"arm64"` or the architecture itself;
+`Rig.cache_bytes d` is its last-level cache size where the driver states it.
+`Rig.offers d k` says whether a buffer of memory kind `k` can be made on `d`.
 `Rig.runs_on_host d` is what `Nx.devices` uses to decide whether a set has
 eager kernels. `Rig.reaches a b` says whether `a` can map `b`'s memory, which
 is what `Nx.place` and `Buffer.borrow` depend on.
@@ -191,6 +202,8 @@ memory. A `Buffer.copy` returns once the bytes are in the destination.
 
 The host waits only at these points. A loop that never waits holds the values
 of the steps the queues hold; a submit waits for room once a queue is full.
+Ordering is per `Rig.word`, which is 4 bytes: two buffers that share a word
+are ordered as one.
 
 ## Buffers
 
@@ -199,12 +212,17 @@ module Buffer : sig
   type t
   type device := t
   type kind = Device | Pinned | Mapped
+  val host_addresses : device -> bool
   val create : ?memory:kind -> device -> int -> t
   val of_string : string -> t
   val of_bigarray : ('a, 'b, Bigarray.c_layout) Bigarray.Array1.t -> t
-  val of_io : device -> 'r Type.Id.t -> 'r -> access:access -> int -> t
+  val of_io :
+    device ->
+    (module Rig_edge.Io with type region = 'r) ->
+    'r -> access:access -> int -> t
   val view : t -> first:int -> length:int -> t
   val borrow : device -> t -> t option
+  val unborrow : ?why:string -> t -> bool
   val free : ?why:string -> t -> bool
   val device : t -> device
   val length : t -> int
@@ -212,6 +230,10 @@ module Buffer : sig
   val dead : t -> string option
   val spans : t -> bool
   val overlaps : t -> t -> bool
+  val share_byte : t -> t -> bool
+  val is_borrowed : t -> bool
+  val wait : t -> access -> unit
+  val reached : t -> access -> bool
   val read :
     t -> ('a, 'b) Bigarray.kind
     -> (('a, 'b, Bigarray.c_layout) Bigarray.Array1.t -> 'c) -> 'c
@@ -234,15 +256,21 @@ end
 
 - `create d n` allocates `n` bytes of `d`'s memory. `Pinned` is host memory
   the device also addresses; `Mapped` is device memory the host also
-  addresses, slowly.
+  addresses, slowly. `host_addresses d` is true when the host addresses all
+  of `d`'s memory, as for `Rig.host` and `Rig.software`.
 - `view` is a range of another buffer's bytes in the same allocation.
   `borrow d b` is a buffer on `d` over `b`'s memory without a copy, or `None`
-  if `d` cannot map it.
-- `read` and `write` hand the host the memory as a bigarray, after waiting
-  for the last use or write. The callback must not keep the array.
-  `blit_to_bytes` copies out of memory the host does not address.
+  if `d` cannot map it. `unborrow b` ends a borrow early when no claim or
+  hold keeps it.
+- `read` and `write` hand the host the memory as a bigarray: `read` waits
+  for the last write, `write` for every use. The callback must not keep the
+  array. `blit_to_bytes` copies out of memory the host does not address.
+- `Buffer.wait b a` waits for the memory's last write (`Read`) or last use
+  (`Read_write`); `Buffer.reached b a` tests it without blocking.
+  `is_borrowed b` says whether `b` is a borrow.
 - Compare buffers with `==`. Polymorphic comparison does not look at bytes;
-  `=` raises for two buffers of one device.
+  `=` raises for two buffers of one device. `overlaps` compares words;
+  `share_byte` compares bytes, which a copy refuses.
 - A dead buffer raises `Invalid_argument` on use. `Buffer.dead` gives the
   reason.
 - `Buffer.free` returns the memory early when nothing else claims it.
@@ -267,14 +295,14 @@ module Submission : sig
   val words  : Buffer.t -> part
 
   val make : ?keep:'a -> ?fixed:(Buffer.t * access) list -> device -> part array -> t
+  type block
   val block : t -> int -> block
   val address : t -> Buffer.t -> int
 
   module Run : sig
     type submission := t
     type t
-    val make    : submission -> t
-    val take    : t -> bool
+    val submission : t -> submission
     val release : t -> unit
     val groups  : t -> block -> int -> int -> int -> unit
     val threads : t -> block -> int -> int -> int -> unit
@@ -284,6 +312,8 @@ module Submission : sig
     val float32 : t -> block -> int -> float -> unit
     val float64 : t -> block -> int -> float -> unit
   end
+
+  val take : t -> Run.t
 end
 val submit : ?waits:Point.t array -> Submission.Run.t -> buffers:Buffer.t array -> Point.t
 ```
@@ -299,10 +329,12 @@ runs a run once with one buffer per slot and returns its point.
   submit passes at index `i`.
 - A launch's grid comes from `Run.groups`, `Run.threads` and `Run.shared`;
   its parameters from `Run.int32`, `int64`, `float32`, `float64` or the refs.
-- A run is taken by the calling thread (`Run.take`), stored into, and
-  released or submitted. A store into a run the thread has not taken raises.
-- A submission is made once and submitted many times. `Run.make` is cheap;
-  `Submission.make` is the expensive preparation.
+- A run is taken by the calling thread (`Submission.take`), stored into,
+  and released or submitted. A store into a run the thread has not taken
+  raises.
+- A submission is made once and submitted many times. `Submission.take` is
+  cheap and reuses a free run; `Submission.make` is the expensive
+  preparation.
 
 ```ocaml
 module Image : sig
@@ -312,6 +344,7 @@ module Image : sig
   val load : device -> string -> (t, string) result
   val device : t -> device
   val resolve : t -> string -> func option
+  val prepare : t -> string -> unit
   val name : func -> string
   val image : func -> t
   val params : func -> int option
@@ -321,7 +354,10 @@ end
 ```
 
 An image is a binary compiled for the device: a metallib on Apple, PTX or
-cubin on NVIDIA, an ELF on AMD. `Image.resolve` finds a function by name.
+cubin on NVIDIA, an ELF on AMD. `Image.resolve` finds a function by name;
+`Image.prepare` starts making one ready without waiting, and the next
+`resolve` waits for it.
+
 Application code rarely calls `Image` directly; `Rune.jit` compiles and runs
 its own programs.
 
@@ -389,19 +425,22 @@ key once, at a module's top level; `get` initialises on first use and takes no
 lock afterwards. `Local` is for libraries, not for application state.
 
 `Rig.budget` is the device's memory budget; `Rig.allocated` what rig holds on
-it. `set_budget` lowers or raises it; `free_cache` returns cached allocations.
+it. `Rig.charged d` is the device whose budget a buffer of `d`'s memory
+counts in, and `Rig.allocation d n` is what an `n`-byte buffer counts there.
+`set_budget` lowers or raises the budget; `free_cache` returns cached
+allocations.
 
 ## Testing
 
-Use `Rig.memory_device "name"` for a device that runs anywhere: its memory is
-the host's and its work runs before `submit` returns. The Nx device-set tests
-use `Nx.devices (Nx.rigs Nx.Host.v)` to prove a computation is placement-
-polymorphic without a GPU. Do not fake a GPU; skip cleanly when no device
-opens.
+Use `Rig.software "name"` for a device that runs anywhere: its memory is
+the host's and its work runs before `submit` returns. The Nx device-set
+tests use `Nx.devices (Nx.Devices.to_list Nx.Host.v)` to prove a computation
+is placement-polymorphic without a GPU. Do not fake a GPU; skip cleanly
+when no device opens.
 
 ```ocaml
 let test_device_set () =
-  let module D = (val Nx.devices (Nx.rigs Nx.Host.v)) in
+  let module D = (val Nx.devices (Nx.Devices.to_list Nx.Host.v)) in
   let on x = Nx.place D.on x in
   (* [f] is the computation under test. *)
   equal ~msg:"the result" (array float_exact) (to_array (f x)) (to_array (f (on x)))
@@ -411,8 +450,8 @@ let test_device_set () =
 
 - `Rig.open_` returns a result. `Result.get_ok` is fine in an example; in a
   library, report `Error why` to the caller.
-- An eager Nx operation on a GPU set raises. Compile it with `Rune.jit`, or
-  do that part on the host.
+- An eager Nx operation on a GPU set minted without kernels raises. Compile
+  it with `Rune.jit`, or do that part on the host.
 - Do not name a driver in a library. Take a `Rig.t` and let the caller open
   it.
 - Do not use `=` on devices or buffers.
@@ -429,3 +468,8 @@ let test_device_set () =
   budget, remote machines.
 - `references/buffers-and-submissions.md` — buffers, copies, claims,
   submissions, launches, images, and the Nx/Rune boundary.
+
+These notes follow the Raven commit pinned in this repository; `rig.mli`
+under `_build/_private/default/.pkg/rig.dev-*/source/packages/rig/lib/` is
+the API that compiles here. The public docs may describe a different API; the
+`software`/`memory_device` note above is the main naming difference in use.

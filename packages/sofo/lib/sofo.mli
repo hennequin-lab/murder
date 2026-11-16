@@ -389,12 +389,15 @@ module Optim : sig
 
       - [`Inverse] is Algorithm 1's [(S + γ·I)⁻¹]: the exact Newton step inside
         the sketched subspace;
+      - [`Pseudoinverse] is [sqrt(S) / (S + γ·I)]: what a pseudoinversion of the GGN
+        prescribes. Use this when you know your GGN is rank deficient.
       - [`Inverse_sqrt] is [(S + γ·I)^{-1/2}], which caps what a direction the
         sketch resolves poorly can contribute and gives the step a square-root
         scaling — closer to a normalized-gradient step than to a Newton one,
         and usually wanting a larger [lr]. *)
   type preconditioner =
     [ `Inverse
+    | `Pseudoinverse
     | `Inverse_sqrt
     ]
 

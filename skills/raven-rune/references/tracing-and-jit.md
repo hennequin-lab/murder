@@ -32,6 +32,17 @@ array a stand-in; `Nx.shape`, `Nx.dtype` and `Nx.placement` work, anything
 else raises. Use `eval_shape` to check shapes before a run, and `program` to
 see why a trace fails.
 
+`Rune.footprint s f x` reports the bytes the first call of `jit s f` over
+`x` allocates on each device and the host, without linking or running the
+program:
+
+```ocaml
+val footprint :
+  ('a -> 'b, 'd) Ptree.fn -> ('a -> 'b) -> 'a -> (Rig.t * int) list
+```
+
+Use it to plan memory for a compiled step whose shapes are fixed.
+
 ## Stand-ins and what a traced function may do
 
 A stand-in has a dtype, a shape and a placement, and no elements. Therefore:
@@ -126,10 +137,10 @@ them, except a result that takes a donated argument's memory. A jitted
 training step therefore returns its parameters and state on the device, and a
 recursive loop that threads them keeps them there.
 
-Initialise on the host. A GPU set has no eager kernels, so a model or
-optimizer state placed at initialisation cannot be touched by host code.
-Place model parameters, optimizer state, inputs, targets and keys at the
-boundary of the first jitted call:
+Initialise on the host. A GPU set minted without kernels has no eager
+kernels, so a model or optimizer state placed at initialisation cannot be
+touched by host code. Place model parameters, optimizer state, inputs,
+targets and keys at the boundary of the first jitted call:
 
 ```ocaml
 let params = Nx.Ptree.place (module Model.P) D.on params in
@@ -196,6 +207,7 @@ Other tools:
 Rune.derivations ()   (* programs derived from compiled calls *)
 Rune.evaluations ()   (* compiled calls the compiler declined *)
 Rune.variants ()      (* variants lowered and linked *)
+Rune.lowerings ()     (* times compiled programs were lowered to tolk graphs *)
 ```
 
 The counters are per domain and intended for suites. They are still the

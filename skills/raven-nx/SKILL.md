@@ -82,7 +82,7 @@ let shift (type d) (x : (float, 's, d) Nx.t) =
 
 A host constant meeting a placed value is a **type error**, not a runtime
 broadcast. `Nx.beside x` is `Placement.uncut (placement x)`: whole on every
-device `x` lies on, so a value made there combines with `x`.
+device `x` lies on, and no sum, so a value made there combines with `x`.
 
 ## Device sets and placement
 
@@ -92,8 +92,9 @@ module D = (val Nx.devices [ device ])
 let placement = D.on                  (* whole value on every device *)
 ```
 
-`Nx.devices` mints a fresh brand. Two sets never meet in typed code, even
-over the same devices: `Nx.devices (Nx.rigs Nx.Host.v)` is a second, distinct
+`Nx.devices` mints a fresh brand. `Nx.Prim.has_kernels s` says whether the
+set computes eagerly. Two sets never meet in typed code, even over the same
+devices: `Nx.devices (Nx.Devices.to_list Nx.Host.v)` is a second, distinct
 host set, which the tests use to prove code is placement-polymorphic.
 
 Placements (`Nx.Placement`):
@@ -104,6 +105,8 @@ Placements (`Nx.Placement`):
 | `device s d` | whole value on `d` alone |
 | `split ~axis s` | cut `axis` into one window per device, evenly |
 | `mesh m cuts` | named mesh axes, major first |
+| `partial m sums cuts` | a sum over the mesh axes `sums` |
+| `closed p` | no longer a sum |
 | `uncut p` | whole on each device `p` cuts |
 | `equal p q`, `same p q` | same windows / same brand |
 | `devices p` | the set |
@@ -114,13 +117,14 @@ where their operands lie and move nothing: a mismatch raises
 `Invalid_argument` and the message names the `Nx.place` call to write.
 
 On a set without kernels, only host-only sets compute eagerly (through
-`nx.cpu`). A GPU set is computed by `Rune.jit` alone; eager operations on it
-raise and name the placement or compiler that would compute them. So build
-models, optimizer state and data on the host, and place them on `D.on` only at
-the boundary of the jitted function that consumes them. A key goes on the
-device with `Nx.Rng.place D.on k` at that boundary, not when it is created. A
-jitted step returns device values, so a recursive training loop keeps them
-there.
+`nx.cpu`); every other eager operation raises and names the placement or
+compiler that would compute it. `nx.cuda` supplies kernels for NVIDIA
+`sm_89` GPUs, but a set minted by `Nx.devices [ gpu ]` has none, so the
+lab's GPU code is computed by `Rune.jit`. Build models, optimizer state and
+data on the host, and place them on `D.on` only at the boundary of the
+jitted function that consumes them. A key goes on the device with
+`Nx.Rng.place D.on k` at that boundary, not when it is created. A jitted step
+returns device values, so a recursive training loop keeps them there.
 
 Read `references/devices.md` for routing rules, multi-device placement, and
 the GPU lifecycle.
@@ -183,7 +187,7 @@ Open `Nx.Infix` locally for operators:
 | `+ - * / **` | `add sub mul div pow` |
 | `+$ -$ *$ /$ **$` | scalar right operand |
 | `*@` | `matmul` |
-| `=% <>$ <$ <=$ >$ >=$` | comparisons to a scalar |
+| `=$ <>$ <$ <=$ >$ >=$` | comparisons to a scalar |
 | `= <> < <= > >=` | tensor comparisons |
 | `&& \|\|` | `logical_and`, `logical_or` (both sides computed) |
 | `.%{p}` / `.${idx}` | `get` / `slice` |
@@ -194,17 +198,25 @@ elementwise binary; `maximum_s`/`minimum_s` take a scalar. The lab's ReLU is
 
 Reductions take `~axes:int list` (not `axis`), `~keepdims`, and preserve the
 dtype: `sum`, `prod`, `mean`, `max`, `min`, `var ~ddof`, `std ~ddof`,
-`logsumexp`, `argmax ~axis`, `cumsum ~axis`, `softmax ~axes ~scale`,
-`log_softmax`. `associative_scan` is the tree scan for an associative
-elementwise `f`.
+`logsumexp`, `argmax ~axis`, `cumsum ~axis`, `softmax ?where ~axes ~scale`,
+`log_softmax ?where`, `standardize ?axes ?eps ?scale ?shift`,
+`moments_ranges`, `rms_norm ?axes ?eps ?scale`. `associative_scan` is the
+tree scan for an associative elementwise `f`. `histogram dims` counts points
+into cells and `weighted_histogram ~weights dims` sums their weights.
 
 Broadcasting aligns from the right: `[2;3]` with `[3]` works, `[2;3]` with
 `[2]` does not. Print shapes before an operation that surprises you.
 
-Linear algebra: `matmul`, `dot`, `contract`, `einsum`, `rearrange`,
-`matrix_transpose`, `matrix_power`, `tril`, `triu`, `diagonal`, `diag`,
-`eye`, `cholesky ~triangle`, `qr ~factors`, `lu`, `svd`, `svdvals`, `eigh`,
-`eigvalsh`, `det`, `solve`, `solve_triangular`, `inv`, `lstsq`.
+Linear algebra: `matmul`, `dot`, `matmul_segments`, `contract`, `einsum`,
+`rearrange`, `matrix_transpose`, `matrix_power`, `tril`, `triu`, `diagonal`,
+`diag`, `eye`, `cholesky ~triangle`, `qr ~factors`, `lu`, `svd`, `svdvals`,
+`eigh`, `eigvalsh`, `det`, `solve`, `solve_triangular`, `inv`, `lstsq`,
+`attention ~acc ~kv q`.
+`matmul_segments ids x w` multiplies each row of `x` by the matrix its id
+names, for routed experts. `matmul`, `dot`, `matmul_segments`, `inner`,
+`tensordot`, `vdot`, `vecdot`, `contract` and `einsum` take `~sum:true` to
+leave a product cut across devices as a sum; `Nx.place` onto a placement
+that is no sum closes it.
 
 `contract` and `einsum` take an `Nx.Pattern.t`. Write sums explicitly after
 `|`; a name silently dropped from the result raises rather than returning a
@@ -260,16 +272,20 @@ let draw () =
 - `with_key k f` runs `f` in a scope rooted at `k`; draws without `~key`
   take the scope's next key.
 - `split ?n k`, `split_batch ~n k`, `fold_in k i`, `fold_in_tensor k i`
-  derive independent keys. A key is spent once used: do not reuse one two
-  ways.
+  derive independent keys; `fold_in_tensor` takes an int64 tensor, so cast a
+  loop's int32 index with `Nx.cast Nx.int64 i`. A key is spent once used: do
+  not reuse one two ways.
 - `Nx.Rng.place p k` moves a key; a placement that cuts the words' axis
   holds no key.
-- Samplers: `normal`, `uniform`, `exponential`, `gumbel`, `randint`,
-  `bernoulli`, `gamma`, `beta`, `poisson`, `binomial`, `von_mises`, `bits`,
-  each with `_at`.
+- Samplers: `normal`, `uniform`, `exponential`, `gumbel` and `bits` have
+  host and `_at` forms; `randint`, `bernoulli`, `gamma`, `beta`, `poisson`,
+  `binomial`, `von_mises`, `truncated_normal`, `dirichlet` and `categorical`
+  take tensors as parameters and draw where those lie. `permute ~n i` is a
+  keyed bijection of `[0, n)` for shuffling indices.
 
 Inside `Rune.jit`, a draw without `~key` raises. In a scan or iterate step,
-draw from `fold_in_tensor k i` with the step index; see `raven-rune`.
+draw from `fold_in_tensor k (Nx.cast Nx.int64 i)` with the step index; see
+`raven-rune`.
 
 ## Donation and checks
 
@@ -312,9 +328,11 @@ should not appear in hot paths.
   or `take` position reads zero.
 - Integer and boolean arrays have no derivative. Cast to a float dtype
   before differentiating.
-- Eager operations on a GPU set raise. Compile with `Rune.jit` or use the
-  host. Do not place a model, state or key at initialisation: place it at the
-  jitted boundary instead, or host code can no longer touch it.
+- Eager operations on a GPU set minted without kernels raise. Compile with
+  `Rune.jit`, use the host, or mint the set with `nx.cuda` kernels where the
+  architecture is supported. Do not place a model, state or key at
+  initialisation: place it at the jitted boundary instead, or host code can
+  no longer touch it.
 - `Nx.donate` is not a free win: a view or a second value over the memory
   makes it shared, so the consumer allocates fresh memory instead of
   writing in place, and a dead value raises naming its consumer.
@@ -326,3 +344,7 @@ should not appear in hot paths.
 - `references/ptree.md` — walks, paths, `instantiate`/`nest`/`v`, derived
   maps, signatures.
 - `references/api.md` — function catalogue with signatures.
+
+These notes follow the Raven commit pinned in this repository; `nx.mli` under
+`_build/_private/default/.pkg/nx.dev-*/source/packages/nx/lib/` is the API
+that compiles here. The public docs may describe a different API.
