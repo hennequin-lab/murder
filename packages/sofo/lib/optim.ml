@@ -422,6 +422,9 @@ let coordinates
            smin
            gamma);
   let rhs = Infix.(vt *@ reshape [| k; 1 |] c) in
+  (* [s] is a vector; keep the column shape so the elementwise divisions
+     below broadcast down the column rather than across [k; k]. *)
+  let s = reshape [| k; 1 |] s in
   let rhs =
     match preconditioner with
     | `Inverse -> Infix.(rhs / (s +$ gamma))
