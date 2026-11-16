@@ -458,7 +458,7 @@ let tangent_solve
          dtheta)
   in
   let e_last = Infix.(dfx + Lqr.matvec tape.Lqr.fxx (slice [ I horizon ] g)) in
-  let _, q_hat =
+  let e0, q_hat =
     Rune.scan
       Nx.Ptree.tensor
       (tangent_stream_rows ())
@@ -503,7 +503,15 @@ let tangent_solve
       }
   in
   let v = concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] (zeros_like dx0); v_next ] in
-  { Lqr.xs = Infix.(g + v); us = du }
+  let xs = Infix.(g + v) in
+  if not p.Problem.free_initial
+  then { Lqr.xs; us = du }
+  else (
+    (* The initial state is a variable, so the tangent also satisfies its
+       stationarity: the pinned sweep leaves [e0] there, and the correction is
+       the model's step in [x₀] with the closed loop's response. *)
+    let dx1, du1 = Lqr.initial_response ~common ~tape ~residual:e0 in
+    { Lqr.xs = Infix.(xs + dx1); us = Infix.(du + du1) })
 
 (* ---------------------------------------------------------------------------
    The fixed-iteration solve
@@ -565,6 +573,7 @@ module Fixed_gains = struct
   type ('a, _) t =
     { ff : 'a (** the feedforward gain [k_k], [horizon; m] *)
     ; fb : 'a (** the feedback gain [K_k], [horizon; m; n] *)
+    ; d : 'a (** the step in the initial state, [n]; zero when it is pinned *)
     ; d1 : 'a (** the modelled first-order decrease, per member *)
     ; d2 : 'a (** the curvature the gains used, per member *)
     ; scale : 'a (** the value-Hessian scale of the pass, per member *)
@@ -661,18 +670,45 @@ let fixed_rollout_lane p theta x0 us =
 let fixed_scale (common : (float, 'w, 'd) Lqr.common) =
   Nx.max (Nx.abs (Nx.diagonal common.Lqr.value_hessian))
 
+(* [initial_step p ~common ~value_grad] is the step the local model takes in the
+   initial state — zero when the problem pins it — and the decrease it buys,
+   which the line search's model must count: the value function's own, in
+   [d1]'s units. The model is quadratic in [x₀], so the step is Newton's, and
+   it is the one {!Lqr.initial_deviation} reports. *)
+let initial_step p ~(common : (float, 'w, 'd) Lqr.common) ~value_grad =
+  if p.Problem.free_initial
+  then (
+    let d = Lqr.initial_deviation ~common ~value_grad in
+    d, Infix.(sum ~axes:[ -1 ] (value_grad * d)))
+  else zeros_like value_grad, zeros_like (sum ~axes:[ -1 ] value_grad)
+
+(* [stacked_x0 xs] is the state a stacked trajectory starts from: step 0, the
+   horizon being the second-to-last axis, so a batch's leading axes are kept. *)
+let stacked_x0 (xs : ('a, 'b, 'd) Nx.t) =
+  let axis = Array.length (shape xs) - 2 in
+  let spec = Array.create ~len:(axis + 1) Nx.A in
+  spec.(axis) <- Nx.I 0;
+  slice (Array.to_list spec) xs
+
 let fixed_backward_lane p theta xs us mu =
   let tape = blocks_t p theta xs us in
   let common = Lqr.backward_common ~mu tape in
-  let gains, d1, d2, _ = Lqr.backward_lin ~common ~tape ~lin:(Lqr.lin_of_tape tape) in
+  let gains, d1, d2, value_grad =
+    Lqr.backward_lin ~common ~tape ~lin:(Lqr.lin_of_tape tape)
+  in
+  let d, decrease = initial_step p ~common ~value_grad in
   { Fixed_gains.ff = gains.Lqr.feedforward
-  ; fb = gains.Lqr.feedback
-  ; d1
+  ; fb = gains.feedback
+  ; d
+  ; d1 = (if p.Problem.free_initial then Infix.(d1 + decrease) else d1)
   ; d2
   ; scale = fixed_scale common
   }
 
-let fixed_trial_lane p theta x0 xs us ff fb alpha =
+let fixed_trial_lane p theta d xs us ff fb alpha =
+  (* The trial starts from the nominal's own initial state, moved by the model's
+     step in [x₀] at the step size the search is trying. *)
+  let x0 = Infix.(stacked_x0 xs + (d * alpha)) in
   let xs_t, us_t =
     Lqr.rollout_tensor
       ~dyn:(dyn p theta)
@@ -713,7 +749,7 @@ let single_fixed_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) fixed_kerne
   { rollout = (fun theta x0 us -> fixed_rollout_lane p theta x0 us)
   ; backward = (fun theta xs us mu -> fixed_backward_lane p theta xs us mu)
   ; trial =
-      (fun theta x0 xs us ff fb alpha -> fixed_trial_lane p theta x0 xs us ff fb alpha)
+      (fun theta d xs us ff fb alpha -> fixed_trial_lane p theta d xs us ff fb alpha)
   }
 
 let batched_fixed_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) fixed_kernels =
@@ -737,14 +773,13 @@ let batched_fixed_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) fixed_kern
           p.Problem.params
           (pair tensor (pair tensor (pair tensor (pair tensor (pair tensor tensor)))))
         @-> returns (fixed_step ()))
-      (fun (theta, (x0, (xs, (us, (ff, (fb, alpha)))))) ->
-         fixed_trial_lane p theta x0 xs us ff fb alpha)
+      (fun (theta, (d, (xs, (us, (ff, (fb, alpha)))))) ->
+         fixed_trial_lane p theta d xs us ff fb alpha)
   in
   { rollout = (fun theta x0 us -> rollout (theta, (x0, us)))
   ; backward = (fun theta xs us mu -> backward (theta, (xs, (us, mu))))
   ; trial =
-      (fun theta x0 xs us ff fb alpha ->
-        trial (theta, (x0, (xs, (us, (ff, (fb, alpha)))))))
+      (fun theta d xs us ff fb alpha -> trial (theta, (d, (xs, (us, (ff, (fb, alpha)))))))
   }
 
 (* [unstack_horizon len t] is [t]'s horizon sliced into [len] per-step
@@ -856,7 +891,14 @@ let solve_fixed_with
     | alpha :: tl ->
       let alpha_t = broadcast_to (shape cost) (scalar alpha) in
       let trial =
-        kernels.trial theta x0 nominal.xs nominal.us gains.ff gains.fb alpha_t
+        kernels.trial
+          theta
+          gains.Fixed_gains.d
+          nominal.xs
+          nominal.us
+          gains.ff
+          gains.fb
+          alpha_t
       in
       let model = Infix.((alpha_t * d1) + (alpha_t * alpha_t * d2 *$ 0.5)) in
       let armijo = Nx.less_equal trial.Fixed_step.cost Infix.(cost + (model *$ c1)) in
@@ -1046,10 +1088,13 @@ type ('w, 'p, 'd) kernels =
       -> ('w, 'd) Problem.value
       -> ('w, 'd) Problem.value
       -> ('w, 'd) Problem.value
-      -> (float, 'w, 'd) Lqr.gains * ('w, 'd) Problem.value * ('w, 'd) Problem.value
+      -> (float, 'w, 'd) Lqr.gains
+         * ('w, 'd) Problem.value
+         * ('w, 'd) Problem.value
+         * ('w, 'd) Problem.value
     (** [backward theta xs us mu] linearizes at the trajectory and runs the
-        damped Riccati pass: the gains and the expected-decrease
-        coefficients. *)
+        damped Riccati pass: the gains, the expected-decrease coefficients, and
+        the model's step in the initial state ([n]; zero when it is pinned). *)
   ; trial :
       'p
       -> ('w, 'd) Problem.value
@@ -1058,8 +1103,9 @@ type ('w, 'p, 'd) kernels =
       -> (float, 'w, 'd) Lqr.gains
       -> ('w, 'd) Problem.value
       -> ('w, 'd) Problem.value * ('w, 'd) Problem.value * ('w, 'd) Problem.value
-    (** [trial theta x0 xs us gains alpha] rolls out one line-search step
-        and evaluates its cost. *)
+    (** [trial theta d xs us gains alpha] rolls out one line-search step from
+        the trajectory's own initial state, moved by [d] at [alpha], and
+        evaluates its cost. *)
   }
 
 (* The type of the compiled adaptive solve: {!solve} with the problem
@@ -1084,10 +1130,15 @@ let eager_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) kernels =
   ; backward =
       (fun theta xs us mu ->
         let tape = blocks_t p theta xs us in
-        let gains, d1, d2, _ = Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape) in
-        gains, d1, d2)
+        let common = Lqr.backward_common ~mu tape in
+        let gains, d1, d2, value_grad =
+          Lqr.backward_lin ~common ~tape ~lin:(Lqr.lin_of_tape tape)
+        in
+        let d, decrease = initial_step p ~common ~value_grad in
+        gains, (if p.Problem.free_initial then Infix.(d1 + decrease) else d1), d2, d)
   ; trial =
-      (fun theta x0 xs us gains alpha ->
+      (fun theta d xs us gains alpha ->
+        let x0 = Infix.(stacked_x0 xs + (d * alpha)) in
         let xs_t, us_t =
           Lqr.rollout_tensor ~dyn:(dyn p theta) ~x0 ~xs ~us ~gains ~alpha
         in
@@ -1116,11 +1167,16 @@ let compiled_kernels ?beam ?parallel (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd)
       ?parallel
       Nx.Ptree.(
         pair p.Problem.params (pair tensor (pair tensor tensor))
-        @-> returns (pair (pair tensor tensor) (pair tensor tensor)))
+        @-> returns (pair (pair (pair tensor tensor) tensor) (pair tensor tensor)))
       (fun (theta, (xs, (us, mu))) ->
          let tape = blocks_t p theta xs us in
-         let gains, d1, d2, _ = Lqr.backward ~mu tape ~lin:(Lqr.lin_of_tape tape) in
-         (gains.Lqr.feedback, gains.feedforward), (d1, d2))
+         let common = Lqr.backward_common ~mu tape in
+         let gains, d1, d2, value_grad =
+           Lqr.backward_lin ~common ~tape ~lin:(Lqr.lin_of_tape tape)
+         in
+         let d, decrease = initial_step p ~common ~value_grad in
+         let d1 = if p.Problem.free_initial then Infix.(d1 + decrease) else d1 in
+         ((gains.Lqr.feedback, gains.feedforward), d), (d1, d2))
   in
   let trial =
     Rune.jit
@@ -1131,8 +1187,9 @@ let compiled_kernels ?beam ?parallel (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd)
           p.Problem.params
           (pair tensor (pair tensor (pair tensor (pair (pair tensor tensor) tensor))))
         @-> returns (pair (pair tensor tensor) tensor))
-      (fun (theta, (x0, (xs, (us, ((feedback, feedforward), alpha))))) ->
+      (fun (theta, (d, (xs, (us, ((feedback, feedforward), alpha))))) ->
          let gains = { Lqr.feedback; feedforward } in
+         let x0 = Infix.(stacked_x0 xs + (d * alpha)) in
          let xs_t, us_t =
            Lqr.rollout_tensor ~dyn:(dyn p theta) ~x0 ~xs ~us ~gains ~alpha
          in
@@ -1144,12 +1201,12 @@ let compiled_kernels ?beam ?parallel (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd)
         xs, cost)
   ; backward =
       (fun theta xs us mu ->
-        let (feedback, feedforward), (d1, d2) = backward (theta, (xs, (us, mu))) in
-        { Lqr.feedback; feedforward }, d1, d2)
+        let ((feedback, feedforward), d), (d1, d2) = backward (theta, (xs, (us, mu))) in
+        { Lqr.feedback; feedforward }, d1, d2, d)
   ; trial =
-      (fun theta x0 xs us gains alpha ->
+      (fun theta d xs us gains alpha ->
         let (xs_t, us_t), cost =
-          trial (theta, (x0, (xs, (us, ((gains.Lqr.feedback, gains.feedforward), alpha)))))
+          trial (theta, (d, (xs, (us, ((gains.Lqr.feedback, gains.feedforward), alpha)))))
         in
         xs_t, us_t, cost)
   }
@@ -1224,12 +1281,12 @@ let solve_with
     then
       failwith
         "dilqr: Solver.solve: Quu could not be regularized to positive definiteness";
-    let gains, d1, d2 = kernels.backward theta !xs !us (mu ()) in
+    let gains, d1, d2, d = kernels.backward theta !xs !us (mu ()) in
     (* A non-positive-definite [Quu] gives a NaN Cholesky factor, and the NaN
        runs through the sweep into the gains and the expected-decrease
        accumulators. *)
     if finite d1 d2
-    then gains, d1, d2
+    then gains, d1, d2, d
     else if raise_damping ()
     then (
       log p "cholesky failed, mu -> %g" (mu_value ());
@@ -1248,7 +1305,7 @@ let solve_with
     if iter >= max_iter
     then ()
     else (
-      let gains, d1t, d2t = backward 0 in
+      let gains, d1t, d2t, d = backward 0 in
       let d1 = item_f d1t
       and d2 = item_f d2t in
       (* Converged: the modelled first-order decrease is negligible against
@@ -1262,7 +1319,7 @@ let solve_with
             | [] -> None
             | alpha :: tl ->
               let alpha_t = scalar_like x0 alpha in
-              let xs_t, us_t, cost_t' = kernels.trial theta x0 !xs !us gains alpha_t in
+              let xs_t, us_t, cost_t' = kernels.trial theta d !xs !us gains alpha_t in
               let fv : float = item_f cost_t' in
               let model = (alpha *. d1) +. (0.5 *. alpha *. alpha *. d2) in
               if Float.(fv <= c +. (c1 *. model))

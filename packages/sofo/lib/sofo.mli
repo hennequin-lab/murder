@@ -305,6 +305,13 @@ module Optim : sig
       is the parameter structure. Each batch lies whole on its leaf's
       devices.
 
+      The draw hangs off a subkey of [key] — lane [i]'s key is
+      [Nx.Rng.fold_in (Nx.Rng.fold_in key 0) i] — so a caller may derive keys
+      of its own from [key] without drawing a lane: the minibatch of the
+      examples is [Nx.Rng.fold_in key c] for some [c], and that is never a
+      direction the sketch already spent. Give the sketch and the data the
+      same root and their draws stay independent.
+
       [custom] is a batched parameter tree, typically built by {!tangents}:
       its [m] lanes become lanes [0 .. m-1] of the result, and [k - m] random
       lanes follow. With [m = k] no random lane is drawn. Custom lanes are
@@ -368,7 +375,10 @@ module Optim : sig
       direction in proportion to the largest curvature; damping from the
       bottom lifts only what is barely resolved, and so needs a full-rank
       sketch: with [s_min = 0] there is nothing to be relative to, and
-      {!coordinates} raises rather than dividing by it. *)
+      {!coordinates} raises rather than dividing by it. Damping from the top
+      needs the other end: [λ·s_max] is zero when the sketch has no curvature
+      at all, which is how a loss with no marks presents itself, and
+      {!coordinates} names that case too. *)
   type damping =
     [ `Absolute of float
     | `Relative_from_top of float
@@ -415,7 +425,11 @@ module Optim : sig
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
       smallest singular value is 0, and for a [gram] that is rank-deficient:
       [k] orthonormal directions do not fit in what fewer than [k] parameters
-      span. *)
+      span. It also raises, rather than returning infinities or NaNs, when the
+      damped spectrum is not strictly positive: a sketch with a zero GGN under
+      a relative mode (nothing to be relative to — usually a loss whose little
+      losses were not marked) and an undamped singular one, whose inverse needs
+      a full-rank sketch. *)
   val coordinates
     :  ?damping:damping
     -> ?preconditioner:preconditioner

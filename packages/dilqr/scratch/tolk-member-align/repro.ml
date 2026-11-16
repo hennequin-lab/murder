@@ -65,6 +65,7 @@ module P = struct
     ; n
     ; m = 1
     ; horizon
+    ; free_initial = false
     ; verbose = false
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics

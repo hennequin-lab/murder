@@ -392,6 +392,34 @@ let coordinates
            the top instead";
       factor *. smin
   in
+  (* The undamped solve is only defined on a full-rank spectrum, and the
+     relative modes tie the damping to a scale the spectrum may not have: a
+     sketch with no curvature scales `Relative_from_top's damping to zero with
+     it, so `s + gamma` has a zero on the diagonal and the solve would answer
+     infinity (or NaN, where `c` is zero too). Naming the case beats handing
+     the caller a NaN parameter tree. *)
+  if smin +. gamma <= 0.0
+  then
+    invalid_arg
+      (match damping with
+       | `Relative_from_top _ when smax = 0.0 ->
+         "Sofo.Optim.coordinates: the sketched GGN is zero, so `Relative_from_top scales \
+          its damping to zero with it and the solve has no finite answer; no curvature \
+          was marked (a loss jitted outside a sketch keeps no marks), or the marked \
+          predictions do not depend on the parameters — damp with `Absolute"
+       | `Absolute value when value <= 0.0 ->
+         Printf.sprintf
+           "Sofo.Optim.coordinates: the damped sketched GGN is singular: its smallest \
+            singular value is %g and the damping is %g; the undamped inverse needs a \
+            full-rank sketch, so damp with a positive `Absolute value or from the top"
+           smin
+           value
+       | _ ->
+         Printf.sprintf
+           "Sofo.Optim.coordinates: the damped sketched GGN is singular: its smallest \
+            singular value is %g and the damping is %g; the solve has no finite answer"
+           smin
+           gamma);
   let damped = Infix.(s +$ gamma) in
   let scale =
     match preconditioner with

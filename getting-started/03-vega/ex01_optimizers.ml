@@ -36,8 +36,8 @@ let run ~name ~init ~step =
 
 let () =
   run ~name:"SGD (lr=0.1)" ~init:Vega.sgd_init ~step:(fun state ->
-    Vega.sgd_step p ~lr:(Vega.lr 0.1) state);
+    Vega.sgd_step p ~lr:(Vega.rate 0.1) state);
   run ~name:"Adam (lr=0.01)" ~init:Vega.adam_init ~step:(fun state ->
-    Vega.adam_step p ~lr:(Vega.lr 0.01) state);
+    Vega.adam_step p ~lr:(Vega.rate 0.01) state);
   run ~name:"AdamW (lr=0.01, wd=0.01)" ~init:Vega.adamw_init ~step:(fun state ->
-    Vega.adamw_step p ~lr:(Vega.lr 0.01) ~weight_decay:0.01 state)
+    Vega.adamw_step p ~lr:(Vega.rate 0.01) ~weight_decay:(Vega.rate 0.01) state)

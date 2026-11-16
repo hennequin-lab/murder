@@ -17,6 +17,38 @@
        command:list
        EOL
        pkg-config
+       EOL)))))
+  ((((arch x86_64)
+     (os macos))
+    ((arch arm64)
+     (os macos)))
+   ((action
+     (progn
+      (when
+       (not
+        (= %{os_distribution} homebrew))
+       (run pkg-config --help))
+      (when
+       (= %{os_distribution} homebrew)
+       (run pkgconf --version))
+      (run
+       sh
+       ./write-config.sh
+       %{pkg-self:name}
+       -v
+       command:list
+       EOL
+       (when
+        (catch_undefined_var
+         (not
+          (= %{os_distribution} homebrew))
+         false)
+        pkg-config)
+       (when
+        (catch_undefined_var
+         (= %{os_distribution} homebrew)
+         false)
+        pkgconf)
        EOL)))))))
 
 (depexts
@@ -88,10 +120,3 @@
     https://raw.githubusercontent.com/dra27/mingw-w64-shims/refs/tags/1.0.1/write-config.sh)
    (checksum
     sha512=00c4e7c605e46c8fb4d24c40da0a9317e31e3ec723a7aac59546b1cfb180024cc76dbd27c2aca8d223047ad4b0a4bcd047443fc64a6e218a21931aaa672c3e71))))
-
-(enabled_on_platforms
- (only
-  ((arch x86_64)
-   (os linux))
-  ((arch arm64)
-   (os linux))))

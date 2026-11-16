@@ -139,7 +139,19 @@ module Poisson = struct
 
   let default_link x = Infix.(exp x +$ 1e-3)
 
-  let make (type w) ~at ?c_mask ?link ?(dt = 1.0) ~n ~n_output () =
+  let make
+        (type w)
+        ~at
+        ?c_mask
+        ?link
+        ?(dt = 1.0)
+        ?(bias = 0.)
+        ?(scale = 1.)
+        ?(log_gain = 0.)
+        ~n
+        ~n_output
+        ()
+    =
     if n <= 0 then invalid_arg "Likelihood.Poisson.make: n must be positive";
     if n_output <= 0 then invalid_arg "Likelihood.Poisson.make: n_output must be positive";
     if not (Float.( > ) dt 0.0)
@@ -148,7 +160,7 @@ module Poisson = struct
     let init ?key (dtype : (float, w) Nx.dtype) =
       let c =
         Infix.(
-          randn ~at ?key dtype [| n_output; n |] *$ (1.0 /. Float.sqrt (Float.of_int n)))
+          randn ~at ?key dtype [| n_output; n |] *$ (scale /. Float.sqrt (Float.of_int n)))
       in
       let c =
         match c_mask with
@@ -156,8 +168,8 @@ module Poisson = struct
         | Some mask -> Infix.(c * mask)
       in
       { c
-      ; bias = zeros_at at dtype [| n_output |]
-      ; log_gain = zeros_at at dtype [| n_output |]
+      ; bias = full_at at dtype [| n_output |] bias
+      ; log_gain = full_at at dtype [| n_output |] log_gain
       }
     in
     let mean (p : (_, _) params) x =

@@ -76,7 +76,7 @@ let () =
   in
   let step (p, st) =
     let value, grads = Rune.value_and_grad params loss p in
-    let p, st = Vega.adam_step params ~lr:(Vega.lr learning_rate) st ~params:p ~grads in
+    let p, st = Vega.adam_step params ~lr:(Vega.rate learning_rate) st ~params:p ~grads in
     p, st, item [] value
   in
   (* The accumulator is the pair [(params, optimizer state)]; each recursion

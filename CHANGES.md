@@ -159,10 +159,64 @@ changes do not need an entry.
   shift gives exactly those terms, so a damped pass costs one diagonal
   addition per step. `mu` may hold one strength per batch member.
   `Regularisation.floor` names the floor of a schedule.
+- New `Lqr.Laplace`: the local quadratic model's Gaussian over its whole latent
+  trajectory, `(x₀, u)`. The model's Hessian factorizes exactly along the
+  horizon — the value quadratic in `x₀` plus one form per step in the
+  innovation `(u_k − ū_k) − k_k − K_k (x_k − x̄_k)` — so `make` and
+  `make_fixed` read it from one tape and the factors a pass already computes,
+  `mean` is the model's minimizer, `sample` draws the innovations and rolls the
+  linear response out, and `log_prob` is the innovations' density, whose map to
+  the trajectory has a unit Jacobian. None of the three needs a dense
+  covariance: a draw costs one scan and a density one triangular solve per
+  step, and for a linear dynamics with Gaussian losses the Gaussian is the
+  posterior itself. `log_scale` is one scalar for every block, and `?mu` damps
+  the pass, which is what gives a model whose `Q_uu` is not positive definite
+  a Gaussian at all.
+- `Problem.t` gains `free_initial`: the step-0 running loss prices the initial
+  state, so a solve optimizes it jointly with the controls instead of starting
+  from the one it was given. The solve's initial state is then a starting point
+  and the trajectory it returns starts where it found, its step 0 being the
+  answer. The step is `Lqr.initial_deviation`'s — Newton's, the model being
+  quadratic in `x₀` — and both implicit derivatives take it: `Dilqr.bwd`'s
+  perturbation gains the closed loop's response to it and returns no cotangent
+  on the input state, and `Lqr.solve_jvp` takes `~free_initial` for the same
+  reason, `Lqr.initial_response` being the piece the two share. A problem that
+  prices `x₀` without a proper prior on it leaves the block singular, and the
+  step NaN.
 
 ### ilqr-vae
 
 - Imported from `hennequin-lab/ilqr-vae-raven`.
+- The iLQR recognition's covariance is a choice: `Recognition.Iilqr.make` takes
+  `?covariance`, `Recognition.Iilqr.kron ()` (the default, the two learned
+  factors) or `Recognition.Iilqr.laplace ()`. A kind is one description, so
+  what a covariance starts from is its own argument — `kron`'s `?sigma2_time`
+  and `?sigma2_space`, `laplace`'s `?damping` — and `make` no longer takes the
+  `?space_sigma2` and `?time_sigma2` it used to, which a caller that picked
+  the local model's Gaussian could pass all the same. The second kind is the
+  local model's Gaussian, one per trial, read from the Riccati pass at the
+  solution: its mean is that model's mode, its factors the pass's `Q_uu` and
+  gains, and its only learned parameter is one scalar scaling every block —
+  so it needs no `n_steps × n_steps` factor and its family does not grow with
+  the horizon. The draws are joint over the initial state and the inputs,
+  which two independent factors were not, and on a linear-Gaussian model the
+  covariance is the exact posterior, so the bound carries no sampling noise.
+  `?damping` regularizes the pass for a model whose `Q_uu` is not positive
+  definite.
+- `Recognition.Iilqr.params` is a variant rather than a record: `Kron` holds
+  the two factors and the initial state's scale, `Laplace` one scale and the
+  pass's damping. A caller that builds one names the case.
+- `Recognition.Iilqr.posterior_mean` and `posterior_initial` take `~params`:
+  with the local model's covariance the mean is that model's mode rather than
+  the last solve's trajectory, so what the mean is depends on the parameters.
+- A free initial state is one solve, not two: the encoder's problem sets
+  `Dilqr.Problem.t`'s `free_initial`, so `x₀` is optimized with the controls and
+  `?rounds` is gone from `Recognition.Iilqr.posterior_mean` and
+  `posterior_initial` (and from their docs). The initial state's mean is now a
+  solve output, so its draw carries the solve's implicit VJP — the bound's
+  gradient in the model's parameters no longer loses the `x₀` channel, which
+  the old fixed-point rounds detached. A trial with a free initial state costs
+  about 1.3 times one without instead of 2.7.
 - The fixed inner solve runs at most the recognition's iteration count and
   stops earlier when it has converged, so a fixed recognition is a budget
   rather than an exact count. `Recognition.fixed` takes `?conv_threshold` for
@@ -189,14 +243,12 @@ changes do not need an entry.
   `Dilqr.Problem.t`) carries the model's `initial_prior`, which is then the
   step-0 running loss of the encoder's control problem — the boundary
   condition that makes `x_0` free. The recognition's posterior over `x_0` is
-  the local model's Laplace posterior: its mean is the joint mode, reached in
-  `?rounds` rounds of solve-then-replace, and its covariance is
-  `exp (2 initial_log_scale) · P⁻¹`. Both are values of the local model, taken
-  stopped in the draws and in the density the bound differentiates, so the
-  block's one free parameter — and its one gradient — is the log scale;
-  `Recognition.Iilqr.posterior_initial` reports the pair. A
-  model with such a recognition must pass `~initial_prior`; one with the
-  fixed-zero recognition must not, as before.
+  the local model's Laplace posterior: its mean is the joint mode, which the
+  solve returns, and its covariance is `exp (2 initial_log_scale) · P⁻¹`.
+  The precision is a value of the local model, taken stopped in the draws and
+  in the density the bound differentiates; `Recognition.Iilqr.posterior_initial`
+  reports the pair. A model with such a recognition must pass
+  `~initial_prior`; one with the fixed-zero recognition must not, as before.
 - `Elbo.batch_loss_fixed` is gone: `Elbo.loss_fixed` already takes a tensor mini-batch, and the two names differed by a rank check and documentation only.
 - `Recognition.solve` selects the iLQR inner solver: `Recognition.adaptive` and
   `Recognition.fixed` replace the `?iters` argument of every recognition call,
@@ -251,6 +303,12 @@ changes do not need an entry.
   `n_steps` of the recognition — so the model reads them from there and only
   checks that the components agree. `Recognition.dims` is still the source of
   the horizon, which no other component knows.
+- New sublibrary `ilqr-vae.mpi` (`Ilqr_vae_mpi`): a data-parallel training
+  driver. One mini-batch is split over MPI ranks, each rank differentiates the
+  bound of its own trials, and the root averages the gradients over the batch,
+  updates the parameters and broadcasts them. The batch's key is split per
+  trial, so the estimate does not depend on the number of ranks. It needs the
+  `mpi` package and an MPI implementation.
 
 ### symo
 
@@ -265,6 +323,23 @@ changes do not need an entry.
 
 ### sofo
 
+- A sketch's directions hang off a subkey of the key it is given (lane `i` is
+  `fold_in (fold_in key 0) i`), so a caller's own draw from that key cannot
+  coincide with a lane. Before, the lanes were `fold_in key i`, and the
+  minibatch key the examples derive — `fold_in state.key 0` — was exactly
+  lane 0: one lane of every sketch was a function of the batch it measured,
+  not a random direction. The examples now split the root into a direction
+  stream and a data stream, and `Optim.directions` documents the guarantee.
+  A given key draws a different subspace than it did.
+- `Optim.coordinates` raises instead of returning infinities or NaNs when the
+  damped spectrum is not strictly positive: a sketch with a zero GGN under a
+  relative damping mode — usually a loss whose little losses were never
+  marked — and an undamped singular sketch, whose inverse needs a full rank.
+  `Absolute` damping with a positive value still solves a zero GGN.
+- `Sofo.sse`'s shape error names `Sofo.sse`, not `Sofo.mse`.
+- The linear example and the README's loop build the parameter step once with
+  `Optim.update_jit`, as the API note asks, instead of calling `Optim.update`
+  — which compiles it again on every iteration.
 - The subspace solve is documented as the one part of a step that stays on the
   host, and the reason has moved twice. It was that an eigendecomposition could
   not be compiled; then that Raven compiles one (`Nx.eigh` lowers to Jacobi

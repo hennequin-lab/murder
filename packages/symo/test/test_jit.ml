@@ -89,7 +89,7 @@ let test_parity () =
 (* The compiled step on a set of its own over the host's device: the state,
    the gradients and the compiled tables lie there, and the solve between the
    two halves runs on the host. It agrees with the eager step on the host. *)
-module Other = (val Nx.devices (Nx.rigs Nx.Host.v))
+module Other = (val Nx.devices (Nx.Devices.to_list Nx.Host.v))
 
 let test_other_set () =
   let compiled = M.Compiled.create ~config in

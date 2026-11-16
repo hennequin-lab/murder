@@ -201,7 +201,7 @@ let test_transport_blocks () =
    so a step there places the compiled tables beside them and brings the
    solve's result back. The kernels are the host's, so it computes what a
    step on the host computes. *)
-module Other = (val Nx.devices (Nx.rigs Nx.Host.v))
+module Other = (val Nx.devices (Nx.Devices.to_list Nx.Host.v))
 
 let test_other_set () =
   let config : M.config =

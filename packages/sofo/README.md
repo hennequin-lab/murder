@@ -129,20 +129,29 @@ let objective params key =
 let sketch_step =
   Sofo.Optim.sketch_jit ~k:n_tangents placement Model.ptree Rng.ptree objective
 
+(* The parameter step is compiled too, and held: building it inside the loop
+   would compile it again on every iteration. *)
+let update_step = Sofo.Optim.update_jit placement Model.ptree
+
 let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
   then params
   else (
-    let aux = Rng.place placement (Rng.fold_in state.key 0) in
+    (* The minibatch key is its own stream, folded by the step counter: the
+       sketch's directions hang off `dirs_key`, so no batch is ever a
+       direction the sketch already spent. *)
+    let aux = Rng.place placement (Rng.fold_in data_key state.step) in
     let out = sketch_step ~key:state.key ~aux params in
-    let params, state =
-      Sofo.Optim.update ~lr ~damping placement Model.ptree state params out
-    in
+    let params, state = update_step ~lr ~damping state params out in
     let loss = item [] out.loss in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
     loop ~i:(i + 1) params state)
 
-let state = Sofo.Optim.init ~key:(Rng.key 1985) ()
+(* Two streams from one root: the subspace and the data. *)
+let root = Rng.key 1985
+let dirs_key = Rng.fold_in root 0
+let data_key = Rng.fold_in root 1
+let state = Sofo.Optim.init ~key:dirs_key ()
 let () = Stdio.printf "device: %s\n%!" (Rig.name device)
 let _ = loop ~i:0 student state
 ```
@@ -164,8 +173,11 @@ How to read it:
    RNG key the minibatch is drawn from. It is _data_: the sketch never
    differentiates it and the update never moves it, but it rides the input tree
    of the compiled step, so a new batch is a new input rather than a new trace.
-   The direction key is kept separate (`Rng.fold_in state.key 0`), so data and
-   subspace draws do not correlate.
+   The two streams are split from one root — `dirs_key` for the subspace,
+   `data_key` for the minibatches, folded by the step counter — so a batch and
+   a direction are never the same draw. The library keeps the direction lanes
+   one fold below the key it is given for the same reason: a caller's own key
+   derived from the state's cannot coincide with a lane.
 4. **The sketching half is compiled once.** `Sofo.Optim.sketch_jit
    ~k placement Model.ptree Rng.ptree objective` builds the whole
    `(key, aux, params)` computation under `Rune.jit` and returns the function
@@ -173,13 +185,15 @@ How to read it:
    _inside_ it, from the key input, so replaying it each step samples a fresh
    128-dimensional subspace without retracing.
 5. **The loop replays, solves, steps.** One compiled call produces the loss, `C`,
-   `G̃`, the Gram ΘΘᵀ and Θ; `Sofo.Optim.update` solves on the host from the
+   `G̃`, the Gram ΘΘᵀ and Θ; `Sofo.Optim.update_jit` solves on the host from the
    k-sized numbers, shifts the parameters in a compiled step where they live,
    and advances the direction stream with the parameters, so the next iteration
-   cannot reuse the subspace it just measured. The parameters are placed on the
-   device `-dev` names (`Nx.Ptree.place`), and everything that touches them is
-   compiled for it. `damping = \`Absolute 0.` and `lr = 0.1` make it a scaled Newton step
-   inside the subspace.
+   cannot reuse the subspace it just measured. The step is built once, outside
+   the loop: `Rune.jit` caches per closure, so `Sofo.Optim.update` — which
+   builds one per call — would compile it again every iteration. The
+   parameters are placed on the device `-dev` names (`Nx.Ptree.place`), and
+   everything that touches them is compiled for it. `damping = \`Absolute 0.`
+   and `lr = 0.1` make it a scaled Newton step inside the subspace.
 
 ## API at a glance
 

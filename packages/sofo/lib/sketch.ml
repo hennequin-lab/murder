@@ -67,12 +67,15 @@ type ('p, 'd) t =
    zero lanes; their consumers are untracked operations, so they simply do not
    participate.
 
-   With [key], the [i]-th draw takes [Nx.Rng.fold_in key i], the key a scope
-   rooted at [key] gives it, so the draw is the scope's whatever set [key] lies
-   on: a scope takes host keys only, and a key a compiled step receives is
-   traced. Each batch is made beside its leaf, whole on the leaf's devices. *)
+   With [key], the [i]-th draw takes [Nx.Rng.fold_in (Nx.Rng.fold_in key 0) i],
+   one fold below the key itself: the draw is the key's whatever set [key] lies
+   on — a key a compiled step receives is traced — and a caller's own draw at
+   [Nx.Rng.fold_in key c], such as a minibatch key derived from the state's,
+   cannot coincide with a lane. Each batch is made beside its leaf, whole on the
+   leaf's devices. *)
 let sample (type p d) (structure : (p, d) Nx.Ptree.t) ?key ~k (params : p) : p =
   let draws = ref 0 in
+  let key = Option.map (fun key -> Nx.Rng.fold_in key 0) key in
   Nx.Ptree.map
     structure
     (fun _ leaf ->

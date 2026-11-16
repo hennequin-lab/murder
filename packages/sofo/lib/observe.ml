@@ -122,7 +122,7 @@ let mse ?w ~target y =
 let sse ?w ~target y =
   let shape_y = shape y in
   if shape_y <> shape target
-  then invalid_arg "Sofo.mse: prediction and target must have the same shape";
+  then invalid_arg "Sofo.sse: prediction and target must have the same shape";
   let d = Infix.(y - target) in
   let sq = Infix.(d * d) in
   let loss, curv =
@@ -130,8 +130,8 @@ let sse ?w ~target y =
     | None -> sum sq, Curv.scale 2.0
     | Some w ->
       let w = cast (Nx.dtype y) w in
-      let two_over_n = Nx.Dtype.of_float (Nx.dtype y) 2.0 in
-      sum Infix.(w * sq), Curv.diag (Rune.detach Infix.(w *$ two_over_n))
+      let two = Nx.Dtype.of_float (Nx.dtype y) 2.0 in
+      sum Infix.(w * sq), Curv.diag (Rune.detach Infix.(w *$ two))
   in
   observe ~y ~curv loss;
   loss

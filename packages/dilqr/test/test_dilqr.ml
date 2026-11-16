@@ -103,6 +103,7 @@ module Integrator = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
@@ -159,6 +160,7 @@ module Pendulum = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
@@ -213,6 +215,7 @@ module Batched = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
@@ -249,6 +252,7 @@ module Concave = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
@@ -1153,6 +1157,7 @@ let test_streaming_jvp_matches_tape_jvp () =
       ~costate:(Dilqr.Lqr.costate tape)
       ~tangent
       ~dx0
+      ~free_initial:false
   in
   check_close
     ~msg:"streaming jvp xs"
@@ -1578,6 +1583,551 @@ let test_initial_condition_matches_dense () =
     initial.Dilqr.Lqr.precision
     reference_precision
 
+(* ──────────────────────────────────────────────────────────────────────────
+   The local model's Gaussian: the factorization the sampler and the density
+   rest on, checked against the tape's own quadratic cost. The reference is a
+   different route to the same number — the cost along an arbitrary trajectory
+   rather than the Riccati recursion — so a wrong factor, a wrong gain or a
+   missing term fails it.
+   ────────────────────────────────────────────────────────────────────────── *)
+
+let mv = Dilqr.Lqr.matvec
+
+(* [local_cost tape ~dx0 us] is the tape's quadratic cost along the trajectory
+   that starts at [dx0] under [us]: the deviation form, so the linear terms are
+   the tape's own gradients. Exactly quadratic, so nothing below depends on a
+   step size. *)
+let local_cost (tape : (float, Nx.float64_elt, Nx.host) Dilqr.Lqr.tape) ~dx0 us =
+  let horizon = (shape tape.Dilqr.Lqr.blocks.a).(0) in
+  let xs = Array.create ~len:(horizon + 1) dx0 in
+  for k = 0 to horizon - 1 do
+    xs.(k + 1)
+    <- Infix.(
+         mv (get [ k ] tape.Dilqr.Lqr.blocks.a) xs.(k)
+         + mv (get [ k ] tape.Dilqr.Lqr.blocks.b) (get [ k ] us))
+  done;
+  let total = ref 0.0 in
+  for k = 0 to horizon - 1 do
+    let x = xs.(k)
+    and u = get [ k ] us in
+    let step =
+      Infix.(
+        (sum (mv (get [ k ] tape.Dilqr.Lqr.blocks.lxx) x * x) *$ 0.5)
+        + (sum (mv (get [ k ] tape.Dilqr.Lqr.blocks.luu) u * u) *$ 0.5)
+        + sum (mv (get [ k ] tape.Dilqr.Lqr.blocks.lux) x * u)
+        + sum (get [ k ] tape.Dilqr.Lqr.blocks.lx * x)
+        + sum (get [ k ] tape.Dilqr.Lqr.blocks.lu * u))
+    in
+    total := !total +. item step
+  done;
+  let xk = xs.(horizon) in
+  !total
+  +. item
+       Infix.((sum (mv tape.Dilqr.Lqr.fxx xk * xk) *$ 0.5) + sum (tape.Dilqr.Lqr.fx * xk))
+
+(* [stacked ~x0 us] reads a trajectory as one vector: the initial state, then
+   every control, the order the joint Hessian is indexed in. *)
+let stacked ~x0 us =
+  create
+    float64
+    [| (shape x0).(0) + numel us |]
+    (Array.append (to_array x0) (to_array us))
+
+(* The joint Hessian of the local model over [(x₀, u)], by central differences
+   of its own cost. The cost is exactly quadratic, so any step is exact and the
+   step only trades round-off against the [1 / h²] amplification. *)
+let joint_hessian ~n ~m ~horizon tape =
+  let dim = n + (horizon * m) in
+  let value (z : float array) =
+    let x0 = create float64 [| n |] (Array.sub z ~pos:0 ~len:n) in
+    let us = create float64 [| horizon; m |] (Array.sub z ~pos:n ~len:(horizon * m)) in
+    local_cost tape ~dx0:x0 us
+  in
+  let h = 1e-2 in
+  let shift i j si sj =
+    Array.init dim ~f:(fun k ->
+      (if Int.equal k i then si else 0.0) +. if Int.equal k j then sj else 0.0)
+  in
+  create
+    float64
+    [| dim; dim |]
+    (Array.init (dim * dim) ~f:(fun idx ->
+       let i = idx / dim
+       and j = Int.rem idx dim in
+       (value (shift i j h h)
+        -. value (shift i j h (-.h))
+        -. (value (shift i j (-.h) h) -. value (shift i j (-.h) (-.h))))
+       /. (4.0 *. h *. h)))
+
+(* The identity the whole Gaussian rests on: around the model's minimizer the
+   cost is the value quadratic in [x₀] plus one quadratic form per step in the
+   innovation [(u_k − u⋆_k) − K_k (x_k − x⋆_k)]. *)
+let test_laplace_factorization () =
+  let n = 3
+  and m = 2
+  and horizon = 4 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let laplace = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let mode = Dilqr.Lqr.Laplace.mean ~tape laplace in
+  (* the tape's cost is in deviations from the nominal, the mode is absolute *)
+  let mode_x0 = Infix.(get [ 0 ] mode.Dilqr.Lqr.xs - get [ 0 ] nominal.Dilqr.Lqr.xs) in
+  let mode_us = Infix.(mode.Dilqr.Lqr.us - nominal.Dilqr.Lqr.us) in
+  let star = local_cost tape ~dx0:mode_x0 mode_us in
+  let precision =
+    (Option.value_exn laplace.Dilqr.Lqr.Laplace.initial).Dilqr.Lqr.precision
+  in
+  let check ~msg dx0 us =
+    let lhs = local_cost tape ~dx0 us -. star in
+    let d_x0 = Infix.(dx0 - mode_x0) in
+    let d_us = Infix.(us - mode_us) in
+    let d_xs = Array.create ~len:(horizon + 1) d_x0 in
+    for k = 0 to horizon - 1 do
+      d_xs.(k + 1)
+      <- Infix.(
+           mv (get [ k ] tape.Dilqr.Lqr.blocks.a) d_xs.(k)
+           + mv (get [ k ] tape.Dilqr.Lqr.blocks.b) (get [ k ] d_us))
+    done;
+    let rhs = ref (0.5 *. item Infix.(sum (mv precision d_x0 * d_x0))) in
+    for k = 0 to horizon - 1 do
+      let w =
+        Infix.(
+          get [ k ] d_us - mv (get [ k ] laplace.Dilqr.Lqr.Laplace.feedback) d_xs.(k))
+      in
+      let z = mv (get [ k ] laplace.Dilqr.Lqr.Laplace.quu_chol) w in
+      rhs := !rhs +. (0.5 *. item Infix.(sum (z * z)))
+    done;
+    check_close ~msg ~tol:1e-8 (scalar64 lhs) (scalar64 !rhs)
+  in
+  let draw seed shape =
+    Nx.Rng.normal_at Nx.Host.on ~key:(Nx.Rng.key seed) float64 shape
+  in
+  List.iter [ 1; 2; 3 ] ~f:(fun seed ->
+    check
+      ~msg:"the innovations reproduce the cost difference"
+      (draw seed [| n |])
+      (draw (seed + 100) [| horizon; m |]))
+
+(* The density: the innovations' product is the dense Gaussian of the joint
+   Hessian, normalisation included. The log determinant is what a wrong factor
+   or a missing block would move, so this is the test that says the density
+   integrates to one. *)
+let test_laplace_log_prob_matches_dense () =
+  let n = 2
+  and m = 1
+  and horizon = 3 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let laplace = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let mode = Dilqr.Lqr.Laplace.mean ~tape laplace in
+  let hessian = joint_hessian ~n ~m ~horizon tape in
+  let dim = n + (horizon * m) in
+  let _, log_det = Nx.slogdet float64 hessian in
+  let log_det = item log_det in
+  let check ~msg x0 us =
+    let delta =
+      Infix.(stacked ~x0 us - stacked ~x0:(get [ 0 ] mode.Dilqr.Lqr.xs) mode.Dilqr.Lqr.us)
+    in
+    let quadratic = item Infix.(sum (mv hessian delta * delta) *$ 0.5) in
+    let reference =
+      -.quadratic
+      +. (0.5 *. log_det)
+      -. (0.5 *. Float.of_int dim *. Float.log (2.0 *. Float.pi))
+    in
+    let got =
+      item (Dilqr.Lqr.Laplace.log_prob ~tape laplace ~log_scale:(scalar64 0.0) ~x0 ~us)
+    in
+    check_close ~msg ~tol:1e-6 (scalar64 got) (scalar64 reference)
+  in
+  let draw seed shape =
+    Nx.Rng.normal_at Nx.Host.on ~key:(Nx.Rng.key seed) float64 shape
+  in
+  List.iter [ 7; 8 ] ~f:(fun seed ->
+    check
+      ~msg:"the density is the dense Gaussian's"
+      (draw seed [| n |])
+      (draw (seed + 50) [| horizon; m |]))
+
+(* The sampler: the draws' mean is the mode and their covariance the joint
+   Hessian's inverse. Monte Carlo, so the tolerances are what the sample size
+   buys; the identity above is what pins the exact statement. *)
+let test_laplace_sample () =
+  let n = 2
+  and m = 1
+  and horizon = 3
+  and n_samples = 20_000 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let laplace = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let mode = Dilqr.Lqr.Laplace.mean ~tape laplace in
+  let draws =
+    Dilqr.Lqr.Laplace.sample
+      ~tape
+      laplace
+      ~log_scale:(scalar64 0.0)
+      ~key:(Nx.Rng.key 11)
+      ~n_samples
+  in
+  let dim = n + (horizon * m) in
+  let sample_x0 = get [ 0 ] draws.Dilqr.Lqr.xs in
+  let sample_us = Nx.transpose ~axes:[ 1; 0; 2 ] draws.Dilqr.Lqr.us in
+  let rows =
+    Array.init n_samples ~f:(fun i ->
+      to_array (stacked ~x0:(get [ i ] sample_x0) (get [ i ] sample_us)))
+  in
+  let zs = create float64 [| n_samples; dim |] (Array.concat (Array.to_list rows)) in
+  let centre = stacked ~x0:(get [ 0 ] mode.Dilqr.Lqr.xs) mode.Dilqr.Lqr.us in
+  let mean = Nx.mean ~axes:[ 0 ] zs in
+  let centred = Infix.(zs - reshape [| 1; dim |] mean) in
+  let covariance =
+    Infix.(matrix_transpose centred *@ centred /$ Float.of_int n_samples)
+  in
+  let expected = Nx.inv (joint_hessian ~n ~m ~horizon tape) in
+  let spread = item (Nx.sqrt (Nx.max (Nx.abs expected))) in
+  check_close
+    ~msg:"the draws' mean is the mode"
+    ~tol:(6.0 *. spread /. Float.sqrt (Float.of_int n_samples))
+    mean
+    centre;
+  check_close
+    ~msg:"the draws' covariance is the Hessian's inverse"
+    ~tol:0.06
+    covariance
+    expected
+
+(* With the initial state fixed there is no factor over [x₀]: the Gaussian is
+   over the controls alone, and it is the conditional law of the joint model
+   given that state. Its density is the joint one with the initial block's own
+   density taken out. *)
+let test_laplace_fixed_initial () =
+  let n = 2
+  and m = 1
+  and horizon = 3 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let free = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let fixed = Dilqr.Lqr.Laplace.make_fixed tape ~nominal in
+  require
+    ~msg:"a fixed initial state has no block"
+    (Option.is_none fixed.Dilqr.Lqr.Laplace.initial);
+  let x0 = get [ 0 ] nominal.Dilqr.Lqr.xs in
+  let us = Nx.Rng.normal_at Nx.Host.on ~key:(Nx.Rng.key 13) float64 [| horizon; m |] in
+  let log_prob t =
+    item (Dilqr.Lqr.Laplace.log_prob ~tape t ~log_scale:(scalar64 0.0) ~x0 ~us)
+  in
+  let initial = Option.value_exn free.Dilqr.Lqr.Laplace.initial in
+  let delta = Infix.(x0 - initial.Dilqr.Lqr.mean) in
+  let upper = cholesky ~triangle:Upper initial.Dilqr.Lqr.precision in
+  let whitened = Infix.(delta *@ matrix_transpose upper) in
+  let initial_log_prob =
+    -0.5
+    *. (item Infix.(sum (whitened * whitened))
+        -. (2.0 *. item (sum (log (diag upper))))
+        +. (Float.of_int n *. Float.log (2.0 *. Float.pi)))
+  in
+  check_close
+    ~msg:"the fixed density is the joint one without the initial block"
+    ~tol:1e-8
+    (scalar64 (log_prob fixed))
+    (scalar64 (log_prob free -. initial_log_prob));
+  let draws =
+    Dilqr.Lqr.Laplace.sample
+      ~tape
+      fixed
+      ~log_scale:(scalar64 0.0)
+      ~key:(Nx.Rng.key 14)
+      ~n_samples:4
+  in
+  check_close
+    ~msg:"every draw starts at the nominal's state"
+    ~tol:1e-12
+    (get [ 0 ] draws.Dilqr.Lqr.xs)
+    (broadcast_to [| 4; n |] x0)
+
+(* A local model whose curvature is not positive definite has no Gaussian:
+   the factor is NaN. Damping is the escape hatch — the Gaussian it gives is
+   the damped model's, and it exists where the undamped one does not. *)
+let test_laplace_damping () =
+  let n = 2
+  and m = 1
+  and horizon = 2 in
+  let i_n = eye float64 n in
+  let blocks =
+    { Dilqr.Lqr.Rows.a = broadcast_to [| horizon; n; n |] i_n
+    ; b = ones float64 [| horizon; n; m |]
+    ; lx = zeros float64 [| horizon; n |]
+    ; lu = zeros float64 [| horizon; m |]
+    ; lxx = zeros float64 [| horizon; n; n |]
+    ; luu = broadcast_to [| horizon; m; m |] Infix.(eye float64 m *$ 0.5)
+    ; lux = zeros float64 [| horizon; m; n |]
+    }
+  in
+  let tape =
+    ({ Dilqr.Lqr.blocks; fx = zeros float64 [| n |]; fxx = Infix.(i_n *$ -1.0) }
+     : (float, Nx.float64_elt, Nx.host) Dilqr.Lqr.tape)
+  in
+  (* the nominal is any trajectory the tape can be linearized at; this model's
+     own undamped solve is NaN, which is the point *)
+  let nominal : (float, Nx.float64_elt, Nx.host) Dilqr.Lqr.solution =
+    { xs = zeros float64 [| horizon + 1; n |]; us = zeros float64 [| horizon; m |] }
+  in
+  let finite t = item (all (isfinite t)) in
+  let undamped = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let initial = Option.value_exn undamped.Dilqr.Lqr.Laplace.initial in
+  require
+    ~msg:"a non-convex model has a NaN precision"
+    (not (Bool.equal (finite initial.Dilqr.Lqr.precision) true));
+  let damped = Dilqr.Lqr.Laplace.make ~mu:(scalar64 2.0) tape ~nominal ~prior:None in
+  let initial = Option.value_exn damped.Dilqr.Lqr.Laplace.initial in
+  require
+    ~msg:"damping gives a Gaussian"
+    (Bool.equal (finite initial.Dilqr.Lqr.precision) true);
+  let draws =
+    Dilqr.Lqr.Laplace.sample
+      ~tape
+      damped
+      ~log_scale:(scalar64 0.0)
+      ~key:(Nx.Rng.key 17)
+      ~n_samples:3
+  in
+  require ~msg:"and finite draws" (Bool.equal (finite draws.Dilqr.Lqr.us) true)
+
+(* ──────────────────────────────────────────────────────────────────────────
+   A free initial state: the problem prices x₀ in its step-0 running loss, so
+   the solve optimizes it jointly with the controls. The cost is quadratic and
+   the dynamics linear, so the joint mode is exact and the derivative is the
+   one the implicit function theorem gives — finite differences of a converged
+   solve are the reference for both.
+   ────────────────────────────────────────────────────────────────────────── *)
+
+module Anchored = struct
+  module Params = struct
+    type ('a, _) t = { gain : 'a } [@@deriving ptree]
+  end
+
+  let n = 2
+  let m = 1
+  let horizon = 3
+  let verbose = false
+
+  (* The anchor: a Gaussian on the initial state, as the step-0 running loss.
+     It is what makes the block positive definite and the mode unique. *)
+  let anchor_mean = vec64 [| 1.0; -0.5 |]
+  let anchor_precision = 2.0
+  let target = vec64 [| 0.5; 0.0 |]
+
+  let dynamics { Params.gain } ~k:_ ~x ~u =
+    let open Infix in
+    let x0 = slice [ R (0, 1) ] x
+    and x1 = slice [ R (1, 2) ] x in
+    concatenate ~axis:0 [ (x0 *$ 0.9) + (x1 *$ 0.1); (x1 *$ 0.8) + (u * gain) ]
+
+  let running_loss _ ~k ~x ~u =
+    let open Infix in
+    let d = x - target in
+    let anchor = x - anchor_mean in
+    let zero = scalar_like k 0.0 in
+    let anchored =
+      where (Nx.equal k zero) (sum (anchor * anchor) *$ (0.5 *. anchor_precision)) zero
+    in
+    (sum (d * d) *$ 0.5) + (sum (u * u) *$ 0.5) + anchored
+
+  let final_loss _ ~x =
+    let open Infix in
+    let d = x - target in
+    sum (d * d)
+
+  let problem
+    : (Nx.float64_elt, (Nx.host Nx.float64_t, Nx.host) Params.t, Nx.host) Dilqr.Problem.t
+    =
+    { dtype = float64
+    ; n
+    ; m
+    ; horizon
+    ; free_initial = true
+    ; verbose
+    ; params = Nx.Ptree.instantiate (module Params)
+    ; dynamics
+    ; running_loss
+    ; final_loss
+    }
+end
+
+(* The problem's own cost at [(x₀, u)], stacked as one vector, along the true
+   dynamics. *)
+let anchored_cost theta (z : float array) =
+  let x0 = create float64 [| Anchored.n |] (Array.sub z ~pos:0 ~len:Anchored.n) in
+  let us =
+    Array.init Anchored.horizon ~f:(fun k ->
+      create float64 [| Anchored.m |] (Array.sub z ~pos:(Anchored.n + k) ~len:Anchored.m))
+  in
+  item (snd (Dilqr.Solver.rollout Anchored.problem theta x0 us))
+
+(* The solve moves the initial state, and the cost is stationary where it lands:
+   that is what "the solve optimizes x₀" means. A pinned solve of the same
+   problem keeps the state it was given. *)
+let test_free_initial_is_solved_for () =
+  let module P = Anchored in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { gain = scalar64 1.0 } in
+  let x0 = vec64 [| 0.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let solve = Dilqr.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-14 in
+  let xs, us = Dilqr.split_taus P.problem (solve { Dilqr.Inputs.theta; x0; us0 }) in
+  let solved_x0 = xs.(0) in
+  require
+    ~msg:"the solve moved the initial state"
+    Float.(item (Nx.max (Nx.abs Infix.(solved_x0 - x0))) > 1e-2);
+  let z =
+    Array.append (to_array solved_x0) (to_array (stack ~axis:0 (Array.to_list us)))
+  in
+  let value t = anchored_cost theta (to_array t) in
+  let grad = fd_grad ~eps:1e-6 value (create float64 [| Array.length z |] z) in
+  require
+    ~msg:"the joint mode is stationary in the initial state and the controls"
+    Float.(item (Nx.max (Nx.abs grad)) < 1e-5);
+  let pinned = { P.problem with free_initial = false } in
+  let xs, _ =
+    Dilqr.split_taus pinned (Dilqr.solve_fixed pinned ~max_iters:8 { theta; x0; us0 })
+  in
+  check_close ~msg:"a pinned solve keeps the state it was given" ~tol:1e-12 xs.(0) x0
+
+(* The implicit derivative of a free-initial solve, in both modes: reverse mode
+   against central differences of a converged solve, and the transpose law,
+   which also says that the input's initial state reaches nothing. *)
+let test_free_initial_derivative () =
+  let module P = Anchored in
+  let theta gain : (Nx.host Nx.float64_t, Nx.host) P.Params.t =
+    { gain = scalar64 gain }
+  in
+  let x0 = vec64 [| 0.2; 0.1 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.05 ])) in
+  let structure = Dilqr.inputs P.problem in
+  let inputs = { Dilqr.Inputs.theta = theta 1.0; x0; us0 } in
+  let solve = Dilqr.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-14 in
+  let ybar = pattern ~seed:0.4 ~like:(zeros float64 [| P.horizon + 1; P.n + P.m |]) in
+  let objective i = sum Infix.(ybar * solve i) in
+  let grads = Rune.grad structure objective inputs in
+  let eps = 1e-6 in
+  let fd =
+    (item (objective { inputs with theta = theta (1.0 +. eps) })
+     -. item (objective { inputs with theta = theta (1.0 -. eps) }))
+    /. (2.0 *. eps)
+  in
+  let got = item grads.Dilqr.Inputs.theta.P.Params.gain in
+  require
+    ~msg:(Printf.sprintf "implicit gradient %g vs finite differences %g" got fd)
+    Float.(Float.abs (got -. fd) <= 1e-5 +. (1e-4 *. Float.abs fd));
+  check_close
+    ~msg:"the initial state is a starting point, not an input"
+    ~tol:1e-12
+    grads.Dilqr.Inputs.x0
+    (zeros float64 [| P.n |]);
+  let dinputs = pattern_inputs ~seed:1.3 structure inputs in
+  let dtaus =
+    snd (Rune.jvp structure Nx.Ptree.tensor (fun i -> solve i) inputs dinputs)
+  in
+  check_close
+    ~msg:"<grad, v> = <cotangent, JVP v>"
+    ~tol:1e-8
+    (Nx.Ptree.dot structure float64 grads dinputs)
+    (sum Infix.(ybar * dtaus));
+  (* a tangent of the input's initial state moves nothing *)
+  let d0 = { dinputs with Dilqr.Inputs.x0 = pattern ~seed:2.7 ~like:x0 } in
+  check_close
+    ~msg:"the input's initial state tangent reaches nothing"
+    ~tol:1e-10
+    (snd (Rune.jvp structure Nx.Ptree.tensor (fun i -> solve i) inputs d0))
+    dtaus
+
+(* The batched free solve: one solve for two members, and each member's
+   gradient the one its own solve gives — the batch's layout, the initial
+   state's step and the implicit VJP included. *)
+let test_free_initial_batched () =
+  let module P = Anchored in
+  let b = 2 in
+  let solve = Dilqr.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-14 in
+  let objective i = sum (Dilqr.loss_of_taus P.problem i.Dilqr.Inputs.theta (solve i)) in
+  let structure = Dilqr.inputs P.problem in
+  let member i
+    : ( (Nx.host Nx.float64_t, Nx.host) P.Params.t
+        , (float, Nx.float64_elt, Nx.host) Nx.t )
+        Dilqr.Inputs.t
+    =
+    { theta = { P.Params.gain = scalar64 (1.0 +. (0.2 *. Float.of_int i)) }
+    ; x0 = vec64 [| 0.1 *. Float.of_int (i + 1); -0.2 |]
+    ; us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.01 *. Float.of_int (i + 1) ]))
+    }
+  in
+  let batched
+    : ( (Nx.host Nx.float64_t, Nx.host) P.Params.t
+        , (float, Nx.float64_elt, Nx.host) Nx.t )
+        Dilqr.Inputs.t
+    =
+    { theta =
+        { P.Params.gain = stack ~axis:0 (List.init b ~f:(fun i -> (member i).theta.gain))
+        }
+    ; x0 = stack ~axis:0 (List.init b ~f:(fun i -> (member i).x0))
+    ; us0 =
+        Array.init P.horizon ~f:(fun k ->
+          stack ~axis:0 (List.init b ~f:(fun i -> (member i).Dilqr.Inputs.us0.(k))))
+    }
+  in
+  let g = Rune.grad structure objective batched in
+  for i = 0 to b - 1 do
+    let g_i = Rune.grad structure objective (member i) in
+    check_close
+      ~msg:(Printf.sprintf "batched free grad, member %d" i)
+      ~tol:1e-9
+      (slice [ I i ] g.Dilqr.Inputs.theta.P.Params.gain)
+      g_i.Dilqr.Inputs.theta.P.Params.gain;
+    check_close
+      ~msg:(Printf.sprintf "batched free grad x0, member %d" i)
+      ~tol:1e-9
+      (slice [ I i ] g.Dilqr.Inputs.x0)
+      g_i.Dilqr.Inputs.x0
+  done
+
+(* The adaptive solve takes the initial state's step too, eagerly and with its
+   kernels compiled — the recognition's default solver is the adaptive one, so
+   it is the path a user reaches without asking. It finds the fixed solve's
+   joint mode and its derivative. *)
+let test_free_initial_adaptive () =
+  let module P = Anchored in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { gain = scalar64 1.0 } in
+  let x0 = vec64 [| 0.0; 0.0 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let inputs = { Dilqr.Inputs.theta; x0; us0 } in
+  let mode_of solve =
+    let xs, us = Dilqr.split_taus P.problem (solve inputs) in
+    xs.(0), stack ~axis:0 (Array.to_list us)
+  in
+  let fixed = Dilqr.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-14 in
+  let adaptive = Dilqr.solve_adaptive P.problem in
+  let compiled = Dilqr.solve_adaptive P.problem ~parallel:1 in
+  let fixed_x0, fixed_us = mode_of fixed in
+  let adaptive_x0, adaptive_us = mode_of (adaptive ~max_iter:60 ~conv_threshold:1e-14) in
+  check_close
+    ~msg:"the adaptive solve finds the same initial state"
+    ~tol:1e-8
+    adaptive_x0
+    fixed_x0;
+  check_close ~msg:"and the same controls" ~tol:1e-8 adaptive_us fixed_us;
+  let compiled_x0, compiled_us = mode_of (compiled ~max_iter:60 ~conv_threshold:1e-14) in
+  check_close ~msg:"the compiled adaptive solve agrees" ~tol:1e-8 compiled_x0 adaptive_x0;
+  check_close ~msg:"and its controls" ~tol:1e-8 compiled_us adaptive_us;
+  let structure = Dilqr.inputs P.problem in
+  let objective solve i =
+    sum (Dilqr.loss_of_taus P.problem i.Dilqr.Inputs.theta (solve i))
+  in
+  let grad solve =
+    (Rune.grad structure (objective solve) inputs).Dilqr.Inputs.theta.P.Params.gain
+  in
+  check_close
+    ~msg:"the adaptive solve's gradient is the fixed one's"
+    ~tol:1e-6
+    (grad (adaptive ~max_iter:60 ~conv_threshold:1e-14))
+    (grad fixed)
+
 (* [Dilqr.inputs] is a hand-written walk over the problem's parameter
    structure: its visits are the parameters under [theta], the initial state,
    then the controls' count and each control at its index. *)
@@ -1660,5 +2210,16 @@ let () =
        ; test "the local model is a fixed point" test_local_model_is_a_fixed_point
        ; test "value function matches dense" test_value_function_matches_dense
        ; test "initial condition matches dense" test_initial_condition_matches_dense
+       ; test "the local model's Gaussian factorizes" test_laplace_factorization
+       ; test
+           "the local model's density is the dense Gaussian's"
+           test_laplace_log_prob_matches_dense
+       ; test "the local model's sampler matches dense" test_laplace_sample
+       ; test "a fixed initial state has no block" test_laplace_fixed_initial
+       ; test "damping is the escape hatch" test_laplace_damping
+       ; test "a free initial state is solved for" test_free_initial_is_solved_for
+       ; test "a free initial state's derivative" test_free_initial_derivative
+       ; test "a batched free initial state" test_free_initial_batched
+       ; test "a free initial state, adaptively" test_free_initial_adaptive
        ; test "inputs structure" test_inputs_structure
        ])

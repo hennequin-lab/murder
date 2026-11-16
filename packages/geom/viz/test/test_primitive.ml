@@ -278,7 +278,7 @@ let test_transform_circle_and_sphere () =
    value computed there is the host's, bit for bit. An operation that met a
    constant left on the host would raise. *)
 let test_device_set () =
-  let module D = (val Nx.devices (Nx.rigs Nx.Host.v)) in
+  let module D = (val Nx.devices (Nx.Devices.to_list Nx.Host.v)) in
   let m =
     M.mul (M.translate3 1. 0. 0.5) (M.rotate ~axis:(vec3 0. 0. 1.) ~angle:(scalar 0.5))
   in

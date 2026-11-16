@@ -290,7 +290,7 @@ let test_solver () =
    value computed there is the host's, bit for bit. An operation that met a
    constant left on the host would raise. *)
 let test_device_set () =
-  let module D = (val Nx.devices (Nx.rigs Nx.Host.v)) in
+  let module D = (val Nx.devices (Nx.Devices.to_list Nx.Host.v)) in
   let on x = Nx.place D.on x in
   let m = R.six_dof () in
   let ee = R.frame m "ee" in

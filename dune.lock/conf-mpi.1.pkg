@@ -1,0 +1,45 @@
+(version 1)
+
+(build
+ (all_platforms ((action (run sh configure %{os})))))
+
+(depends
+ (all_platforms (conf-pkg-config)))
+
+(depexts
+ ((mpi-default-dev)
+  (= %{os_family} debian))
+ ((mpi-default-dev)
+  (= %{os_family} ubuntu))
+ ((openmpi-devel)
+  (= %{os_distribution} centos))
+ ((openmpi-devel)
+  (= %{os_family} fedora))
+ ((openmpi)
+  (or_absorb_undefined_var
+   (= %{os_family} suse)
+   (= %{os_family} opensuse)))
+ ((openmpi)
+  (= %{os_distribution} arch))
+ ((openmpi-dev)
+  (= %{os_distribution} alpine))
+ ((openmpi)
+  (= %{os} freebsd))
+ ((devel/openmpi)
+  (= %{os} openbsd))
+ ((openmpi-devel-default)
+  (and_absorb_undefined_var
+   (= %{os} macos)
+   (= %{os_distribution} macports)))
+ ((open-mpi)
+  (and_absorb_undefined_var
+   (= %{os} macos)
+   (= %{os_distribution} homebrew))))
+
+(extra_sources
+ (configure
+  (fetch
+   (url
+    https://raw.githubusercontent.com/ocaml/opam-source-archives/main/patches/conf-mpi/configure)
+   (checksum
+    sha256=49b4aa9354b3f417ec949bd6f7662222c9a1021b1912fad128a88b8dc69e1160))))

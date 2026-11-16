@@ -76,17 +76,25 @@ let sketch_step =
    would compile it again on every iteration. *)
 let update_step = Sofo.Optim.update_jit placement Model.ptree
 
+(* Two streams from one root: the subspace and the data. *)
+let root = Rng.key 1985
+let dirs_key = Rng.fold_in root 0
+let data_key = Rng.fold_in root 1
+
 let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
   then params
   else (
-    let aux = Rng.place placement (Rng.fold_in state.key 0) in
+    (* The minibatch key is its own stream, folded by the step counter: the
+       sketch's directions hang off `dirs_key`, so no batch is ever a
+       direction the sketch already spent. *)
+    let aux = Rng.place placement (Rng.fold_in data_key state.step) in
     let out = sketch_step ~key:state.key ~aux params in
     let params, state = update_step ~lr ~damping state params out in
     let loss = item [] out.loss in
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
     loop ~i:(i + 1) params state)
 
-let state = Sofo.Optim.init ~key:(Rng.key 1985) ()
+let state = Sofo.Optim.init ~key:dirs_key ()
 let () = Stdio.printf "device: %s\n%!" (Rig.name device)
 let _ = loop ~i:0 student state

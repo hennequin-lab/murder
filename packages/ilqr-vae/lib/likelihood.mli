@@ -182,7 +182,7 @@ module Poisson : sig
       [[n]] dimensional states to [[n_output]] observation channels; {!init}
       draws its parameters:
 
-      - [c] is drawn from a standard normal scaled by [1 / sqrt n] (the
+      - [c] is drawn from a standard normal scaled by [scale / sqrt n] (the
         reference initialization) and masked by [c_mask] when given.
       - [link] defaults to [fun x -> 1e-3 + exp x].
       - [dt] is the bin width multiplying the rate, default [1.].
@@ -195,6 +195,9 @@ module Poisson : sig
     -> ?c_mask:('w, 's) value
     -> ?link:(('w, 's) value -> ('w, 's) value)
     -> ?dt:float
+    -> ?bias:float
+    -> ?scale:float
+    -> ?log_gain:float
     -> n:int
     -> n_output:int
     -> unit

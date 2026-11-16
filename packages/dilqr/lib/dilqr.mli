@@ -51,6 +51,16 @@
     that control flow stays on the host. Its returned closure is therefore
     eager.
 
+    {b The initial state.} A problem either starts from the state its inputs
+    give it, or — with {!Problem.t}'s [free_initial] — prices that state in its
+    step-0 running loss and optimizes it with the controls. The second is what
+    an encoder that infers an initial condition needs: the solve then returns
+    the joint mode, its trajectory's step 0 is the state it found, and both
+    implicit derivatives carry the initial state's own dependence on the
+    parameters. The step is Newton's, the local model being quadratic in
+    [x₀], so one solve finds it; a model without a proper prior on [x₀] leaves
+    the block singular.
+
     {b Batches.} {!solve_fixed} solves a batch of problems at once: give every
     leaf of the parameters, the initial state and every initial control a
     leading batch axis, and each member gets its own trajectory, cost and

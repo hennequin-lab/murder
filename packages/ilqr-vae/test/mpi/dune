@@ -1,0 +1,10 @@
+(test
+ (name test_mpi)
+ (modules test_mpi)
+ (libraries base ilqr_vae ilqr_vae_mpi nx rune windtrap)
+ ; A hung test fails rather than blocking the gate.
+ (action
+  (setenv
+   WINDTRAP_TIMEOUT
+   120
+   (run %{test}))))

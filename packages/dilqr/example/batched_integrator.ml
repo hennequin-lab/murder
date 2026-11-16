@@ -59,6 +59,7 @@ module Integrator = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
