@@ -40,6 +40,7 @@ type damping =
 type preconditioner =
   [ `Inverse
   | `Inverse_sqrt
+  | `Pseudoinverse
   ]
 
 type state =
@@ -420,14 +421,14 @@ let coordinates
             singular value is %g and the damping is %g; the solve has no finite answer"
            smin
            gamma);
-  let damped = Infix.(s +$ gamma) in
-  let scale =
-    match preconditioner with
-    | `Inverse -> damped
-    | `Inverse_sqrt -> sqrt damped
-  in
   let rhs = Infix.(vt *@ reshape [| k; 1 |] c) in
-  let z = reshape [| k |] Infix.(u *@ (rhs / reshape [| k; 1 |] scale)) in
+  let rhs =
+    match preconditioner with
+    | `Inverse -> Infix.(rhs / (s +$ gamma))
+    | `Inverse_sqrt -> Infix.(rhs / sqrt (s +$ gamma))
+    | `Pseudoinverse -> Infix.(rhs * sqrt s / (s +$ gamma))
+  in
+  let z = reshape [| k |] Infix.(u *@ rhs) in
   (* Back to the sketch's own coordinates, where [apply] contracts them: the
      step is Θ (Q z). *)
   match q with
