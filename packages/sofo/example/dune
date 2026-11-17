@@ -3,6 +3,9 @@
  (libraries
   sofo
   nx
+  nx.amd
+  nx.cuda
+  nx.kernel
   rune
   vega
   base

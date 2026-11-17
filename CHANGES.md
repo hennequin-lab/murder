@@ -323,6 +323,25 @@ changes do not need an entry.
 
 ### sofo
 
+- The subspace solve is eager, and runs where the sketch ran when that set
+  computes eagerly: `Optim.update_jit` reads `Nx.Devices.has_kernels` and calls
+  `Optim.coordinates` at the step's placement, so a GPU set minted with
+  `~kernels:(module Nx_cuda)` or `(module Nx_amd)` solves with the backend's
+  spectral kernel — bidiagonalization and QR past order 32 — instead of copying
+  the sketched `c`, `ggn` and `gram` back to the host. A set minted without
+  kernels still brings the `k`-sized matrices to the host, since it computes
+  only under `Rune.jit`. The eager backend replays three to six times faster
+  than the compiled Jacobi program at `k` from 32 to 128, which is why the
+  solve is not compiled with it; `doc/jit-solve.md` has the measurements and
+  the round trip's. No API change.
+- `Optim.coordinates` is now itself traceable: the spectrum's extrema are 0-d
+  tensors rather than host reads, the damping a 0-d tensor, and the two
+  refusals `Nx.check`s, which raise at the call on the host and at the next
+  wait on a device. Compiled, it agrees with the eager solve to `5e-12`
+  relative at `k = 128`; the library does not compile it.
+- The examples mint their GPU set with `~kernels` when the GPU's kernel library
+  computes on it — `nx.cuda` for NVIDIA sm_89, `nx.amd` for AMD gfx12 — so the
+  solve runs there, and print whether the set has eager kernels.
 - `Optim.preconditioner` gains [`Pseudoinverse`]: the sketched solve weights a
   direction by `√S / (S + γ·I)` instead of `(S + γ·I)⁻¹`. A direction the sketch
   resolves poorly is attenuated rather than amplified, and one it cannot resolve
@@ -345,17 +364,20 @@ changes do not need an entry.
 - The linear example and the README's loop build the parameter step once with
   `Optim.update_jit`, as the API note asks, instead of calling `Optim.update`
   — which compiles it again on every iteration.
-- The subspace solve is documented as the one part of a step that stays on the
-  host, and the reason has moved twice. It was that an eigendecomposition could
-  not be compiled; then that Raven compiles one (`Nx.eigh` lowers to Jacobi
-  rotations, to `1e-15` of the host's eigenvalues) but that compiling it took
-  8.5 s for a single `k = 24` program, nearly all of it in one LLVM pass of one
-  kernel — LLVM 22's loop-idiom recogniser on a chain of float maxima, which
-  Raven 72044867 turns off for host kernels; and now that it compiles in a
-  fraction of a second but runs slower than the host's: 8× at `k = 128`, and
-  10–60× on an AMD GPU, against a round trip of three `k×k` tensors.
-  `doc/jit-solve.md` records the measurements on both sides, the diagnosis, and
-  what would make a compiled solve worth having. No API change.
+- The subspace solve is documented as the one part of a step that is eager
+  rather than compiled, and the reason has moved three times. It was that an
+  eigendecomposition could not be compiled; then that Raven compiles one
+  (`Nx.eigh` lowers to Jacobi rotations, to `1e-15` of the host's eigenvalues)
+  but that compiling it took 8.5 s for a single `k = 24` program, nearly all of
+  it in one LLVM pass of one kernel — LLVM 22's loop-idiom recogniser on a
+  chain of float maxima, which Raven 72044867 turns off for host kernels; then
+  that it compiles in a fraction of a second but runs slower than the host's;
+  and now that every eager backend carries a spectral routine of its own, which
+  is the fast one — LAPACK on the host, Jacobi only up to order 32 and
+  bidiagonalization past it on a GPU — and replays three to six times faster
+  than the compiled program. `doc/jit-solve.md` records the measurements on
+  both sides, the diagnosis, and what the change of eager side bought.
+  No API change.
 - Imported from `hennequin-lab/sofo-raven`.
 - `Optim.directions`, `Optim.step` and `Optim.sketch_jit` take `?custom`, a
   batched set of tangents that becomes the first lanes of the sketch and is

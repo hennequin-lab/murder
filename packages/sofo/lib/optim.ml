@@ -12,14 +12,16 @@
    - the *sketching* half is differentiable and compiles, so [sketch_jit]
      wraps the (key, aux, params) → (loss, c, C, G̃, Θ, gram) computation in
      [Rune.jit];
-   - the *update* half needs the eigendecomposition of the sketched GGN. Raven
-     compiles one — [Nx.eigh] is lowered to Jacobi rotations — but it runs
-     slower compiled than on the host: eight times at k = 128, and ten to sixty
-     times on a GPU, against a round trip of three k×k tensors (measured in
-     [doc/jit-solve.md]). So the solve runs eagerly on the host at O(k³) —
-     negligible against a model with P ≫ k parameters, which is the algorithm's
-     whole premise — and only k-sized matrices cross to the host. The step on
-     the parameters is compiled again, where they live.
+   - the *update* half needs the eigendecomposition of the sketched GGN, which
+     is the one thing worth neither compiling nor copying. Raven lowers
+     [Nx.eigh] under [Rune.jit] to Jacobi rotations, while every eager backend
+     carries a blocked routine instead — LAPACK's on the host, and on a GPU
+     Jacobi only up to order 32, bidiagonalization and QR past it (measured in
+     [doc/jit-solve.md]). So the solve runs eagerly at O(k³) — negligible
+     against a model with P ≫ k parameters, which is the algorithm's whole
+     premise — where the sketch ran, and only k-sized numbers cross to the host
+     when that set computes with no kernels. The step on the parameters is
+     compiled again, where they live.
 
    Everything here is a pure function of values. The only state is [state]: the
    key the directions are drawn from, carried as an int32 tensor so it can ride
@@ -311,11 +313,16 @@ let gram (type p d) (structure : (p, d) Nx.Ptree.t) ~k (dirs : p) : d Nx.float64
    singular vectors are its eigenvectors, so [Nx.eigh] gives the factorization
    [Nx.svd] would, [z = u diag(±s) uᵀ], at about half the cost. Taking
    magnitudes keeps the SVD's semantics where rounding leaves an eigenvalue of
-   a positive semi-definite matrix slightly negative. *)
+   a positive semi-definite matrix slightly negative.
+
+   The extrema are 0-d tensors, not host floats: the solve runs where the
+   matrix lies, and the only readers of [s_max] and [s_min] are the damping and
+   the guards, which [Nx.check] answers where the matrix lies too — nothing
+   here pulls a value across to build a message most steps never raise. *)
 let spectrum (z : 'd Nx.float64_t) =
   let w, u = eigh float64 z in
   let s = abs w in
-  u, s, item [] (max s), item [] (min s)
+  u, s, max s, min s
 
 (* The whitening transform Q = Z^{-1/2} of a Gram matrix: the matrix that turns
    the tangents a sketch was drawn along into an orthonormal basis. Q is the
@@ -329,16 +336,21 @@ let spectrum (z : 'd Nx.float64_t) =
 let inverse_sqrt (z : 'd Nx.float64_t) : 'd Nx.float64_t =
   let k = (shape z).(0) in
   let u, s, smax, smin = spectrum z in
-  if smin <= 1e-12 *. smax
-  then
-    invalid_arg
-      (Printf.sprintf
-         "Sofo.Optim: the drawn directions cannot be whitened — their Gram matrix is \
-          rank-deficient (s_min/s_max = %.2g), so %d orthonormal directions do not fit \
-          in what they span; whitening needs at least as many parameters that can carry \
-          a direction as there are lanes."
-         (if smax = 0.0 then 0.0 else smin /. smax)
-         k);
+  Nx.check
+    Nx.Ptree.(pair tensor tensor)
+    Infix.(smin > smax *$ 1e-12)
+    (smin, smax)
+    (fun _ (smin, smax) ->
+       let smin = item [] smin
+       and smax = item [] smax in
+       invalid_arg
+         (Printf.sprintf
+            "Sofo.Optim: the drawn directions cannot be whitened — their Gram matrix is \
+             rank-deficient (s_min/s_max = %.2g), so %d orthonormal directions do not \
+             fit in what they span; whitening needs at least as many parameters that can \
+             carry a direction as there are lanes."
+            (if smax = 0.0 then 0.0 else smin /. smax)
+            k));
   let inv_sqrt = rsqrt s in
   Infix.(u * reshape [| 1; k |] inv_sqrt *@ transpose u)
 
@@ -382,16 +394,24 @@ let coordinates
   let vt = transpose u in
   let gamma =
     match damping with
-    | `Absolute value -> value
-    | `Relative_from_top factor -> factor *. smax
+    | `Absolute value -> scalar_like smin value
+    | `Relative_from_top factor -> Infix.(smax *$ factor)
     | `Relative_from_bottom factor ->
-      if smin <= 0.0
-      then
-        invalid_arg
-          "Sofo.Optim.coordinates: `Relative_from_bottom needs a full-rank sketch, but \
-           the smallest singular value of the sketched GGN is 0; damp absolutely or from \
-           the top instead";
-      factor *. smin
+      (* Damping from the bottom is relative to a scale the spectrum only has
+         when every direction is resolved, so it needs [smin > 0] before it
+         has one to be relative to. *)
+      Nx.check
+        Nx.Ptree.(pair tensor tensor)
+        Infix.(smin >$ 0.0)
+        (smin, smax)
+        (fun _ (smin, _) ->
+           invalid_arg
+             (Printf.sprintf
+                "Sofo.Optim.coordinates: `Relative_from_bottom needs a full-rank sketch, \
+                 but the smallest singular value of the sketched GGN is %g; damp \
+                 absolutely or from the top instead"
+                (item [] smin)));
+      Infix.(smin *$ factor)
   in
   (* The undamped solve is only defined on a full-rank spectrum, and the
      relative modes tie the damping to a scale the spectrum may not have: a
@@ -399,33 +419,41 @@ let coordinates
      it, so `s + gamma` has a zero on the diagonal and the solve would answer
      infinity (or NaN, where `c` is zero too). Naming the case beats handing
      the caller a NaN parameter tree. *)
-  if smin +. gamma <= 0.0
-  then
-    invalid_arg
-      (match damping with
-       | `Relative_from_top _ when smax = 0.0 ->
-         "Sofo.Optim.coordinates: the sketched GGN is zero, so `Relative_from_top scales \
-          its damping to zero with it and the solve has no finite answer; no curvature \
-          was marked (a loss jitted outside a sketch keeps no marks), or the marked \
-          predictions do not depend on the parameters — damp with `Absolute"
-       | `Absolute value when value <= 0.0 ->
-         Printf.sprintf
-           "Sofo.Optim.coordinates: the damped sketched GGN is singular: its smallest \
-            singular value is %g and the damping is %g; the undamped inverse needs a \
-            full-rank sketch, so damp with a positive `Absolute value or from the top"
-           smin
-           value
-       | _ ->
-         Printf.sprintf
-           "Sofo.Optim.coordinates: the damped sketched GGN is singular: its smallest \
-            singular value is %g and the damping is %g; the solve has no finite answer"
-           smin
-           gamma);
+  Nx.check
+    Nx.Ptree.(triple tensor tensor tensor)
+    Infix.(smin + gamma >$ 0.0)
+    (smin, smax, gamma)
+    (fun _ (smin, smax, gamma) ->
+       let smin = item [] smin
+       and smax = item [] smax
+       and gamma = item [] gamma in
+       invalid_arg
+         (match damping with
+          | `Relative_from_top _ when smax = 0.0 ->
+            "Sofo.Optim.coordinates: the sketched GGN is zero, so `Relative_from_top \
+             scales its damping to zero with it and the solve has no finite answer; no \
+             curvature was marked (a loss jitted outside a sketch keeps no marks), or \
+             the marked predictions do not depend on the parameters — damp with \
+             `Absolute"
+          | `Absolute value when value <= 0.0 ->
+            Printf.sprintf
+              "Sofo.Optim.coordinates: the damped sketched GGN is singular: its smallest \
+               singular value is %g and the damping is %g; the undamped inverse needs a \
+               full-rank sketch, so damp with a positive `Absolute value or from the top"
+              smin
+              value
+          | _ ->
+            Printf.sprintf
+              "Sofo.Optim.coordinates: the damped sketched GGN is singular: its smallest \
+               singular value is %g and the damping is %g; the solve has no finite \
+               answer"
+              smin
+              gamma));
   let rhs = Infix.(vt *@ reshape [| k; 1 |] c) in
   (* [s] is a row and [rhs] a column: shape the spectrum as a column, or the
      elementwise solve broadcasts [k] against [k; 1] into a [k; k] matrix. *)
   let s = reshape [| k; 1 |] s in
-  let damped = Infix.(s +$ gamma) in
+  let damped = Infix.(s + gamma) in
   let rhs =
     match preconditioner with
     | `Inverse -> Infix.(rhs / damped)
@@ -532,7 +560,9 @@ let sketch_jit
     { loss = out.loss; c = out.c; ggn = out.ggn; gram = out.gram; dirs }
 
 (* [params - lr * Θ z], compiled, so it runs where the parameters and the
-   directions live. [z] and [lr] are host values that join them per call.
+   directions live. [z] and [lr] are inputs of the program, not constants of
+   it, so a new coordinate vector and a new learning rate cost a replay rather
+   than a retrace.
 
    [Rune.jit] keeps its program per closure, not per program text: each call
    builds a fresh [Jit.create] and that is what holds the compiled program. A
@@ -556,8 +586,14 @@ let shift_jit (type p d) ?beam ?parallel (p : (p, d) Nx.Ptree.t)
 
    The step, and the state that produced it, advance together: the caller
    threads one state through the loop, so the key the sketch consumed and the
-   key the next sketch is drawn from cannot drift apart. The solve runs on the
-   host, which copies three k-sized tensors when the sketch ran on a GPU. *)
+   key the next sketch is drawn from cannot drift apart.
+
+   The solve runs where the sketch ran when that set computes eagerly
+   ({!Nx.Devices.has_kernels}) — the eager SVD of the backend, never the
+   Jacobi program [Rune.jit] would build — and on the host when it does not,
+   since a set minted without kernels computes only under the compiler. Either
+   way [k] coordinates come back to [placement] for the compiled shift: a
+   view where they were solved, a copy of [k] numbers where they were not. *)
 let update_jit
       (type p d)
       ?beam
@@ -566,20 +602,39 @@ let update_jit
       (p : (p, d) Nx.Ptree.t)
   =
   let shift = shift_jit ?beam ?parallel p in
+  let eager = Nx.Devices.has_kernels (Nx.Placement.devices placement) in
+  let solve
+        (type e)
+        ?damping
+        ?preconditioner
+        ~(at : e Nx.Placement.t)
+        (o : (p, d) step_info)
+    =
+    let z =
+      coordinates
+        ?damping
+        ?preconditioner
+        ~gram:(place at o.gram)
+        (place at o.ggn)
+        (place at o.c)
+    in
+    place placement z
+  in
   fun ?(lr = 1.0)
     ?damping
     ?preconditioner
     (st : state)
     (params : p)
     (o : (p, d) step_info) ->
-    let host = place Nx.Host.on in
     let z =
-      coordinates ?damping ?preconditioner ~gram:(host o.gram) (host o.ggn) (host o.c)
+      if eager
+      then solve ?damping ?preconditioner ~at:placement o
+      else solve ?damping ?preconditioner ~at:Nx.Host.on o
     in
     ( shift
         (place_all p placement params)
         (place_all p placement o.dirs)
-        (place placement z)
+        z
         (scalar_at placement float64 lr)
     , next st )
 

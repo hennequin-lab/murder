@@ -8,20 +8,28 @@ let lr = 0.1
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Absolute 0.
 
-let device =
-  let gpu =
-    match Cmdargs.get_string "-dev" with
-    | Some "amd" | Some "AMD" ->
-      Rig.open_ (Rig_amd_amdgpu.gpu 0) |> Stdlib.Result.get_ok |> Option.some
-    | Some "nv" | Some "NV" ->
-      Rig.open_ (Rig_nv_nvidia.gpu 0) |> Stdlib.Result.get_ok |> Option.some
-    | _ -> None
-  in
-  match gpu with
-  | Some g -> g
-  | None -> Rig.host
+(* A GPU set computes eagerly only when it is minted with the library of
+   kernels for its GPU, and the solve of [Sofo.Optim.update_jit] runs there
+   when it does; a GPU neither library computes on is used without kernels and
+   computes under [Rune.jit] alone. nx.cuda covers NVIDIA sm_89, nx.amd AMD
+   gfx12. *)
+let device, kernels =
+  match Cmdargs.get_string "-dev" with
+  | Some "amd" | Some "AMD" ->
+    let gpu = Rig.open_ (Rig_amd_amdgpu.gpu 0) |> Stdlib.Result.get_ok in
+    let kernels =
+      if Nx_amd.computes_on gpu then Some (module Nx_amd : Nx_kernel.S) else None
+    in
+    gpu, kernels
+  | Some "nv" | Some "NV" ->
+    let gpu = Rig.open_ (Rig_nv_nvidia.gpu 0) |> Stdlib.Result.get_ok in
+    let kernels =
+      if Nx_cuda.computes_on gpu then Some (module Nx_cuda : Nx_kernel.S) else None
+    in
+    gpu, kernels
+  | _ -> Rig.host, None
 
-module D = (val Nx.devices [ device ])
+module D = (val Nx.devices ?kernels [ device ])
 
 let placement = D.on
 
@@ -96,5 +104,11 @@ let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
     loop ~i:(i + 1) params state)
 
 let state = Sofo.Optim.init ~key:dirs_key ()
-let () = Stdio.printf "device: %s\n%!" (Rig.name device)
+
+let () =
+  Stdio.printf
+    "device: %s (eager kernels: %b)\n%!"
+    (Rig.name device)
+    (Nx.Devices.has_kernels D.v)
+
 let _ = loop ~i:0 student state

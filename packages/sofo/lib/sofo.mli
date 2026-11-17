@@ -223,21 +223,23 @@ val sketch
 
     Two halves, split by what is worth compiling rather than by taste. The
     sketching half is differentiable and jits ({!Optim.sketch_jit}); the update
-    needs the eigendecomposition of the sketched GGN, which Raven compiles —
-    [Nx.eigh] is lowered to Jacobi rotations — but which runs slower compiled
-    than on the host: eight times slower at [k = 128], and ten to sixty times
-    slower on a GPU, against a round trip of three [k×k] tensors (see
-    [doc/jit-solve.md]). So the solve runs eagerly on the host at O(k³),
-    negligible beside a model with P ≫ k parameters — the premise of the
-    algorithm — and only [k]-sized numbers make the trip. A deployment
-    therefore compiles the sketch and the shift, and keeps the solve outside
-    them:
+    needs the eigendecomposition of the sketched GGN, and that is the one thing
+    worth neither compiling nor copying. Raven compiles it — [Nx.eigh] is
+    lowered to Jacobi rotations — while every eager backend carries a blocked
+    routine: cyclic Jacobi at order 32 or less, bidiagonalization and QR past
+    it, LAPACK on the host. The eager kernel replays three to six times faster
+    than the compiled program at [k] from 32 to 128 (see [doc/jit-solve.md]),
+    so the solve runs eagerly at O(k³) — negligible beside a model with P ≫ k
+    parameters, the premise of the algorithm — where the sketch ran, and only
+    [k]-sized numbers move when that set computes with no kernels. A
+    deployment therefore compiles the sketch and the shift, and keeps the solve
+    outside them:
 
     {[
       (* build the compiled half once; it jits on first call *)
       let sketch_step = Sofo.Optim.sketch_jit ~k Params.ptree Aux.ptree loss in
 
-      (* the loop: one replay, one host solve, one compiled step *)
+      (* the loop: one replay, one eager solve, one compiled step *)
       let params, state =
         let out = sketch_step ~key:state.Sofo.Optim.key ~aux params in
         Sofo.Optim.update ~lr ~damping Params.ptree state params out
@@ -418,12 +420,14 @@ module Optim : sig
       properties of the curvature rather than of the draw. Omit [gram] to solve
       in the sketch's own basis, unconsidered directions and all.
 
-      {b Note.} A compiled eigendecomposition is possible — [Nx.eigh] lowers to
-      Jacobi rotations and compiles in a fraction of a second — but its
-      replay is several times the host kernel's, and a device's is slower
-      still, so this is for the host side of a step rather than inside a
-      [Rune.jit]ed program (see [doc/jit-solve.md]). It takes arguments on a
-      set with kernels, such as the host.
+      {b Note.} It computes wherever its arguments lie, eagerly, and that is
+      what the library wants: an eager backend's spectral routine is the fast
+      one — LAPACK on the host, a blocked bidiagonalization on a GPU — and the
+      same function traced under [Rune.jit] is a program of Jacobi rotations,
+      several times slower to replay (see [doc/jit-solve.md]). It takes
+      arguments on a set with kernels, {!Nx.Devices.has_kernels}; a GPU set
+      minted without them computes only under the compiler, so {!update_jit}
+      brings the [k]-sized numbers to the host first and solves there.
 
       Raises [Invalid_argument] for [`Relative_from_bottom] on a sketch whose
       smallest singular value is 0, and for a [gram] that is rank-deficient:
@@ -561,11 +565,15 @@ module Optim : sig
         let params, state = Sofo.Optim.update ~lr ~damping p state params out in
       ]}
 
-      The solve runs on the host, from [out]'s [k]-sized [c], [ggn] and
-      [gram], and that is the whole of the round trip: three small tensors
-      down, [k] numbers up. The step on the parameters is compiled and runs
-      where [params] and [out.dirs] live, so parameters placed on a GPU stay
-      there. [doc/jit-solve.md] says why the solve is not compiled with them.
+      The step on the parameters is compiled and runs where [params] and
+      [out.dirs] live, so parameters placed on a GPU stay there. The solve is
+      eager, and runs there too when the placement's set computes eagerly —
+      [Nx.Devices.has_kernels], which a GPU set minted with
+      [~kernels:(module Nx_cuda)] or [(module Nx_amd)] does — using that
+      backend's spectral kernel. A set minted without kernels brings [out]'s
+      three [k]-sized matrices back to the host for it, three small tensors
+      down and [k] numbers up; [doc/jit-solve.md] says why the solve is eager
+      rather than compiled with the rest.
 
       {!update_sketch} is the same step for a sketch measured eagerly, which
       threads no state. This one compiles the parameter step on every call, so
@@ -600,7 +608,13 @@ module Optim : sig
       step built inside {!update} compiles again, kernel search included, on
       every iteration of a training loop. Build this once and hold it: the
       shapes of [params], [dirs] and [z] do not change across a run, so every
-      iteration replays one program. *)
+      iteration replays one program.
+
+      The eager solve is outside the program and follows [placement]'s set, as
+      {!update} describes: on a GPU set minted with kernels it runs on the GPU,
+      and on a set that computes only under the compiler the [k]-sized
+      matrices come back to the host. Which of the two a run does is fixed when
+      this is built, so it costs one test per build, not one per step. *)
   val update_jit
     :  ?beam:int
     -> ?parallel:int

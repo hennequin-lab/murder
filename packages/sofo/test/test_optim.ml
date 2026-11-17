@@ -354,6 +354,27 @@ let test_coordinates_survives_a_singular_direction () =
   raises_match Exn.invalid_arg (fun () ->
     ignore (Sofo.Optim.coordinates ~damping:(`Absolute 0.0) ggn c))
 
+let test_coordinates_compiles () =
+  (* The solve is eager, and it is the same function under [Rune.jit]: the
+     spectrum's extrema are tensors and its refusals [Nx.check]s, so nothing in
+     it needs the host. That is what keeps one implementation of the solve
+     rather than a host one and a slightly different traced one. *)
+  let solve =
+    Rune.jit
+      Nx.Ptree.(tensor @-> tensor @-> returns tensor)
+      (fun ggn c -> Sofo.Optim.coordinates ~damping:(`Absolute 0.5) ggn c)
+  in
+  let s = [| 4.0; 1.0; 0.25 |] in
+  let ggn =
+    create f64 [| k; k |] [| s.(0); 0.0; 0.0; 0.0; s.(1); 0.0; 0.0; 0.0; s.(2) |]
+  in
+  let c = create f64 [| k |] [| 1.0; -2.0; 3.0 |] in
+  check_arr
+    ~eps:1e-12
+    ~msg:"the traced solve is the eager one"
+    (to_array (Sofo.Optim.coordinates ~damping:(`Absolute 0.5) ggn c))
+    (solve ggn c)
+
 let test_coordinates_rejects_a_spectrum_it_cannot_invert () =
   (* A sketch with no curvature at all — a loss whose little losses were never
      marked, say — leaves `Relative_from_top nothing to scale its damping by,
@@ -884,6 +905,7 @@ let tests =
       ; test
           "an uninvertible spectrum raises"
           test_coordinates_rejects_a_spectrum_it_cannot_invert
+      ; test "the solve compiles" test_coordinates_compiles
       ]
   ; group
       "the update"

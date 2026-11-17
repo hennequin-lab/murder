@@ -28,11 +28,14 @@ The library splits along what can be compiled:
 - **Updating** (`Sofo.Optim`) — Algorithm 1's damped subspace solve
   `θ ← θ − η·Θ·U(S + γI)⁻¹UᵀC`, and the shift. The solve needs the
   eigendecomposition of the symmetric `G̃`. That compiles — `Nx.eigh` is lowered
-  to Jacobi rotations and `Rune.jit` traces it — but it is 8× the host kernel's
-  time to replay at `k = 128` and 10–60× on a GPU, against a round trip of three
-  `k×k` tensors; so the solve runs eagerly on the host at O(k³) — the cheap
-  part, 8.7 ms at `k = 128`, against a model with P ≫ k parameters — and only
-  `k`-sized numbers make the trip (see
+  to Jacobi rotations and `Rune.jit` traces it — but the eager kernel is the
+  fast one: every backend (`nx.cpu`, `nx.cuda`, `nx.amd`) carries a blocked
+  routine — LAPACK's on the host, and on a GPU Jacobi only up to order 32,
+  bidiagonalization and QR past it — and it replays three to six times faster
+  than the compiled program. So the solve runs eagerly at O(k³) — the cheap
+  part, 1.6 ms at `k = 128` on the host, against a model with P ≫ k parameters
+  — where the sketch ran, and only `k`-sized numbers cross to the host when
+  that set computes with no kernels (see
   [`doc/jit-solve.md`](doc/jit-solve.md)). The shift compiles, and runs where
   the parameters live.
 
@@ -52,7 +55,9 @@ Student–teacher linear regression with ill-conditioned inputs: draw a teacher
 `W*`, a student `W`, and minibatches `y = x·W*`, then train the student with
 the SOFO update. This is the whole example, with `-dev` read by `Cmdargs`
 (run it with `dune exec example/linear.exe`, and add `-- -dev nv` or
-`-- -dev amd` to run it on an NVIDIA or AMD GPU):
+`-- -dev amd` to run it on an NVIDIA or AMD GPU — a GPU whose kernels the
+build has, `nx.cuda` for NVIDIA sm_89 and `nx.amd` for AMD gfx12, also solves
+there):
 
 ```ocaml
 open Base
@@ -65,20 +70,28 @@ let lr = 0.1
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Absolute 0.
 
-let device =
-  let gpu =
-    match Cmdargs.get_string "-dev" with
-    | Some "amd" | Some "AMD" ->
-      Rig.open_ (Rig_amd_amdgpu.gpu 0) |> Stdlib.Result.get_ok |> Option.some
-    | Some "nv" | Some "NV" ->
-      Rig.open_ (Rig_nv_nvidia.gpu 0) |> Stdlib.Result.get_ok |> Option.some
-    | _ -> None
-  in
-  match gpu with
-  | Some g -> g
-  | None -> Rig.host
+(* A GPU set computes eagerly only when it is minted with the library of
+   kernels for its GPU, and the solve of [Sofo.Optim.update_jit] runs there
+   when it does; a GPU neither library computes on is used without kernels and
+   computes under [Rune.jit] alone. nx.cuda covers NVIDIA sm_89, nx.amd AMD
+   gfx12. *)
+let device, kernels =
+  match Cmdargs.get_string "-dev" with
+  | Some "amd" | Some "AMD" ->
+    let gpu = Rig.open_ (Rig_amd_amdgpu.gpu 0) |> Stdlib.Result.get_ok in
+    let kernels =
+      if Nx_amd.computes_on gpu then Some (module Nx_amd : Nx_kernel.S) else None
+    in
+    gpu, kernels
+  | Some "nv" | Some "NV" ->
+    let gpu = Rig.open_ (Rig_nv_nvidia.gpu 0) |> Stdlib.Result.get_ok in
+    let kernels =
+      if Nx_cuda.computes_on gpu then Some (module Nx_cuda : Nx_kernel.S) else None
+    in
+    gpu, kernels
+  | _ -> Rig.host, None
 
-module D = (val Nx.devices [ device ])
+module D = (val Nx.devices ?kernels [ device ])
 
 let placement = D.on
 
@@ -133,6 +146,11 @@ let sketch_step =
    would compile it again on every iteration. *)
 let update_step = Sofo.Optim.update_jit placement Model.ptree
 
+(* Two streams from one root: the subspace and the data. *)
+let root = Rng.key 1985
+let dirs_key = Rng.fold_in root 0
+let data_key = Rng.fold_in root 1
+
 let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
   if i >= max_iter
   then params
@@ -147,12 +165,14 @@ let rec loop ~i (params : _ Model.P.t) (state : Sofo.Optim.state) =
     Stdio.printf "[%05i] loss = %.6f\n%!" i loss;
     loop ~i:(i + 1) params state)
 
-(* Two streams from one root: the subspace and the data. *)
-let root = Rng.key 1985
-let dirs_key = Rng.fold_in root 0
-let data_key = Rng.fold_in root 1
 let state = Sofo.Optim.init ~key:dirs_key ()
-let () = Stdio.printf "device: %s\n%!" (Rig.name device)
+
+let () =
+  Stdio.printf
+    "device: %s (eager kernels: %b)\n%!"
+    (Rig.name device)
+    (Nx.Devices.has_kernels D.v)
+
 let _ = loop ~i:0 student state
 ```
 
@@ -185,14 +205,17 @@ How to read it:
    _inside_ it, from the key input, so replaying it each step samples a fresh
    128-dimensional subspace without retracing.
 5. **The loop replays, solves, steps.** One compiled call produces the loss, `C`,
-   `G̃`, the Gram ΘΘᵀ and Θ; `Sofo.Optim.update_jit` solves on the host from the
-   k-sized numbers, shifts the parameters in a compiled step where they live,
-   and advances the direction stream with the parameters, so the next iteration
-   cannot reuse the subspace it just measured. The step is built once, outside
-   the loop: `Rune.jit` caches per closure, so `Sofo.Optim.update` — which
-   builds one per call — would compile it again every iteration. The
-   parameters are placed on the device `-dev` names (`Nx.Ptree.place`), and
-   everything that touches them is compiled for it. `damping = \`Absolute 0.`
+   `G̃`, the Gram ΘΘᵀ and Θ; `Sofo.Optim.update_jit` solves eagerly from those
+   numbers — by the backend where they lie: the example mints its set with
+   `nx.cuda`/`nx.amd` kernels for a GPU they compute on, and without kernels
+   for one they do not, which brings the k-sized matrices back to the host —
+   shifts the parameters in a compiled step where they live, and advances the
+   direction stream with the parameters, so the next iteration cannot reuse the
+   subspace it just measured. The step is built once, outside the loop:
+   `Rune.jit` caches per closure, so `Sofo.Optim.update` — which builds one per
+   call — would compile it again every iteration. The parameters are placed on
+   the device `-dev` names (`Nx.Ptree.place`), and everything that touches them
+   is compiled for it. `damping = \`Absolute 0.`
    and `lr = 0.1` make it a scaled Newton step inside the subspace.
 
 ## API at a glance
@@ -215,17 +238,17 @@ How to read it:
 | Damping and preconditioning policy                | `` `Relative_from_top`` (default), `` `Absolute``, `` `Relative_from_bottom``, `` `Inverse``, `` `Inverse_sqrt`` |
 
 The API reference lives in [`lib/sofo.mli`](lib/sofo.mli), whose doc comments
-are the intended documentation; `PLAN.md` records the design and the
-implementation notes, including what each milestone settled.
+are the intended documentation.
 [`doc/jit-solve.md`](doc/jit-solve.md) is why the subspace solve is the one
-thing in the loop that stays on the host: what Raven now compiles and what it
-costs to run, measured on the host and on a GPU.
+thing in the loop that is eager rather than compiled: what the eager backends
+do that the compiler does not, and what it costs to run, measured on the host
+and on a GPU.
 
 ## Examples
 
 | Example                    | What it shows                                                                                                                                                                                                            |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `example/linear.ml`        | The minimal compiled loop shown above: ill-conditioned linear regression, one `Rune.jit`ed sketch, the host solve and the compiled shift.                                                                                |
+| `example/linear.ml`        | The minimal compiled loop shown above: ill-conditioned linear regression, one `Rune.jit`ed sketch, the eager solve and the compiled shift.                                                                                |
 | `example/lorenz.ml`        | The paper's Lorenz endpoint task: a small RNN (`Rune.scan`) trained by the compiled SOFO loop, with an Adam loop (`Rune.value_and_grad` + `Vega.adam_step`) over the same `objective` kept (commented out) for comparison.                                                  |
 
 ```bash
@@ -236,8 +259,9 @@ dune exec example/lorenz.exe -- -d /tmp -dev nv
 ## Building and testing
 
 Requires OCaml ≥ 5.5 (algebraic effects), `nx`, `rune` and `ppx_ptree`; the
-examples additionally use `vega`, `laguz`, `nx.io`, `bos`, `cmdliner`,
-[`cmdargs`](https://github.com/hennequin-lab/cmdargs) and `stdio`.
+examples additionally use `vega`, `jera`, `nx.io`, `nx.cuda`, `nx.amd`,
+`bos`, `cmdliner`, [`cmdargs`](https://github.com/hennequin-lab/cmdargs) and
+`stdio`.
 
 ```bash
 dune build            # library, examples and tests
