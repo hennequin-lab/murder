@@ -323,6 +323,11 @@ changes do not need an entry.
 
 ### sofo
 
+- `Optim.preconditioner` gains [`Pseudoinverse`]: the sketched solve weights a
+  direction by `√S / (S + γ·I)` instead of `(S + γ·I)⁻¹`. A direction the sketch
+  resolves poorly is attenuated rather than amplified, and one it cannot resolve
+  at all contributes nothing instead of `1/γ`: the step a rank-deficient GGN
+  asks for, without needing the damping to stand in for the missing rank.
 - A sketch's directions hang off a subkey of the key it is given (lane `i` is
   `fold_in (fold_in key 0) i`), so a caller's own draw from that key cannot
   coincide with a lane. Before, the lanes were `fold_in key i`, and the
