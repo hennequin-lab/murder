@@ -15,7 +15,7 @@
       planes, lines, circles, point pairs and the full Möbius group.
 
     The core {!Algebra} is a functor over a metric signature and a real scalar
-    kind. A multivector is an {!Nx.t} with the blade axis last and ordinary
+    kind. A multivector is an `Nx.t` with the blade axis last and ordinary
     batch axes in front, so the algebra composes with the rest of Raven and is
     compatible with [Rune.jit] and [Rune.grad]. The models fix the scalar kind
     to [float32].
@@ -43,7 +43,7 @@
     {2 Scalars and structures}
 
     The core is polymorphic in the scalar kind ({!module-type-SCALAR}), while the
-    model modules are instantiated at [float32]. A value is an ordinary {!Nx.t},
+    model modules are instantiated at [float32]. A value is an ordinary `Nx.t`,
     so it is already a leaf for [Nx.Ptree] and for the optimizers in Vega; no
     custom [walk] is needed. Record types that appear later (for example in the
     visualization package) use [ppx_ptree] rather than a hand-written

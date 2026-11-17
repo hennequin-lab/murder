@@ -20,7 +20,7 @@
     and logarithm are therefore shared by {!Cga} and {!Pga}; only the embedding
     into the dense algebra and the action on objects are model-specific.
 
-    A motor is an {!Nx.t} of shape [batch_shape @ [|8|]], with the eight
+    A motor is an `Nx.t` of shape [batch_shape @ [|8|]], with the eight
     coefficients in the basis order above. It is a concrete tensor type so that
     it composes with the rest of Raven without conversion. The basis order is
     part of the interface; use {!of_array} and {!to_array} to read or write it
@@ -31,7 +31,7 @@
 (** The type for motors. The last axis has length {!size}. *)
 type 'd t = 'd Nx.float32_t
 
-(** [dtype] is {!Nx.float32}. *)
+(** [dtype] is `Nx.float32`. *)
 val dtype : (float, Nx.float32_elt) Nx.dtype
 
 (** [size] is [8], the number of coefficients of a motor. *)
@@ -149,7 +149,7 @@ val translation : 'd t -> 'd Nx.float32_t
 
 (** [rotation m] is the 3 by 3 rotation matrix of [m], in row-major order, of
     shape [batch_shape m @ [|3; 3|]]. It acts on column vectors, is the
-    top-left block of {!adjoint}, and agrees with the Euclidean action of
+    top-left block of {!val-adjoint}, and agrees with the Euclidean action of
     [m] on directions: for a motor [m] and a vector [x], [rotation m * x] is
     the direction [m] maps [x] to. *)
 val rotation : 'd t -> 'd Nx.float32_t

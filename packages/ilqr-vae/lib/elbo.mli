@@ -78,7 +78,7 @@ type ('w, 's) t =
     whole path. [beta] is a scalar tensor (by default a one of the model's
     dtype), not a host float, so a training step can take it as an argument
     and follow a {!Schedule} — or any other per-step weight — without
-    recompiling under {!Rune.jit}.
+    recompiling under `Rune.jit`.
 
     Raises [Invalid_argument] if the data and posterior shapes disagree or if
     the sample batch is empty. *)
