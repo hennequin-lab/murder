@@ -28,20 +28,20 @@
       tangent then costs one cheap backward pass and one rollout.
 
     Both rules are attached to the same solve. {!solve_adaptive} and
-    {!solve_fixed} wrap their primal in one {!Rune.custom_jvp}: forward mode
+    {!solve_fixed} wrap their primal in one `Rune.custom_jvp`: forward mode
     runs its tangent map, and reverse mode applies {!bwd}'s pullback as that
-    map's transpose (a {!Rune.custom_transpose}). There is no separate
+    map's transpose (a `Rune.custom_transpose`). There is no separate
     forward-mode entry point: [Rune.jvp] and [Rune.grad] both applied to the
     same function return the two derivatives.
 
     A problem is a value ({!Problem.t}): its dtype, dimensions, horizon,
     dynamics and losses are record fields, and its parameter structure is an
     [Nx.Ptree.t]. Everything below the solve level is a pure tensor
-    computation, and every time loop is a {!Rune.scan}: one traced step stands
+    computation, and every time loop is a `Rune.scan`: one traced step stands
     for the whole horizon, which [Rune.jit] compiles as a loop. The fixed
     solve's control flow is data-dependent but stays in the graph — its
-    iteration budget and damping retries are {!Rune.iterate}s and its line
-    search {!Rune.cond} branches — so a solve, its implicit derivative in
+    iteration budget and damping retries are `Rune.iterate`s and its line
+    search `Rune.cond` branches — so a solve, its implicit derivative in
     either mode, and the tangent sweeps of a forward-mode batch all trace and
     compile with [Rune.jit] on CPU or GPU into programs whose size grows with
     neither the horizon nor the budget. The
@@ -139,8 +139,8 @@ module Inputs = Problem.Inputs
 
 (** [inputs problem] is the structure of the solve inputs: the problem's
     parameters at [theta], the initial state [x0], and every control of the
-    initial guess [us0]. It is what {!Rune.grad}, {!Rune.jvp},
-    {!Rune.custom_jvp} and {!Rune.jit} take. *)
+    initial guess [us0]. It is what `Rune.grad`, `Rune.jvp`,
+    `Rune.custom_jvp` and `Rune.jit` take. *)
 val inputs
   :  ('w, 'p, 'd) Problem.t
   -> (('p, ('w, 'd) Problem.value) Inputs.t, 'd) Nx.Ptree.t
@@ -271,7 +271,7 @@ module Solver : sig
     -> ('w, 'd) Problem.value t
 
   (** The adaptive solve with its tensor work compiled. The type of the
-      returned function is {!solve} minus the problem. *)
+      returned function is {!val-solve} minus the problem. *)
   type ('w, 'p, 'd) compiled =
     ?max_iter:int
     -> ?conv_threshold:float
@@ -283,7 +283,7 @@ module Solver : sig
     -> ('w, 'd) Problem.value array
     -> ('w, 'd) Problem.value t
 
-  (** [compile ?beam ?parallel problem] is {!solve} with each traceable kernel
+  (** [compile ?beam ?parallel problem] is {!val-solve} with each traceable kernel
       — the dynamics and cost scans, the linearization and Riccati pass, and
       one line-search rollout — compiled by [Rune.jit]. The host still owns
       the control flow: regularization retries, Armijo backtracking and the

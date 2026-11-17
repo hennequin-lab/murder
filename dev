@@ -10,6 +10,7 @@ Usage: ./dev <command> [args]
   fmt       apply formatting (dune fmt)
   check     dune build @ci, then the full litany roster
   test      dune runtest
+  doc       build the API reference into _build/default/_doc/_html
   lint      dune exec -- litany check
   lock      dune pkg lock plus the Raven-main lock patch
   outdated  dune pkg outdated
@@ -41,6 +42,7 @@ case "$cmd" in
     dune exec -- litany check
     ;;
   test) dune runtest ;;
+  doc) dune build @doc ;;
   lint) dune exec -- litany check ;;
   lock) exec scripts/relock.sh ;;
   outdated) dune pkg outdated ;;

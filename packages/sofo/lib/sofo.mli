@@ -25,7 +25,7 @@
 
     Three modes, one loss function — swap the enclosing driver, not the model:
 
-    - {!sketch}: loss, C and the sketched GGN (the marks are collected);
+    - {!val-sketch}: loss, C and the sketched GGN (the marks are collected);
     - a bare [Rune.vmap] around [Rune.jvp] over the loss: loss and C (the
       marks are inert), the composition the sketch itself drives;
     - [Rune.value_and_grad]: loss and the exact gradient (the marks are
@@ -104,12 +104,12 @@ end
 
 (** [observe ~y ~curv l] marks the scalar [l] as a little loss in the
     prediction [y], whose Hessian with respect to [y] is [curv]. Under a
-    {!sketch}, the rule of a unit-result [Rune.custom_jvp] gathers [y]'s
+    {!val-sketch}, the rule of a unit-result [Rune.custom_jvp] gathers [y]'s
     [k]-lane tangent batch and adds the block YᵀHY to the sketch's total; under
     any other driver the mark makes no rule, so calling this is a no-op outside
     a sketch. A mark in a [Rune.jit]ed function is made when the function is
     traced, and a call whose program was traced outside a sketch adds no
-    block inside one: give {!sketch} the uncompiled loss.
+    block inside one: give {!val-sketch} the uncompiled loss.
 
     [l] must be a scalar computed from [y] by differentiable operations — the
     user's own arithmetic defines both the value and the tangent of the loss
@@ -185,9 +185,9 @@ type ('p, 'd) sketch =
 
 (** [sketch structure loss params dirs] sketches [loss] at [params] along the
     directions [dirs]. [structure] is the parameter structure, the
-    {!Nx.Ptree.instantiate} of the record's module, and [dirs] is a parameter
+    `Nx.Ptree.instantiate` of the record's module, and [dirs] is a parameter
     structure whose float leaves stack [k] directions on a leading axis;
-    {!Optim.directions} draws them from a key, and any other sampler returning
+    {!Optim.val-directions} draws them from a key, and any other sampler returning
     the same structure serves.
 
     [loss] must return a scalar — it is the whole objective, including any
@@ -197,11 +197,11 @@ type ('p, 'd) sketch =
     only cover the marked ones (law 6, see {!observe}).
 
     The same loss function runs under the other drivers without changing: the
-    marks are inert to {!Rune.value_and_grad} and to a bare [Rune.vmap] around
+    marks are inert to `Rune.value_and_grad` and to a bare [Rune.vmap] around
     [Rune.jvp] (the composition this function drives). A [Rune.scan] inside
     the loss is threaded by the total's scope, so a per-step mark fires for
     every step and a compiled sketch keeps the scan a loop; a [Rune.vmap]
-    inside the loss batches the trials, while a {!Rune.vmap} *around* [sketch]
+    inside the loss batches the trials, while a `Rune.vmap` *around* [sketch]
     is a batch of sketches, one per mapped parameter tree, each along its own
     lanes.
 
@@ -216,7 +216,7 @@ val sketch
 
 (** {1 The optimizer: Algorithm 1's update}
 
-    {!sketch} measures; this turns a measurement into a step. It is the whole
+    {!val-sketch} measures; this turns a measurement into a step. It is the whole
     of SOFO beyond the sketching — the damped subspace solve and the parameter
     update — and it is deliberately small: everything expensive or
     differentiable belongs to the sketch.
@@ -251,7 +251,7 @@ val sketch
     returns its successor with the new parameters, so the stream and the
     parameters advance together and a loop cannot replay the subspace it just
     measured. {!Optim.update_sketch} is the same step for a sketch measured
-    eagerly, and {!Optim.step} is a complete eager iteration.
+    eagerly, and {!Optim.val-step} is a complete eager iteration.
 
     The third kind of input, [Aux], is the loss's own: the batch, a schedule
     value, whatever the caller has that the parameters do not. It is not a
@@ -270,13 +270,13 @@ module Optim : sig
     }
 
   (** [init ?key ()] is a fresh state: step 0, and [key] as the stream's root,
-      or a subkey of the ambient {!Nx.Rng} scope when [key] is omitted. The
+      or a subkey of the ambient `Nx.Rng` scope when [key] is omitted. The
       whole run follows from this key. *)
   val init : ?key:Nx.host Nx.Rng.key -> unit -> state
 
   (** [next st] is the state of the iteration after [st]: the counter advances
       and the key becomes the subkey the counter indexes, so no two steps share
-      a direction draw. {!step} and {!update} advance the state themselves and
+      a direction draw. {!val-step} and {!update} advance the state themselves and
       hand it back; this is for a loop that draws sketches without updating — a
       first-order control, or a run that only measures. *)
   val next : state -> state
@@ -289,8 +289,8 @@ module Optim : sig
       fixes each leaf's dtype; a later leaf of another float dtype is cast to
       it, as [Nx.stack] requires.
 
-      This is the constructor for the [~custom] argument of {!directions},
-      {!step} and {!sketch_jit}. A custom tangent is one parameter-shaped
+      This is the constructor for the [~custom] argument of {!val-directions},
+      {!val-step} and {!sketch_jit}. A custom tangent is one parameter-shaped
       direction, not a lane of one; [tangents] puts the list on the lane axis
       the sketch expects.
 
@@ -338,7 +338,7 @@ module Optim : sig
 
   (** [apply structure ~k thetas z] is Θz: the parameter-space direction the
       sketch coordinates [z] denote, each leaf in its parameter's dtype.
-      [structure] is the parameter structure. {!sketch} returns the same
+      [structure] is the parameter structure. {!val-sketch} returns the same
       function as the [apply] field of its record; this one takes the
       directions as a value, because a compiled step cannot return a closure. *)
   val apply : ('p, 'd) Nx.Ptree.t -> k:int -> 'p -> 'd Nx.float64_t -> 'p
@@ -409,7 +409,7 @@ module Optim : sig
       The solve is eager and O(k³), and it is the one place the library needs a
       factorization.
 
-      [gram] is the directions' Gram matrix ({!gram}), and it whitens the
+      [gram] is the directions' Gram matrix ({!field-gram}), and it whitens the
       problem first: [ggn ← Q ggn Qᵀ] and [c ← Q c] with [Q = (ΘΘᵀ)^{-1/2}],
       before the damping and the inversion, and the result comes back through
       [Qᵀ]. The solve is a statement about the subspace the directions span,
@@ -449,9 +449,9 @@ module Optim : sig
 
       The solve is {!coordinates} with the sketch's own directions: the Gram of
       [sk.dirs] whitens it, so the damping is relative to the curvature of the
-      subspace and the parameter step is [Θ (Q z)] — the coordinates {!apply}
+      subspace and the parameter step is [Θ (Q z)] — the coordinates {!val-apply}
       contracts are the whitened solve brought back to the drawn basis. Use
-      {!step} to draw the directions and sketch as well, and {!update} for the
+      {!val-step} to draw the directions and sketch as well, and {!update} for the
       state-threaded step on a {!sketch_jit} output. *)
   val update_sketch
     :  ('p, 'd) Nx.Ptree.t
@@ -467,7 +467,7 @@ module Optim : sig
   (** [step structure ~k ~lr ?damping ?preconditioner ?custom st ~loss ~params] sketches [loss] at [params] along directions drawn from [st]'s
       key, applies the update, and returns the new parameters, the next state
       and the sketch — the loss, C and G̃, for logging. [structure] is the
-      parameter structure. [custom] is passed to {!directions}, as is the cap
+      parameter structure. [custom] is passed to {!val-directions}, as is the cap
       on [k], so an eager loop may replace the custom set at every iteration.
       One call is one training iteration, eager end to end; use {!sketch_jit}
       with {!update} when the sketching half should be compiled. *)
@@ -503,7 +503,7 @@ module Optim : sig
     { loss : 'd Nx.float64_t (** The primal total, as a scalar. *)
     ; c : 'd Nx.float64_t (** C = Θᵀ∇c, shape [k]. *)
     ; ggn : 'd Nx.float64_t (** ΘᵀJᵀHJΘ, shape [k;k]. *)
-    ; gram : 'd Nx.float64_t (** ΘΘᵀ, shape [k;k]: {!gram} of [dirs]. *)
+    ; gram : 'd Nx.float64_t (** ΘΘᵀ, shape [k;k]: {!field-gram} of [dirs]. *)
     ; dirs : 'p (** Θ, the directions the sketch was measured along. *)
     }
 
@@ -519,7 +519,7 @@ module Optim : sig
       [loss] takes the parameters and the aux, in that order. It is the same
       function the eager entry points take, closed over its aux —
       [Sofo.sketch structure (fun params -> loss params aux) params dirs] for a
-      caller's own directions, and likewise {!step}'s [~loss] — so one
+      caller's own directions, and likewise {!val-step}'s [~loss] — so one
       objective serves the compiled half and the eager one.
 
       The returned function takes [custom] as an optional input, not as a
@@ -531,7 +531,7 @@ module Optim : sig
       leaf shapes replays the compiled program; switching [None]/[Some] or
       changing [m] traces a new program once, because the option's presence
       and the custom leaves' shapes are part of [Rune.jit]'s key. [k] is
-      capped at the number of float parameters, as {!directions} describes. *)
+      capped at the number of float parameters, as {!val-directions} describes. *)
   val sketch_jit
     :  ?beam:int
     -> ?parallel:int

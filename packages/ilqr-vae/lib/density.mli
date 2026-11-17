@@ -39,10 +39,10 @@ type ('w, 's) covariance =
       a model stores a positive scale. *)
   | Cholesky of { factor : ('w, 's) value }
   (** The lower triangular [[d; d]] Cholesky factor [L] of the covariance,
-      with [Σ = L Lᵀ], as {!Nx.cholesky} returns by default. *)
+      with [Σ = L Lᵀ], as `Nx.cholesky` returns by default. *)
   | Precision_cholesky of { factor : ('w, 's) value }
   (** The upper triangular [[d; d]] Cholesky factor [U] of the precision,
-      with [P = UᵀU], as {!Nx.cholesky} returns under `~triangle:Upper`: the
+      with [P = UᵀU], as `Nx.cholesky` returns under `~triangle:Upper`: the
       covariance is [P⁻¹]. A scaled covariance is a scaled factor —
       [e^{-s} U] is the precision factor of [e^{2s} P⁻¹] — so the scale
       needs no case of its own. *)

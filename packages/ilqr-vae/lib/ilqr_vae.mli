@@ -19,8 +19,8 @@
     is used — an encoder prior [p̃] that shapes the iLQR cost. {!Model}
     bundles the pieces into a description, {!Model.make} builds it without
     drawing anything, and {!Model.init} draws the parameters a fresh model
-    starts from, whose structure {!Model.structure} is what {!Rune.grad},
-    {!Rune.jit} and the optimizers take.
+    starts from, whose structure {!Model.structure} is what `Rune.grad`,
+    `Rune.jit` and the optimizers take.
 
     {b The recognition model.} [q(x_0, u | o)] is a {!Recognition.t}: a value
     with its own parameters. Two are provided and the model takes either as
@@ -133,7 +133,7 @@ module Elbo = Elbo
     [[1; n]] and [u] of shape [[n_steps; 1; m]] for one trial, and
     [[batch…; 1; n]] and [[batch…; n_steps; 1; m]] for a mini-batch).
     [solve] selects the recognition's inner solver; see
-    {!Recognition.type-solve}. See {!Recognition.mean}. *)
+    {!Recognition.type-solve}. See {!Recognition.val-mean}. *)
 val posterior_mean
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
@@ -156,7 +156,7 @@ val posterior_draws
 
 (** [log_prob model params data samples] is [log q(samples | data)] for given
     latents, one value per member of a sample batch. See
-    {!Recognition.log_prob}. *)
+    {!Recognition.val-log_prob}. *)
 val log_prob
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params

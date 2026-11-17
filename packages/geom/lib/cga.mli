@@ -36,7 +36,7 @@
     lines, circles); it is not a universal meet that also accepts a point as a
     direct object.
 
-    {b Normalisation.} The inherited {!Algebra.normalize} is the metric
+    {b Normalisation.} The inherited {!normalize} is the metric
     normalisation [a / norm a]. The projective normalisations of the objects
     are {!normalize_point}, {!normalize_sphere} and {!normalize_plane}; they
     divide by the scale that the object carries as a representative, not by

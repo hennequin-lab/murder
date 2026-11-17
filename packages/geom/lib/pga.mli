@@ -23,7 +23,7 @@
     shared with {!Cga}; {!of_motor} and {!apply_motor} bridge the two
     representations.
 
-    {b Normalisation.} The inherited {!Algebra.normalize} is the metric
+    {b Normalisation.} The inherited {!normalize} is the metric
     normalisation [a / norm a]. The projective normalisations are
     {!normalize_point} and {!normalize_plane}. *)
 

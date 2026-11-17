@@ -17,7 +17,7 @@
     transformations walk, the functions that take its parameters, and how to
     draw those parameters. The parameters themselves are a value of their own,
     made by {!val-init}. Everything below is differentiable and traceable. [k] is a tensor, because the
-    encoder's cost runs under {!Rune.scan}; a prior that treats the first step
+    encoder's cost runs under `Rune.scan`; a prior that treats the first step
     differently selects on it with [Nx.where] rather than a host [if]. *)
 
 open Types
