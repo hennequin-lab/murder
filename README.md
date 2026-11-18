@@ -34,6 +34,12 @@ dune exec getting-started/01-nx/ex01_arrays.exe
 | [`symo`](packages/symo) | Weight-space symmetry for curvature estimation |
 | [`sofo`](packages/sofo) | Second-order forward-mode optimization |
 
+## Documentation
+
+The package API reference is published at
+<https://hennequin-lab.github.io/murder/>, built with odoc on every push to
+`main`. `./dev doc` builds it locally into `_build/default/_doc/_html`.
+
 ## Learn Raven
 
 Start at [`getting-started/`](getting-started/README.md). It covers Nx, Rune,

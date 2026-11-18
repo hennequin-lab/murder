@@ -41,7 +41,7 @@
     - A frame is a named rigid transform on a link:
       [M_world_frame = M_world_link * M_pose].
     - A {e screw} is a twist [(omega, v)] with the angular part first, exactly
-      as {!Motor.exp} and {!Motor.log} take and return it. The linear part is
+      as {!Geom.Motor.exp} and {!Geom.Motor.log} take and return it. The linear part is
       the velocity of the point at the origin of the frame the screw is
       expressed in, so a body point [p] moves with [v + omega x p].
     - The configuration [q] has shape [batch_shape @ [|dof|]], with one column
@@ -53,12 +53,12 @@
     {2:algebra Which motion algebra}
 
     {!Make} is a functor over the module it computes motions with, and
-    {!Float32} — the packed dual quaternion {!Motor} — is the instance this
+    {!Float32} — the packed dual quaternion {!Geom.Motor} — is the instance this
     library exposes as [Robot]. A float64 instance is a second {!MOTION}
     implementation and a second [Make] application; nothing in this module
     assumes [float32] except the instance it happens to ship. This is the seam
     that keeps the model layer independent of the scalar-precision decision
-    still open for the algebra modules ({!Motor}, {!Cga}, {!Pga} are fixed to
+    still open for the algebra modules ({!Geom.Motor}, {!Geom.Cga}, {!Geom.Pga} are fixed to
     [float32]).
 
     {2:status Status}
@@ -74,7 +74,7 @@
 (** The motions a robot model is built from.
 
     An implementation is the packed eight-component dual quaternion algebra of
-    {!Motor} at some scalar kind. Everything the model layer needs is here: the
+    {!Geom.Motor} at some scalar kind. Everything the model layer needs is here: the
     product, the inverse, the exponential that turns a unit screw and a
     coordinate into a joint motion, and the components of a motion that a
     Jacobian needs to re-reference. *)
@@ -91,44 +91,44 @@ module type MOTION = sig
   (** [one] is the identity motion. *)
   val one : Nx.host t
 
-  (** [mul m1 m2] applies [m2] first and [m1] second, as {!Motor.mul}. *)
+  (** [mul m1 m2] applies [m2] first and [m1] second, as {!Geom.Motor.mul}. *)
   val mul : 'd t -> 'd t -> 'd t
 
-  (** [inverse m] is the inverse motion, as {!Motor.inverse}. *)
+  (** [inverse m] is the inverse motion, as {!Geom.Motor.inverse}. *)
   val inverse : 'd t -> 'd t
 
-  (** [normalize m] removes the drift of a long product, as {!Motor.normalize}. *)
+  (** [normalize m] removes the drift of a long product, as {!Geom.Motor.normalize}. *)
   val normalize : 'd t -> 'd t
 
-  (** [translate v] is the translation by the vector [v], as {!Motor.translate}. *)
+  (** [translate v] is the translation by the vector [v], as {!Geom.Motor.translate}. *)
   val translate : (float, kind, 'd) Nx.t -> 'd t
 
   (** [translate3 x y z] is [translate] of the unbatched vector [(x, y, z)]. *)
   val translate3 : float -> float -> float -> Nx.host t
 
   (** [rotate ~axis ~angle] is the rotation by [angle] radians about [axis], as
-      {!Motor.rotate}. *)
+      {!Geom.Motor.rotate}. *)
   val rotate : axis:(float, kind, 'd) Nx.t -> angle:(float, kind, 'd) Nx.t -> 'd t
 
   (** [exp twist] is the screw motion of the twist [(omega, v)], as
-      {!Motor.exp}. *)
+      {!Geom.Motor.exp}. *)
   val exp : (float, kind, 'd) Nx.t -> 'd t
 
-  (** [log m] is the twist whose [exp] is [m], as {!Motor.log}. *)
+  (** [log m] is the twist whose [exp] is [m], as {!Geom.Motor.log}. *)
   val log : 'd t -> (float, kind, 'd) Nx.t
 
-  (** [adjoint m] is the 6 by 6 adjoint acting on twists, as {!Motor.adjoint}. *)
+  (** [adjoint m] is the 6 by 6 adjoint acting on twists, as {!Geom.Motor.val-adjoint}. *)
   val adjoint : 'd t -> (float, kind, 'd) Nx.t
 
   (** [translation m] is the position of the frame [m], as
-      {!Motor.translation}. *)
+      {!Geom.Motor.translation}. *)
   val translation : 'd t -> (float, kind, 'd) Nx.t
 
-  (** [rotation m] is the 3 by 3 rotation of [m], as {!Motor.rotation}. *)
+  (** [rotation m] is the 3 by 3 rotation of [m], as {!Geom.Motor.rotation}. *)
   val rotation : 'd t -> (float, kind, 'd) Nx.t
 end
 
-(** The packed dual quaternion of {!Motor}: the [float32] instance. *)
+(** The packed dual quaternion of {!Geom.Motor}: the [float32] instance. *)
 module Float32 : MOTION with type kind = Nx.float32_elt
 
 (** {1:models Models} *)
@@ -333,14 +333,14 @@ module Make (Mo : MOTION) : sig
       Both are the same physical velocity in different coordinates — [`Body] is
       [`World] with each three-vector rotated, not carried by the frame's
       adjoint, which would move the reference point as well. The test suite
-      checks [`World] against a finite difference of {!pose} and [`Body] against
+      checks [`World] against a finite difference of {!val-pose} and [`Body] against
       the right-trivialised difference of the logarithm, which is what fixes the
       signs and the reference points.
 
       {b Which one a pose error pairs with.} An error [e = log (M_target^-1 M)]
       lives in the frame's body coordinates, so the step that cancels it is
       [dq = -J_body^+ e]; [dq = -J_world^+ e] mixes coordinates, and a solver
-      built on it converges linearly at best, or not at all. {!log} of the
+      built on it converges linearly at best, or not at all. `log` of the
       {e other} difference, [log (M M_target^-1)], is a spatial twist referenced
       to the world origin, which is a third convention and not [`World] — use
       the body pairing unless there is a reason not to.
@@ -387,7 +387,7 @@ module Make (Mo : MOTION) : sig
       chain's columns — and the test suite checks them against each other. *)
   val twist : t -> ?space:[ `Body | `World ] -> frame:frame -> 'd q -> 'd qdot -> 'd twist
 
-  (** [bias m ?space ~frame q qdot] is the time derivative of {!twist}, of
+  (** [bias m ?space ~frame q qdot] is the time derivative of {!val-twist}, of
       shape [batch_shape @ [|6|]]: the frame origin's acceleration and the
       angular acceleration along a trajectory through [q] with velocity [qdot]
       and zero acceleration. It is [Jdot * qdot], the second term of
@@ -456,32 +456,32 @@ module Make (Mo : MOTION) : sig
 
   (** {2:ad Differentiable kinematics}
 
-      The kinematics is already traceable — it is pure {!Nx} — so
-      [Rune.jacfwd], [Rune.jvp] and [Rune.grad] differentiate {!pose} as it
+      The kinematics is already traceable — it is pure `Nx` — so
+      [Rune.jacfwd], [Rune.jvp] and [Rune.grad] differentiate {!val-pose} as it
       stands. They differentiate the closed form of [exp] and its neighbours,
       which is where the branches are.
 
       {!pose_tangent} is the same derivative written once, analytically, from
-      {!motion_jacobian}; {!pose_diff} attaches it to {!pose} as a
-      {!Rune.custom_jvp} rule. Use {!pose_diff} where the derivative is what
+      {!motion_jacobian}; {!pose_diff} attaches it to {!val-pose} as a
+      `Rune.custom_jvp` rule. Use {!pose_diff} where the derivative is what
       matters: forward mode then evaluates the closed form instead of
       differentiating through it, reverse mode transposes the closed form's
       operations, and higher orders differentiate the rule rather than the
       branches. This is the arrangement the design note argues for: automatic
       differentiation for composition, analytic derivatives as its leaves. *)
 
-  (** [pose_tangent m ~frame:f q dq] is the tangent of {!pose} at [q] along
+  (** [pose_tangent m ~frame:f q dq] is the tangent of {!val-pose} at [q] along
       [dq]: the sum over [i] of [motion_jacobian]-column [i] times [dq_i], of
       shape [batch_shape @ [|8|]]. It is linear in [dq], which is what a
       tangent map must be. *)
   val pose_tangent : t -> frame:frame -> 'd q -> 'd q -> 'd motion
 
-  (** [pose_diff m ~frame:f] is {!pose} with the derivative {!pose_tangent}
-      attached through {!Rune.custom_jvp}. Its values are {!pose}'s, its
+  (** [pose_diff m ~frame:f] is {!val-pose} with the derivative {!pose_tangent}
+      attached through `Rune.custom_jvp`. Its values are {!val-pose}'s, its
       first derivative is the closed form of {!pose_tangent} — not of the
-      branches {!pose} would differentiate — and higher derivatives
+      branches {!val-pose} would differentiate — and higher derivatives
       differentiate the rule's code. Both modes use it, and it is traceable, so
-      it can replace {!pose} anywhere a derivative is taken. *)
+      it can replace {!val-pose} anywhere a derivative is taken. *)
   val pose_diff : t -> frame:frame -> 'd q -> 'd motion
 
   (** {2:standard Models of standard robots} *)
@@ -504,6 +504,6 @@ end
 (** {1:instance The float32 instance}
 
     [Geom_robot.Robot] {e is} {!Make} applied to {!Float32}: the model layer on
-    the packed dual quaternion of {!Motor}. The functor is the seam for another
+    the packed dual quaternion of {!Geom.Motor}. The functor is the seam for another
     scalar kind; the instance is what the rest of the stack uses. *)
 include module type of Make (Float32)

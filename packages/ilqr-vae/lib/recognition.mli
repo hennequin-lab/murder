@@ -240,7 +240,7 @@ val init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> ('w, 'd, 'l, 'e, 'r, 's
     [data] is one trial ([[n_steps; n_output]]) or a mini-batch
     ([[batch…; n_steps; n_output]]). A mini-batch is one tensor argument: the
     recognition applies one trial's encoder to each of its leading axes — one
-    {!Rune.vmap} when the solve is fixed, one host-side iteration per trial
+    `Rune.vmap` when the solve is fixed, one host-side iteration per trial
     when it is adaptive — and the key is split into one subkey per trial, so
     their draws are independent. The result carries the batch axes as
     documented at {!type-posterior}.
@@ -259,7 +259,7 @@ val init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> ('w, 'd, 'l, 'e, 'r, 's
 
     [solve] selects how a recognition with an iterative inner solver reaches
     its mean; see {!type-solve}. The adaptive solve cannot run inside
-    {!Rune.vmap}, so a mini-batch is solved one trial at a time with it and
+    `Rune.vmap`, so a mini-batch is solved one trial at a time with it and
     with one map of the whole batch when the solve is {!fixed}. *)
 val infer
   :  ('w, 'd, 'l, 'e, 'r, 's) t
@@ -324,12 +324,12 @@ val gparams_structure
         x_0 = 0,  x_{k+1} = f(x_k, u_k)
     ]}
 
-    {b The covariance.} {!type-kind} selects it, and the parameters are
+    {b The covariance.} `kind` selects it, and the parameters are
     whichever one it is:
 
-    - {!constructor-Kron}, the default and the paper's: [N(μ_u, Σ_time ⊗ Σ_space)],
+    - `Kron`, the default and the paper's: [N(μ_u, Σ_time ⊗ Σ_space)],
       two learned Cholesky factors shared by every trial;
-    - {!constructor-Laplace}: the local quadratic model's own Gaussian, one per
+    - `Laplace`: the local quadratic model's own Gaussian, one per
       trial, [N(z⋆, (P⁻¹, Q_uu,0⁻¹ …))] over [z = (x₀, u)], from the factors
       the Riccati pass at the solution already holds ({!Dilqr.Lqr.Laplace}).
       It needs no covariance parameters at all; one learned scalar scales
@@ -549,7 +549,7 @@ module Lfads : sig
       - [n_ctrl] that of the controller (default [32]);
       - [with_inputs] (default [true]) selects whether the inputs are
         inferred at all;
-      - [phi] (default {!Nx.tanh}) is the activation of every cell;
+      - [phi] (default `Nx.tanh`) is the activation of every cell;
       - [key] seeds the initialization, and defaults to the current random
         scope.
 

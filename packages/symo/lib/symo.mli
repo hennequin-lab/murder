@@ -217,7 +217,7 @@ module Optim : module type of Optim
 
 (** [Make (M)] is the library entry point: the orbit machinery ({!Orbit.Make})
     and the Taylor optimizer ({!Optim.Make}) for a model [M], plus [ptree],
-    the packed traversal {!Rune.grad} and {!Rune.jit} take.
+    the packed traversal `Rune.grad` and `Rune.jit` take.
 
     The parameter tree is [('d Nx.float32_t, 'd) M.t] throughout, on any
     device set ['d]: the compiled tables are host values, placed beside the

@@ -23,7 +23,7 @@
     is linear, so the affine part of the local model is already absorbed by
     {!lin}.
 
-    {b The derivative.} {!solve} solves that problem by a Riccati backward pass
+    {b The derivative.} {!val-solve} solves that problem by a Riccati backward pass
     and a gain rollout. {!solve_jvp} is its derivative in forward mode,
     {!backward_common} and {!backward_lin} the two halves of the backward pass
     the derivative reuses.
@@ -337,7 +337,7 @@ type ('a, 'b, 'd) tangent =
   }
 
 (** [solve_jvp ~common ~tape ~costate ~tangent ~dx0 ~free_initial] is the
-    tangent of {!solve}'s solution for the data tangent {!tangent} and the
+    tangent of {!val-solve}'s solution for the data tangent {!tangent} and the
     initial state tangent [dx0]: the derivative of the argmin along one
     direction in the space of problems. [free_initial] says which argmin: with
     it the initial state is a variable of the problem, so the tangent also
@@ -392,7 +392,7 @@ type ('a, 'b, 'd) tangent =
     the test: it holds pointwise, needs no step size, and fails loudly if
     either side is off by a term. The test suite checks it for random tapes at
     fixed points, and checks {!solve_jvp} against central differences of
-    {!solve}. *)
+    {!val-solve}. *)
 val solve_jvp
   :  common:(float, 'b, 'd) common
   -> tape:(float, 'b, 'd) tape
@@ -440,7 +440,7 @@ val rollout_tensor
 
 (** [rollout_linearized ~tape ~gains ~x0] integrates the linearized dynamics
     [x_{k+1} = A_k x_k + B_k u_k] under [u_k = k_k + K_k x_k] from [x0], as
-    one scan. It is {!solve}'s forward pass, and — with the gains of a
+    one scan. It is {!val-solve}'s forward pass, and — with the gains of a
     perturbed pass — the last step of the implicit VJP. *)
 val rollout_linearized
   :  tape:(float, 'b, 'd) tape
@@ -471,9 +471,9 @@ val rollout_linearized
     Three things follow, and none of them needs a dense covariance or an
     inverse beyond one triangular solve per block:
 
-    - {!val-mean} is [z⋆]: the policy's rollout from the initial state's mean;
-    - {!val-sample} draws the innovations and rolls the linear response out;
-    - {!val-log_prob} is the innovations' density, so it needs no log
+    - {!Laplace.val-mean} is [z⋆]: the policy's rollout from the initial state's mean;
+    - {!Laplace.val-sample} draws the innovations and rolls the linear response out;
+    - {!Laplace.val-log_prob} is the innovations' density, so it needs no log
       determinant of the joint.
 
     This is the truncation point's message of the Riccati pass read the other
@@ -486,13 +486,13 @@ val rollout_linearized
 
     Nothing here is stopped: a caller that wants the Gaussian to be a value of
     the local model — as a variational covariance is — detaches the record's
-    tensors and the one scale it passes to {!val-sample} and {!val-log_prob}.
+    tensors and the one scale it passes to {!Laplace.val-sample} and {!Laplace.val-log_prob}.
     The tape's nominal is what carries the gradient in that case. *)
 module Laplace : sig
   type ('a, 'b, 'd) t =
     { nominal : ('a, 'b, 'd) solution
       (** the trajectory the tape was linearized at: [(x̄, ū)]. The Gaussian's
-          mean is {!val-mean}'s, which is this plus the policy's rollout. *)
+          mean is {!Laplace.val-mean}'s, which is this plus the policy's rollout. *)
     ; feedback : ('a, 'b, 'd) Nx.t (** [K_k], [horizon; m; n] *)
     ; feedforward : ('a, 'b, 'd) Nx.t (** [k_k], [horizon; m] *)
     ; quu_chol : ('a, 'b, 'd) Nx.t

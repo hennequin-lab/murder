@@ -74,7 +74,7 @@ val init : ?key:'s Nx.Rng.key -> (float, 'w) Nx.dtype -> ('w, 'p, 's) t -> 'p
 (** [integrate d p ~x0 ~u] rolls the dynamics out over the horizon of [u]:
     [u] is [[batch…; T; m]], [x0] is [[batch…; n]], and the state path is
     [[batch…; T + 1; n]]. Trial axes lead, the horizon follows them. One
-    {!Rune.scan} stands for the horizon, so the rollout traces and compiles. *)
+    `Rune.scan` stands for the horizon, so the rollout traces and compiles. *)
 val integrate
   :  ('w, 'p, 's) t
   -> 'p

@@ -14,7 +14,7 @@
 
     {b Coordinates.} Everything here is host-side and eager: the renderer is a
     scalar CPU renderer, so a picture of a robot is a handful of unbatched
-    [Robot] calls whose results are read into {!Geom_viz.Primitive.p3}. That is
+    [Robot] calls whose results are read into {!Geom_viz.Primitive.type-p3}. That is
     the deliberate boundary — the tensor work stays in [geom_robot], and only
     the numbers cross.
 

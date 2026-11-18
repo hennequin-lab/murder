@@ -1,6 +1,6 @@
 (** Simple parsing of command-line arguments.
 
-    The arguments are read once from {!Sys.argv} when the module is loaded. *)
+    The arguments are read once from `Sys.argv` when the module is loaded. *)
 
 (** Raised when an argument is missing or cannot be parsed. *)
 exception Cmdargs_Wrong of string

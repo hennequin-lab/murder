@@ -1,0 +1,70 @@
+name: Docs
+
+# Build the odoc API reference and publish it at
+# https://hennequin-lab.github.io/murder/. Pull requests build it too, so a
+# broken reference fails before it reaches main: the workspace turns odoc
+# warnings into errors.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  DUNE_CACHE: enabled
+  DUNE_CACHE_STORAGE_MODE: copy
+
+jobs:
+  build:
+    name: Build API docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ocaml-dune/setup-dune@v2
+        with:
+          version: 3.24.2
+          steps: install-dune enable-pkg install-depexts
+      # odoc is a dev tool, not a locked dependency, exactly as ocamlformat is
+      # for the fmt job.
+      - name: Install odoc
+        run: dune tools install odoc
+      - name: Build the reference
+        run: dune build @doc
+      # The Pages artifact is only staged on the runs that deploy.
+      - name: Stage the Pages artifact
+        if: github.event_name != 'pull_request'
+        run: |
+          cp -a _build/default/_doc/_html _site
+          touch _site/.nojekyll
+      - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

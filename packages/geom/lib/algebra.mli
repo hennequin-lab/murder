@@ -6,7 +6,7 @@
 (** Dense Clifford algebras.
 
     An algebra is a signature together with a real scalar kind. A multivector is
-    an {!Nx.t} whose {e last} axis is the blade axis, of length [2^n], and whose
+    an `Nx.t` whose {e last} axis is the blade axis, of length [2^n], and whose
     leading axes are ordinary batch axes. The coefficient at blade index [k] is
     the coefficient of {!Blade.to_int}[ k] in the basis blade of that index. A
     single multivector therefore has shape [[|2^n|]], a batch of [b]
@@ -15,19 +15,19 @@
     The coefficient basis is the orthonormal basis of the signature. In the
     conformal model this is [e_1, ..., e_5], not the null basis: the null
     vectors [e_0] and [e_infinity] are derived multivectors. This keeps the
-    bitmask product rule valid and sparse (see {!val-mul_sign}); the model
+    bitmask product rule valid and sparse (see {!Blade.val-mul_sign}); the model
     module {!Cga} exposes the null vectors by name.
 
     The module is a functor over the signature and the scalar kind, so the
     structure constants are computed once per instantiation, at module
-    initialisation. The functions are pure {!Nx} operations: no host read of a
+    initialisation. The functions are pure `Nx` operations: no host read of a
     tensor value and no data-dependent OCaml branch, so they are compatible with
     [Rune.jit] and [Rune.grad]. *)
 
 (** {1:parameters Parameters} *)
 
 module type SCALAR = sig
-  (** The buffer element kind of {!Nx}, such as {!Nx.float32_elt}. *)
+  (** The buffer element kind of `Nx`, such as `Nx.float32_elt`. *)
   type kind
 
   (** The data type descriptor used to build constants. *)
@@ -139,7 +139,7 @@ module type ALGEBRA = sig
   (** {1:products Products} *)
 
   (** [gp a b] is the geometric product [a b]. Batch axes broadcast according
-      to {!Nx}. *)
+      to `Nx`. *)
   val gp : 'd t -> 'd t -> 'd t
 
   (** [op a b] is the outer (exterior) product [a and b]. *)

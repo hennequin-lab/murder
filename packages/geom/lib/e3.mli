@@ -55,6 +55,6 @@ val to_vector : 'd t -> 'd Nx.float32_t
 val rotor : axis:'d Nx.float32_t -> angle:'d Nx.float32_t -> 'd t
 
 (** [apply_rotor r x] is [r x tilde(r)], the action of the rotor [r] on the
-    multivector [x]. It is {!Algebra.sandwich} with the inverse replaced by the
+    multivector [x]. It is {!sandwich} with the inverse replaced by the
     reverse, since [r] is unit. *)
 val apply_rotor : 'd t -> 'd t -> 'd t

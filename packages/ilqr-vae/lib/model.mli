@@ -10,7 +10,7 @@
     priors, and the recognition model that infers the latents. It carries no
     parameters at all: the parameters are a separate value
     ({!type-params}) whose structure {!structure} returns, and which is what
-    {!Rune.grad}, {!Rune.jit} and the optimizers take. {!make} builds the
+    `Rune.grad`, `Rune.jit` and the optimizers take. {!make} builds the
     description from its components and {!init} is the one draw.
 
     {b What is abstract, and why.} A model and its components —
@@ -204,7 +204,7 @@ val recognition : ('w, 'd, 'l, 'p, 'e, 'r, 's) t -> ('w, 'd, 'l, 'e, 'r, 's) Rec
 (** [structure model] is the structure of a {!type-params} value, assembled from the
     components' structures: paths read ["dynamics.a1"],
     ["likelihood.log_variances"], ["recognition.ic_fwd.uf"] and so on. This
-    is the structure {!Rune.grad}, {!Rune.jit} and {!Vega} take. *)
+    is the structure `Rune.grad`, `Rune.jit` and `Vega` take. *)
 val structure
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) t
   -> (('w, 'd, 'l, 'p, 'e, 'r, 's) params, 's) Nx.Ptree.t
@@ -235,7 +235,7 @@ val infer
   -> ('w, 's) Recognition.posterior
 
 (** [mean model params data] is the recognition's posterior mean, one
-    deterministic latent trajectory per trial. See {!Recognition.mean}. *)
+    deterministic latent trajectory per trial. See {!Recognition.val-mean}. *)
 val mean
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) t
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params
@@ -244,7 +244,7 @@ val mean
   -> ('w, 's) Recognition.samples
 
 (** [log_prob model params data samples] is [log q(samples | data)] for given
-    latents, with the batch axes of [data]. See {!Recognition.log_prob}. *)
+    latents, with the batch axes of [data]. See {!Recognition.val-log_prob}. *)
 val log_prob
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) t
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params

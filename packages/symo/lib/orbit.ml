@@ -44,10 +44,10 @@ module type S = sig
 
   (** [random_transform ~key theta] applies a random element of the global
       symmetry group to the parameter tree [theta]: one uniformly random
-      permutation per group id in {!Model.symmetries}, applied to every axis
+      permutation per group id in {!val-symmetries}, applied to every axis
       tagged [Perm id] (all such axes share the group's dimension); [Id] axes
       are untouched. The element is drawn from [key] with
-      {!Nx.Rng.fold_in}, so the function is pure and traces under
+      `Nx.Rng.fold_in`, so the function is pure and traces under
       [Rune.jit]. *)
   val random_transform
     :  key:'d Nx.Rng.key

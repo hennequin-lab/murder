@@ -16,8 +16,8 @@
     module is the dense-algebra counterpart.
 
     {b Status.} The first implementation provides the closed form for a simple
-    bivector ({!exp_simple}) and the [SE(3)] exponential through {!Motor};
-    {!exp} and {!log} for a general bivector are staged behind this interface.
+    bivector ({!VERSOR.exp_simple}) and the [SE(3)] exponential through {!Motor};
+    {!VERSOR.exp} and {!VERSOR.log} for a general bivector are staged behind this interface.
     Until the general routine lands they raise [Invalid_argument] for inputs
     outside the supported subset. The signatures will not change. *)
 
@@ -43,7 +43,7 @@ module type VERSOR = sig
       versor whose non-scalar part is a single simple bivector (a rotation,
       boost or null rotation); for a general even versor with several
       independent bivector components the result is the simple approximation
-      and need not invert {!exp}. General even-versor logarithms are a later
+      and need not invert {!VERSOR.exp}. General even-versor logarithms are a later
       refinement.
 
       Raises [Invalid_argument] if [v] is not a versor or is outside the
