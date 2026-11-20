@@ -23,7 +23,7 @@
 ; Move this SHA forward deliberately; dune.lock records the same commit.
 (pin
  (url
-  "git+https://github.com/raven-ml/raven.git#db85961a001acda37712931637cf0f02462cf014")
+  "git+https://github.com/raven-ml/raven.git#ba2fc47311d1aff8a3cc05ea5357e2a95d1bfae9")
  (package
   (name lz))
  (package
