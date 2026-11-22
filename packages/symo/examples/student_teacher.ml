@@ -60,6 +60,10 @@ let forward (p : (Nx.host Nx.float32_t, Nx.host) Mlp.t) x =
   let h = relu (x *@ transpose p.w1) in
   h *@ transpose p.w2
 
+(* The GGN's samples are the gradients of the predictions on a small batch. *)
+let metric_batch = 32
+let metric_inputs = slice [ Nx.R (0, metric_batch) ] inputs
+let outputs p = forward p metric_inputs
 let teacher = init (Nx.Rng.key 42)
 let targets = forward teacher inputs
 
@@ -69,9 +73,7 @@ let loss (p : (Nx.host Nx.float32_t, Nx.host) Mlp.t) =
   mean (d * d)
 
 let () =
-  let config : S.config =
-    { learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-1 }
-  in
+  let config = S.default ~learning_rate:(Some 0.1) ~damping:3e-4 in
   let compiled = S.Compiled.create ~config in
   let state = ref (S.init ~config (init (Nx.Rng.key 7))) in
   Stdio.printf
@@ -83,7 +85,8 @@ let () =
   Stdio.printf "%8d  %12.6f\n" 0 (item [] (loss !state.S.State.theta));
   for step = 1 to steps do
     let _, grads = Rune.value_and_grad S.ptree loss !state.S.State.theta in
-    state := S.Compiled.step compiled ~config ~state:!state ~grads;
+    let samples = S.ggn ~outputs !state.S.State.theta in
+    state := S.Compiled.step compiled ~state:!state ~grads ~samples;
     if Int.(step % print_every = 0)
     then Stdio.printf "%8d  %12.6f\n" step (item [] (loss !state.S.State.theta))
   done

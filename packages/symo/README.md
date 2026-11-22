@@ -28,23 +28,29 @@ least squares from data. For a weight-space symmetry the group elements are
 permutations of hidden units, so the factors are small matrices over the axes
 the group leaves alone.
 
-The optimizer forms the second-order orbit average of the non-invariant part of
-the averaged gradient and preconditions the step with its root-damped inverse:
+The optimizer forms the second-order orbit average of the **GGN** and
+preconditions the step with its damped inverse:
 
 ```text
-S_g = R2(δ_g, δ_g),   δ_g = ḡ - R1(ḡ)      (EMA'd with β₂, debiased)
-P   = (S_g^{1/2} + λI)^{-1}
+S_g = EMA_β₂( mean over output elements R2(∇f_i, ∇f_i) )     (debiased)
+P   = (S_g + λI)^{-1}              (default: λ in gradient² units)
+      or (S_g^{1/2} + λI)^{-1}     (optional: λ in gradient units)
 
 θ ← θ - η · P · ḡ
 ```
 
-`λ` is one **absolute** damping term, added to the square root of every isotypic
-block's spectrum: one scalar for all kinds and leaves, never a fraction of a
-spectrum. It sits where Adam's `ε` sits, so it is in gradient (RMS) units. `P`
-is positive definite and its gain is capped at `1/λ`, so `‖Δθ‖ ≤ η‖ḡ‖/λ` and the
-step is always a descent direction; a large `λ` tends to plain gradient descent.
-The paper's Taylor estimator (Eq. 10, with relative damping `damping·s_max + s`)
-is kept in `Solve` for comparison and tests, but the optimizer no longer uses it.
+`S.ggn ~outputs` builds the metric's samples from the model's predictions: one
+per-output gradient per output element (one forward pass and one backward pass
+per element), whose mean orbit-averaged outer product is the GGN. `λ` is one
+**absolute** damping term, added to every isotypic block's spectrum (the
+default `Inverse` form) or to its square root (`Root`, in gradient units, where
+Adam's `ε` sits): one scalar for all kinds and leaves, never a fraction of a
+spectrum. `P` is positive definite and its gain is capped at `1/λ`, so
+`‖Δθ‖ ≤ η‖ḡ‖/λ` and the step is always a descent direction; a large `λ` tends
+to plain gradient descent. The paper's Taylor estimator (Eq. 10, with relative
+damping `damping·s_max + s`) is kept in `Solve` for comparison and tests, but
+the optimizer no longer uses it. Nothing in the step reads a host value, so the
+whole of it is one `Rune.jit` program (`S.Compiled`).
 
 ## A model in three declarations
 
@@ -91,26 +97,37 @@ scalar function of it (the example below regresses a student against a
 teacher):
 
 ```ocaml
-let config : S.config =
-  { learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-1 }
-  (* damping is λ, absolute and in gradient units: the gain of
-     (S_g^{1/2} + λI)^{-1} is capped at 1/λ. *)
+(* the model's prediction, e.g. on a small metric batch *)
+let outputs p = forward p metric_inputs
 
+let config = S.default ~learning_rate:(Some 0.1) ~damping:3e-4
 let compiled = S.Compiled.create ~config
 let state = ref (S.init ~config params)
 
 let train_step () =
   let _, grads = Rune.value_and_grad S.ptree loss !state.S.State.theta in
-  state := S.Compiled.step compiled ~config ~state:!state ~grads
+  let samples = S.ggn ~outputs !state.S.State.theta in
+  state := S.Compiled.step compiled ~state:!state ~grads ~samples
 ```
 
-`S.step ~config ~state ~grads` is the eager equivalent. The step is split so
-only the preconditioner solve is host-side:
+`S.default` is the damped GGN step (`β₁ = 0.9`, `β₂ = 0.99`, `form = Inverse`);
+`S.step ~config ~state ~grads ~samples` is the eager equivalent of
+`S.Compiled.step`. The step is one traceable function —
 
 ```text
-prepare (jitted)                 solve (host)                  finish (jitted)
-momentum, orbit average of g,    blocks of S_g, eigh of        apply P to ḡ,
-factors of S_g, EMA, debias      (S_g^{1/2} + λI)^{-1}         shift θ
+prepare (momentum, GGN samples, EMA) → solve (block eigh) → finish (apply P, shift)
+```
+
+— and `S.ggn` traces too, so the forward pass, the loss gradient, the metric and
+the update can share a single `Rune.jit`:
+
+```text
+let train_step =
+  Rune.jit Nx.Ptree.(state @-> returns state)
+    (fun state ->
+       let _, grads = Rune.value_and_grad S.ptree loss state.S.State.theta in
+       let samples = S.ggn ~outputs state.S.State.theta in
+       S.step ~config ~state ~grads ~samples)
 ```
 
 `S.Compiled.create` is cheap; the first call traces and compiles, later calls
@@ -130,12 +147,12 @@ dune exec examples/student_teacher.exe
 student-teacher MLP: 32 hidden units, 8 inputs, 128 examples
     step           mse
        0      2.840415
-      50      0.013507
-     100      0.005589
-     200      0.002241
-     300      0.001100
-     400      0.000678
-     500      0.000471
+      50      0.009809
+     100      0.002865
+     200      0.000905
+     300      0.000488
+     400      0.000240
+     500      0.000142
 ```
 
 `examples/rnn.ml` trains an RNN with `S.Compiled` and writes its diagnostics
@@ -143,6 +160,15 @@ and plots to the directory named by `-d`:
 
 ```sh
 dune exec examples/rnn.exe -- -d /tmp
+```
+
+`examples/lorenz.ml` is the Lorenz-63 forecasting task of
+`sofo/example/lorenz.ml`, trained with the inverse-damped GGN (and its optional
+root form). It sweeps the damping and the learning rate, keeps the best
+validation loss per variant, and draws the curves with hugin:
+
+```sh
+dune exec examples/lorenz.exe -- -d /tmp
 ```
 
 ## Building and testing
@@ -153,6 +179,7 @@ This package is part of the `murder` monorepo. From the repository root:
 dune build @packages/symo/runtest
 dune exec packages/symo/examples/student_teacher.exe
 dune exec packages/symo/examples/rnn.exe -- -d /tmp
+dune exec packages/symo/examples/lorenz.exe -- -d /tmp
 ```
 
 The suites are:
@@ -163,7 +190,7 @@ The suites are:
 | `test_compiler` | compiled closures against brute-force sums over the index space, the Cholesky design solve, invariance (`A S Aᵀ = S`) |
 | `test_orbit`    | `R1`/`R2` and dense round trips against exact enumeration of the symmetry group                                       |
 | `test_blocks`   | blocks against the dense spectrum, transport across sizes, the blockwise preconditioner against the dense one         |
-| `test_optim`    | preconditioner identities, the damped step on an invariant quadratic, block transport, end-to-end training            |
+| `test_optim`    | preconditioner identities, the per-sample metric, the damped step on an invariant quadratic, end-to-end training      |
 | `test_jit`      | 50-step eager/compiled parity, state threading, replay-not-retrace                                                    |
 
 ## Library layout
@@ -176,8 +203,8 @@ The suites are:
 | `Term`, `Component`, `Basis` | basis terms (ties + free axes), components, and the symbolic basis of the invariant subspace                           |
 | `Compiler`                   | one specification at fixed dimensions → closures for factor estimation, dense blocks and batched block-vector products |
 | `Orbit`                      | lifts the compiler to the whole parameter tree (`First_order`, `Second_order`)                                         |
-| `Solve`                      | the host-side solves (root-damped inverse, and the Taylor estimator's damped powers)                                   |
-| `Optim`                      | the damped-whitening step, eager and jitted (`State`, `Mid`, `Compiled`)                                               |
+| `Solve`                      | the traceable damped inverses (inverse and root), and the Taylor estimator's host-side damped powers                 |
+| `Optim`                      | the damped-GGN step, eager and jitted (`State`, `Mid`, `Compiled`)                                                     |
 | `Make`                       | the entry point: orbit machinery + optimizer + packed traversal                                                        |
 
 ## Design notes
@@ -198,11 +225,20 @@ The suites are:
   elsewhere `Compiler.compile ~symmetric:true` uses the full basis, so the
   estimator stays the projection onto the invariant subspace (and a second
   moment stays positive semidefinite).
-- **The damping is absolute and sits on the root.** `damping` is `λ` in
-  `(S_g^{1/2} + λI)^{-1}`: one scalar added to the *square root* of every
-  isotypic block's spectrum, in gradient units (where Adam's `ε` sits), so the
-  gain cap `1/λ` and the step bound `η‖ḡ‖/λ` are global. The Taylor estimator's
-  relative damping (`damping·s_max`) remains in `Solve`.
+- **The metric is the GGN.** `S.ggn ~outputs` takes one gradient of an output
+  element per metric sample; projection and factor estimation are linear, so
+  their mean is the orbit average of the GGN. `S_g` is that mean, EMA'd with
+  `β₂` and debiased, with no mean subtraction.
+- **The damping is absolute, and inverse by default.** `damping` is `λ` in
+  `(S_g + λI)^{-1}` (`form = Inverse`, the default, gradient² units) or in
+  `(S_g^{1/2} + λI)^{-1}` (`form = Root`, gradient units, where Adam's `ε`
+  sits): one scalar added to every isotypic block's spectrum, so the gain cap
+  `1/λ` and the step bound `η‖ḡ‖/λ` are global. The Taylor estimator's relative
+  damping (`damping·s_max`) remains in `Solve`.
+- **One jit.** The solve reads no host value, so the step is a single traced
+  program: `S.Compiled` caches it, and `S.ggn` traces too, so a training step
+  (forward, backward, metric and update) can be one `Rune.jit` function of the
+  state, in the shape of Vega's optimizer steps.
 - **Permuted axes must be in the stable range.** A group with `k` permuted
   axes needs dimension `n >= 2k` (2, 4 and 6 for one, two and three axes) for
   the commutant to be semisimple and the block decomposition faithful; the
@@ -214,7 +250,7 @@ The suites are:
   triangular solves, which stay traceable under `Rune.jit`.
 - **float32 tensors, float64 factorizations.** Parameters, factors, blocks and
   the runtime solves are float32; only the compile-time Cholesky and the
-  host-side estimator eigendecompositions run in float64.
+  step's eigendecompositions run in float64.
 - **No global RNG.** Everything that draws takes an explicit `Nx.Rng.t`, so
   tests and runs replay exactly; the optimizer step itself is deterministic.
 - **The library contains no model definitions.** Models live in downstream

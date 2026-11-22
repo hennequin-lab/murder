@@ -3,23 +3,25 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-(* The host-side estimator solves.
+(* The estimator solves.
 
-   The optimizer's preconditioner is the root-damped inverse of the gradient's
-   second moment,
+   The optimizer's preconditioner is a damped inverse of the gradient's
+   second moment, in one of two forms,
 
-     P = (S_g^{1/2} + damping · I)^{-1}
+     P = (S_g^{1/2} + damping · I)^{-1}      (root damping)
+     P = (S_g       + damping · I)^{-1}      (linear damping)
 
    applied blockwise: one small eigendecomposition per isotypic kind, with the
    same absolute [damping] in every block. The blocks are the operator's
    matrices in orthonormal bases of the isotypic components (see {!Blocks}), so
    the shift is [damping · I] on the whole parameter space — one global,
-   absolute damping, not a scale taken from each block's spectrum. The root and
-   the shift put [damping] where Adam's [epsilon] sits, so it is in gradient
-   units, and they cap the largest eigenvalue of [P] at [1/damping] at every
-   size: the step is bounded and increasing [damping] shrinks it monotonically.
-   The blockwise form reads no value with [Nx.item] and would trace; it is kept
-   host-side because the eigendecompositions run in float64.
+   absolute damping, not a scale taken from each block's spectrum. In the root
+   form [damping] sits where Adam's [epsilon] sits, so it is in gradient units;
+   in the linear form it is in gradient-squared units. Either form caps the
+   largest eigenvalue of [P] at [1/damping] at every size, so the step is
+   bounded and increasing [damping] shrinks it monotonically. The blockwise
+   forms read no value with [Nx.item], so they trace: the optimizer's whole
+   step is one [Rune.jit] program.
 
    The Taylor estimator of Eq. 10 is kept below with *relative* damping,
    [damping · s_max + s]: it is the paper's estimator and the dense reference
@@ -88,6 +90,25 @@ let damped_inverse_root ~damping x =
    to each root spectrum is adding [damping · I] on the whole parameter space. *)
 let damped_inverse_root_blocks ~damping blocks =
   List.map blocks ~f:(damped_inverse_root ~damping)
+
+(* [damped_inverse ~damping x] is [(proj x + damping · I)^{-1}], the linear
+   cousin of {!damped_inverse_root}: [damping] is absolute and in the units of
+   [x]'s spectrum, so the result's largest eigenvalue is capped at
+   [1/damping]. It is the damped natural-gradient form; the same remarks on
+   the projection and the float64 shift apply. *)
+let damped_inverse ~damping x =
+  if Float.(damping <= 0.)
+  then
+    invalid_arg
+      "Symo.Solve.damped_inverse: the damping must be positive (it shifts the spectrum, \
+       and is also the gain cap)";
+  let w, u = eigh float64 (cast float64 x) in
+  let d = Infix.(maximum w (zeros_like w) +$ damping) in
+  let z = cast float32 Infix.(ones_like d / d) in
+  let u = cast float32 u in
+  Infix.(u * reshape [| 1; -1 |] z *@ transpose u)
+
+let damped_inverse_blocks ~damping blocks = List.map blocks ~f:(damped_inverse ~damping)
 
 (* ------------------------------------------------------------------------
    Relative damping: the Taylor estimator of Eq. 10

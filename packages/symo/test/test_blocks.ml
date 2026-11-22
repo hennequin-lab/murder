@@ -176,18 +176,26 @@ let test_blockwise_preconditioner () =
   let d = List.length c.Compiler.basis.components in
   let fg = random_factors (Nx.Rng.key 31) d in
   let sg = symmetrize (c.Compiler.dense_block ~factors:fg) in
-  let dense = Solve.damped_inverse_root ~damping:0.1 sg in
   let blocks = Blocks.block_matrices b (Blocks.to_blocks b fg) in
-  let p_blocks = Solve.damped_inverse_root_blocks ~damping:0.1 (Array.to_list blocks) in
-  let factors =
-    Blocks.of_blocks b (Blocks.blocks_of_matrices b (Array.of_list p_blocks))
+  let check_form ~msg ~dense ~blocks =
+    let factors =
+      Blocks.of_blocks b (Blocks.blocks_of_matrices b (Array.of_list blocks))
+    in
+    let reconstructed = c.Compiler.dense_block ~factors in
+    equal
+      ~msg
+      (array (float 1e-4))
+      (to_array (cast float64 dense))
+      (to_array (cast float64 reconstructed))
   in
-  let reconstructed = c.Compiler.dense_block ~factors in
-  equal
+  check_form
     ~msg:"blockwise (S_g^1/2 + lam I)^-1"
-    (array (float 1e-4))
-    (to_array (cast float64 dense))
-    (to_array (cast float64 reconstructed))
+    ~dense:(Solve.damped_inverse_root ~damping:0.1 sg)
+    ~blocks:(Solve.damped_inverse_root_blocks ~damping:0.1 (Array.to_list blocks));
+  check_form
+    ~msg:"blockwise (S_g + lam I)^-1"
+    ~dense:(Solve.damped_inverse ~damping:0.1 sg)
+    ~blocks:(Solve.damped_inverse_blocks ~damping:0.1 (Array.to_list blocks))
 
 (* Two permuted axes with a free axis: the bundled basis is incomplete, so the
    compiler falls back to the full one, and the blocks carry the operator's

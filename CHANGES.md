@@ -312,16 +312,16 @@ changes do not need an entry.
 
 ### symo
 
-- The optimizer's update is the root-damped step
-  `θ ← θ - η (S_g^{1/2} + λI)^{-1} ḡ` instead of the Taylor `H_inv`: one
-  absolute `damping` (λ) for every isotypic kind and leaf, added to the square
-  root of each block's spectrum in gradient (RMS) units, where Adam's `ε` sits,
-  with the gain capped at `1/λ` (so the step is bounded and always descends).
-  `damping` is no longer relative to a spectrum's maximum, the optimizer no
-  longer forms `S_w`, and the examples are retuned. The paper's Taylor estimator
-  (`hessian`, `hessian_inverse`, `hessian_inverse_blocks`, `symmetric_power`,
-  `damp_spectrum`) stays in `Solve` with its argument renamed
-  `~relative_damping` for contrast.
+- The optimizer is the damped GGN: `S.ggn ~outputs` builds one gradient per
+  output element, `S_g` is their orbit average (EMA'd with `beta_2` and
+  debiased), and the step is `theta <- theta - eta (S_g + λI)^{-1} ḡ` by default
+  (`S.default`; `form = Root` gives the root-damped variant). Nothing in the
+  step reads a host value, so `S.Compiled` jits the whole step into one
+  program; `prepare`, `step` and `Compiled.step` take `~samples`, and `State`
+  drops `beta_1_t`.
+- New `examples/lorenz.ml`: the Lorenz-63 forecasting task of the sofo example,
+  sweeping the damping and the learning rate over the damped GGN and drawing
+  the best validation curves with hugin.
 - Fixed the symmetric basis for a leaf with two permuted axes of one group and a
   free axis: bundling a term with its transpose spans `Sym(W) ⊗ End(F)` and
   misses the `Λ²(W) ⊗ Λ²(F)` part of the symmetric operators, so the estimate

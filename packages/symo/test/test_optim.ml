@@ -3,13 +3,13 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-(* The Taylor optimizer.
+(* The damped optimizer.
 
-   The estimator is checked on an invariant quadratic: the exchange identity
-   [S_g = H S_w H] between the second-order moments, the damped inverse of
-   [Solve] on a known operator, and a full Newton step that must land on the
-   minimizer when the gradient is confined to the non-invariant subspace. A
-   small two-layer fixture then trains with [Rune.value_and_grad]. *)
+   The two damped inverses of [Solve] are checked on known operators, the
+   metric's per-sample averaging on a two-sample batch, the exchange identity
+   [S_g = H S_w H] on the orbit machinery, and the step on an invariant
+   quadratic against the blocks it is built from. A small two-layer fixture then
+   trains with [Rune.value_and_grad]. *)
 
 open Base
 open Nx
@@ -159,6 +159,49 @@ let test_preconditioner () =
      | exception Invalid_argument _ -> true
      | _ -> false)
 
+(* The linear form: [(S_g + λI)^{-1}] inverts the damped spectrum, with the
+   gain capped at [1/λ], a rank-one estimate still finite, and the same limit
+   to a scaled identity (SGD). *)
+let test_linear_preconditioner () =
+  let lam = 0.1 in
+  let sg = mat32 [| 2; 2 |] [| 1.5; 0.2; 0.2; 0.8 |] in
+  let p = Solve.damped_inverse ~damping:lam sg in
+  let shifted = Infix.(sg + (eye float32 2 *$ lam)) in
+  check ~msg:"P (S_g + lam I) = I" ~tol:1e-4 (eye float32 2) Infix.(p *@ shifted);
+  let w, _ = eigh float64 (cast float64 p) in
+  let max_gain = item [] (max w) in
+  let cap = 1. /. lam in
+  is_true ~msg:"the linear gain is capped at 1/lam" Float.(max_gain <= cap +. 1e-4);
+  let rank1 = mat32 [| 2; 2 |] [| 1.; 1.; 1.; 1. |] in
+  let w1, _ = eigh float64 (cast float64 (Solve.damped_inverse ~damping:lam rank1)) in
+  let rank1_gain = item [] (Nx.max w1) in
+  is_true
+    ~msg:"a singular estimate attains the linear cap"
+    Float.(Float.abs (rank1_gain -. cap) < 1e-3);
+  let big = Solve.damped_inverse ~damping:1e8 sg in
+  let scale = 1. /. 1e8 in
+  check
+    ~msg:"large linear damping tends to SGD"
+    ~tol:1e-9
+    Infix.(eye float32 2 *$ scale)
+    big;
+  is_true
+    ~msg:"rank-one linear estimate is finite"
+    (Array.for_all
+       (to_array (Solve.damped_inverse ~damping:1e-3 rank1))
+       ~f:Float.is_finite);
+  let indefinite = mat32 [| 2; 2 |] [| 1.; 2.; 2.; 1. |] in
+  is_true
+    ~msg:"indefinite linear estimate is projected"
+    (Array.for_all
+       (to_array (Solve.damped_inverse ~damping:1e-2 indefinite))
+       ~f:Float.is_finite);
+  is_true
+    ~msg:"non-positive linear damping is refused"
+    (match Solve.damped_inverse ~damping:0. sg with
+     | exception Invalid_argument _ -> true
+     | _ -> false)
+
 let test_exchange_identity () =
   let a = mat32 [| 2; 2 |] [| 2.0; 0.5; 0.5; 1.0 |] in
   let c = Infix.((eye float32 3 *$ 3.0) + (ones float32 [| 3; 3 |] *$ 0.7)) in
@@ -192,10 +235,11 @@ let test_damped_step () =
   let lam = 0.1 in
   let eta = 1.0 in
   let config : Q.config =
-    { learning_rate = Some eta; beta_1 = 0.0; beta_2 = 0.0; damping = lam }
+    { learning_rate = Some eta; beta_1 = 0.0; beta_2 = 0.0; damping = lam; form = `Root }
   in
   let state = Q.init ~config { Quad.w = theta } in
-  let next = Q.step ~config ~state ~grads:{ Quad.w = g } in
+  let samples = { Quad.w = unsqueeze ~axes:[ 0 ] g } in
+  let next = Q.step ~config ~state ~grads:{ Quad.w = g } ~samples in
   (* The same step built from the blocks of [S_g], independently of the
      optimizer. *)
   let blocks =
@@ -207,6 +251,27 @@ let test_damped_step () =
     (Q.Second_order.apply ~factors:(Q.Second_order.factors_of_blocks p) { Quad.w = g }).w
   in
   check ~msg:"the step is eta P g" ~tol:1e-5 Infix.(theta - (pg *$ eta)) next.theta.w;
+  (* The linear form solves the same blocks with the other damping shape. *)
+  let linear : Q.config = { config with form = `Inverse } in
+  let next_linear =
+    Q.step
+      ~config:linear
+      ~state:(Q.init ~config:linear { Quad.w = theta })
+      ~grads:{ Quad.w = g }
+      ~samples
+  in
+  let p_linear = Solve.damped_inverse_blocks ~damping:lam blocks in
+  let pg_linear =
+    (Q.Second_order.apply
+       ~factors:(Q.Second_order.factors_of_blocks p_linear)
+       { Quad.w = g })
+      .w
+  in
+  check
+    ~msg:"the linear step is eta P g"
+    ~tol:1e-5
+    Infix.(theta - (pg_linear *$ eta))
+    next_linear.theta.w;
   let step = Infix.(next.theta.w - theta) in
   let norm x = Float.sqrt (item [] (sum Infix.(x * x))) in
   is_true
@@ -222,8 +287,49 @@ let test_damped_step () =
       ~config:measure
       ~state:(Q.init ~config:measure { Quad.w = theta })
       ~grads:{ Quad.w = g }
+      ~samples
   in
   check ~msg:"measure-only keeps theta" ~tol:1e-6 theta measured.theta.w
+
+(* The metric is the mean of the samples' orbit averages, with no mean
+   subtraction: two samples give the average of their projected outer products,
+   one sample gives the projection of its own, and [ggn] gives one sample per
+   output element, the gradient of that element. *)
+let test_metric () =
+  let config : Q.config =
+    { learning_rate = None; beta_1 = 0.0; beta_2 = 0.0; damping = 0.1; form = `Root }
+  in
+  let theta = create float32 [| 2; 3 |] [| 0.4; 0.3; 0.5; -0.2; 0.1; -0.3 |] in
+  let g1 = create float32 [| 2; 3 |] [| 1.0; -0.5; 0.2; 0.3; 0.8; -0.6 |] in
+  let g2 = create float32 [| 2; 3 |] [| -0.2; 0.7; 0.1; 0.5; -0.4; 0.2 |] in
+  let packed g =
+    Q.Second_order.pack (Q.Second_order.factors_of_pair { Quad.w = g } { Quad.w = g })
+  in
+  let metric samples =
+    let state = Q.init ~config { Quad.w = theta } in
+    let mid = Q.prepare ~config ~state ~grads:{ Quad.w = g1 } ~samples in
+    mid.Q.Mid.sigma_g
+  in
+  let two =
+    { Quad.w = concatenate ~axis:0 [ unsqueeze ~axes:[ 0 ] g1; unsqueeze ~axes:[ 0 ] g2 ]
+    }
+  in
+  check
+    ~msg:"the metric averages the samples"
+    ~tol:1e-5
+    Infix.((packed g1 + packed g2) *$ 0.5)
+    (metric two);
+  check
+    ~msg:"one sample is its own outer product"
+    ~tol:1e-6
+    (packed g1)
+    (metric { Quad.w = unsqueeze ~axes:[ 0 ] g1 });
+  (* [ggn] of the identity output is one unit direction per element. *)
+  let samples = Q.ggn ~outputs:(fun p -> p.Quad.w) { Quad.w = g1 } in
+  List.iter (List.range 0 6) ~f:(fun k ->
+    let row = slice [ Nx.I k; Nx.A; Nx.A ] samples.Quad.w |> reshape [| -1 |] in
+    let unit = reshape [| -1 |] (eye float32 6 |> fun e -> slice [ Nx.I k ] e) in
+    check ~msg:"a GGN sample is one output's gradient" ~tol:1e-6 unit row)
 
 (* ------------------------------------------------------------------------
    End-to-end fixture
@@ -235,11 +341,12 @@ let ys =
   let w = mat32 [| 2; 1 |] [| 1.0; -0.5 |] in
   Infix.((xs *@ w) + (Nx.Rng.normal ~key:(Nx.Rng.key 8) float32 [| 8; 1 |] *$ 0.05))
 
-let mlp_loss (p : (Nx.host Nx.float32_t, Nx.host) Mlp.t) =
+let mlp_forward (p : (Nx.host Nx.float32_t, Nx.host) Mlp.t) =
+  Infix.(relu (xs *@ transpose p.w1) *@ transpose p.w2)
+
+let mlp_loss p =
   let open Infix in
-  let h = relu (xs *@ transpose p.w1) in
-  let out = h *@ transpose p.w2 in
-  let d = out - ys in
+  let d = mlp_forward p - ys in
   mean (d * d)
 
 let test_end_to_end () =
@@ -248,16 +355,15 @@ let test_end_to_end () =
     ; w2 = Nx.Rng.normal ~key:(Nx.Rng.key 10) float32 [| 1; 3 |]
     }
   in
-  let config : M.config =
-    { learning_rate = Some 0.5; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-1 }
-  in
+  let config = M.default ~learning_rate:(Some 0.5) ~damping:1e-1 in
   let state = M.init ~config params in
   let loss params = item [] (mlp_loss params) in
   let before = loss params in
   let state =
     List.fold (List.range 0 20) ~init:state ~f:(fun state _ ->
       let _, grads = Rune.value_and_grad M.ptree mlp_loss state.M.State.theta in
-      M.step ~config ~state ~grads)
+      let samples = M.ggn ~outputs:mlp_forward state.M.State.theta in
+      M.step ~config ~state ~grads ~samples)
   in
   is_true ~msg:"loss decreased" Float.(loss state.M.State.theta < before)
 
@@ -285,7 +391,12 @@ module Other = (val Nx.devices (Nx.Devices.to_list Nx.Host.v))
 
 let test_other_set () =
   let config : M.config =
-    { learning_rate = Some 0.5; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-1 }
+    { learning_rate = Some 0.5
+    ; beta_1 = 0.9
+    ; beta_2 = 0.99
+    ; damping = 1e-1
+    ; form = `Root
+    }
   in
   let tree k =
     { Mlp.w1 = Nx.Rng.normal ~key:(Nx.Rng.key k) float32 [| 3; 2 |]
@@ -296,9 +407,14 @@ let test_other_set () =
   and grads = tree 63 in
   let other x = Nx.Ptree.place (module Mlp) Other.on x in
   let two_steps ~theta ~grads =
+    let samples =
+      { Mlp.w1 = unsqueeze ~axes:[ 0 ] grads.Mlp.w1
+      ; w2 = unsqueeze ~axes:[ 0 ] grads.Mlp.w2
+      }
+    in
     let state = M.init ~config theta in
-    let state = M.step ~config ~state ~grads in
-    M.step ~config ~state ~grads
+    let state = M.step ~config ~state ~grads ~samples in
+    M.step ~config ~state ~grads ~samples
   in
   let on_host = two_steps ~theta ~grads in
   let on_other = two_steps ~theta:(other theta) ~grads:(other grads) in
@@ -311,8 +427,10 @@ let tests =
   [ test "EMA and debias schedules" test_schedules
   ; test "Taylor estimator inverts a known operator" test_taylor_estimator
   ; test "damped inverse square root" test_preconditioner
+  ; test "damped linear inverse" test_linear_preconditioner
   ; test "exchange identity S_g = H S_w H" test_exchange_identity
   ; test "damped step on an invariant quadratic" test_damped_step
+  ; test "the metric averages samples and the GGN gives per-output gradients" test_metric
   ; test "transport preserves the blocks" test_transport_blocks
   ; test "end-to-end MLP training" test_end_to_end
   ; test "a step on another set equals the host's" test_other_set

@@ -58,55 +58,60 @@
     axes); below it the algebra is not semisimple and the decomposition is not
     faithful. The compiler raises [Invalid_argument] when a spec violates it.
 
-    {2 The damped step}
+    {2 The damped GGN step}
 
-    With [S_g = R2(δ_g, δ_g)] built from the non-invariant part of the
-    averaged gradient, EMA'd with [beta_2] and debiased, the preconditioner is
+    [S_g] is the second-order orbit average of the Gauss–Newton matrix,
+    EMA'd with [beta_2] and debiased. {!Optim.S.ggn} builds its samples from
+    the model's outputs: one per-output gradient per element of the output,
+    whose mean orbit-averaged outer product is the GGN. The preconditioner is
 
     {[
-      P = (S_g^{1/2} + λ I)^{-1},      θ ← θ − η · P · ḡ
+      P = (S_g + λ I)^{-1}            (Inverse, the default: λ in gradient² units)
+      P = (S_g^{1/2} + λ I)^{-1}      (Root, optional: λ in gradient units)
+      θ ← θ − η · P · ḡ
     ]}
 
-    [λ] is one absolute [damping], in gradient units: the root is where Adam's
-    [epsilon] sits, and [λ] is added to the square root of every isotypic
-    block's spectrum. The blocks are orthonormal bases of the isotypic
-    components, so that is [λ·I] on the whole parameter space — across kinds
-    and leaves — and the gain is capped at [1/λ]. {!Solve} runs the
-    eigendecompositions on the assembled blocks, the only step outside
-    [Rune.jit]'s reach; {!Optim} composes momentum, the orbit average, the
-    factors of [S_g], the solve and the parameter shift.
+    [λ] is one absolute [damping]: it is added to every isotypic block's
+    spectrum, or to its square root. The blocks are orthonormal bases of the
+    isotypic components, so that is a multiple of the identity on the whole
+    parameter space — across kinds and leaves — and the gain is capped at
+    [1/λ] in either form. {!Solve} runs the eigendecompositions on the
+    assembled blocks; it reads no host value, so the whole step is one
+    [Rune.jit] program ({!Optim.S.Compiled}).
 
     The paper's Taylor estimator [H]/[H_inv] (Eq. 10) is still available from
     {!Solve}. It uses a relative damping,
     [X^{p̃} = U diag((damping·s_max + s)^p) Uᵀ], and is not the
     optimizer's step.
 
-    {2 Compiled step}
+    {2 The jitted step}
 
-    The step is split so that everything but the preconditioner solve is
-    traceable: [prepare] (momentum, the orbit average, the packed factors of
-    [S_g], EMA and bias counters) and [finish] (the factors of [P], applied to
-    the momentum, shift the parameters). {!Optim.Make.Compiled} wraps the two
-    halves in [Rune.jit] with the whole state threaded through input and
-    output leaves, so a training loop traces once and then replays:
+    Nothing in the step reads a host value, so {!Optim.Make.Compiled} wraps the
+    whole of it in [Rune.jit]: the state, the gradients and the GGN samples
+    cross the boundary as input leaves and the next state comes back as the
+    output leaf. [ggn] traces too, so the forward pass, the loss gradient, the
+    metric and the update can share one program:
 
     {[
-    let config =
-      { Optim.learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-2 }
-    in
-    let compiled = S.Compiled.create ~config in
+    let config = S.default ~learning_rate:(Some 0.1) ~damping:1e-2
+    let compiled = S.Compiled.create ~config
     let rec train state n =
       if n = 0
       then state
       else (
         let _, grads = Rune.value_and_grad S.ptree loss state.S.State.theta in
-        train (S.Compiled.step compiled ~config ~state ~grads) (n - 1))
+        let samples = S.ggn ~outputs state.S.State.theta in
+        train (S.Compiled.step compiled ~state ~grads ~samples) (n - 1))
     in
     train (S.init ~config params) 1000
     ]}
 
-    Compiled functions are not thread-safe and cache on the leaf signature of
-    the state; changing the tree's shape or dtype retraces. *)
+    [S.default] is the damped GGN step: [beta_1 = 0.9], [beta_2 = 0.99], and
+    [`Inverse], so [damping] is in gradient-squared units. The config is a
+    constant of the compiled step, so changing it means a new
+    {!Optim.S.Compiled.create}. Compiled functions are not thread-safe and
+    cache on the leaf signature of the state; changing the tree's shape or
+    dtype retraces. *)
 
 (** The two sides of a commutation equation: the left and right copies an
     orbit average pairs. *)
@@ -169,7 +174,7 @@ module Orbit : sig
   module Make (M : Model) : S with type ('a, 'd) t = ('a, 'd) M.t
 end
 
-(** The host-side estimator solves. *)
+(** The estimator solves. *)
 module Solve : sig
   (** [svd64 x] is the economy SVD of [x], computed in float64 and returned in
       float32. *)
@@ -180,17 +185,29 @@ module Solve : sig
       negative eigenvalues (roundoff on a second moment). [damping] is
       absolute and sits at the root, in gradient units: it is not scaled by
       the spectrum, so the result's largest eigenvalue is capped at
-      [1/damping]. It must be positive. *)
-  val damped_inverse_root : damping:float -> Nx.host Nx.float32_t -> Nx.host Nx.float32_t
+      [1/damping]. It must be positive. It reads no host value, so it traces. *)
+  val damped_inverse_root : damping:float -> 'd Nx.float32_t -> 'd Nx.float32_t
 
   (** [damped_inverse_root_blocks ~damping blocks] is the same on each block.
       Because the blocks are an operator's matrices in orthonormal bases of the
       isotypic components, the shared [damping] is [damping·I] on the whole
-      parameter space. This is what the optimizer uses. *)
+      parameter space. *)
   val damped_inverse_root_blocks
     :  damping:float
-    -> Nx.host Nx.float32_t list
-    -> Nx.host Nx.float32_t list
+    -> 'd Nx.float32_t list
+    -> 'd Nx.float32_t list
+
+  (** [damped_inverse ~damping x] is [(proj x + damping·I)^{-1}], the linear
+      cousin of {!damped_inverse_root}, with [damping] in the units of [x]'s
+      spectrum. The result's largest eigenvalue is capped at [1/damping]. It
+      must be positive. *)
+  val damped_inverse : damping:float -> 'd Nx.float32_t -> 'd Nx.float32_t
+
+  (** [damped_inverse_blocks ~damping blocks] is the same on each block. *)
+  val damped_inverse_blocks
+    :  damping:float
+    -> 'd Nx.float32_t list
+    -> 'd Nx.float32_t list
 
   (** [damp_spectrum ~relative_damping s] is [relative_damping * s_max + s]. *)
   val damp_spectrum
@@ -239,20 +256,21 @@ module Solve : sig
     -> Nx.host Nx.float32_t list
 end
 
-(** The damped-whitening optimizer on the orbit machinery: bias-corrected
-    momentum, the second-order orbit average of the gradient with debiasing,
-    the blockwise [(S_g^{1/2} + λI)^{-1}] solve, the parameter shift, and the
-    compiled [prepare]/[finish] pair. *)
+(** The damped-GGN optimizer on the orbit machinery: bias-corrected momentum,
+    the second-order orbit average of the GGN with debiasing, the blockwise
+    [(S_g + λI)^{-1}] (default) or [(S_g^{1/2} + λI)^{-1}] solve, the parameter
+    shift, and the one [Rune.jit] step. *)
 module Optim : module type of Optim
 
 (** [Make (M)] is the library entry point: the orbit machinery ({!Orbit.Make})
-    and the damped-whitening optimizer ({!Optim.Make}) for a model [M], plus
-    [ptree], the packed traversal `Rune.grad` and `Rune.jit` take.
+    and the damped-GGN optimizer ({!Optim.Make}) for a model [M], plus [ptree],
+    the packed traversal `Rune.grad` and `Rune.jit` take.
 
     The parameter tree is [('d Nx.float32_t, 'd) M.t] throughout, on any
     device set ['d]: the compiled tables are host values, placed beside the
-    tree's arrays where they meet them, and the estimator solve runs on the
-    host. [dims] and [symmetries] describe each leaf. *)
+    tree's arrays where they meet them, and the step runs where the arrays
+    lie (it needs a set whose kernels compute [Nx.eigh]). [dims] and
+    [symmetries] describe each leaf. *)
 module Make (M : Orbit.Model) : sig
   (** The packed traversal of the parameter tree on the host. A description is
       at one set: [Nx.Ptree.instantiate (module M)] describes the tree on
