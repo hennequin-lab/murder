@@ -70,7 +70,7 @@ let loss (p : (Nx.host Nx.float32_t, Nx.host) Mlp.t) =
 
 let () =
   let config : S.config =
-    { learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+    { learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-1 }
   in
   let compiled = S.Compiled.create ~config in
   let state = ref (S.init ~config (init (Nx.Rng.key 7))) in

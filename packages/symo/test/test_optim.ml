@@ -80,21 +80,84 @@ let test_schedules () =
   equal ~msg:"counter decay" (float 1e-6) 0.05 (item [] (Optim.bump_tensor (s 0.1) 0.5));
   equal ~msg:"counter floor" (float 1e-6) 1e-4 (item [] (Optim.bump_tensor (s 1e-6) 0.5))
 
-let test_solve_identity () =
+let test_taylor_estimator () =
   let sigma_w = mat32 [| 2; 2 |] [| 1.5; 0.2; 0.2; 0.8 |] in
   let a = mat32 [| 2; 2 |] [| 2.0; 0.3; 0.3; 1.2 |] in
   let sigma_g = Infix.(a *@ sigma_w *@ transpose a) in
-  let h_inv = Solve.hessian_inverse ~damping:0.0 sigma_w sigma_g in
-  let h = Solve.hessian ~damping:0.0 sigma_w sigma_g in
+  let h_inv = Solve.hessian_inverse ~relative_damping:0.0 sigma_w sigma_g in
+  let h = Solve.hessian ~relative_damping:0.0 sigma_w sigma_g in
   check ~msg:"H_inv is the inverse" ~tol:1e-4 (eye float32 2) Infix.(h_inv *@ a);
   check ~msg:"H H_inv = I" ~tol:1e-4 (eye float32 2) Infix.(h *@ h_inv);
   (* Damping regularises a singular sigma_w without producing NaNs. *)
   let singular = mat32 [| 2; 2 |] [| 1.0; 1.0; 1.0; 1.0 |] in
   let sigma_g0 = zeros float32 [| 2; 2 |] in
-  let regularized = Solve.hessian_inverse ~damping:1e-3 singular sigma_g0 in
+  let regularized = Solve.hessian_inverse ~relative_damping:1e-3 singular sigma_g0 in
   is_true
     ~msg:"damped singular solve is finite"
     (Array.for_all (to_array regularized) ~f:Float.is_finite)
+
+(* The optimizer's preconditioner: [(S_g^{1/2} + λI)^{-1}] inverts the damped
+   root, its gain is capped at [1/λ] (so the step is bounded and always a
+   descent direction), a large damping tends to a scaled identity (SGD), and
+   rank-one or slightly indefinite estimates stay finite. *)
+let test_preconditioner () =
+  let lam = 0.1 in
+  let sg = mat32 [| 2; 2 |] [| 1.5; 0.2; 0.2; 0.8 |] in
+  let p = Solve.damped_inverse_root ~damping:lam sg in
+  let root =
+    let w, u = eigh float64 (cast float64 sg) in
+    let z = Nx.sqrt (cast float32 w) in
+    let u = cast float32 u in
+    Infix.(u * reshape [| 1; -1 |] z *@ transpose u)
+  in
+  check
+    ~msg:"P (S_g^1/2 + lam I) = I"
+    ~tol:1e-4
+    (eye float32 2)
+    Infix.(p *@ Infix.(root + (eye float32 2 *$ lam)));
+  check ~msg:"P is symmetric" ~tol:1e-6 p (transpose p);
+  let w, _ = eigh float64 (cast float64 p) in
+  let max_gain = item [] (max w) in
+  let cap = 1. /. lam in
+  is_true ~msg:"the gain is capped at 1/lam" Float.(max_gain <= cap +. 1e-4);
+  (* The cap is attained on a rank-one estimate: the zero direction is the
+     one the damping regularises. *)
+  let rank1 = mat32 [| 2; 2 |] [| 1.; 1.; 1.; 1. |] in
+  let w1, _ =
+    eigh float64 (cast float64 (Solve.damped_inverse_root ~damping:lam rank1))
+  in
+  let rank1_gain = item [] (Nx.max w1) in
+  is_true
+    ~msg:"a singular estimate attains the cap"
+    Float.(Float.abs (rank1_gain -. cap) < 1e-3);
+  (* At small damping the preconditioner is the whitening, [P S_g P = I]. *)
+  let p0 = Solve.damped_inverse_root ~damping:1e-6 sg in
+  check
+    ~msg:"small damping is S_g^{-1/2}"
+    ~tol:1e-3
+    (eye float32 2)
+    Infix.(p0 *@ sg *@ transpose p0);
+  let big = Solve.damped_inverse_root ~damping:1e8 sg in
+  let scale = 1. /. 1e8 in
+  check ~msg:"large damping tends to SGD" ~tol:1e-9 Infix.(eye float32 2 *$ scale) big;
+  (* A rank-one estimate carries no pseudo-inverse branch ... *)
+  is_true
+    ~msg:"rank-one estimate is finite"
+    (Array.for_all
+       (to_array (Solve.damped_inverse_root ~damping:1e-3 rank1))
+       ~f:Float.is_finite);
+  (* ... and one with a negative eigenvalue from roundoff is projected. *)
+  let indefinite = mat32 [| 2; 2 |] [| 1.; 2.; 2.; 1. |] in
+  is_true
+    ~msg:"indefinite estimate is projected"
+    (Array.for_all
+       (to_array (Solve.damped_inverse_root ~damping:1e-2 indefinite))
+       ~f:Float.is_finite);
+  is_true
+    ~msg:"non-positive damping is refused"
+    (match Solve.damped_inverse_root ~damping:0. sg with
+     | exception Invalid_argument _ -> true
+     | _ -> false)
 
 let test_exchange_identity () =
   let a = mat32 [| 2; 2 |] [| 2.0; 0.5; 0.5; 1.0 |] in
@@ -116,34 +179,51 @@ let test_exchange_identity () =
   let expected = Infix.(h_large *@ sw *@ h_large) in
   check ~msg:"S_g = H S_w H" ~tol:1e-4 expected sg
 
-let test_newton_step () =
+(* The damped step on the invariant quadratic: the parameters move by
+   [-η P ḡ] with [P = (S_g^{1/2} + λI)^{-1}] of the assembled blocks, the step
+   is bounded by [η‖ḡ‖/λ], and it descends. *)
+let test_damped_step () =
   let a = mat32 [| 2; 2 |] [| 2.0; 0.5; 0.5; 1.0 |] in
   let theta_star = create float32 [| 2; 3 |] [| 0.4; 0.4; 0.4; -0.2; -0.2; -0.2 |] in
   let delta = Nx.Rng.normal ~key:(Nx.Rng.key 2) float32 [| 2; 3 |] in
   let w = Infix.(delta - mean ~axes:[ 1 ] ~keepdims:true delta) in
   let theta = Infix.(theta_star + w) in
   let g = Infix.(a *$ 3.0 *@ w) in
+  let lam = 0.1 in
+  let eta = 1.0 in
   let config : Q.config =
-    { learning_rate = Some 1.0; beta_1 = 0.0; beta_2 = 0.0; damping = 1e-6 }
+    { learning_rate = Some eta; beta_1 = 0.0; beta_2 = 0.0; damping = lam }
   in
   let state = Q.init ~config { Quad.w = theta } in
-  let state = Q.step ~config ~state ~grads:{ Quad.w = g } in
-  let loss x = Infix.(sum (x * (a *$ 3.0 *@ x)) *$ 0.5) in
-  let before = item [] (loss theta) in
-  let after = item [] (loss state.theta.w) in
-  is_true ~msg:"loss decreased" Float.(after < before);
-  check ~msg:"Newton step lands on the minimizer" ~tol:2e-3 theta_star state.theta.w;
-  (* [learning_rate = None] measures without shifting the parameters. *)
-  let measure : Q.config =
-    { learning_rate = None; beta_1 = 0.0; beta_2 = 0.0; damping = 1e-6 }
+  let next = Q.step ~config ~state ~grads:{ Quad.w = g } in
+  (* The same step built from the blocks of [S_g], independently of the
+     optimizer. *)
+  let blocks =
+    Q.Second_order.blocks_of_factors
+      (Q.Second_order.factors_of_pair { Quad.w = g } { Quad.w = g })
   in
-  let state' =
+  let p = Solve.damped_inverse_root_blocks ~damping:lam blocks in
+  let pg =
+    (Q.Second_order.apply ~factors:(Q.Second_order.factors_of_blocks p) { Quad.w = g }).w
+  in
+  check ~msg:"the step is eta P g" ~tol:1e-5 Infix.(theta - (pg *$ eta)) next.theta.w;
+  let step = Infix.(next.theta.w - theta) in
+  let norm x = Float.sqrt (item [] (sum Infix.(x * x))) in
+  is_true
+    ~msg:"the step is bounded by eta |g| / lam"
+    Float.(norm step <= (eta *. norm g /. lam) +. 1e-4);
+  is_true ~msg:"the step descends" Float.(item [] (sum Infix.(g * step)) < 0.);
+  let loss x = Infix.(sum (x * (a *$ 3.0 *@ x)) *$ 0.5) in
+  is_true ~msg:"loss decreased" Float.(item [] (loss next.theta.w) < item [] (loss theta));
+  (* [learning_rate = None] measures without shifting the parameters. *)
+  let measure : Q.config = { config with learning_rate = None } in
+  let measured =
     Q.step
       ~config:measure
       ~state:(Q.init ~config:measure { Quad.w = theta })
       ~grads:{ Quad.w = g }
   in
-  check ~msg:"measure-only keeps theta" ~tol:1e-6 theta state'.theta.w
+  check ~msg:"measure-only keeps theta" ~tol:1e-6 theta measured.theta.w
 
 (* ------------------------------------------------------------------------
    End-to-end fixture
@@ -169,7 +249,7 @@ let test_end_to_end () =
     }
   in
   let config : M.config =
-    { learning_rate = Some 0.5; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+    { learning_rate = Some 0.5; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-1 }
   in
   let state = M.init ~config params in
   let loss params = item [] (mlp_loss params) in
@@ -205,7 +285,7 @@ module Other = (val Nx.devices (Nx.Devices.to_list Nx.Host.v))
 
 let test_other_set () =
   let config : M.config =
-    { learning_rate = Some 0.5; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+    { learning_rate = Some 0.5; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-1 }
   in
   let tree k =
     { Mlp.w1 = Nx.Rng.normal ~key:(Nx.Rng.key k) float32 [| 3; 2 |]
@@ -229,9 +309,10 @@ let test_other_set () =
 
 let tests =
   [ test "EMA and debias schedules" test_schedules
-  ; test "Solve inverts a known operator" test_solve_identity
+  ; test "Taylor estimator inverts a known operator" test_taylor_estimator
+  ; test "damped inverse square root" test_preconditioner
   ; test "exchange identity S_g = H S_w H" test_exchange_identity
-  ; test "Newton step on an invariant quadratic" test_newton_step
+  ; test "damped step on an invariant quadratic" test_damped_step
   ; test "transport preserves the blocks" test_transport_blocks
   ; test "end-to-end MLP training" test_end_to_end
   ; test "a step on another set equals the host's" test_other_set

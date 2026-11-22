@@ -45,7 +45,7 @@ let mlp_loss (p : (Nx.host Nx.float32_t, Nx.host) Mlp.t) =
   mean (d * d)
 
 let config : M.config =
-  { learning_rate = Some 0.3; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+  { learning_rate = Some 0.3; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-1 }
 
 let params () =
   { Mlp.w1 = Nx.Rng.normal ~key:(Nx.Rng.key 9) float32 [| 3; 2 |]

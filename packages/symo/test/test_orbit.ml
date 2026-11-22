@@ -71,6 +71,22 @@ end
 
 module OS = Orbit.Make (Shared)
 
+(* One leaf with two permuted axes on the same side *and* a free axis. The
+   transpose-bundled basis is not complete for it: the symmetric operators
+   also contain a [Λ²(W) ⊗ Λ²(F)] part that a term and its transpose cannot
+   reach, so the compiler must fall back to the full basis for the estimate
+   to be the exact orbit average. *)
+module Two_perms_free = struct
+  type ('a, _) t = { w : 'a } [@@deriving ptree]
+
+  let dims : (int list, _) t = { w = [ 4; 4; 3 ] }
+
+  let symmetries : (Symmetry.spec list, _) t =
+    { w = [ Symmetry.Perm 0; Symmetry.Perm 0; Symmetry.Id ] }
+end
+
+module OF = Orbit.Make (Two_perms_free)
+
 (* ------------------------------------------------------------------------
    Group enumeration
    ------------------------------------------------------------------------ *)
@@ -451,11 +467,34 @@ let test_random_transform_shared () =
       ~msg:"random element is in the global group"
       (List.exists images ~f:(fun image -> shared_equal image y)))
 
+(* Two permuted axes and a free axis: the bundled basis is lossy, the
+   compiler falls back to the full one, and the estimate of a rank-one outer
+   product is then the exact (positive semidefinite) orbit average. *)
+let test_two_perms_free () =
+  let c = (OF.Second_order.large ()).w.(0) in
+  is_true ~msg:"the bundled basis falls back" (not c.Compiler.basis.symmetric);
+  let x = Nx.Rng.normal ~key:(Nx.Rng.key 81) float32 [| 4; 4; 3 |] in
+  let factors =
+    OF.Second_order.factors_of_pair { Two_perms_free.w = x } { Two_perms_free.w = x }
+  in
+  let assembled = c.Compiler.dense_block ~factors:factors.w.(0) in
+  let expected = exact_r2 c x in
+  check_leaf ~msg:"two permuted axes and a free axis" ~tol:1e-5 expected assembled;
+  let w, _ = eigh float64 (cast float64 assembled) in
+  let min_w = item [] (Nx.min w) in
+  is_true ~msg:"the estimate is positive semidefinite" Float.(min_w > -1e-5);
+  let rebuilt =
+    OF.Second_order.dense_of_factors
+      (OF.Second_order.factors_of_blocks (OF.Second_order.blocks_of_factors factors))
+  in
+  check_leaf ~msg:"blocks round trip" ~tol:1e-5 assembled rebuilt
+
 let tests =
   [ test "first order against the group" test_first_order_exact
   ; test "first order commutes with the group" test_first_order_equivariant
   ; test "second order against the group" test_second_order_exact
   ; test "two permutation groups" test_two_groups_exact
+  ; test "two permuted axes with a free axis" test_two_perms_free
   ; test "multi-leaf orbit machinery" test_multi_leaf
   ; test "multi-leaf invariance" test_multi_leaf_invariance
   ; test "random group element" test_random_transform

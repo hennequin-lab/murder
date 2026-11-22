@@ -38,8 +38,8 @@
     end
     ]}
 
-    {!Make} turns that declaration into the orbit machinery and the Taylor
-    optimizer for the whole parameter tree.
+    {!Make} turns that declaration into the orbit machinery and the
+    damped-whitening optimizer for the whole parameter tree.
 
     {2 Blocks and sizes}
 
@@ -58,35 +58,41 @@
     axes); below it the algebra is not semisimple and the decomposition is not
     faithful. The compiler raises [Invalid_argument] when a spec violates it.
 
-    {2 The Taylor step}
+    {2 The damped step}
 
-    With [S_w = R2(δ_w, δ_w)] and [S_g = R2(δ_g, δ_g)] built from the
-    non-invariant parts of the parameters and the averaged gradient, the
-    estimator is
+    With [S_g = R2(δ_g, δ_g)] built from the non-invariant part of the
+    averaged gradient, EMA'd with [beta_2] and debiased, the preconditioner is
 
-    {v
-      H     = S_w^{-1/2̃} (S_w^{1/2̃} S_g S_w^{1/2̃})^{1/2̃} S_w^{-1/2̃}
-      H_inv = S_w^{ 1/2̃} (S_w^{1/2̃} S_g S_w^{1/2̃})^{-1/2̃} S_w^{ 1/2̃}
-    v}
+    {[
+      P = (S_g^{1/2} + λ I)^{-1},      θ ← θ − η · P · ḡ
+    ]}
 
-    with damped symmetric powers [X^{p̃} = U diag((damping·s_max + s)^p) Uᵀ],
-    and the step is [θ ← θ − η · H_inv · ḡ]. {!Solve} performs the
-    factorization on the assembled blocks, the only step outside [Rune.jit]'s
-    reach; {!Optim} composes momentum, orbit averages, the factors of
-    [S_w]/[S_g], the estimator solve and the parameter shift.
+    [λ] is one absolute [damping], in gradient units: the root is where Adam's
+    [epsilon] sits, and [λ] is added to the square root of every isotypic
+    block's spectrum. The blocks are orthonormal bases of the isotypic
+    components, so that is [λ·I] on the whole parameter space — across kinds
+    and leaves — and the gain is capped at [1/λ]. {!Solve} runs the
+    eigendecompositions on the assembled blocks, the only step outside
+    [Rune.jit]'s reach; {!Optim} composes momentum, the orbit average, the
+    factors of [S_g], the solve and the parameter shift.
+
+    The paper's Taylor estimator [H]/[H_inv] (Eq. 10) is still available from
+    {!Solve}. It uses a relative damping,
+    [X^{p̃} = U diag((damping·s_max + s)^p) Uᵀ], and is not the
+    optimizer's step.
 
     {2 Compiled step}
 
-    The step is split so that everything but the estimator solve is
-    traceable: [prepare] (momentum, orbit averages, the packed factors of
-    [S_w]/[S_g], EMA and bias counters) and [finish] (the factors of [H_inv],
-    applied to the momentum, shift the parameters). {!Optim.Make.Compiled} wraps the two
+    The step is split so that everything but the preconditioner solve is
+    traceable: [prepare] (momentum, the orbit average, the packed factors of
+    [S_g], EMA and bias counters) and [finish] (the factors of [P], applied to
+    the momentum, shift the parameters). {!Optim.Make.Compiled} wraps the two
     halves in [Rune.jit] with the whole state threaded through input and
     output leaves, so a training loop traces once and then replays:
 
     {[
     let config =
-      { Optim.learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+      { Optim.learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-2 }
     in
     let compiled = S.Compiled.create ~config in
     let rec train state n =
@@ -163,61 +169,85 @@ module Orbit : sig
   module Make (M : Model) : S with type ('a, 'd) t = ('a, 'd) M.t
 end
 
-(** The host-side estimator solve. *)
+(** The host-side estimator solves. *)
 module Solve : sig
   (** [svd64 x] is the economy SVD of [x], computed in float64 and returned in
       float32. *)
   val svd64 : Nx.host Nx.float32_t -> Nx.host Nx.float32_t * Nx.host Nx.float32_t
 
-  (** [damp_spectrum ~damping s] is [damping * s_max + s]. *)
-  val damp_spectrum : damping:float -> Nx.host Nx.float32_t -> Nx.host Nx.float32_t
+  (** [damped_inverse_root ~damping x] is
+      [((proj x)^{1/2} + damping·I)^{-1}], where [proj x] zeroes [x]'s
+      negative eigenvalues (roundoff on a second moment). [damping] is
+      absolute and sits at the root, in gradient units: it is not scaled by
+      the spectrum, so the result's largest eigenvalue is capped at
+      [1/damping]. It must be positive. *)
+  val damped_inverse_root : damping:float -> Nx.host Nx.float32_t -> Nx.host Nx.float32_t
 
-  (** [symmetric_power ~damping ~power x] is the damped symmetric power of a
-      symmetric matrix, [U diag((damping·s_max + s)^power) Uᵀ] for
-      [x = U diag(s) Uᵀ]. A negative power of a zero singular value is zero:
-      a zero surrogate yields a zero direction rather than NaN. *)
-  val symmetric_power
+  (** [damped_inverse_root_blocks ~damping blocks] is the same on each block.
+      Because the blocks are an operator's matrices in orthonormal bases of the
+      isotypic components, the shared [damping] is [damping·I] on the whole
+      parameter space. This is what the optimizer uses. *)
+  val damped_inverse_root_blocks
     :  damping:float
+    -> Nx.host Nx.float32_t list
+    -> Nx.host Nx.float32_t list
+
+  (** [damp_spectrum ~relative_damping s] is [relative_damping * s_max + s]. *)
+  val damp_spectrum
+    :  relative_damping:float
+    -> Nx.host Nx.float32_t
+    -> Nx.host Nx.float32_t
+
+  (** [symmetric_power ~relative_damping ~power x] is the damped symmetric
+      power of a symmetric matrix [x = U diag(s) Uᵀ], namely
+      [U diag((relative_damping·s_max + s)^power) Uᵀ]. A negative power of a
+      zero singular value is zero: a zero surrogate yields a zero direction
+      rather than NaN. *)
+  val symmetric_power
+    :  relative_damping:float
     -> power:float
     -> Nx.host Nx.float32_t
     -> Nx.host Nx.float32_t
 
-  (** [hessian ~damping sigma_w sigma_g] is the estimator [H] itself. *)
+  (** [hessian ~relative_damping sigma_w sigma_g] is the Taylor estimator [H]
+      itself. *)
   val hessian
-    :  damping:float
+    :  relative_damping:float
     -> Nx.host Nx.float32_t
     -> Nx.host Nx.float32_t
     -> Nx.host Nx.float32_t
 
-  (** [hessian_inverse ~damping sigma_w sigma_g] is Eq. 10's preconditioner
-      [H_inv] on two dense matrices. It reads the spectrum's maximum with
-      [Nx.item], which a traced value refuses, so it is kept host-side. Its
-      arguments must be on the host. *)
+  (** [hessian_inverse ~relative_damping sigma_w sigma_g] is Eq. 10's
+      preconditioner [H_inv] on two dense matrices. It reads the spectrum's
+      maximum with [Nx.item], which a traced value refuses, so it is kept
+      host-side. Its arguments must be on the host. *)
   val hessian_inverse
-    :  damping:float
+    :  relative_damping:float
     -> Nx.host Nx.float32_t
     -> Nx.host Nx.float32_t
     -> Nx.host Nx.float32_t
 
-  (** [hessian_inverse_blocks ~damping sigma_w sigma_g] is the same
+  (** [hessian_inverse_blocks ~relative_damping sigma_w sigma_g] is the same
       preconditioner applied blockwise: one square matrix per isotypic kind,
-      with the damping scale shared across blocks. This is what the optimizer
-      uses; it is exact at the model's size and small. *)
+      with the damping scale shared across blocks. The optimizer no longer
+      uses it; its root-damped counterpart is
+      {!damped_inverse_root_blocks}. *)
   val hessian_inverse_blocks
-    :  damping:float
+    :  relative_damping:float
     -> Nx.host Nx.float32_t list
     -> Nx.host Nx.float32_t list
     -> Nx.host Nx.float32_t list
 end
 
-(** The Taylor optimizer on the orbit machinery: bias-corrected momentum, an
-    EMA of the gradient's factors with debiasing, the blockwise estimator
-    solve, the parameter shift, and the compiled [prepare]/[finish] pair. *)
+(** The damped-whitening optimizer on the orbit machinery: bias-corrected
+    momentum, the second-order orbit average of the gradient with debiasing,
+    the blockwise [(S_g^{1/2} + λI)^{-1}] solve, the parameter shift, and the
+    compiled [prepare]/[finish] pair. *)
 module Optim : module type of Optim
 
 (** [Make (M)] is the library entry point: the orbit machinery ({!Orbit.Make})
-    and the Taylor optimizer ({!Optim.Make}) for a model [M], plus [ptree],
-    the packed traversal `Rune.grad` and `Rune.jit` take.
+    and the damped-whitening optimizer ({!Optim.Make}) for a model [M], plus
+    [ptree], the packed traversal `Rune.grad` and `Rune.jit` take.
 
     The parameter tree is [('d Nx.float32_t, 'd) M.t] throughout, on any
     device set ['d]: the compiled tables are host values, placed beside the

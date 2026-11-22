@@ -299,7 +299,11 @@ let bundle_transposes terms =
      structures;
    - the cartesian product across groups gives every term;
    - when symmetry is required, a term and its transpose are merged into one
-     component. *)
+     component. Merging symmetrizes the permuted axes but leaves the free
+     axes' factor arbitrary, so the components span [Sym(W) ⊗ End(F)] and not
+     every symmetric operator: the latter also contain [Λ²(W) ⊗ Λ²(F)]
+     ({!symmetric_basis_is_complete}). {!compile} falls back to the full
+     basis where the merge would lose that part. *)
 let basis_of_spec_uncached ~symmetric (symm : Symmetry.t) : Basis.t =
   let open Symmetry in
   let left i = Index.Left i in
@@ -402,7 +406,53 @@ let compile_basis ~(dims : int list Sides.t) (basis : Basis.t) =
   let transform ~perms t = transform ~dims basis.group_axes ~perms t in
   { basis; dims; apply_block; dense_block; estimate_factors; transform }
 
+(* [symmetric_basis_is_complete ~dims spec] is [true] when merging a term
+   with its transpose loses nothing, i.e. when the bundled components of
+   {!basis_of_spec} span the symmetric operators of the commutant. With [W]
+   the permuted axes' space and [F] the free axes' factor, the components
+   span [Sym(W) ⊗ End(F)] while the symmetric operators are
+   [Sym(W) ⊗ Sym(F) ⊕ Λ²(W) ⊗ Λ²(F)]. The missing part is nonempty exactly
+   when the factor holds more than one entry and some group acts on two axes
+   of one side (which is what gives an isotypic multiplicity ≥ 2); it is
+   therefore empty when the free size is one or no group has two axes on one
+   side. The two sides describe one leaf: symmetry is only requested for a
+   diagonal pair. *)
+let symmetric_basis_is_complete ~(dims : int list Sides.t) (spec : Symmetry.t) =
+  let free_size dims specs =
+    List.fold2_exn specs dims ~init:1 ~f:(fun acc spec dim ->
+      match spec with
+      | Symmetry.Id -> acc * dim
+      | Symmetry.Absent | Symmetry.Perm _ -> acc)
+  in
+  let free =
+    free_size dims.Sides.left spec.Sides.left
+    * free_size dims.Sides.right spec.Sides.right
+  in
+  let count side id =
+    List.count side ~f:(function
+      | Symmetry.Perm id' -> Int.equal id id'
+      | Symmetry.Absent | Symmetry.Id -> false)
+  in
+  let simple =
+    let ids =
+      spec.Sides.left @ spec.Sides.right
+      |> List.filter_map ~f:(function
+        | Symmetry.Perm id -> Some id
+        | Symmetry.Absent | Symmetry.Id -> None)
+      |> List.dedup_and_sort ~compare:Int.compare
+    in
+    List.for_all ids ~f:(fun id ->
+      Int.(count spec.Sides.left id <= 1 && count spec.Sides.right id <= 1))
+  in
+  Int.equal free 1 || simple
+
+(* A symmetric compilation falls back to the full basis where the bundled one
+   would not span the symmetric operators ({!symmetric_basis_is_complete}),
+   so the estimator stays the projection onto the invariant subspace. The
+   compiled closures and blocks are those of the full basis; the caller's
+   [symmetric] request is otherwise unchanged. *)
 let compile ?(symmetric = false) ~dims spec =
+  let symmetric = symmetric && symmetric_basis_is_complete ~dims spec in
   compile_basis ~dims (basis_of_spec ~symmetric spec)
 
 let compile_manual ?(symmetric = false) ~dims ~group_axes components =

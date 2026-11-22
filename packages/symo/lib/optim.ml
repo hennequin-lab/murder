@@ -3,18 +3,29 @@
   SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-(* The Taylor optimizer (Eq. 10 of the paper) on the orbit machinery.
+(* The damped-whitening optimizer on the orbit machinery.
 
-   The step is split so that only the estimator solve is not traceable:
-   prepare (traceable)               solve (host)          finish (traceable)
-   momentum, orbit averages,    ->   blockwise damped   ->  factors of H_inv,
-   factors of S_w/S_g, EMA           powers, eigh          apply to g_avg, shift
+   The step is split so that only the preconditioner solve is not traceable:
+   prepare (traceable)                  solve (host)            finish (traceable)
+   momentum, orbit average of g,   ->   blockwise, eigh of   ->  apply P to ḡ,
+   factors of S_g, EMA, debias          (S_g + λI)^{-1/2}         shift θ
 
-   The curvature operators are carried as their block coordinates (see
-   {!Blocks}), packed into one flat tensor per operator so the state and the
-   jit boundary stay tensor-valued. The host solve works on the assembled
-   blocks — one small matrix per isotypic kind — so it is both cheaper and
-   exact across sizes, unlike a surrogate built from the same factors.
+   [S_g] is the second-order orbit average of the non-invariant gradient,
+   EMA'd with [beta_2] and debiased; the step is
+
+     θ ← θ - η · P · ḡ,   P = (S_g^{1/2} + λI)^{-1}
+
+   [λ] is absolute and sits where Adam's [epsilon] sits, at the root: one
+   scalar for every isotypic kind and leaf, added to each block's root
+   spectrum, never a fraction of it. [P] is positive definite and its gain is
+   capped at [1/λ], so the step is bounded and always a descent direction, and
+   the eigendecomposition is of [S_g] alone.
+
+   The operator is carried as its block coordinates (see {!Blocks}), packed
+   into one flat tensor so the state and the jit boundary stay tensor-valued.
+   The host solve works on the assembled blocks — one small matrix per
+   isotypic kind — so it is both cheaper and exact across sizes, unlike a
+   surrogate built from the same factors.
 
    [prepare] and [finish] touch neither [Nx.item] of a traced value nor a
    data-dependent branch, so [Compiled] can wrap them in [Rune.jit] with the
@@ -29,6 +40,10 @@ module Config = struct
     ; beta_1 : float
     ; beta_2 : float
     ; damping : float
+      (** Absolute damping [λ], in gradient units (the root is where Adam's
+          [epsilon] sits): it is added to the square root of every isotypic
+          block's spectrum in [(S_g^{1/2} + λI)^{-1}], and caps the
+          preconditioner's gain ([1/λ]). It must be positive. *)
     }
 end
 
@@ -63,7 +78,6 @@ module type S = sig
       { theta : ('a, 'd) tree
       ; g_avg : ('a, 'd) tree
       ; g_avg_debias : ('a, 'd) tree
-      ; sigma_w : 'a
       ; sigma_g : 'a
       ; sigma_g_avg : 'a
       ; beta_1_t : 'a
@@ -84,7 +98,9 @@ module type S = sig
     -> 'd mid
 
   (** [solve ~damping mid] runs on the host: it places [mid]'s packed factors
-      there and its result beside them. *)
+      of [S_g] there, forms [(S_g^{1/2} + damping I)^{-1}] on its blocks, and
+      packs the result beside them. [damping] is absolute and must be
+      positive. *)
   val solve : damping:float -> 'd mid -> 'd Nx.float32_t
 
   val finish : config:config -> mid:'d mid -> 'd Nx.float32_t -> 'd state
@@ -139,7 +155,6 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
       { theta : ('a, 'd) M.t
       ; g_avg : ('a, 'd) M.t
       ; g_avg_debias : ('a, 'd) M.t
-      ; sigma_w : 'a
       ; sigma_g : 'a
       ; sigma_g_avg : 'a
       ; beta_1_t : 'a
@@ -167,11 +182,8 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
       map2 (fun _ g avg -> ema ~beta:config.beta_1 g avg) grads state.State.g_avg
     in
     let g_avg_debias = map (fun _ g -> debias state.State.beta_1_t g) g_avg in
-    let theta_star = O.First_order.orbit_average state.State.theta in
     let g_star = O.First_order.orbit_average g_avg_debias in
-    let delta_w = map2 (fun _ t ts -> Infix.(t - ts)) state.State.theta theta_star in
     let delta_g = map2 (fun _ g gs -> Infix.(g - gs)) g_avg_debias g_star in
-    let sigma_w = O.Second_order.pack (O.Second_order.factors_of_pair delta_w delta_w) in
     let sigma_g_avg =
       O.Second_order.pack (O.Second_order.factors_of_pair delta_g delta_g)
       |> fun s -> ema ~beta:config.beta_2 s state.State.sigma_g_avg
@@ -180,28 +192,26 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
     { Mid.theta = state.State.theta
     ; g_avg
     ; g_avg_debias
-    ; sigma_w
     ; sigma_g
     ; sigma_g_avg
     ; beta_1_t = bump_tensor state.State.beta_1_t config.beta_1
     ; beta_2_t = bump_tensor state.State.beta_2_t config.beta_2
     }
 
-  (* The host solve: unpack the two packed factor lists on the host, assemble
-     the blocks, apply Eq. 10 blockwise, and pack the result beside [mid]. *)
+  (* The host solve: unpack the packed factors of [S_g], assemble its blocks,
+     apply the absolute-damped inverse square root to each, and pack the
+     preconditioner beside them. *)
   let solve ~damping mid =
     let host = place Nx.Host.on in
-    let sigma_w = O.Second_order.unpack (host mid.Mid.sigma_w) in
     let sigma_g = O.Second_order.unpack (host mid.Mid.sigma_g) in
-    let blocks_w = O.Second_order.blocks_of_factors sigma_w in
-    let blocks_g = O.Second_order.blocks_of_factors sigma_g in
-    Solve.hessian_inverse_blocks ~damping blocks_w blocks_g
+    let blocks = O.Second_order.blocks_of_factors sigma_g in
+    Solve.damped_inverse_root_blocks ~damping blocks
     |> O.Second_order.factors_of_blocks
     |> O.Second_order.pack
-    |> place (beside mid.Mid.sigma_w)
+    |> place (beside mid.Mid.sigma_g)
 
-  let finish ~config ~mid hessian_inv =
-    let factors = O.Second_order.unpack hessian_inv in
+  let finish ~config ~mid preconditioner =
+    let factors = O.Second_order.unpack preconditioner in
     let delta = O.Second_order.apply ~factors mid.Mid.g_avg in
     let theta =
       match config.learning_rate with
@@ -217,8 +227,8 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
 
   let step ~config ~state ~grads =
     let mid = prepare ~config ~state ~grads in
-    let hessian_inv = solve ~damping:config.damping mid in
-    finish ~config ~mid hessian_inv
+    let preconditioner = solve ~damping:config.damping mid in
+    finish ~config ~mid preconditioner
 
   (* ------------------------------------------------------------------------
      JIT
@@ -226,7 +236,7 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
      [prepare] and [finish] are compiled once per config; the state, the
      gradients and the estimator cross the boundary as input/output leaves, so
      a training loop never retraces. The only host call between them is
-     [Solve.hessian_inverse_blocks].
+     [Solve.damped_inverse_root_blocks].
      ------------------------------------------------------------------------ *)
 
   module Compiled = struct
@@ -243,7 +253,7 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
     module Finish = struct
       type ('a, 'd) t =
         { mid : ('a, 'd) Mid.t
-        ; hessian_inv : 'a
+        ; preconditioner : 'a
         }
       [@@deriving ptree]
     end
@@ -269,7 +279,7 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
         prepare ~config ~state:i.Input.state ~grads:i.Input.grads
       in
       let finish_fn (f : d finish_input) =
-        finish ~config ~mid:f.Finish.mid f.Finish.hessian_inv
+        finish ~config ~mid:f.Finish.mid f.Finish.preconditioner
       in
       { prepare = Rune.jit Nx.Ptree.(input_ptree @-> returns mid_ptree) prepare_fn
       ; finish = Rune.jit Nx.Ptree.(finish_ptree @-> returns state_ptree) finish_fn
@@ -277,7 +287,7 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
 
     let step t ~config ~state ~grads =
       let mid = t.prepare { Input.state; grads } in
-      let hessian_inv = solve ~damping:config.damping mid in
-      t.finish { Finish.mid; hessian_inv }
+      let preconditioner = solve ~damping:config.damping mid in
+      t.finish { Finish.mid; preconditioner }
   end
 end

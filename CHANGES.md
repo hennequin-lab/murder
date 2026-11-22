@@ -312,6 +312,22 @@ changes do not need an entry.
 
 ### symo
 
+- The optimizer's update is the root-damped step
+  `θ ← θ - η (S_g^{1/2} + λI)^{-1} ḡ` instead of the Taylor `H_inv`: one
+  absolute `damping` (λ) for every isotypic kind and leaf, added to the square
+  root of each block's spectrum in gradient (RMS) units, where Adam's `ε` sits,
+  with the gain capped at `1/λ` (so the step is bounded and always descends).
+  `damping` is no longer relative to a spectrum's maximum, the optimizer no
+  longer forms `S_w`, and the examples are retuned. The paper's Taylor estimator
+  (`hessian`, `hessian_inverse`, `hessian_inverse_blocks`, `symmetric_power`,
+  `damp_spectrum`) stays in `Solve` with its argument renamed
+  `~relative_damping` for contrast.
+- Fixed the symmetric basis for a leaf with two permuted axes of one group and a
+  free axis: bundling a term with its transpose spans `Sym(W) ⊗ End(F)` and
+  misses the `Λ²(W) ⊗ Λ²(F)` part of the symmetric operators, so the estimate
+  of `S_g` was not the orbit average and could be indefinite. `Compiler.compile
+  ~symmetric:true` now falls back to the full basis in that case; the blocks,
+  transport and functional calculus are unchanged.
 - Imported from `hennequin-lab/symo-raven`.
 - Ported to raven 19a5d88. The orbit machinery and the optimizer run on the
   parameter tree's device set: a `Model` is an `Nx.Ptree.S` declared

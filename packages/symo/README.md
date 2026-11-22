@@ -28,19 +28,23 @@ least squares from data. For a weight-space symmetry the group elements are
 permutations of hidden units, so the factors are small matrices over the axes
 the group leaves alone.
 
-The estimator (`Taylor`, Eq. 10 of the paper) forms
+The optimizer forms the second-order orbit average of the non-invariant part of
+the averaged gradient and preconditions the step with its root-damped inverse:
 
 ```text
-S_w   = R2(δ_w, δ_w),   δ_w = w - R1(w)
-S_g   = R2(δ_g, δ_g),   δ_g = ḡ - R1(ḡ)     (EMA'd with β₂, debiased)
+S_g = R2(δ_g, δ_g),   δ_g = ḡ - R1(ḡ)      (EMA'd with β₂, debiased)
+P   = (S_g^{1/2} + λI)^{-1}
 
-H     = S_w^{-1/2̃} (S_w^{1/2̃} S_g S_w^{1/2̃})^{1/2̃} S_w^{-1/2̃}
-H_inv = S_w^{ 1/2̃} (S_w^{1/2̃} S_g S_w^{1/2̃})^{-1/2̃} S_w^{ 1/2̃}
-
-θ ← θ - η · H_inv · ḡ
+θ ← θ - η · P · ḡ
 ```
 
-with damped symmetric powers `X^{p̃} = U diag((damping·s_max + s)^p) Uᵀ`.
+`λ` is one **absolute** damping term, added to the square root of every isotypic
+block's spectrum: one scalar for all kinds and leaves, never a fraction of a
+spectrum. It sits where Adam's `ε` sits, so it is in gradient (RMS) units. `P`
+is positive definite and its gain is capped at `1/λ`, so `‖Δθ‖ ≤ η‖ḡ‖/λ` and the
+step is always a descent direction; a large `λ` tends to plain gradient descent.
+The paper's Taylor estimator (Eq. 10, with relative damping `damping·s_max + s`)
+is kept in `Solve` for comparison and tests, but the optimizer no longer uses it.
 
 ## A model in three declarations
 
@@ -88,7 +92,9 @@ teacher):
 
 ```ocaml
 let config : S.config =
-  { learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-4 }
+  { learning_rate = Some 0.1; beta_1 = 0.9; beta_2 = 0.99; damping = 1e-1 }
+  (* damping is λ, absolute and in gradient units: the gain of
+     (S_g^{1/2} + λI)^{-1} is capped at 1/λ. *)
 
 let compiled = S.Compiled.create ~config
 let state = ref (S.init ~config params)
@@ -99,16 +105,16 @@ let train_step () =
 ```
 
 `S.step ~config ~state ~grads` is the eager equivalent. The step is split so
-only the estimator solve is host-side:
+only the preconditioner solve is host-side:
 
 ```text
-prepare (jitted)                solve (host)              finish (jitted)
-momentum, orbit averages,  →    eigh + damped        →    factors of H_inv,
-dense S_w/S_g, EMA, betas       symmetric powers          apply to ḡ, shift θ
+prepare (jitted)                 solve (host)                  finish (jitted)
+momentum, orbit average of g,    blocks of S_g, eigh of        apply P to ḡ,
+factors of S_g, EMA, debias      (S_g^{1/2} + λI)^{-1}         shift θ
 ```
 
 `S.Compiled.create` is cheap; the first call traces and compiles, later calls
-replay. The whole state, the gradients and the estimator cross the boundary as
+replay. The whole state, the gradients and the preconditioner cross the boundary as
 input/output leaves, so a training loop never retraces.
 
 ## Example
@@ -124,10 +130,12 @@ dune exec examples/student_teacher.exe
 student-teacher MLP: 32 hidden units, 8 inputs, 128 examples
     step           mse
        0      2.840415
-      50      0.031715
-     100      0.006669
-      ...
-     500      0.002557
+      50      0.013507
+     100      0.005589
+     200      0.002241
+     300      0.001100
+     400      0.000678
+     500      0.000471
 ```
 
 `examples/rnn.ml` trains an RNN with `S.Compiled` and writes its diagnostics
@@ -153,9 +161,9 @@ The suites are:
 | --------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `test_term`     | term ordering, normalization, symbolic inner products                                                                 |
 | `test_compiler` | compiled closures against brute-force sums over the index space, the Cholesky design solve, invariance (`A S Aᵀ = S`) |
-| `test_orbit`    | `R1`/`R2` and dense round trips against exact enumeration of the symmetry group                                      |
-| `test_blocks`   | blocks against the dense spectrum, transport across sizes, the blockwise estimator against the dense one              |
-| `test_optim`    | estimator identities, Newton step on an invariant quadratic, block transport, end-to-end training                     |
+| `test_orbit`    | `R1`/`R2` and dense round trips against exact enumeration of the symmetry group                                       |
+| `test_blocks`   | blocks against the dense spectrum, transport across sizes, the blockwise preconditioner against the dense one         |
+| `test_optim`    | preconditioner identities, the damped step on an invariant quadratic, block transport, end-to-end training            |
 | `test_jit`      | 50-step eager/compiled parity, state threading, replay-not-retrace                                                    |
 
 ## Library layout
@@ -163,13 +171,13 @@ The suites are:
 | module                       | role                                                                                                                   |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `Sides`, `Index`             | the two sides of a commutation equation; axis indices and einsum characters                                            |
-| `Symmetry`                   | `Absent`/`Id`/`Perm i` specs                                                                                          |
-| `Kind`, `Blocks`             | isotypic kinds and canonical test vectors; block coordinates and transport between sizes                              |
+| `Symmetry`                   | `Absent`/`Id`/`Perm i` specs                                                                                           |
+| `Kind`, `Blocks`             | isotypic kinds and canonical test vectors; block coordinates and transport between sizes                               |
 | `Term`, `Component`, `Basis` | basis terms (ties + free axes), components, and the symbolic basis of the invariant subspace                           |
 | `Compiler`                   | one specification at fixed dimensions → closures for factor estimation, dense blocks and batched block-vector products |
 | `Orbit`                      | lifts the compiler to the whole parameter tree (`First_order`, `Second_order`)                                         |
-| `Solve`                      | the host-side estimator (blockwise and dense damped symmetric powers, `H`/`H_inv`)                                   |
-| `Optim`                      | the Taylor step, eager and jitted (`State`, `Mid`, `Compiled`)                                                         |
+| `Solve`                      | the host-side solves (root-damped inverse, and the Taylor estimator's damped powers)                                   |
+| `Optim`                      | the damped-whitening step, eager and jitted (`State`, `Mid`, `Compiled`)                                               |
 | `Make`                       | the entry point: orbit machinery + optimizer + packed traversal                                                        |
 
 ## Design notes
@@ -182,6 +190,19 @@ The suites are:
   operator at another size, preserving its blocks, its distinct spectrum and
   any function of it. Only multiplicities (trace, determinant) change with the
   size.
+- **The symmetric basis falls back where bundling loses.** Bundling a term
+  with its transpose symmetrizes the permuted axes but leaves the free axes'
+  factor arbitrary, so it spans `Sym(W) ⊗ End(F)` and misses the
+  `Λ²(W) ⊗ Λ²(F)` part of the symmetric operators. That part is empty when the
+  free factor holds one entry or no group acts on two axes of one side;
+  elsewhere `Compiler.compile ~symmetric:true` uses the full basis, so the
+  estimator stays the projection onto the invariant subspace (and a second
+  moment stays positive semidefinite).
+- **The damping is absolute and sits on the root.** `damping` is `λ` in
+  `(S_g^{1/2} + λI)^{-1}`: one scalar added to the *square root* of every
+  isotypic block's spectrum, in gradient units (where Adam's `ε` sits), so the
+  gain cap `1/λ` and the step bound `η‖ḡ‖/λ` are global. The Taylor estimator's
+  relative damping (`damping·s_max`) remains in `Solve`.
 - **Permuted axes must be in the stable range.** A group with `k` permuted
   axes needs dimension `n >= 2k` (2, 4 and 6 for one, two and three axes) for
   the commutant to be semisimple and the block decomposition faithful; the
