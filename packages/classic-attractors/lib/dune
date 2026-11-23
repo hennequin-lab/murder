@@ -1,0 +1,5 @@
+(library
+ (name classic_attractors)
+ (public_name classic-attractors)
+ (libraries base nx jera)
+ (modules_without_implementation attractor))

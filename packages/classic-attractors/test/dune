@@ -1,0 +1,4 @@
+(test
+ (name test_attractors)
+ (package classic-attractors)
+ (libraries base nx classic_attractors windtrap))

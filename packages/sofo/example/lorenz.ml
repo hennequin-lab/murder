@@ -1,6 +1,5 @@
 open Base
 open Nx
-open Jera
 
 let in_dir = Cmdargs.in_dir "-d"
 let print s = Stdio.print_endline (Sexp.to_string_hum s)
@@ -47,50 +46,26 @@ let lr = 0.3
 let n_tangents = 128
 let damping : Sofo.Optim.damping = `Relative_from_top 1e-5
 
-(* Data generation: simulate the Lorenz attractor for a very long time using RK4,
-   and chop the resulting sequence into [total_bs] chunks *)
+(* Data generation: one long Lorenz run cut into [total_bs] consecutive chunks
+   of [horizon] states, shuffled, then standardized per coordinate. *)
 
 let lorenz_trajs =
   let file = in_dir "data.npy" in
   try unpack float32 (Nx_io.load_npy file) with
   | _ ->
-    let dt = 0.01 in
-    let sigma = 10. in
-    let rho = 28. in
-    let beta = 8. /. 3. in
-    let lorenz _t y =
-      let open Nx.Infix in
-      let x = slice [ A; I 0 ] y
-      and yc = slice [ A; I 1 ] y
-      and z = slice [ A; I 2 ] y in
-      let dx = (yc - x) *$ sigma
-      and dy = (x * (-z +$ rho)) - yc
-      and dz = (x * yc) - (z *$ beta) in
-      stack ~axis:1 [ dx; dy; dz ]
-    in
-    (* The trajectory is the march's own output: [at] holds one time per step
-       and every step is kept, so nothing is interpolated. Its times are
-       float64, the steps as exact as the stride allows. *)
-    let march =
-      Rune.jit
-        Nx.Ptree.(tensor @-> tensor @-> returns tensor)
-        (fun at y0 -> Ode.march Nx.Ptree.tensor Ode.rk4 ~steps:1 lorenz ~at y0)
-    in
-    Rng.with_key (Rng.key 42)
-    @@ fun () ->
-    let n_bins = Int.((total_bs + 10) * horizon) in
-    let y0 = ones float32 [| 1; 3 |] in
-    let at = linspace float64 0. Float.(dt * of_int Int.(n_bins - 1)) n_bins in
-    Stdio.printf "integrating the lorenz ODE... %!";
-    let ys = march at y0 in
-    Stdio.printf "done.\n%!";
-    let n_bins = dim 0 ys in
     let ys =
-      ys
-      |> slice Int.[ R (n_bins - 1 - (total_bs * horizon), -1) ]
-      |> reshape [| total_bs; horizon; 3 |]
-      |> transpose ~axes:[ 1; 0; 2 ]
-      |> fun x -> Infix.((x - mean ~axes:[ 0; 1 ] x) / std ~axes:[ 0; 1 ] x)
+      Classic_attractors.Lorenz.snippets
+        ~discard_first:1000
+        ~key:(Rng.key 42)
+        float32
+        ~dt:0.01
+        ~n_steps:horizon
+        total_bs
+    in
+    let ys =
+      let m = mean ~axes:[ 0; 1 ] ys
+      and sd = std ~axes:[ 0; 1 ] ys in
+      Infix.((ys - m) / sd)
     in
     Nx_io.save_npy file ys;
     ys (* [ horizon, total_bs, 3 ] *)

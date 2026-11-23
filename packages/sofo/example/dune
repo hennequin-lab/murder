@@ -9,7 +9,6 @@
   rune
   vega
   base
-  jera
   rig
   nx.io
   rig.amd.amdgpu
@@ -18,6 +17,7 @@
   bos
   cmdliner
   cmdargs
+  classic_attractors
   unix)
  (preprocess
   (pps ppx_sexp_message ppx_ptree)))

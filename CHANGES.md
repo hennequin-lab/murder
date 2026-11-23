@@ -5,6 +5,14 @@ changes do not need an entry.
 
 ## Unreleased
 
+### classic-attractors
+
+- New package: the Lorenz, Rössler, Thomas, Halvorsen, Aizawa and driven Duffing
+  attractors, each with its vector field, a `simulate` that draws runs from
+  random initial conditions, and a `snippets` that cuts one long Runge–Kutta
+  run into shuffled chunks. Both integrate with `Jera`'s `Ode.rk4` and return
+  `[n_steps; n; dim]` tensors.
+
 ### mjc
 
 - New package: a differentiable physics engine on Nx and Rune, private until its

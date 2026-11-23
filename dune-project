@@ -39,6 +39,8 @@
  (package
   (name hugin))
  (package
+  (name quill))
+  (package
   (name rig))
  (package
   (name munin))
@@ -64,6 +66,20 @@
   "git+https://github.com/invariant-hq/litany.git#4cab5e78fd62d2455638fb76ca030ee6d9ce1d29")
  (package
   (name litany)))
+
+(package
+ (name classic-attractors)
+ (synopsis "Classic low-dimensional attractors on the Raven stack")
+ (description
+  "Lorenz, Rossler, Thomas, Halvorsen, Aizawa and the driven Duffing oscillator: their vector fields, and trajectory and snippet generators integrated with Jera's Runge-Kutta solvers on Nx tensors.")
+ (depends
+  (ocaml
+   (>= 5.5.0))
+  dune
+  base
+  nx
+  jera
+  (windtrap :with-test)))
 
 (package
  (name dilqr)

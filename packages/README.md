@@ -5,6 +5,7 @@ repositories.
 
 | Package | Status | What it does |
 | --- | --- | --- |
+| `classic-attractors` | alpha | Classic low-dimensional attractors: fields, runs and snippets |
 | `cmdargs` | stable | Simple parsing of command-line arguments |
 | `geom` | alpha | Geometric algebra for robotics on the Raven stack |
 | `dilqr` | alpha | Differentiable iLQR on Nx tensors |
