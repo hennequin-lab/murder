@@ -256,13 +256,17 @@ The suites are:
 - **The library contains no model definitions.** Models live in downstream
   code or examples (`examples/student_teacher.ml`); only generic parameter-tree
   machinery is here.
-- The `Nx.einsum` repeated-label defect that shaped the tensor layer — and
-  its upstream fix, which retired the `Delta`/`Contract` workaround — is
-  documented in `PLAN.md`, §10.
 
-`PLAN.md` is the port's design document and keeps the full milestone history;
-`PLAN-transport.md` records the block/transport design that replaced the
-surrogate estimator and the `ensure_size_invariance` filter.
+`doc/transport.typ` is the mathematics of the blocks: what the test vectors are,
+why the factor-to-block dictionary is an exact isomorphism, what transport
+preserves, and why a function of the orbit average costs one small
+eigendecomposition per isotypic kind. It is the section the paper leaves out,
+and it supersedes the design notes that `PLAN.md` kept while the surrogate
+estimator was being replaced.
+
+```sh
+typst compile packages/symo/doc/transport.typ   # → transport.pdf
+```
 
 ## License
 
