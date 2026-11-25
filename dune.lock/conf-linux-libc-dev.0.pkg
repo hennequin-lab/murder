@@ -1,0 +1,39 @@
+(version 0)
+
+(build
+ (choice
+  ((((arch x86_64)
+     (os linux))
+    ((arch arm64)
+     (os linux)))
+   ((action
+     (progn
+      (run sh -exc "echo '#include <linux/stddef.h>' > test.c")
+      (run cc -E test.c)))))))
+
+(depexts
+ ((linux-libc-dev)
+  (= %{os_family} debian))
+ ((linux-libc-dev)
+  (= %{os_family} ubuntu))
+ ((linux-glibc-devel)
+  (or_absorb_undefined_var
+   (= %{os_family} suse)
+   (= %{os_family} opensuse)))
+ ((kernel-headers)
+  (or_absorb_undefined_var
+   (= %{os_family} fedora)
+   (= %{os_distribution} rhel)
+   (= %{os_distribution} centos)
+   (= %{os_distribution} ol)))
+ ((linux-headers)
+  (= %{os_family} alpine))
+ ((linux-api-headers)
+  (= %{os_family} arch)))
+
+(enabled_on_platforms
+ (only
+  ((arch x86_64)
+   (os linux))
+  ((arch arm64)
+   (os linux))))
