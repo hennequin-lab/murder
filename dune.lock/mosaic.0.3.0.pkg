@@ -1,0 +1,19 @@
+(version 0.3.0)
+
+(build
+ (all_platforms
+  ((action
+    (progn
+     (when %{pkg-self:dev} (run dune subst))
+     (run dune build -p %{pkg-self:name} -j %{jobs} @install))))))
+
+(depends
+ (all_platforms
+  (ocaml dune matrix toffee cmarkit)))
+
+(source
+ (fetch
+  (url
+   https://github.com/invariant-hq/mosaic/releases/download/0.3.0/mosaic-0.3.0.tbz)
+  (checksum
+   sha512=6a7ab054605538bb31a2b73a1a6d093981a2704c9f0af5852221c05735290d74aca7c7282298c4d0f91e86a800e2ccd94b4918af883cd963449c758eb6b272b3)))

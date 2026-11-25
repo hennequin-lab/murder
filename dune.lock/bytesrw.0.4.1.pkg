@@ -1,0 +1,37 @@
+(version 0.4.1)
+
+(build
+ (all_platforms
+  ((action
+    (run
+     ocaml
+     pkg/pkg.ml
+     build
+     --dev-pkg
+     %{pkg-self:dev}
+     --with-cmdliner
+     %{pkg:cmdliner:installed}
+     --with-b0
+     false
+     --with-conf-libblake3
+     false
+     --with-conf-mbedtls
+     false
+     --with-conf-libmd
+     false
+     --with-conf-xxhash
+     false
+     --with-conf-zlib
+     false
+     --with-conf-zstd
+     false)))))
+
+(depends
+ (all_platforms
+  (ocaml ocamlfind ocamlbuild topkg conf-pkg-config cmdliner)))
+
+(source
+ (fetch
+  (url https://erratique.ch/software/bytesrw/releases/bytesrw-0.4.1.tbz)
+  (checksum
+   sha512=9d4d65ff080a107f2ed35c4f13ac77c20e4920e92dffe84c270f23169d7db130506a450aa83a6c6c621ce80b699191291fb8be227d1fb47fb5fd49ddc150b37e)))

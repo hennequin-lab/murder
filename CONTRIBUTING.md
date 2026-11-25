@@ -7,6 +7,9 @@
   dev tools (`ocamlformat`, `ocamlmerlin`, `ocamllsp`, `odoc`), downloads the
   locked dependencies, and builds the `.cmt` files.
 - First command: `dune exec getting-started/01-nx/ex01_arrays.exe`.
+- The same lock builds the lab's tools: `dune exec quill` for the notebook,
+  `dune exec munin` for the experiment dashboard. Put `--` before their
+  flags, as in `dune exec -- munin runs --root DIR`.
 
 ## Daily loop
 

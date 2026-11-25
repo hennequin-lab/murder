@@ -23,6 +23,20 @@ cd murder
 dune exec getting-started/01-nx/ex01_arrays.exe
 ```
 
+## Tools
+
+The lock also builds the lab's tools from the pinned Raven packages:
+
+```sh
+dune exec quill           # the Quill REPL and notebook
+dune exec quill notes.md  # open a notebook
+dune exec munin           # the experiment dashboard
+dune exec munin runs      # the store's runs, newest first
+```
+
+`dune exec` builds a tool on first use. Put `--` before its options, as in
+`dune exec -- munin runs --root DIR`, so dune does not parse them.
+
 ## Packages
 
 | Package | What it does |

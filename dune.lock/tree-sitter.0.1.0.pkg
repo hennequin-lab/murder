@@ -1,0 +1,19 @@
+(version 0.1.0)
+
+(build
+ (all_platforms
+  ((action
+    (progn
+     (when %{pkg-self:dev} (run dune subst))
+     (run dune build -p %{pkg-self:name} -j %{jobs} @install))))))
+
+(depends
+ (all_platforms
+  (ocaml dune)))
+
+(source
+ (fetch
+  (url
+   https://github.com/tmattio/mosaic/releases/download/0.1.0/mosaic-0.1.0.tbz)
+  (checksum
+   sha512=06e9c4a741590942e81a27738d0b5c0413fafec8cf3b7dae047ad69f155e7b718aa4223818dc161b7d028efffcfd3365905e264d6fd31d453910ddfa91dcf9b9)))

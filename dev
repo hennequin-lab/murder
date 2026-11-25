@@ -12,7 +12,7 @@ Usage: ./dev <command> [args]
   test      dune runtest
   doc       build the API reference into _build/default/_doc/_html
   lint      dune exec -- litany check
-  lock      dune pkg lock plus the Raven-main lock patch
+  lock      dune pkg lock
   outdated  dune pkg outdated
   new       scaffold packages/<name>
   wt        create, list, and remove worktrees (./dev wt help)

@@ -1,0 +1,25 @@
+(version dev)
+
+(build
+ (all_platforms ((dune))))
+
+(depends
+ (all_platforms
+  (ocaml
+   dune
+   cmarkit
+   cmdliner
+   ocamlfind
+   bytesrw
+   jsont
+   mosaic
+   matrix
+   toffee
+   tree-sitter)))
+
+(source
+ (fetch
+  (url
+   git+https://github.com/raven-ml/raven.git#c17412beda27fb9292ac1695b861950501406788)))
+
+(dev)

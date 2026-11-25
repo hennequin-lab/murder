@@ -9,7 +9,7 @@ External sources are pinned in `dune-project`:
 
 - **Raven** — the whole Raven repository at a full commit SHA. The pin lists
   every Raven package this repo and its downstream projects use (`lz`,
-  `nx`, `rune`, `tolk`, `vega`, `jera`, `hugin`, `rig`, `munin`,
+  `nx`, `rune`, `tolk`, `vega`, `jera`, `hugin`, `rig`, `munin`, `quill`,
   `ppx_ptree`, `kaun`). Raven is not a package of this monorepo.
 - **windtrap** and **ppx_windtrap** — windtrap's `v0.3.0` release, the
   version just ahead of the commit Raven's CI uses. The release is on opam,
@@ -30,6 +30,33 @@ must add it to the Raven pin in `dune-project`; packages not named there come
 from the package repositories. The same applies to murder packages a project
 wants to use.
 
+## Tools in the checkout
+
+`murder-dev` depends on the two Raven applications the lab runs from a
+checkout: `munin`, the experiment tracker and dashboard, and `quill`, the
+notebook. Dune package management builds a locked package's executables into
+`_build/_private/<context>/.pkg/<pkg>/target/bin` and puts those directories
+on `PATH` when it runs a program, so no extra setup is needed:
+
+```sh
+dune exec munin runs          # the store's runs, newest first
+dune exec quill notebook.md   # open a notebook
+```
+
+`dune exec` parses its own options after the program name too, so put `--`
+before the program's flags:
+
+```sh
+dune exec -- munin runs --root DIR
+```
+
+Both are applications, not libraries. A package that wants munin's library in
+its own code adds `munin` to its `depends` and relocks, and an ongoing project
+does the same in its own repository. Because they are dependencies of
+`murder-dev`, `@check` and `@all @install` build them and their dependencies
+(mosaic, matrix, toffee, cmarkit, tree-sitter, ...), in CI as well as locally;
+the shared Dune cache makes a later checkout restore them.
+
 ## Updating the lock
 
 Use the wrapper, not `dune pkg lock` directly:
@@ -38,19 +65,10 @@ Use the wrapper, not `dune pkg lock` directly:
 ./dev lock
 ```
 
-`scripts/relock.sh` runs `dune pkg lock` and then `scripts/patch-lock.py`.
-The patch is temporary and exists for two upstream issues:
-
-1. Raven main's private test libraries under `packages/hugin/test` are built by
-   `@install` even when Dune builds another package with `-p`. One of them
-   copies `packages/hugin/lib/marks.{ml,mli}` from outside its package and
-   fails. Building `<pkg>.install` avoids the private tests.
-2. GitHub's archive endpoint returns 504 for some Jane Street tarballs. The
-   patch points those sources at codeload; the lock's checksum still verifies.
-
-Remove the patch when Raven main builds with `@install` and GitHub serves the
-archives. Until then, review the lock diff, keep it in a dedicated
-`chore(deps):` commit, and run `./dev check` before merging.
+`scripts/relock.sh` runs `dune pkg lock`. The temporary Raven-main lock patch
+is gone: Raven builds with `@install` and this lock resolves without it.
+Review the lock diff, keep it in a dedicated `chore(deps):` commit, and run
+`./dev check` before merging.
 
 ## Updating Raven
 

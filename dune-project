@@ -186,7 +186,7 @@
  (allow_empty)
  (synopsis "Development tools and example dependencies for the murder monorepo")
  (description
-  "Lint, documentation and the libraries used by the examples and tutorials. This package is not published.")
+  "Lint, the Quill notebook, experiment tracking, and the libraries used by the examples and tutorials. This package is not published.")
  (depends
   (ocaml
    (>= 5.5.0))
@@ -197,7 +197,9 @@
   cmdliner
   hugin
   jera
+  munin
   ppx_ptree
+  quill
   rig
   vega))
 

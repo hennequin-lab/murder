@@ -5,7 +5,7 @@
 
 (depends
  (all_platforms
-  (ocaml dune)))
+  (ocaml dune bytesrw)))
 
 (source
  (fetch

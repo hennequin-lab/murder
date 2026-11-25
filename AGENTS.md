@@ -17,8 +17,7 @@ one causes real damage.
 - NEVER push, force-push, amend published commits, or rewrite history. The
   human pushes. Do not commit unless explicitly asked.
 - NEVER hand-edit `dune.lock/` or anything under `_build/`. `dune.lock` is
-  written by `./dev lock` (which also runs the Raven-main workaround); `_build`
-  is Dune's output.
+  written by `./dev lock`; `_build` is Dune's output.
 - NEVER relock or delete `dune.lock` as a side effect. Relock only when the
   change adds or updates a dependency or pin, and include the lock diff.
 - NEVER disable, bypass, or weaken `@fmt`, `@lint`, tests, or CI to make a
@@ -76,11 +75,13 @@ one causes real damage.
 - `./dev check` — `dune build @ci`, then the full litany roster.
 - `./dev test` — `dune runtest`.
 - `./dev lint` — `dune exec -- litany check`.
-- `./dev lock` — `dune pkg lock` plus the Raven-main lock patch.
+- `./dev lock` — `dune pkg lock`.
 - `./dev new <name>` — scaffold `packages/<name>/`.
 - `./dev wt` — create, list, and remove worktrees (see Parallel work).
 - One package's tests: `dune build @packages/<pkg>/runtest`.
 - One tutorial: `dune exec getting-started/01-nx/ex01_arrays.exe`.
+- The notebook: `dune exec quill [FILE]`.
+- The experiment dashboard: `dune exec munin`; a command: `dune exec -- munin runs`.
 
 Use `timeout` for commands that can hang (tests, package solving). If a build
 looks stuck, check `dune rpc ping` before killing anything.
@@ -218,3 +219,26 @@ type(scope): Imperative summary
 - Prefer to `open Nx` globally.
 - Prefer to use infix operators for Nx maths, as they are more legible for humans; for this, use local `let open Infix in (...)`.
 - Prefer to use `ppx_ptree` rather than write you own `walk` functions.
+
+## Tracking training runs
+
+Training loops, sweeps and one-off experiments log to munin, not to `printf`
+columns or an ad-hoc results directory. The skill is
+`skills/raven-munin/SKILL.md`; load it with `/skill:raven-munin`.
+
+- One run per trial: `Session.within (Session.start ...) @@ fun s -> ...`. A
+  sweep is a parent run, and each trial starts with `~parent`.
+- Put every setting that changes the result in `~params`, including the seed
+  and the device, and declare `~steps`.
+- Give `train/loss`, `val/loss` and `val/acc` goals, log at a report cadence,
+  and publish checkpoints with `Session.log_artifact`.
+- Read a sweep with the `munin` CLI (`runs --parent`, `compare`, `metrics`,
+  or the dashboard), not by parsing text logs.
+- `murder-dev` depends on `munin` and `quill`, so `dune exec munin` and
+  `dune exec quill` work in a checkout; put `--` before their flags. A
+  package that links `munin` adds it to its own `depends` (a dependency
+  change: ask, then `./dev lock`); a project repo does the same for itself.
+- A stable library does not link munin; the executable that owns the loop
+  does. Tests use a temporary store root, never the default store.
+- In this repo, tracking belongs in examples and `getting-started/`; an
+  ongoing project tracks in its own repository.

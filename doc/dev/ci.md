@@ -35,8 +35,8 @@ Or `./dev check` for everything.
   `@fmt` fails with `Program ocamlformat not found in the tree or in PATH`.
   The tool lock lives under `_build`, and Dune picks the version named in
   `.ocamlformat`, so bumping that file is enough to move the formatter.
-- The lock patch in `scripts/patch-lock.py` is applied when relocking, not in
-  CI; CI uses the committed lock.
+- CI uses the committed lock and never relocks; `./dev lock` is the only
+  writer.
 - Litany on Dune 3.24.2 currently skips ppx-preprocessed units with
   `derived-needs-build`. It still gates the units it admits, but the summary is
   not full coverage. Remove this note when litany's Dune adapter catches up.

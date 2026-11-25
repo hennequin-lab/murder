@@ -75,6 +75,10 @@ jobs:
           steps: install-dune enable-pkg install-depexts
       - name: Build
         run: dune build @all @install
+      - name: Smoke-test the lab tools
+        run: |
+          dune exec munin root
+          dune exec quill -- --version
       - name: Test
         run: dune runtest
       - name: Documentation
