@@ -62,14 +62,15 @@
 
     {[
       ~recognition:
-        (Recognition.Lfads.make ~at:Nx.Host.on ~n_ic:64 ~n_ctrl:32 ~n:3 ~m:3 ~n_steps:32 ~n_output:3
-           Nx.float64)
-    ]}
-
-    plus the initial-state prior the LFADS posterior needs:
-
-    {[
-      ~initial_prior:(Initial.make ~at:Nx.Host.on ~std:1.0 ~n:3 Nx.float64)
+        (Recognition.Lfads.make
+           ~at:Nx.Host.on
+           ~n_ic:64
+           ~n_ctrl:32
+           ~n:3
+           ~m:3
+           ~n_steps:32
+           ~n_output:3
+           ())
     ]}
 
     Everything else — the ELBO, the sampling, the training step, the JIT
@@ -98,7 +99,7 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) params =
   ; likelihood : 'l
   ; prior : 'p
   ; encoder_prior : 'e
-  ; initial_prior : (('w, 's) value, 's) Initial.params option
+  ; initial_prior : (('w, 's) value, 's) Initial.params
   ; recognition : 'r
   }
 
@@ -119,9 +120,8 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) params =
       let params = Model.init ~at:Nx.Host.on ~key model in
     ]}
 
-    [initial_prior] is the description of the prior over [x_0]: it belongs to
-    the parameters (the model keeps no tensor at all), it is required exactly
-    when the recognition infers the initial state, and {!init} draws its value
+    [initial_prior] is the description of the prior over [x_0], defaulting to
+    [Initial.make ~n ()] ([N(0, I_n)]); {!init} builds its parameter value
     with the rest.
 
     {b No dimension arguments.} Every dimension the model needs is already
@@ -133,13 +133,10 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) params =
     so a mismatch is a mistake the type system does not catch.
 
     [recognition] says how the latents are inferred ({!Recognition.Iilqr} or
-    {!Recognition.Lfads}, or a value built the same way). [initial_prior] must
-    be given exactly when the recognition infers the initial state — LFADS
-    does, iLQR fixes [x_0 = 0] and must not have one.
+    {!Recognition.Lfads}, or a value built the same way).
 
-    Raises [Invalid_argument] if a dimension is not positive, if the
-    components disagree on one, or if the initial-state prior and the
-    recognition do not match. *)
+    Raises [Invalid_argument] if a dimension is not positive or if the
+    components disagree on one. *)
 val make
   :  (float, 'w) Nx.dtype
   -> dynamics:('w, 'd, 's) Dynamics.t
@@ -194,9 +191,8 @@ val prior : ('w, 'd, 'l, 'p, 'e, 'r, 's) t -> ('w, 'p, 's) Prior.t
 (** [encoder_prior m] is the prior of the iLQR cost, [p̃]. *)
 val encoder_prior : ('w, 'd, 'l, 'p, 'e, 'r, 's) t -> ('w, 'e, 's) Prior.t
 
-(** [initial_prior m] is the prior over [x_0], present exactly when the
-    recognition infers the initial state. *)
-val initial_prior : ('w, 'd, 'l, 'p, 'e, 'r, 's) t -> Initial.t option
+(** [initial_prior m] is the prior over [x_0]. *)
+val initial_prior : ('w, 'd, 'l, 'p, 'e, 'r, 's) t -> Initial.t
 
 (** [recognition m] is the model's recognition: how the latents are inferred. *)
 val recognition : ('w, 'd, 'l, 'p, 'e, 'r, 's) t -> ('w, 'd, 'l, 'e, 'r, 's) Recognition.t

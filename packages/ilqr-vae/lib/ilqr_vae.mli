@@ -26,13 +26,14 @@
     with its own parameters. Two are provided and the model takes either as
     [~recognition]:
 
-    - {!Recognition.Iilqr}: the iLQR-VAE recognition. [x_0 = 0], and the
-      mean of [u] solves a finite-horizon optimal control problem whose cost
-      is [−log p̃(u) − log p(o | z(u))]; the covariance is a Kronecker
-      product of a factor over time and a factor over inputs
-      ([Σ_time ⊗ Σ_space]). {!Dilqr} solves the problem and differentiates
-      it with an implicit VJP, so the gradient does not unroll the
-      iterations.
+    - {!Recognition.Iilqr}: the iLQR-VAE recognition. The mean of [(x_0, u)]
+      solves a finite-horizon optimal control problem whose cost is
+      [−log p(x_0) − log p̃(u) − log p(o | z(x_0, u))]; the covariance is
+      either a Kronecker product over the inputs ([Σ_time ⊗ Σ_space]) paired
+      with the local model's marginal Gaussian over [x_0], or the local
+      quadratic model's joint Gaussian over [(x_0, u)]. {!Dilqr} solves the
+      problem and differentiates it with an implicit VJP, so the gradient does
+      not unroll the iterations.
     - {!Recognition.Lfads}: an LFADS-style recognition. Bidirectional
       encoder RNNs infer a Gaussian posterior over [x_0] and a second
       encoder–controller pair produces an autoregressive Gaussian posterior
@@ -224,11 +225,10 @@ val integrate_from
   -> ('w, 's) value
 
 (** [sample_generative model params ~key] draws a trial from the generative
-    model: the initial state from its prior (or zero, when the model has
-    none; [[n]]), inputs from the prior ([[n_steps; m]]), their state
-    trajectory ([[n_steps + 1; n]]) and observations sampled from the
-    likelihood ([[n_steps; n_output]]), from the states the observations
-    belong to. The key is split for the draws. *)
+    model: the initial state from its prior ([[n]]), inputs from the prior
+    ([[n_steps; m]]), their state trajectory ([[n_steps + 1; n]]) and
+    observations sampled from the likelihood ([[n_steps; n_output]]), from the
+    states the observations belong to. The key is split for the draws. *)
 val sample_generative
   :  ('w, 'd, 'l, 'p, 'e, 'r, 's) model
   -> ('w, 'd, 'l, 'p, 'e, 'r, 's) params

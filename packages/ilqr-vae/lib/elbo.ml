@@ -45,9 +45,8 @@ let transpose_time ~time_axis t =
    input prior is evaluated step by step, and only when the recognition infers
    the inputs at all: a recognition that leaves them at the point mass at zero
    has no input factor to weigh, and pricing the point mass would add a term
-   the bound does not contain. The initial-state prior contributes exactly
-   when the model has one. [u] is time-major, so its leading axis is scanned
-   and every trial and sample axis is a batch axis. *)
+   the bound does not contain. [u] is time-major, so its leading axis is
+   scanned and every trial and sample axis is a batch axis. *)
 let log_prior
       (type w d l p e r)
       (model : (w, d, l, p, e, r, 's) Model.t)
@@ -85,9 +84,7 @@ let log_prior
       sum ~axes:[ 0 ] by_step)
     else zeros_at (beside x0) (Model.dtype model) sample_shape
   in
-  match params.Model.initial_prior with
-  | None -> u_logp
-  | Some p -> Infix.(u_logp + Initial.logp p x0)
+  Infix.(u_logp + Initial.logp params.Model.initial_prior x0)
 
 let compute
       (type w d l p e r)

@@ -16,7 +16,7 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) t =
   ; likelihood : ('w, 'l, 's) Likelihood.t
   ; prior : ('w, 'p, 's) Prior.t
   ; encoder_prior : ('w, 'e, 's) Prior.t
-  ; initial_prior : Initial.t option
+  ; initial_prior : Initial.t
   ; recognition : ('w, 'd, 'l, 'e, 'r, 's) Recognition.t
   }
 
@@ -25,7 +25,7 @@ type ('w, 'd, 'l, 'p, 'e, 'r, 's) params =
   ; likelihood : 'l
   ; prior : 'p
   ; encoder_prior : 'e
-  ; initial_prior : (('w, 's) value, 's) Initial.params option
+  ; initial_prior : (('w, 's) value, 's) Initial.params
   ; recognition : 'r
   }
 
@@ -99,26 +99,13 @@ let make
     ~right:"likelihood.n_output"
     dims.Recognition.n_output
     n_output;
-  (* A recognition that infers the initial state needs a prior over it, and
-     one that fixes [x_0 = 0] must not be given one: the ELBO's initial-state
-     term would not cancel. *)
-  (match initial_prior with
-   | None ->
-     if Recognition.infers_initial recognition
-     then
-       invalid_arg
-         (Printf.sprintf
-            "Model.make: the %s recognition infers an initial state; pass ~initial_prior"
-            (Recognition.name recognition))
-   | Some p ->
-     if not (Recognition.infers_initial recognition)
-     then
-       invalid_arg
-         (Printf.sprintf
-            "Model.make: the %s recognition fixes x_0 = 0; it must not be given an \
-             initial_prior"
-            (Recognition.name recognition));
-     check_initial_prior ~n p);
+  let initial_prior =
+    match initial_prior with
+    | None -> Initial.make ~n ()
+    | Some p ->
+      check_initial_prior ~n p;
+      p
+  in
   { dtype
   ; n
   ; m
@@ -149,7 +136,7 @@ let init
   ; likelihood = Likelihood.init ?key:(sub 1) dtype model.likelihood
   ; prior = Prior.init ?key:(sub 2) dtype model.prior
   ; encoder_prior = Prior.init ?key:(sub 3) dtype model.encoder_prior
-  ; initial_prior = Option.map model.initial_prior ~f:(Initial.init ~at dtype)
+  ; initial_prior = Initial.init ~at dtype model.initial_prior
   ; recognition = Recognition.init ?key:(sub 4) dtype model.recognition
   }
 
@@ -177,7 +164,7 @@ let structure (type w d l p e r) (model : (w, d, l, p, e, r, 's) t)
         r.encoder_prior
     in
     let initial_prior =
-      field c "initial_prior" (option (structure (Initial.structure ()))) r.initial_prior
+      field c "initial_prior" (structure (Initial.structure ())) r.initial_prior
     in
     let recognition =
       field

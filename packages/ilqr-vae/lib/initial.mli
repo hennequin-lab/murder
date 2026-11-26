@@ -5,16 +5,11 @@
 
 (** The prior over the initial state.
 
-    A model built without one keeps the convention that every trial starts at
-    [x_0 = 0] and the initial state is not a latent variable. A recognition
-    that infers an initial state — {!Recognition.Lfads} — needs a prior to
-    weigh its posterior against, and {!Model.make} takes it as
-    [~initial_prior].
-
-    The distribution is a factorized Gaussian
-    [p(x_0) = N(mu, diag (exp (2 · log_stds)))]. Both [mu] and [log_stds] are
-    learned. LFADS initializes this prior at [N(0, κ I)]; the reference
-    implementation makes it learnable, and so does this library. *)
+    Every trial starts at a latent initial state [x_0] drawn from a factorized
+    Gaussian prior [p(x_0) = N(mu, diag (exp (2 · log_stds)))], and
+    {!Model.make} takes its description as [?initial_prior] (defaulting to
+    [N(0, I)]). Both [mu] and [log_stds] are learned with the rest of the
+    model. *)
 
 open Types
 

@@ -8,17 +8,9 @@ open Nx
 open Types
 (* The generative prior over the initial state [x_0].
 
-   The library's own generative model starts every trial at [x_0 = 0] and
-   leaves the initial state out of the latent variables: iLQR-style
-   recognition infers only the inputs and a model built without an
-   {!Initial.t} keeps that convention. An LFADS-style recognition infers an
-   initial state as well, and then a prior over it is needed to weigh the
-   posterior against; {!Model} takes one as [~initial_prior].
-
-   The distribution is a factorized Gaussian, [p(x_0) = N(mu, diag (exp (2 log_stds)))], with both the mean and the log standard deviations
-   learned like any other parameter. The paper initializes [p(x_0)] at
-   [N(0, kappa I)]; the reference implementation makes it learnable, and so
-   does this one. *)
+   Every trial starts at a latent initial state [x_0] drawn from a factorized
+   Gaussian prior, [p(x_0) = N(mu, diag (exp (2 log_stds)))], with both the
+   mean and the log standard deviations learned like any other parameter. *)
 
 (* The prior as a description: what it is, not the value it starts at. It
    holds no tensor, so it needs no dtype and no placement. *)

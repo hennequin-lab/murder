@@ -96,7 +96,7 @@ val integrate_samples
 (** {1:linear Linear} *)
 
 (** A linear system in discrete time:
-    [x' = x A + (k = 0 ? u : dt_over_tau · u)] with [A = I + dt_over_tau (W − I)]
+    [x' = x A + dt_over_tau · u] with [A = I + dt_over_tau (W − I)]
     and an optional input projection [b]: [u] is replaced by [u @ b] when [b]
     is present. [W] is what is learned; [A] has the eigenvalues of a
     continuous-time system with the given spectral abscissa after one step at
@@ -161,15 +161,12 @@ end
     term,
 
     {[
-      x' = x + (x A0 − x + φ (x A1 + bias1) A2 + bias2) · d + u'
-    ]}
-    {[
-      u' = (k = 0 ? u : d · u)
+      x' = x + (x A0 − x + φ (x A1 + bias1) A2 + bias2 + u') · d
     ]}
 
-    with [d = dt_over_tau] a learned per-dimension vector, [u] projected by
-    [b] when present, and [φ] the activation passed to {!make}. This is the
-    architecture of the paper's Lorenz and neural experiments. *)
+    with [d = dt_over_tau] a learned per-dimension vector, [u'] the input [u]
+    projected by [b] when present, and [φ] the activation passed to {!make}.
+    This is the architecture of the paper's Lorenz and neural experiments. *)
 module Linear_nonlinear : sig
   (** The parameters of a linear–nonlinear dynamics over payload ['a].
       {!structure} gives their [Nx.Ptree.t]. *)
@@ -245,12 +242,11 @@ end
       h x = φ (x H1 + h_bias1) H2 + h_bias2
     ]}
     {[
-      x' = x + d · g x · (h x − x) + u'
+      x' = x + d · (g x · (h x − x) + u')
     ]}
 
-    with [u'] as in {!module:Linear_nonlinear} and the same [k = 0]
-    convention. [φ] is the activation of both the gate and the proposal, as in
-    the reference implementation. *)
+    with [d = dt_over_tau], [u'] the input [u] projected by [b] when present,
+    and [φ] the activation of both the gate and the proposal. *)
 module Gnode : sig
   (** The parameters of a gated dynamics over payload ['a]. {!structure}
       gives their [Nx.Ptree.t]. *)

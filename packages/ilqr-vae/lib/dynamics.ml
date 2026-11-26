@@ -149,23 +149,6 @@ let randn ~at ?key dtype shape =
    deviation [sigma], at [at]. *)
 let scaled_randn ~at ?key ~sigma dtype shape = Infix.(randn ~at ?key dtype shape *$ sigma)
 
-(* [first_step k] is a boolean scalar that is [true] at step 0. A dynamics
-   written for these constructors selects on it with [Nx.where], since [k] is
-   a tensor under the encoder's scans. *)
-let first_step (k : ('w, 's) value) = Nx.equal k (scalar_like k 0.0)
-
-(* [input_term ~dt_over_tau ~k ~u] is the input contribution of one step: the
-   projected input itself at the first step, [dt_over_tau] times it
-   afterwards. Applying the whole scaled input at step 0 is the convention of
-   the reference implementation. *)
-let input_term ~dt_over_tau ~k ~u =
-  let scaled =
-    match dt_over_tau with
-    | `Scalar dt -> Infix.(u *$ dt)
-    | `Vector dt -> Infix.(u * dt)
-  in
-  where (first_step k) u scaled
-
 (* {1 Linear} *)
 
 module Linear = struct
@@ -248,17 +231,14 @@ module Linear_nonlinear = struct
         let walk = walk_params
       end)
 
-  let dyn ~phi p ~k ~x ~u =
+  let dyn ~phi p ~k:_ ~x ~u =
     let hidden = phi Infix.((x *@ p.a1) + p.bias1) in
-    let passive =
-      Infix.(x + (((x *@ p.a0) - x + ((hidden *@ p.a2) + p.bias2)) * p.dt_over_tau))
-    in
     let u =
       match p.b with
       | None -> u
       | Some b -> Infix.(u *@ b)
     in
-    Infix.(passive + input_term ~dt_over_tau:(`Vector p.dt_over_tau) ~k ~u)
+    Infix.(x + (((x *@ p.a0) - x + ((hidden *@ p.a2) + p.bias2) + u) * p.dt_over_tau))
 
   let make (type w) ~at ?(radius = 0.1) ~dt ~tau ~n ~nh ~m ~phi () =
     if n <= 0 then invalid_arg "Dynamics.Linear_nonlinear.make: n must be positive";
@@ -337,16 +317,15 @@ module Gnode = struct
         let walk = walk_params
       end)
 
-  let dyn ~phi p ~k ~x ~u =
+  let dyn ~phi p ~k:_ ~x ~u =
     let g = phi Infix.((x *@ p.g_a1) + p.g_bias1) in
     let h = Infix.((phi ((x *@ p.h_a1) + p.h_bias1) *@ p.h_a2) + p.h_bias2) in
-    let passive = Infix.(x + (g * (h - x) *$ p.dt_over_tau)) in
     let u =
       match p.b with
       | None -> u
       | Some b -> Infix.(u *@ b)
     in
-    Infix.(passive + input_term ~dt_over_tau:(`Scalar p.dt_over_tau) ~k ~u)
+    Infix.(x + (((g * (h - x)) + u) *$ p.dt_over_tau))
 
   let make (type w) ~at ?(radius = 0.1) ?m ~dt ~tau ~n ~nh ~phi () =
     if n <= 0 then invalid_arg "Dynamics.Gnode.make: n must be positive";

@@ -111,9 +111,9 @@ let sample_generative
       ~n_steps:(Model.n_steps model)
   in
   let x0 =
-    match params.Model.initial_prior with
-    | None -> zeros_at (beside u) (Model.dtype model) [| Model.n model |]
-    | Some p -> reshape [| Model.n model |] (Initial.sample p ~key:key_x0 ~n_samples:1)
+    reshape
+      [| Model.n model |]
+      (Initial.sample params.Model.initial_prior ~key:key_x0 ~n_samples:1)
   in
   let z = integrate_from model params ~x0 ~u in
   let time_axis = Array.length (shape z) - 2 in

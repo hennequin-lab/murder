@@ -7,17 +7,17 @@
 
     A recognition model is a distribution over a trial's latent variables
     conditioned on the trial's observations. The latents are the initial
-    state [x_0] ([[n]]) and the inputs [u_0 … u_{T−1}] ([[n_steps; m]]); a
-    model that fixes [x_0 = 0] and a model that infers it are both expressed
-    here, and {!Model.t} carries whichever recognition the user built. Trial
-    axes lead every tensor, then comes the horizon, then the sample axis.
+    state [x_0] ([[n]]) and the inputs [u_0 … u_{T−1}] ([[n_steps; m]]);
+    {!Model.t} carries whichever recognition the user built. Trial axes lead
+    every tensor, then comes the horizon, then the sample axis.
 
     Two constructors are provided:
 
     - {!Iilqr}: the iLQR-VAE recognition. Its mean solves a finite-horizon
-      optimal control problem with {!Dilqr} and its covariance is a Kronecker
-      product of a factor over time and a factor over input dimensions. It
-      fixes [x_0 = 0].
+      optimal control problem jointly over [x_0] and [u_0 … u_{T−1}] with
+      {!Dilqr}, and its covariance is either a Kronecker product over the
+      inputs paired with the local quadratic model's marginal Gaussian over
+      [x_0], or the local quadratic model's joint Gaussian over [(x_0, u)].
     - {!Lfads}: an LFADS-style recognition. Bidirectional encoder RNNs infer
       a Gaussian posterior over the initial state, and an encoder–controller
       pair produces an autoregressive Gaussian posterior over the inputs.
@@ -68,16 +68,12 @@ type ('w, 'd, 'l, 'e, 's) generative =
 
 (** The corresponding parameters: a subset of {!Model.params}. The device set
     ['s] is that of the initial-state prior's tensors, which the encoder
-    prices.
-
-    [initial_prior] is present exactly when the encoder infers an initial
-    state: the prior is then the boundary condition of the encoder's control
-    problem, so it is a term of the cost the solve differentiates. *)
+    prices as the boundary condition of its control problem. *)
 type ('w, 'd, 'l, 'e, 's) gparams =
   { dynamics : 'd
   ; likelihood : 'l
   ; encoder_prior : 'e
-  ; initial_prior : (('w, 's) value, 's) Initial.params option
+  ; initial_prior : (('w, 's) value, 's) Initial.params
   }
 
 (** One reparameterized draw of a trial's latents: the initial state, of shape
@@ -169,14 +165,14 @@ val default : solve
     tensor. *)
 type ('w, 'd, 'l, 'e, 'r, 's) t
 
-(** [make ~dims ~infers_initial ~infers_inputs ~name ~structure ~init ~infer ~mean ~log_prob ()] is the recognition those describe, and the way to write
-    one the library does not ship. [dims] is the shape of model it is built for,
-    [infers_initial] and [infers_inputs] say which factors [q] carries (what
-    {!Model.make} and {!Elbo} check), [structure] is how its parameters are
-    walked, [init] draws them, and the three maps are the posterior. *)
+(** [make ~dims ~infers_inputs ~name ~structure ~init ~infer ~mean ~log_prob ()]
+    is the recognition those describe, and the way to write one the library
+    does not ship. [dims] is the shape of model it is built for,
+    [infers_inputs] says whether [q] carries an input factor (what {!Elbo}
+    checks), [structure] is how its parameters are walked, [init] draws them,
+    and the three maps are the posterior. *)
 val make
   :  dims:dims
-  -> infers_initial:bool
   -> infers_inputs:bool
   -> name:string
   -> structure:('r, 's) Nx.Ptree.t
@@ -212,10 +208,6 @@ val make
 
 (** [dims r] is the shape of model it is built for. *)
 val dims : ('w, 'd, 'l, 'e, 'r, 's) t -> dims
-
-(** [infers_initial r] is [true] when [q] carries an initial-state factor, so
-    that {!Model.make} can require a matching initial-state prior. *)
-val infers_initial : ('w, 'd, 'l, 'e, 'r, 's) t -> bool
 
 (** [infers_inputs r] is [true] when [q] carries an input factor. A recognition
     that leaves the inputs at the point mass at zero has none: {!Elbo} then drops
@@ -315,44 +307,39 @@ val gparams_structure
 (** The iLQR-VAE recognition, as its own constructor with its own parameters.
 
     The posterior mean is the solution of the finite-horizon optimal control
-    problem
+    problem over the initial state [x_0] and the inputs [u_0 … u_{T−1}]:
 
     {[
-      min_{u_0 … u_{T−1}}  Σ_k l(x_k, u_k) + φ(x_T)
-        l(x_k, u_k) = −log p̃(u_k) − [k ≥ 1] · log p(o_{k−1} | x_k)
+      min_{x_0, u_0 … u_{T−1}}  Σ_k l(x_k, u_k) + φ(x_T)
+        l(x_0, u_0) = −log p̃(u_0) − log p(x_0)
+        l(x_k, u_k) = −log p̃(u_k) − log p(o_{k−1} | x_k)   (k ≥ 1)
         φ(x_T)      = −log p(o_{T−1} | x_T)
-        x_0 = 0,  x_{k+1} = f(x_k, u_k)
+        x_{k+1}     = f(x_k, u_k)
     ]}
+
+    The step-0 running loss prices [x_0] with the model's {!Initial} prior, and
+    the solve optimizes [x_0] jointly with the inputs ({!Dilqr.Problem.t}'s
+    [free_initial = true]), so one solve returns the joint mode [(x_0⋆, u⋆)]
+    and both carry the solve's implicit VJP.
 
     {b The covariance.} `kind` selects it, and the parameters are
     whichever one it is:
 
-    - `Kron`, the default and the paper's: [N(μ_u, Σ_time ⊗ Σ_space)],
-      two learned Cholesky factors shared by every trial;
-    - `Laplace`: the local quadratic model's own Gaussian, one per
-      trial, [N(z⋆, (P⁻¹, Q_uu,0⁻¹ …))] over [z = (x₀, u)], from the factors
-      the Riccati pass at the solution already holds ({!Dilqr.Lqr.Laplace}).
-      It needs no covariance parameters at all; one learned scalar scales
-      every block, [exp (2 log_scale) · Σ], which keeps the family stationary
-      in the horizon.
+    - `Kron`, the default: [N(μ_u, Σ_time ⊗ Σ_space)] over the inputs (two
+      learned Cholesky factors shared by every trial), paired with
+      [N(x_0⋆, exp (2 initial_log_scale) · P⁻¹)] over the initial state, where
+      [P] is the marginal Hessian of the encoder's cost in [x_0];
+    - `Laplace`: the local quadratic model's own joint Gaussian, one per
+      trial, [N(z⋆, exp (2 log_scale) · (P⁻¹, Q_uu,0⁻¹ …))] over
+      [z = (x_0, u)], from the factors the Riccati pass at the solution
+      already holds ({!Dilqr.Lqr.Laplace}). It needs no covariance matrix
+      parameters at all; one learned scalar scales every block, which keeps the
+      family stationary in the horizon.
 
-    {b The initial state.} With [infer_initial] (default [false]) the initial
-    state is a latent and [x_0 = 0] is replaced by "x_0 is free, priced by the
-    model's {!Initial} prior", which the encoder's problem then carries as its
-    step-0 running loss. The solve then optimizes [x_0] jointly with the
-    inputs — {!Dilqr.Problem.t}'s [free_initial] — so one solve returns the
-    joint mode and [x_0] is a solve output like the controls. Its covariance
-    is [exp (2 log_scale) · P⁻¹] with [P] the Hessian of the encoder's cost in
-    [x_0], which is the exact posterior precision of a linear model and the
-    Gauss-Newton one otherwise.
-
-    A covariance's factors are values rather than functions of the parameters
-    the bound follows: the draws and the density take them stopped, as they
-    take the Kronecker factors, and a scale is the only part of a covariance
-    block that carries a gradient. The term left out is the bound's derivative
-    in the distribution's own precision, which is zero where the bound is
-    stationary in [q]; following it would mean differentiating the Riccati
-    recursion behind [P].
+    A covariance's curvature factors are values rather than functions of the
+    parameters the bound follows: the draws and the density take them stopped,
+    and the learned covariance parameters (the Kronecker factors and the log
+    scales) are the only part of a covariance that carries a gradient.
 
     The parameters are learned by the ELBO's gradient, and the gradient
     reaches the model's dynamics, likelihood, encoder prior and initial-state
@@ -386,15 +373,14 @@ module Iilqr : sig
       [Invalid_argument] if [damping] is negative. *)
   val laplace : ?damping:float -> unit -> kind
 
-  (** The recognition's parameters: its covariance, whose scale is the only
-      part of it that the bound learns. *)
+  (** The recognition's parameters: its covariance. *)
   type ('a, 's) params =
     | Kron of
         { space : ('a, 's) Covariance.params (** the [[m]]-dimensional factor *)
         ; time : ('a, 's) Covariance.params (** the [[n_steps]]-dimensional one *)
-        ; initial_log_scale : 'a option
-          (** a scalar when the initial state is inferred: the log scale of its
-              covariance, [exp (2 log_scale) · P⁻¹]. Absent when it is fixed. *)
+        ; initial_log_scale : 'a
+          (** a scalar: the log scale of the initial state's covariance,
+              [exp (2 initial_log_scale) · P⁻¹] *)
         }
     | Laplace of
         { log_scale : 'a
@@ -414,26 +400,18 @@ module Iilqr : sig
     -> (('w, 's) value, 's) params
     -> (('w, 'e) value, 'e) params
 
-  (** [problem gen ?verbose ?free_initial data] is the encoder's control
-      problem for one trial, as a {!Dilqr.Problem.t} whose parameters are
-      {!type-gparams}. [verbose] is the solver's, off by default.
-
-      [free_initial] (default [false]) says that the step-0 running loss prices
-      the initial state, so that a solve of the problem optimizes it too. The
-      recognition's own calls pass it exactly when the model has an
-      initial-state prior — that prior is the step-0 loss — and a caller
-      assembling the problem itself must say the same thing, or the solve will
-      pin a state the model meant to infer. *)
+  (** [problem gen ?verbose data] is the encoder's control problem for one
+      trial, as a {!Dilqr.Problem.t} whose parameters are {!type-gparams} and
+      whose initial state is free ([free_initial = true]) and priced by the
+      step-0 running loss. [verbose] is the solver's, off by default. *)
   val problem
     :  ('w, 'd, 'l, 'e, 's) generative
     -> ?verbose:bool
-    -> ?free_initial:bool
     -> ('w, 's) value
     -> ('w, ('w, 'd, 'l, 'e, 's) gparams, 's) Dilqr.Problem.t
 
-  (** [posterior_mean gen gp ~params ?u_init ?solve data] is the mean of [q],
-      of shape [[n_steps; m]]: the local model's mode with the Laplace
-      covariance, and the iLQR solution with the Kronecker one. [u_init]
+  (** [posterior_mean gen gp ~params ?u_init ?solve data] is the mean of [q]
+      over the inputs, of shape [[n_steps; m]]: the iLQR solution. [u_init]
       ([n_steps; m], zeros when omitted) is the initial guess and carries no
       gradient: the idealized solve does not depend on it. Differentiable
       through {!Dilqr}'s implicit VJP of whichever solve {!type-solve}
@@ -447,20 +425,15 @@ module Iilqr : sig
     -> ('w, 's) value
     -> ('w, 's) value
 
-  (** [posterior_initial gen gp ~params ?u_init ?solve data] is the Gaussian
-      the local quadratic model implies for the initial state — the mean and
-      the precision of it — when the model has an initial-state prior, and
-      [None] when it fixes [x_0 = 0].
+  (** [posterior_initial gen gp ~params ?u_init ?solve data] is the marginal
+      Gaussian the local quadratic model implies for the initial state — its
+      mean and precision.
 
       The mean is the joint mode of the encoder's cost over [x_0] and the
       inputs, which the solve returns because that cost prices [x_0]; the
-      precision is the same cost's Hessian in [x_0], so its inverse is the
-      covariance the analogous linear model's posterior would have, up to
-      [exp (2 log_scale)].
-
-      This is the diagnostic entry point as much as a component: it answers
-      "what initial condition does the encoder want, given this trial", which
-      is what the [u_0] channel of the fixed-zero encoder stood in for. *)
+      precision is the same cost's marginal Hessian in [x_0], so its inverse
+      is the covariance the analogous linear model's posterior would have, up
+      to [exp (2 log_scale)]. *)
   val posterior_initial
     :  ('w, 'd, 'l, 'e, 's) generative
     -> ('w, 'd, 'l, 'e, 's) gparams
@@ -468,19 +441,15 @@ module Iilqr : sig
     -> ?u_init:('w, 's) value
     -> ?solve:solve
     -> ('w, 's) value
-    -> ('w, 's) initial option
+    -> ('w, 's) initial
 
-  (** [make ?infer_initial ?covariance ~n ~m ~n_steps ~n_output ()] is the
-      recognition. [covariance] (default [kron ()]) selects what [q]'s
-      covariance is, and with it everything that covariance starts from.
-      [infer_initial] (default [false]) makes the initial state a latent: the
-      encoder then prices it with the model's initial-state prior, and
-      {!Model.make} requires one. The dimensions are the model's;
-      {!Model.make} checks them against the other components and takes the
-      horizon from here. *)
+  (** [make ~at ?covariance ~n ~m ~n_steps ~n_output ()] is the recognition.
+      [covariance] (default [kron ()]) selects what [q]'s covariance is, and
+      with it everything that covariance starts from. The dimensions are the
+      model's; {!Model.make} checks them against the other components and
+      takes the horizon from here. *)
   val make
     :  at:'s Nx.Placement.t
-    -> ?infer_initial:bool
     -> ?covariance:kind
     -> n:int
     -> m:int

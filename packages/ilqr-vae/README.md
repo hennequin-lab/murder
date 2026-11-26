@@ -6,15 +6,14 @@ stack: `nx` tensors, `rune` transformations, and
 engine — with a swappable recognition model.
 
 A trial is a tensor of observations; a mini-batch stacks trials on leading
-axes. Latent inputs (and, for an LFADS-style
-encoder, an initial state) drive a state through a dynamics; a likelihood
-emits each observation from the state reached by the inputs before it. The
-recognition is a value of type `Recognition.t` with its own parameters;
-`Model.make` takes one, and everything else — the ELBO, sampling, training,
-JIT compilation — is unchanged by the choice. The model is a description with
-no parameters in it: `Model.make` builds it and draws nothing, and
-`Model.init` draws the parameters a fresh one starts from, one subkey per
-component.
+axes. An initial state and latent inputs drive a state through a dynamics; a
+likelihood emits each observation from the state reached by the inputs before
+it. The recognition is a value of type `Recognition.t` with its own
+parameters; `Model.make` takes one, and everything else — the ELBO, sampling,
+training, JIT compilation — is unchanged by the choice. The model is a
+description with no parameters in it: `Model.make` builds it and draws
+nothing, and `Model.init` draws the parameters a fresh one starts from, one
+subkey per component.
 
 The model's dimensions are not arguments: `n` and `m` come from the
 dynamics, `n_output` from the likelihood and `n_steps` from the recognition
@@ -95,24 +94,22 @@ let step =
   `Recognition.Iilqr.laplace ~damping` regularizes the pass, which is what
   gives a model whose `Q_uu` is not positive definite a covariance at all.
 
-  `~infer_initial:true` makes the initial state a latent instead of fixing it
-  at zero, and the model must then pass `~initial_prior`: that prior is the
-  step-0 running loss of the encoder's control problem, so the solve optimizes
-  `x_0` jointly with the inputs and one solve returns the joint mode. Its
-  covariance is the local model's Hessian in `x_0` up to the scale —
-  [Σ = exp (2 log_scale) · P⁻¹] with the Kronecker covariance and the same
-  scalar as every other block with the Laplace one. The precision is a value
-  of the local model, taken stopped in the draws and in the density; the mean
-  is the solve's own, so the bound's gradient reaches the model through the
-  solve's implicit VJP. `Recognition.Iilqr.posterior_initial` reports the
-  pair.
+  The model's initial-state prior (`?initial_prior`, `Initial.make ~n ()` by
+  default) is the step-0 running loss of the encoder's control problem, so the
+  solve optimizes `x_0` jointly with the inputs and one solve returns the joint
+  mode. Its marginal covariance is the local model's Hessian in `x_0` up to the
+  scale — `[Σ = exp (2 initial_log_scale) · P⁻¹]` with the Kronecker covariance
+  and the same scalar as every other block with the Laplace one. The precision
+  is a value of the local model, taken stopped in the draws and in the density;
+  the mean is the solve's own, so the bound's gradient reaches the model
+  through the solve's implicit VJP. `Recognition.Iilqr.posterior_initial`
+  reports the pair.
 - `Recognition.Lfads` — an LFADS-style recognition (Pandarinath et al.,
   2018). Bidirectional encoder RNNs infer a Gaussian posterior over the
   initial state and a second encoder–controller pair produces an
   autoregressive Gaussian posterior over the inputs; every RNN is the
-  library's `Dynamics.Mgu`. It needs an `~initial_prior`, and
-  `~with_inputs:false` gives the original LFADS model without inferred
-  inputs.
+  library's `Dynamics.Mgu`. `~with_inputs:false` gives the original LFADS
+  model without inferred inputs.
 
 Swapping them is changing one argument of `Model.make`. The ELBO estimates its
 KL from `log q` and the model's `log p` at the same reparameterized draws, with
