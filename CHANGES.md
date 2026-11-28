@@ -192,6 +192,31 @@ changes do not need an entry.
   prices `x₀` without a proper prior on it leaves the block singular, and the
   step NaN.
 
+- Batched solves take any number of leading batch axes (`[B1; B2; …]`), the
+  shape `Problem.taus_of` has always documented. The problem's own losses and
+  the tape are mapped over every axis, the per-member layout reduces over all
+  of them and the fixed solve stacks its controls behind them, so a rank-2
+  batch solves each member as its own solve would. `Solver.rollout`,
+  `Solver.blocks`, `Solver.solve_fixed` and `Dilqr.solve_fixed` now raise
+  `Invalid_argument` when the leaves' batch shapes disagree, instead of reading
+  the first axis as the batch and mis-solving.
+- `Linesearch.accepts` had its Armijo sign inverted: with a negative modelled
+  decrease it tested `f < f0 - c1·df`, which accepts a trial that raises the
+  cost. It is `f < f0 + c1·df`, the condition the solves test inline, and which
+  they (and not the predicate) had been using.
+- A solve with `free_initial` counts the initial state's curvature in the line
+  search's model. The step is Newton's, so `decrease = Vx₀·d = −dᵀV₀d`: `d1`
+  takes `decrease` and `d2` must take `−decrease` with it, `d2 = −d1` as for the
+  controls. Without it the model predicted `d1` where a full step buys `½d1`,
+  and `~c1 >= 0.5` rejected the full step — the solve then closed a fraction of
+  the gap per iteration. Fixed in both solves, eager and compiled.
+- The reverse rule differentiates the first-order blocks alone (the dynamics,
+  its Jacobians and the loss gradients): the quadratic blocks' cotangents
+  cancel identically against the model's own constants, so the nested
+  `Rune.grad` no longer traces third-order derivatives of the losses. Verified
+  bit-identical to the previous rule, on a problem whose loss Hessians move
+  with the parameters.
+
 ### ilqr-vae
 
 - Imported from `hennequin-lab/ilqr-vae-raven`.

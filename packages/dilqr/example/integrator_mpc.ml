@@ -4,9 +4,10 @@
   ---------------------------------------------------------------------------*)
 
 (* Double-integrator MPC: repeatedly re-solve a short-horizon iLQR from the
-   current state, compiled end to end with Rune.jit (solve + implicit
-   gradient in one program, CPU device by default; pass a device name to move
-   it to GPU). *)
+   current state, compiled end to end with Rune.jit (solve + implicit gradient
+   in one program). The problem is built for the host device, so the compiled
+   program runs on the CPU; the solve itself is device-agnostic and takes its
+   device from the tensors it is given. *)
 
 open Base
 open Nx

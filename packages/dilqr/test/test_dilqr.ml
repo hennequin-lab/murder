@@ -2160,6 +2160,467 @@ let test_inputs_structure () =
     us0.2: a leaf
     |}
 
+(* ──────────────────────────────────────────────────────────────────────────
+   The line search's Armijo predicate, on its own. The solves test
+   [f <= f0 + c1 * df] inline, with [df < 0] the modelled decrease, so the
+   predicate accepts a trial that gives up at least [c1] of that decrease and
+   rejects one that gives up less — or that raises the cost.
+   ────────────────────────────────────────────────────────────────────────── *)
+
+let test_linesearch_accepts () =
+  let accepts = Dilqr.Linesearch.accepts in
+  let f0 = 2.0
+  and df = -1.0
+  and c1 = 0.1 in
+  require
+    ~msg:"a trial that decreases the cost enough is accepted"
+    (accepts ~f0 ~f:(f0 -. 0.5) ~df ~c1);
+  require
+    ~msg:"a trial that decreases the cost too little is rejected"
+    (not (accepts ~f0 ~f:(f0 -. 0.05) ~df ~c1));
+  require
+    ~msg:"a trial that raises the cost is rejected"
+    (not (accepts ~f0 ~f:(f0 +. 0.05) ~df ~c1));
+  require
+    ~msg:"the threshold is exactly the c1 fraction of the modelled decrease"
+    (accepts ~f0 ~f:(f0 -. 0.11) ~df ~c1 && not (accepts ~f0 ~f:(f0 -. 0.1) ~df ~c1));
+  require
+    ~msg:"no modelled decrease accepts nothing at the current cost"
+    (not (accepts ~f0 ~f:f0 ~df:0.0 ~c1))
+
+(* A problem with nothing to optimize but the initial state: the dynamics
+   ignore the control and the control's cost is [½ u²], so every feedforward
+   gain is exactly zero and the only step in the model is Newton's in [x₀].
+   The model is then exactly quadratic in the step size, and its second-order
+   coefficient must carry the initial state's curvature: at [α = 1] it
+   predicts [½ d1], which is the decrease a Newton step really makes. With
+   [c1 > ½] only the correct model accepts [α = 1]; the truncated one predicts
+   [d1] and is rejected, and the solve backs off to a fraction of the step. *)
+module Start_only = struct
+  module Params = struct
+    type ('a, _) t = { w : 'a } [@@deriving ptree]
+  end
+
+  let n = 1
+  let m = 1
+  let horizon = 1
+  let verbose = false
+  let target = 1.0
+
+  (* the state stays where it is, whatever the control does *)
+  let dynamics _ ~k:_ ~x ~u:_ = x
+
+  let running_loss { Params.w } ~k:_ ~x ~u =
+    Infix.(w * ((sum ((x -$ target) * (x -$ target)) *$ 0.5) + (sum (u * u) *$ 0.5)))
+
+  let final_loss { Params.w } ~x:_ = Infix.(w *$ 0.0)
+
+  let problem
+    : (Nx.float64_elt, (Nx.host Nx.float64_t, Nx.host) Params.t, Nx.host) Dilqr.Problem.t
+    =
+    { dtype = float64
+    ; n
+    ; m
+    ; horizon
+    ; free_initial = true
+    ; verbose
+    ; params = Nx.Ptree.instantiate (module Params)
+    ; dynamics
+    ; running_loss
+    ; final_loss
+    }
+end
+
+(* The initial state's curvature is in the line-search model: with
+   [c1 = 0.9 > ½], the armijo test at the full Newton step passes only if the
+   model's quadratic term carries [dᵀ V d]. Without it the step is rejected at
+   every [α >= ½] and the solve only closes a fraction of the gap per
+   iteration — [0.41] of it over four. *)
+let test_free_initial_step_is_modelled () =
+  let module P = Start_only in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { w = scalar64 1.0 } in
+  let x0 = vec64 [| 0.0 |] in
+  let us0 = us_of [ [ 0.0 ] ] in
+  let xs, us =
+    Dilqr.split_taus
+      P.problem
+      (Dilqr.solve_fixed
+         P.problem
+         ~max_iters:4
+         ~c1:0.9
+         ~damping:Dilqr.Damping.Off
+         { Dilqr.Inputs.theta; x0; us0 })
+  in
+  check_close
+    ~msg:"the Newton step in x0 is accepted at c1 = 0.9"
+    ~tol:1e-9
+    xs.(0)
+    (vec64 [| P.target |]);
+  check_close ~msg:"and nothing moves the controls" ~tol:1e-12 us.(0) (vec64 [| 0.0 |])
+
+(* A rank-2 batch: every leading axis is the batch's. Two things stop after the
+   first axis if the code assumes one — the vmap that applies the problem's own
+   losses, which must peel one axis per level, and the reshape that puts a
+   per-member scalar beside the tape's rows. *)
+let test_batched_two_axes () =
+  let module P = Batched in
+  let b1 = 2
+  and b2 = 3 in
+  let cell i j = (i * b2) + j in
+  let mass i j = 1.0 +. (0.1 *. Float.of_int (cell i j))
+  and target i j = -0.5 +. (0.3 *. Float.of_int (cell i j)) in
+  let x0_of i j = vec64 [| 0.2 *. Float.of_int i; -0.1 *. Float.of_int j |] in
+  let us0_of () = us_of (List.init P.horizon ~f:(fun _ -> [ 0.0 ])) in
+  let member i j
+    : ( (Nx.host Nx.float64_t, Nx.host) P.Params.t
+        , (float, Nx.float64_elt, Nx.host) Nx.t )
+        Dilqr.Inputs.t
+    =
+    { Dilqr.Inputs.theta =
+        { P.Params.mass = scalar64 (mass i j); target = scalar64 (target i j) }
+    ; x0 = x0_of i j
+    ; us0 = us0_of ()
+    }
+  in
+  let flatten shape f =
+    let numel = Array.fold shape ~init:1 ~f:(fun a b -> a * b) in
+    create float64 shape (Array.init numel ~f:(fun idx -> f (idx / b2) (Int.rem idx b2)))
+  in
+  let flat_vec ~len (f : int -> int -> float array) =
+    create
+      float64
+      (Array.append [| b1; b2 |] [| len |])
+      (Array.concat
+         (Array.to_list
+            (Array.init (b1 * b2) ~f:(fun idx -> f (idx / b2) (Int.rem idx b2)))))
+  in
+  let batched
+    : ( (Nx.host Nx.float64_t, Nx.host) P.Params.t
+        , (float, Nx.float64_elt, Nx.host) Nx.t )
+        Dilqr.Inputs.t
+    =
+    { Dilqr.Inputs.theta =
+        { P.Params.mass = flatten [| b1; b2 |] mass
+        ; target = flatten [| b1; b2 |] target
+        }
+    ; x0 = flat_vec ~len:P.n (fun i j -> to_array (x0_of i j))
+    ; us0 =
+        Array.init P.horizon ~f:(fun k ->
+          flat_vec ~len:P.m (fun _ _ -> to_array (us0_of ()).(k)))
+    }
+  in
+  let solve = Dilqr.solve_fixed P.problem ~max_iters:40 ~conv_threshold:1e-14 in
+  let taus = solve batched in
+  require
+    ~msg:"a rank-2 batch stacks behind both axes"
+    (Array.equal Int.equal (shape taus) [| b1; b2; P.horizon + 1; P.n + P.m |]);
+  let costs = Dilqr.loss_of_taus P.problem batched.Dilqr.Inputs.theta taus in
+  require ~msg:"one cost per member" (Array.equal Int.equal (shape costs) [| b1; b2 |]);
+  for i = 0 to b1 - 1 do
+    for j = 0 to b2 - 1 do
+      let inputs = member i j in
+      let taus_ij = solve inputs in
+      check_close
+        ~msg:(Printf.sprintf "rank-2 batch, member (%d, %d)" i j)
+        ~tol:1e-8
+        (slice [ I i; I j ] taus)
+        taus_ij;
+      check_close
+        ~msg:(Printf.sprintf "rank-2 batch cost, member (%d, %d)" i j)
+        ~tol:1e-8
+        (slice [ I i; I j ] costs)
+        (Dilqr.loss_of_taus P.problem inputs.Dilqr.Inputs.theta taus_ij)
+    done
+  done
+
+(* A batch of problems differentiated in forward mode: the tangent map is taken
+   member by member — the implicit function theorem says one member's solution
+   does not depend on the others — so the batched JVP is the stack of the
+   members' own. *)
+let test_batched_problems_jvp () =
+  let module P = Batched in
+  let b, theta, x0, us0 = batched_setup () in
+  let inputs = { Dilqr.Inputs.theta; x0; us0 } in
+  let structure = Dilqr.inputs P.problem in
+  let dirs = pattern_inputs ~seed:0.63 structure inputs in
+  let solve j = Dilqr.solve_fixed P.problem ~max_iters:8 j in
+  let dtaus = snd (Rune.jvp structure Nx.Ptree.tensor solve inputs dirs) in
+  require
+    ~msg:"one tangent per member"
+    (Array.equal Int.equal (shape dtaus) [| b; P.horizon + 1; P.n + P.m |]);
+  for i = 0 to b - 1 do
+    let theta_i, x0_i, us0_i = batched_member theta x0 us0 i in
+    let inputs_i = { Dilqr.Inputs.theta = theta_i; x0 = x0_i; us0 = us0_i } in
+    let dirs_i = Nx.Ptree.map structure (fun _ leaf -> slice [ I i ] leaf) dirs in
+    check_close
+      ~msg:(Printf.sprintf "batched forward mode, member %d" i)
+      ~tol:1e-9
+      (slice [ I i ] dtaus)
+      (snd (Rune.jvp structure Nx.Ptree.tensor solve inputs_i dirs_i))
+  done
+
+(* The local model's Gaussian when the caller holds a prior on the initial
+   state: the prior is fused with the value function the tape's step-0 cost
+   leaves, so the mode and the density are the regularized model's. The dense
+   reference is the same cost with the prior added — its minimizer, and the
+   quadratic form its Hessian defines. Densities are compared by their
+   difference, which pins the quadratic form (and the log scale) without
+   needing the normalisation the prior may or may not carry. *)
+let test_laplace_prior_matches_dense () =
+  let n = 2
+  and m = 1
+  and horizon = 3 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let nominal_x0 = get [ 0 ] nominal.Dilqr.Lqr.xs in
+  let mu = create float64 [| n |] [| 0.7; -0.4 |] in
+  let lambda = create float64 [| n; n |] [| 2.0; 0.3; 0.3; 1.1 |] in
+  let dim = n + (horizon * m) in
+  (* the total cost in deviations from the nominal: the tape's, plus the prior
+     on the absolute initial state *)
+  let total (z : float array) =
+    let dx0 = create float64 [| n |] (Array.sub z ~pos:0 ~len:n) in
+    let us = create float64 [| horizon; m |] (Array.sub z ~pos:n ~len:(horizon * m)) in
+    let shift = Infix.(dx0 + (nominal_x0 - mu)) in
+    local_cost tape ~dx0 us +. (0.5 *. item Infix.(sum (mv lambda shift * shift)))
+  in
+  let h = 1e-2 in
+  let shift i s =
+    let z = Array.create ~len:dim 0.0 in
+    z.(i) <- s;
+    z
+  in
+  let add i si j sj = Array.map2_exn ~f:( +. ) (shift i si) (shift j sj) in
+  let hessian =
+    create
+      float64
+      [| dim; dim |]
+      (Array.init (dim * dim) ~f:(fun idx ->
+         let i = idx / dim
+         and j = Int.rem idx dim in
+         (total (add i h j h)
+          -. total (add i h j (-.h))
+          -. (total (add i (-.h) j h) -. total (add i (-.h) j (-.h))))
+         /. (4.0 *. h *. h)))
+  in
+  let gradient =
+    create
+      float64
+      [| dim |]
+      (Array.init dim ~f:(fun i ->
+         (total (shift i h) -. total (shift i (-.h))) /. (2.0 *. h)))
+  in
+  let z_star = neg (mv (inv hessian) gradient) in
+  let laplace = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:(Some (mu, lambda)) in
+  let mean = Dilqr.Lqr.Laplace.mean ~tape laplace in
+  let nominal_stacked = stacked ~x0:nominal_x0 nominal.Dilqr.Lqr.us in
+  check_close
+    ~msg:"the mode is the regularized model's minimizer"
+    ~tol:1e-7
+    (stacked ~x0:(get [ 0 ] mean.Dilqr.Lqr.xs) mean.Dilqr.Lqr.us)
+    Infix.(nominal_stacked + z_star);
+  let quadratic z =
+    item Infix.(sum (mv hessian Infix.(z - z_star) * Infix.(z - z_star)))
+  in
+  let log_prob ~s (z : float array) =
+    let dx0 = create float64 [| n |] (Array.sub z ~pos:0 ~len:n) in
+    let us = create float64 [| horizon; m |] (Array.sub z ~pos:n ~len:(horizon * m)) in
+    item
+      (Dilqr.Lqr.Laplace.log_prob
+         ~tape
+         laplace
+         ~log_scale:(scalar64 s)
+         ~x0:Infix.(nominal_x0 + dx0)
+         ~us:Infix.(nominal.Dilqr.Lqr.us + us))
+  in
+  let z0 =
+    create
+      float64
+      [| dim |]
+      (Array.init dim ~f:(fun i -> 0.3 +. (0.05 *. Float.of_int i)))
+  and z1 =
+    create
+      float64
+      [| dim |]
+      (Array.init dim ~f:(fun i -> -0.2 +. (0.11 *. Float.of_int i)))
+  in
+  List.iter [ 0.0; 0.4; -0.7 ] ~f:(fun s ->
+    check_close
+      ~msg:(Printf.sprintf "the density with a prior, log_scale = %g" s)
+      ~tol:1e-6
+      (scalar64 (log_prob ~s (to_array z0) -. log_prob ~s (to_array z1)))
+      (scalar64 (-0.5 *. Float.exp (-2.0 *. s) *. (quadratic z0 -. quadratic z1))));
+  (* the batched density: one value per member, each the unbatched one *)
+  let zi = [| to_array z0; to_array z1 |] in
+  let sample_x0 =
+    create
+      float64
+      [| 2; n |]
+      (Array.concat
+         (Array.to_list (Array.map zi ~f:(fun z -> Array.sub z ~pos:0 ~len:n))))
+  in
+  let sample_us =
+    create
+      float64
+      [| horizon; 2; m |]
+      (Array.concat
+         (List.init horizon ~f:(fun k ->
+            Array.concat
+              (Array.to_list
+                 (Array.map zi ~f:(fun z -> Array.sub z ~pos:(n + (k * m)) ~len:m))))))
+  in
+  let batched =
+    Dilqr.Lqr.Laplace.log_prob
+      ~tape
+      laplace
+      ~log_scale:(scalar64 0.0)
+      ~x0:Infix.(sample_x0 + nominal_x0)
+      ~us:Infix.(sample_us + reshape [| horizon; 1; m |] nominal.Dilqr.Lqr.us)
+  in
+  require ~msg:"one density per member" (Array.equal Int.equal (shape batched) [| 2 |]);
+  Array.iteri zi ~f:(fun i z ->
+    check_close
+      ~msg:(Printf.sprintf "batched density, member %d" i)
+      ~tol:1e-9
+      (slice [ I i ] batched)
+      (scalar64 (log_prob ~s:0.0 z)))
+
+(* A non-zero log scale widens every block by [e^s]: the draws' covariance is
+   [e^{2s}] times the joint Hessian's inverse. *)
+let test_laplace_sample_scaled () =
+  let n = 2
+  and m = 1
+  and horizon = 3
+  and n_samples = 20_000
+  and s = 0.5 in
+  let tape = random_tape ~n ~m ~t_steps:horizon in
+  let nominal = Dilqr.Lqr.solve tape ~x0:(zeros float64 [| n |]) in
+  let laplace = Dilqr.Lqr.Laplace.make tape ~nominal ~prior:None in
+  let draws =
+    Dilqr.Lqr.Laplace.sample
+      ~tape
+      laplace
+      ~log_scale:(scalar64 s)
+      ~key:(Nx.Rng.key 13)
+      ~n_samples
+  in
+  let dim = n + (horizon * m) in
+  let sample_us = Nx.transpose ~axes:[ 1; 0; 2 ] draws.Dilqr.Lqr.us in
+  let rows =
+    Array.init n_samples ~f:(fun i ->
+      to_array (stacked ~x0:(get [ 0; i ] draws.Dilqr.Lqr.xs) (get [ i ] sample_us)))
+  in
+  let zs = create float64 [| n_samples; dim |] (Array.concat (Array.to_list rows)) in
+  let centred = Infix.(zs - reshape [| 1; dim |] (mean ~axes:[ 0 ] zs)) in
+  let covariance =
+    Infix.(matrix_transpose centred *@ centred /$ Float.of_int n_samples)
+  in
+  let expected =
+    Infix.(inv (joint_hessian ~n ~m ~horizon tape) *$ Float.exp (2.0 *. s))
+  in
+  check_close
+    ~msg:"the draws' covariance is e^{2s} times the Hessian's inverse"
+    ~tol:0.08
+    covariance
+    expected
+
+(* A problem whose *loss curvatures* depend on the parameters: [q] weights the
+   state cost and not the control cost, so the local model's [lxx] and its
+   terminal [fxx] move with θ and the solution does too. The dynamics are
+   affine, with [A] and [B] both depending on [gain], so the model is exact —
+   iLQR linearizes the dynamics, and an affine [f] has no second-order term to
+   leave out. That makes central differences of a converged solve the reference
+   for the implicit gradient. *)
+module Curved = struct
+  module Params = struct
+    type ('a, _) t =
+      { q : 'a
+      ; gain : 'a
+      }
+    [@@deriving ptree]
+  end
+
+  let n = 1
+  let m = 1
+  let horizon = 4
+  let verbose = false
+  let target = 1.5
+
+  (* affine, with both [A] and [B] depending on [gain] *)
+  let dynamics { Params.gain; _ } ~k:_ ~x ~u =
+    Infix.((x *$ 0.9) + (x * (gain *$ 0.1)) + (u * gain))
+
+  (* [q] weights the state cost alone: [lxx = q], [luu = 1], [fxx = 4 q] *)
+  let running_loss { Params.q; _ } ~k:_ ~x ~u =
+    Infix.((q * (sum ((x -$ target) * (x -$ target)) *$ 0.5)) + (sum (u * u) *$ 0.5))
+
+  let final_loss { Params.q; _ } ~x =
+    Infix.(q * (sum ((x -$ target) * (x -$ target)) *$ 2.0))
+
+  let problem
+    : (Nx.float64_elt, (Nx.host Nx.float64_t, Nx.host) Params.t, Nx.host) Dilqr.Problem.t
+    =
+    { dtype = float64
+    ; n
+    ; m
+    ; horizon
+    ; free_initial = false
+    ; verbose
+    ; params = Nx.Ptree.instantiate (module Params)
+    ; dynamics
+    ; running_loss
+    ; final_loss
+    }
+end
+
+(* The implicit gradient when the loss Hessians depend on θ. The block
+   cotangent on a Hessian cancels identically against the model's own linear
+   term ([c = l_τ − Cτ̄], [a = f − Ax̄ − Bū]), so the derivative is carried by
+   the first-order data alone — and it must still be the true derivative, which
+   central differences of a converged solve decide. *)
+let test_implicit_gradient_curved_losses () =
+  let module P = Curved in
+  let q0 = scalar64 1.3
+  and gain0 = scalar64 0.4 in
+  let theta : (Nx.host Nx.float64_t, Nx.host) P.Params.t = { q = q0; gain = gain0 } in
+  let x0 = vec64 [| -0.3 |] in
+  let us0 = us_of (List.init P.horizon ~f:(fun _ -> [ 0.1 ])) in
+  let inputs
+    : ((Nx.host Nx.float64_t, Nx.host) P.Params.t, Nx.host Nx.float64_t) Dilqr.Inputs.t
+    =
+    { Dilqr.Inputs.theta; x0; us0 }
+  in
+  let solve = Dilqr.solve_fixed P.problem ~max_iters:60 ~conv_threshold:1e-14 in
+  let ybar = pattern ~seed:0.9 ~like:(zeros float64 [| P.horizon + 1; P.n + P.m |]) in
+  let objective i = sum Infix.(ybar * solve i) in
+  let grads = Rune.grad (Dilqr.inputs P.problem) objective inputs in
+  let eps = 1e-6 in
+  let fd ~base f =
+    (item (objective { inputs with theta = f (base +. eps) })
+     -. item (objective { inputs with theta = f (base -. eps) }))
+    /. (2.0 *. eps)
+  in
+  let with_q v = { P.Params.q = scalar64 v; gain = gain0 }
+  and with_gain v = { P.Params.q = q0; gain = scalar64 v } in
+  let q_grad = item grads.Dilqr.Inputs.theta.P.Params.q
+  and gain_grad = item grads.Dilqr.Inputs.theta.P.Params.gain in
+  let q_fd = fd ~base:(item q0) with_q
+  and gain_fd = fd ~base:(item gain0) with_gain in
+  require
+    ~msg:
+      (Printf.sprintf
+         "the gradient w.r.t. the loss weight: %g vs finite differences %g"
+         q_grad
+         q_fd)
+    Float.(Float.abs (q_grad -. q_fd) <= 1e-5 +. (1e-5 *. Float.abs q_fd));
+  require
+    ~msg:
+      (Printf.sprintf
+         "the gradient w.r.t. the dynamics' gain: %g vs finite differences %g"
+         gain_grad
+         gain_fd)
+    Float.(Float.abs (gain_grad -. gain_fd) <= 1e-5 +. (1e-5 *. Float.abs gain_fd))
+
 let () =
   Stdlib.exit
     (run
@@ -2221,5 +2682,16 @@ let () =
        ; test "a free initial state's derivative" test_free_initial_derivative
        ; test "a batched free initial state" test_free_initial_batched
        ; test "a free initial state, adaptively" test_free_initial_adaptive
+       ; test "the Armijo predicate" test_linesearch_accepts
+       ; test
+           "a free initial state's step is in the line-search model"
+           test_free_initial_step_is_modelled
+       ; test "a rank-2 batch is every member's" test_batched_two_axes
+       ; test "a batched problem in forward mode" test_batched_problems_jvp
+       ; test "the density with a prior matches dense" test_laplace_prior_matches_dense
+       ; test "the sampler's log scale widens the draws" test_laplace_sample_scaled
+       ; test
+           "the implicit gradient with curved losses"
+           test_implicit_gradient_curved_losses
        ; test "inputs structure" test_inputs_structure
        ])

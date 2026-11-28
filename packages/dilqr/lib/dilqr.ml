@@ -29,9 +29,9 @@
 
     {[
     Rune.jit
-      Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
+      Nx.Ptree.(inputs problem @-> returns (inputs problem))
       (fun i ->
-         Rune.grad (inputs problem) (fun i -> loss (solve_fixed problem ~max_iters:5 i)) i)
+         Rune.grad (inputs problem) (fun j -> loss (solve_fixed problem ~max_iters:5 j)) i)
     ]}
 
     compiles the fixed solve and its gradient together, on CPU or GPU.

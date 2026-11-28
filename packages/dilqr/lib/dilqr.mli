@@ -162,7 +162,10 @@ val split_taus
 
 (** [loss_of_taus problem theta taus] evaluates the problem's own running +
     final losses along the trajectory. Differentiable, traceable. A batched
-    [theta] and trajectory are evaluated member by member. *)
+    [theta] and trajectory are evaluated member by member, over every leading
+    batch axis: [taus] is [batch…; K+1; n+m] and the result [batch…], so a
+    rank-2 batch costs two nested vmaps and no member's loss is read against
+    another's. *)
 val loss_of_taus
   :  ('w, 'p, 'd) Problem.t
   -> 'p
@@ -253,11 +256,16 @@ module Solver : sig
   (** Adaptive iLQR. Host-side control flow: unbatched (a batch would need one
       line search per member; {!solve_fixed} has it), and not itself traceable
       by [Rune.jit]. Defaults: [max_iter = 20], [conv_threshold = 1e-6],
-      [c1 = 1e-2], [ls_depth = 8], [damping = Damping.default]. Fails when no
-      step can be regularized into descent — with [Damping.Off] or a
-      [Damping.Fixed] strength that is already the case when the model's
-      [Q_uu] is not positive definite, and the failure says so. {!compile} is
-      the same solve with the tensor work compiled. *)
+      [c1 = 1e-2], [ls_depth = 8], [damping = Damping.default].
+
+      Raises [Failure] when the local model's [Q_uu] cannot be made positive
+      definite: with [Damping.Off] or a pinned [Damping.Fixed] strength that
+      is so as soon as the model's [Q_uu] is indefinite, and with the default
+      adaptive schedule only after every retry at the largest strength, which
+      says [Quu could not be regularized]. An iteration whose line search buys
+      no step is not a failure: the solve stops and returns the trajectory it
+      had, and {!t.iters}'s count says how far it got. {!compile} is the same
+      solve with the tensor work compiled. *)
   val solve
     :  ('w, 'p, 'd) Problem.t
     -> ?max_iter:int
@@ -351,11 +359,15 @@ module Solver : sig
     -> ('w, 'd) Problem.value t
 end
 
-(** Opaque data the solve's forward pass hands to its backward pass. *)
+(** Opaque data the solve's forward pass hands to its backward pass. The
+    library builds one while solving; nothing public returns it, so {!bwd} is
+    internal plumbing rather than a user entry point. *)
 type ('p, 'a) residual
 
 (** The implicit VJP: cotangent on the stacked trajectory in, gradients on
-    the solve inputs out. *)
+    the solve inputs out. Takes the {!residual} of the forward pass, which is
+    opaque and not obtainable from outside the library — the differentiable
+    solves attach the rule themselves, and this is the function they attach. *)
 val bwd
   :  ('w, 'p, 'd) Problem.t
   -> ('p, ('w, 'd) Problem.value) residual
@@ -407,26 +419,29 @@ val solve_adaptive
     derivative in both modes. The returned function takes the fixed-solve
     options and the solve inputs, and returns the stacked trajectory.
 
-    Batched inputs (a leading batch axis on every leaf) are solved as one
-    batch — the step and the damping schedule are the batch's, and the solve
-    stops when its slowest member has converged — and the implicit derivative
-    is taken member by member, which is what the implicit function theorem
-    says: one member's solution does not depend on the others. The stacked
-    trajectory is then [B; K+1; n+m]. The solve is traceable, so put the
-    returned function inside [Rune.jit] with a [Rune.grad] or a [Rune.jvp]
-    inside:
+    Batched inputs are solved as one batch. Every leaf of the parameters, of
+    the initial state and of every initial control carries the batch's leading
+    axes — one axis ([B; …]) or several ([B1; B2; …]), as the caller likes;
+    they must match across the leaves, and a mismatch raises
+    [Invalid_argument]. The step and the damping schedule are the batch's, the
+    solve stops when its slowest member has converged, and the implicit
+    derivative is taken member by member, which is what the implicit function
+    theorem says: one member's solution does not depend on the others. The
+    stacked trajectory is then [batch…; K+1; n+m]. The solve is traceable, so
+    put the returned function inside [Rune.jit] with a [Rune.grad] or a
+    [Rune.jvp] inside:
 
     {[
     let solve = solve_fixed problem in
     let step =
       Rune.jit
-        Nx.Ptree.(inputs problem @-> returns Nx.Ptree.tensor)
-        (fun inputs ->
-           Rune.grad
-             (inputs problem)
-             (fun inputs -> loss (solve ~max_iters:3 inputs))
-             inputs)
+        Nx.Ptree.(inputs problem @-> returns (inputs problem))
+        (fun i ->
+           Rune.grad (inputs problem) (fun j -> loss (solve ~max_iters:3 j)) i)
     ]}
+
+    The rule returns a gradient for every leaf of the inputs, so the jitted
+    program's result is that structure and not a tensor: [returns (inputs problem)], not [returns Nx.Ptree.tensor].
 
     The derivative is taken at the undamped KKT system, as in
     {!solve_adaptive}: the damping, the step and the iteration count are

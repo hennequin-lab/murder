@@ -556,10 +556,13 @@ module Laplace = struct
       rolled out, so a draw is
 
       {[
-        x₀ = x₀⋆ + e^s U_P⁻¹ ξ₀,  u_k = u⋆_k + k_k + K_k δx_k + e^s U_k⁻¹ ξ_k
+        x₀ = x₀⋆ + e^s U_P⁻¹ ξ₀,  u_k = ū_k + k_k + K_k δx_k + e^s U_k⁻¹ ξ_k
       ]}
 
-      with [δx] the linearized dynamics' response. [s = 0] is the Laplace
+      with [δx] the linearized dynamics' response, measured from the nominal
+      trajectory [(x̄, ū)]. The draw is centred on the nominal, not on the
+      mode: at [δx = 0] the control is [ū_k + k_k], which is the mode's own
+      control at step [k], so [k_k] is not added on top of it. [s = 0] is the Laplace
       approximation; one scalar for every block keeps the family stationary in
       the horizon, and is the one parameter worth learning — a shape that the
       local model gets wrong can be widened or narrowed without giving [q] a

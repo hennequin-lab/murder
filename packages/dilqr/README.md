@@ -101,6 +101,7 @@ module Integrator = struct
     ; n
     ; m
     ; horizon
+    ; free_initial = false
     ; verbose
     ; params = Nx.Ptree.instantiate (module Params)
     ; dynamics
@@ -192,10 +193,18 @@ Everything lives under `Dilqr`. A problem is a `Dilqr.Problem.t` value, and
 every solver and helper takes it as its first argument.
 
 - **`Dilqr.Problem.t`** — the problem as a value: `dtype`, `n`, `m`,
-  `horizon`, `verbose`, the parameter structure `params : ('p, 'd) Nx.Ptree.t`, and
-  the functions `dynamics`, `running_loss` and `final_loss`. The structure
-  is built with `Nx.Ptree.instantiate (module Params)`. Being a record,
-  problems can be stored, passed and chosen at runtime.
+  `horizon`, `free_initial`, `verbose`, the parameter structure
+  `params : ('p, 'd) Nx.Ptree.t`, and the functions `dynamics`,
+  `running_loss` and `final_loss`. The structure is built with
+  `Nx.Ptree.instantiate (module Params)`. Being a record, problems can be
+  stored, passed and chosen at runtime.
+
+  `free_initial` says whether the initial state is a **variable** of the
+  optimization or a given: `false` pins it to the solve's `x0`, `true` lets
+  the solve move it, pricing it with the step-0 running loss. The optimized
+  state is what `split_taus` returns as `xs.(0)`. It is a field of the problem
+  because it changes what the solve *is*, so it applies to every call rather
+  than being an option of one.
 
 - **`Dilqr.inputs`** — the structure of the solve inputs (`theta`, `x0`,
   `us0`), built by walking the problem's parameter structure: what
@@ -241,6 +250,19 @@ every solver and helper takes it as its first argument.
   a forward-mode solve consumes. Pure tensor math with host-static control
   flow; safe to trace and jit.
 
+  Its `initial_condition` / `initial_deviation` / `initial_response` are the
+  initial state's block — the stationary point and precision the value
+  function implies for `x₀`, with or without a prior — which is what a solve
+  with `free_initial = true` steps along and what a free initial state's
+  tangent and VJP run.
+
+- **`Dilqr.Lqr.Laplace`** — the local model as a Gaussian over the whole
+  trajectory: `make tape ~nominal ~prior` (or `make_fixed` when `x₀` is not a
+  latent) gives the factors, `mean` the model's minimizer, `sample` draws
+  trajectories with every block scaled by `log_scale`, and `log_prob` their
+  density, batched over a sample or batch axis. An iLQR-VAE-style recognition
+  is a draw from it.
+
 - **`Solver.tangent`** — the tangent of the tape's first-order data along a
   direction in the problem's parameters: what `solve_jvp` needs from a problem,
   and nothing else.
@@ -260,8 +282,10 @@ every solver and helper takes it as its first argument.
 ## Batched solves
 
 `solve_fixed` solves a **batch** of problems at once. Give every leaf of the
-parameters, of the initial state and of every initial control a leading batch
-axis. Say the quick-start problem's
+parameters, of the initial state and of every initial control the batch's
+leading axes — one (`[B; …]`) or several (`[B1; B2; …]`); they must match
+across the leaves, and a mismatch raises `Invalid_argument`. Say the
+quick-start problem's
 parameters also carry a per-member `target`, used by its running loss:
 
 ```ocaml
@@ -298,15 +322,15 @@ Two things are the batch's, not the member's:
   on later trials, so it cannot hold the others back.
 
 Damping is on by default: `Damping.default`, which adapts a strength that is
-one schedule for the batch and a *relative* magnitude — `beta` is a fraction of
-each member's own value-Hessian scale, measured by the pass, so members whose
-curvature differs by orders of magnitude are damped alike, and the first pass
-uses the schedule's own units. `~damping:(Damping.Fixed mu)` pins an absolute
+one schedule for the batch and a *relative* magnitude — `Regularisation.mu`
+is a fraction of each member's own value-Hessian scale, measured by the pass,
+so members whose curvature differs by orders of magnitude are damped alike,
+and the first pass uses the schedule's own units. `~damping:(Damping.Fixed mu)` pins an absolute
 strength, and `~damping:Damping.Off` turns damping off.
 
-`taus_of` stacks to `[b; K+1; n+m]` (the batch axes lead the horizon), and
-`split_taus` / `loss_of_taus` accept the batched trajectory. Differentiating
-is unchanged:
+`taus_of` stacks to `[batch…; K+1; n+m]` — the batch axes lead the horizon,
+however many there are — and `split_taus` / `loss_of_taus` accept the batched
+trajectory. Differentiating is unchanged:
 
 ```ocaml
 let inputs = { Dilqr.Inputs.theta; x0; us0 }
@@ -340,14 +364,29 @@ VJP is computed with the same machinery as the forward pass:
 1. a perturbed Riccati backward pass whose linear terms are the incoming
    cotangent `ȳ`, followed by a homogeneous linearized rollout from `δx₀ = 0`,
    yields the trajectory perturbation `δτ` and the costate perturbation `δλ`;
-2. block cotangents on the tape — `∂/∂a_k = −δλ_{k+1}`,
-   `∂/∂C_k = −sym(δτ_k τ_kᵀ)`, `∂/∂A_k = −(δλ_{k+1} x_kᵀ + δx_k δλ_{k+1}ᵀ)`,
-   and so on;
+2. block cotangents on the first-order data. The quadratic blocks' cotangents
+   — `∂/∂C_k = −sym(δτ_k τ_kᵀ)`, and the matching `δλ_{k+1} x_kᵀ` term of
+   `∂/∂A_k` — cancel **identically** against the model's own constants
+   `c = l_τ(τ̄) − Cτ̄` and `a = f − Ax̄ − Bū`, whose derivatives carry the same
+   cotangents with the opposite sign. What survives is the loss gradients
+   (`∂/∂l_τ,k = −δτ_k`, `∂/∂φ_x = −δτ_K`) and the dynamics (`∂/∂f_k = −δλ_{k+1}`,
+   `∂/∂A_k = −δx_k δλ_{k+1}ᵀ`, and `B_k` with `δu_k`);
 3. a nested `Rune.grad` over the scalar surrogate `Σ ⟨cotangent, block(θ)⟩`
    chains those cotangents to `θ`, recomputing the blocks from `θ` exactly as
    the forward pass does.
 
-Under a converged solve this is the true derivative of the solution map. With
+An argmin's derivative goes through its KKT matrix, which is the primal's, so
+step 2 needs no Hessian cotangent — and step 3, consequently, never
+differentiates one: the surrogate traces dynamics, dynamics Jacobians and loss
+gradients only, and takes no third-order derivative, even for losses that are
+not C³.
+
+Under a converged solve this is the derivative of the idealized solve's
+solution map. The idealization is the one iLQR itself makes: the local model's
+curvature is the loss Hessian, and the dynamics enter through their Jacobians
+only, so a problem whose dynamics are nonlinear has its second derivatives left
+out of the KKT matrix — the Gauss–Newton Hessian, exact for conditionally
+linear dynamics and asymptotically exact where the costates are small. With
 `solve_fixed ~max_iters`, the gradient converges to the adaptive solve's as
 iterations accumulate (see the pendulum example, which prints both).
 
@@ -423,7 +462,7 @@ once per iteration, and every evaluation would add its block again.
 
 ## Examples
 
-Two self-contained examples live in [`example/`](example/):
+Three self-contained examples live in [`example/`](example/):
 
 - [`example/pendulum_swingup.ml`](example/pendulum_swingup.ml) — pendulum
   swing-up from hanging to upright. Demonstrates the adaptive solve, the
@@ -464,16 +503,20 @@ Raven libraries `nx` and `rune`; the test suite additionally uses `windtrap`
 and `ppx_ptree`. Both `nx` and `rune` come with Raven, so a suitable opam
 switch (or an in-tree Raven checkout) is enough.
 
-The test suite covers the regularization schedule, LQR correctness (double
-integrator: cost decrease and control stationarity, checked with independent
-autodiff), nonlinear convergence (pendulum), implicit gradients against
-central finite differences, the fixed solve's competitiveness with the
-adaptive one, the batch's budget being its slowest member's, damping
-recovering an indefinite local model, JIT round-trips of both the solve and its
-gradient, batched solves and gradients against their per-member counterparts,
-the forward mode
-against finite differences and against the reverse mode (the transpose law,
-pointwise), and a batch of directions against the directions one at a time.
+The test suite covers the regularization schedule, the Armijo predicate on its
+own, LQR correctness (double integrator: cost decrease and control
+stationarity, checked with independent autodiff), nonlinear convergence
+(pendulum), implicit gradients against central finite differences — including
+for losses whose Hessians depend on the parameters, and for a free initial
+state — the fixed solve's competitiveness with the adaptive one, the batch's
+budget being its slowest member's, damping recovering an indefinite local
+model, JIT round-trips of both the solve and its gradient, batched solves and
+gradients against their per-member counterparts (rank-1 and rank-2, forward and
+reverse mode), the local model's Gaussian against a dense one (with and
+without a prior, and across log scales, for the density, the mode and the
+sampler), the forward mode against finite differences and against the reverse
+mode (the transpose law, pointwise), and a batch of directions against the
+directions one at a time.
 
 ## References
 
@@ -489,4 +532,4 @@ still move.
 
 ## License
 
-ISC — see `dune-project`.
+ISC — see the repository's `dune-project`.

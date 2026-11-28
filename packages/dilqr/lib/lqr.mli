@@ -98,15 +98,15 @@ type ('a, 'b, 'd) lin =
     the terminal gradient. *)
 val lin_of_tape : (float, 'b, 'd) tape -> (float, 'b, 'd) lin
 
-(** [sym x] is the symmetric part of [x]: [(x + xᵀ) / 2]. Riccati value
-    Hessians are symmetric, so a computed one is symmetrized; a cotangent on
-    a symmetric block is symmetrized for the same reason. *)
-val matvec : (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t
 (** [matvec m v] is [m @ v] over every leading axis: a matrix broadcast against
     a batch of vectors. [Nx.matmul] would contract a batched vector's batch
     axis with the matrix, so the vector is promoted to a column and squeezed
     back. Every product with a value gradient here goes through it. *)
+val matvec : (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t
 
+(** [sym x] is the symmetric part of [x]: [(x + xᵀ) / 2]. Riccati value
+    Hessians are symmetric, so a computed one is symmetrized; a cotangent on
+    a symmetric block is symmetrized for the same reason. *)
 val sym : (float, 'b, 'd) Nx.t -> (float, 'b, 'd) Nx.t
 
 (** The per-step factors that the primal and every tangent of one LQR solve
@@ -241,9 +241,9 @@ val initial_deviation
     free initial state adds to a tangent solve: the local model's step in [x₀]
     that cancels [residual] — the leftover a pinned sweep leaves in the
     stationarity condition of [x₀] — and the closed loop's response to it, with
-    no feedforward of its own. It is the transpose of what {!val-bwd} does for
-    a free initial state, and {!val-solve_jvp} and [Solver.tangent_solve] both
-    run it. *)
+    no feedforward of its own. It is the transpose of what the implicit VJP
+    ([Dilqr.bwd]) does for a free initial state, and {!val-solve_jvp} and
+    [Solver.tangent_solve] both run it. *)
 val initial_response
   :  common:(float, 'b, 'd) common
   -> tape:(float, 'b, 'd) tape
@@ -271,8 +271,8 @@ val initial_response
     itself, [δ* = −V_0⁻¹ Vx_0], at [P = V_0].
 
     The returned [mean] is [nominal + δ*] and the returned [precision] is
-    [P]; the covariance is [P⁻¹], one triangular solve against the Cholesky
-    factor of [P], [Nx.cholesky] on the returned precision.
+    [P]; the covariance is [P⁻¹], two triangular solves against the Cholesky
+    factor of [P] ([Nx.cholesky] on the returned precision).
 
     This is the truncation point's message from the future, in the sense of
     the information-form (backward) Kalman smoother: for a linear dynamics
@@ -343,7 +343,8 @@ type ('a, 'b, 'd) tangent =
     it the initial state is a variable of the problem, so the tangent also
     satisfies its stationarity and [dx0] reaches nothing — the third sweep adds
     the local model's step in [x₀] and the closed loop's response to it, which
-    is the transpose of what {!val-bwd} does for a free initial state.
+    is the transpose of what the implicit VJP ([Dilqr.bwd]) does for a free
+    initial state.
 
     Linear in the tangent data and in [dx0], which is what lets one call serve
     a whole batch of directions: give the {!tangent} tensors and [dx0] a
@@ -546,10 +547,13 @@ module Laplace : sig
       out, so a draw is
 
       {[
-        x₀ = x₀⋆ + e^s U_P⁻¹ ξ₀,  u_k = u⋆_k + k_k + K_k δx_k + e^s U_k⁻¹ ξ_k
+        x₀ = x₀⋆ + e^s U_P⁻¹ ξ₀,  u_k = ū_k + k_k + K_k δx_k + e^s U_k⁻¹ ξ_k
       ]}
 
-      with [δx] the linearized dynamics' response. [s = 0] is the Laplace
+      with [δx] the linearized dynamics' response, measured from the nominal
+      trajectory [(x̄, ū)]. The draw is centred on the nominal, not on the
+      mode: at [δx = 0] the control is [ū_k + k_k], which is the mode's own
+      control at step [k], so [k_k] is not added on top of it. [s = 0] is the Laplace
       approximation; one scalar for every block keeps the family stationary in
       the horizon, which is the one parameter worth learning — a shape the
       local model gets wrong can be widened or narrowed without giving [q] a

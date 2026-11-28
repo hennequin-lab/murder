@@ -40,7 +40,11 @@ type ('w, 'p, 'd) t =
   { dtype : (float, 'w) Nx.dtype (** the dtype, for scalar creation *)
   ; n : int (** state dimension *)
   ; m : int (** control dimension *)
-  ; horizon : int (** number of control steps; states run from 0 to [horizon] *)
+  ; horizon : int
+    (** number of control steps; states run from 0 to [horizon]. It must be at
+        least 1: a solve has to apply one control, and the helpers index step 0
+        to find the initial state, so a horizon of 0 is an indexing error
+        rather than an empty trajectory. *)
   ; free_initial : bool
     (** [true] when the step-0 running loss prices the initial state, so that a
         solve optimizes it jointly with the controls instead of starting from
@@ -50,7 +54,10 @@ type ('w, 'p, 'd) t =
         — an encoder whose initial-state prior is its step-0 loss, say — is the
         case this exists for, and the prior's precision is what keeps the block
         positive definite. *)
-  ; verbose : bool (** per-iteration diagnostics on stdout *)
+  ; verbose : bool
+    (** per-iteration diagnostics on stdout. It is the adaptive solve's switch;
+        {!Solver.solve_fixed} never reads it, so its control flow stays
+        traceable and host-free. *)
   ; params : ('p, 'd) Nx.Ptree.t
     (** the parameter structure at [value], built with
         [Nx.Ptree.instantiate (module Params)] *)
@@ -145,15 +152,19 @@ let loss_of_taus_unbatched p theta taus =
   let last = slice [ I horizon ] taus in
   Infix.(p.final_loss theta ~x:(slice [ R (0, p.n) ] last) + sum losses)
 
+let rec vmap_loss p rank theta taus =
+  if rank <= 0
+  then loss_of_taus_unbatched p theta taus
+  else
+    Rune.vmap
+      Nx.Ptree.(pair p.params tensor @-> returns tensor)
+      (fun (theta, taus) -> vmap_loss p (rank - 1) theta taus)
+      (theta, taus)
+
 (** [loss_of_taus problem theta taus] evaluates the problem's own running +
     final losses along the trajectory. Useful for self-derivation checks and
     as a building block for user losses. A batched [theta] and a batched
     trajectory are evaluated member by member. Differentiable, traceable. *)
 let loss_of_taus p theta taus =
-  if Array.length (shape taus) <= 2
-  then loss_of_taus_unbatched p theta taus
-  else
-    Rune.vmap
-      Nx.Ptree.(pair p.params tensor @-> returns tensor)
-      (fun (theta, taus) -> loss_of_taus_unbatched p theta taus)
-      (theta, taus)
+  let batch_rank = Array.length (shape taus) - 2 in
+  vmap_loss p batch_rank theta taus

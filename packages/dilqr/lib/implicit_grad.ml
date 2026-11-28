@@ -16,13 +16,23 @@
       whose linear terms are ȳ, then a homogeneous linearized rollout from
       δx₀ = 0; this yields the solution perturbation (δx, δu) =: δτ and, via
       the costate recursion, δλ;
-   2. assemble block cotangents on (A, B, a, C, c) — e.g.
-      ∂/∂a_k = −δλ_{k+1}, ∂/∂c_k = −δτ_k, ∂/∂C_k = −sym(δτ_k τ̄_kᵀ),
-      ∂/∂A_k = −(δλ_{k+1} x̄_kᵀ + δx_k δλ_{k+1}ᵀ), grad x₀ = ȳ_x,0 − A₀ᵀδλ₁;
+   2. assemble block cotangents on the first-order data. The quadratic blocks'
+      cotangents — ∂/∂C_k = −sym(δτ_k τ̄_kᵀ), and the matching ∂/∂A_k term
+      δλ_{k+1} x̄_kᵀ — cancel identically against the model's own constants
+      c = l_τ(τ̄) − Cτ̄ and a = f − Ax̄ − Bū, whose derivatives carry the same
+      cotangents with the opposite sign. What survives is the loss gradients
+      (∂/∂l_τ,k = −δτ_k, ∂/∂φ_x = −δτ_K) and the dynamics (∂/∂f_k = −δλ_{k+1},
+      ∂/∂A_k = −δx_k δλ_{k+1}ᵀ, and the same for B_k with δu_k), plus
+      grad x₀ = ȳ_x,0 − A₀ᵀδλ₁.
    3. chain them to the user parameters θ with a nested [Rune.grad] over a
-      scalar surrogate Σ ⟨cotangent, block(θ)⟩, recomputing the blocks from θ
-      exactly as the forward pass does (so derived quantities — a_k, c_k —
-      propagate their couplings).
+      scalar surrogate Σ ⟨cotangent, first-order block(θ)⟩, recomputing the
+      blocks from θ exactly as the forward pass does.
+
+   Because the Hessians drop out of step 2, step 3 never differentiates one:
+   the surrogate traces dynamics, dynamics Jacobians and loss gradients, and
+   no third-order derivative is taken. The result is exactly the derivative of
+   the idealized argmin — an argmin's derivative goes through its KKT matrix,
+   which is the primal's.
 
    The cotangents are stacked along the horizon and the surrogate sums over
    them with batched products, so one traced step stands for the whole
@@ -69,6 +79,24 @@ let row (t : ('a, 'b, 'd) Nx.t) k = slice [ I k ] t
 
 (* [flip x] reverses the horizon axis. *)
 let flip x = Nx.flip ~axes:[ 0 ] x
+
+(* The per-step first-order blocks differentiated w.r.t. the parameters in
+   Step 3 of {!bwd}: dynamics value, its Jacobians, and the loss gradients.
+   Hessian blocks do not enter the solution derivative at a fixed point, so
+   computing them inside [Rune.grad] would only trace 3rd-order derivatives
+   that cancel out. *)
+module First_order_rows = struct
+  type ('a, _) t =
+    { a : 'a
+    ; b : 'a
+    ; f : 'a
+    ; lx : 'a
+    ; lu : 'a
+    }
+  [@@deriving ptree]
+end
+
+let first_order_rows () = Nx.Ptree.instantiate (module First_order_rows)
 
 (* [stack_array ts] stacks the steps of [ts] along a new leading axis. *)
 let stack_array (ts : ('a, 'b, 'd) Nx.t array) : ('a, 'b, 'd) Nx.t =
@@ -148,73 +176,57 @@ let bwd p (res : ('p, ('w, 'd) Problem.value) residual) (ybar : ('w, 'd) Problem
       let dl0, dl1 = costates ~dx ~du in
       dx, du, dl0, dl1)
   in
-  (* Step 2: block cotangents, following the reference formulation (the VJP of
-     the fixed-point map). λ* are the solution costates of the problem's own
-     losses; δτ = (δx, δu) and δλ the perturbation solve's response. Every
-     cotangent is a stacked tensor: one batched product per block, whatever the
-     horizon. *)
+  (* Step 2: block cotangents for the first-order terms. λ* (`lm1`) are the
+     solution costates of the problem's own losses; δτ = (dx, du) and δλ (`dl1`)
+     the perturbation solve's response. The quadratic-block cotangents cancel
+     algebraically against `-C τ̄` in `c_k = l_τ - C τ̄` and `A_k x̄_k + B_k ū_k`
+     in `a_k = f_k - A_k x̄_k - B_k ū_k`, leaving only first-order sensitivities. *)
   let lm1 = Lqr.costate tape in
   let x = slice [ R (0, horizon) ] xs_t in
   let dxk = slice [ R (0, horizon) ] dx in
   let dx_last = row dx horizon in
-  let cot_A = Infix.(outer dl1 x + outer lm1 dxk) in
-  let cot_B = Infix.(outer dl1 us_t + outer lm1 du) in
-  let cot_cx = dxk
-  and cot_cu = du in
-  let cot_lxx = Lqr.sym (outer dxk x) in
-  let cot_luu = Lqr.sym (outer du us_t) in
-  let cot_lux = Infix.(outer du x + matrix_transpose (outer dxk us_t)) in
-  let cot_fx = dx_last in
-  let cot_fxx = Lqr.sym (outer dx_last xs.(horizon)) in
+  let cot_A = outer lm1 dxk in
+  let cot_B = outer lm1 du in
   let grad_x0 = dl0 in
-  (* Step 3: chain the block cotangents to θ with a nested grad over a
-     scalar surrogate that recomputes the blocks from θ exactly like the
-     forward pass, so derived quantities (a_k, c_k) propagate couplings. *)
+  (* Step 3: chain the net block cotangents to θ with a nested grad over one
+     scan of first-order blocks (no 2nd-order loss Hessians inside AD). *)
+  let rows_ptree = first_order_rows () in
   let ks = arange_at (beside us_t) p.Problem.dtype 0 horizon 1 in
   let grad_theta =
     Rune.grad
       p.Problem.params
       (fun theta ->
-         let tape = Solver.blocks_t p theta xs_t us_t in
-         (* f_k, the dynamics at each nominal step. *)
-         let f =
-           snd
-             (Rune.scan
-                Nx.Ptree.unit
-                Nx.Ptree.(pair (pair tensor tensor) tensor)
-                Nx.Ptree.tensor
-                (fun () ((x, u), k) -> (), p.Problem.dynamics theta ~k ~x ~u)
-                ~init:()
-                ((x, us_t), ks))
+         let _, rows =
+           Rune.scan
+             Nx.Ptree.unit
+             Nx.Ptree.(pair (pair tensor tensor) tensor)
+             rows_ptree
+             (fun () ((x_k, u_k), k) ->
+                let f = p.Problem.dynamics theta ~k ~x:x_k ~u:u_k in
+                let a =
+                  Rune.jacfwd' (fun x -> p.Problem.dynamics theta ~k ~x ~u:u_k) x_k
+                in
+                let b =
+                  Rune.jacfwd' (fun u -> p.Problem.dynamics theta ~k ~x:x_k ~u) u_k
+                in
+                let lx =
+                  Rune.grad' (fun x -> p.Problem.running_loss theta ~k ~x ~u:u_k) x_k
+                in
+                let lu =
+                  Rune.grad' (fun u -> p.Problem.running_loss theta ~k ~x:x_k ~u) u_k
+                in
+                (), { First_order_rows.a; b; f; lx; lu })
+             ~init:()
+             ((x, us_t), ks)
          in
-         let acc = ref (scalar_like xs.(0) 0.0) in
-         let term t cot = acc := Infix.(!acc + sum (t * cot)) in
-         term tape.Lqr.blocks.a cot_A;
-         term tape.Lqr.blocks.b cot_B;
-         term f dl1;
-         (* a_k = f_k − A x̄ − B ū *)
-         term
-           Infix.(matvec tape.Lqr.blocks.a x + matvec tape.Lqr.blocks.b us_t)
-           Infix.(-dl1);
-         term tape.Lqr.blocks.lxx cot_lxx;
-         term tape.Lqr.blocks.luu cot_luu;
-         term tape.Lqr.blocks.lux cot_lux;
-         (* c_k = l_τ(τ̄) − C τ̄ *)
-         term tape.Lqr.blocks.lx cot_cx;
-         term tape.Lqr.blocks.lu cot_cu;
-         term
-           Infix.(
-             matvec tape.Lqr.blocks.lxx x
-             + matvec (matrix_transpose tape.Lqr.blocks.lux) us_t)
-           Infix.(-cot_cx);
-         term
-           Infix.(matvec tape.Lqr.blocks.luu us_t + matvec tape.Lqr.blocks.lux x)
-           Infix.(-cot_cu);
-         (* Terminal: c_K = fx − fxx x̄_K, C_K,xx = fxx. *)
-         term tape.fx cot_fx;
-         term tape.fxx cot_fxx;
-         term Infix.(tape.fxx *@ xs.(horizon)) Infix.(-cot_fx);
-         !acc)
+         let fx = Rune.grad' (fun x -> p.Problem.final_loss theta ~x) xs.(horizon) in
+         let open Infix in
+         sum (rows.First_order_rows.a * cot_A)
+         + sum (rows.b * cot_B)
+         + sum (rows.f * dl1)
+         + sum (rows.lx * dxk)
+         + sum (rows.lu * du)
+         + sum (fx * dx_last))
       theta
   in
   { Problem.Inputs.theta = grad_theta
@@ -324,7 +336,7 @@ let solve_fixed_unbatched
    The derivative is still the implicit one at the trajectory the solve
    returned, per member: the step and the damping are devices that find the
    trajectory, not part of the map being differentiated. *)
-let batched_tangent p ~(theta : 'p) ~(sol : ('w, 'd) Problem.value Solver.t) =
+let batched_tangent p ~batch_rank ~(theta : 'p) ~(sol : ('w, 'd) Problem.value Solver.t) =
   let taus = Problem.taus_of p sol.xs sol.us in
   let signature =
     Nx.Ptree.(
@@ -332,7 +344,8 @@ let batched_tangent p ~(theta : 'p) ~(sol : ('w, 'd) Problem.value Solver.t) =
       @-> returns tensor)
   in
   fun (dinputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t) ->
-    Rune.vmap
+    Solver.vmap_fn
+      batch_rank
       signature
       (fun (theta_i, (dtheta_i, (dx0_i, taus_i))) ->
          let xs_i, us_i = Problem.split_taus p taus_i in
@@ -344,27 +357,34 @@ let batched_tangent p ~(theta : 'p) ~(sol : ('w, 'd) Problem.value Solver.t) =
 
 let batched_transpose
       p
+      ~batch_rank
       ~(sol : ('w, 'd) Problem.value Solver.t)
       (inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t)
   =
   let taus = Problem.taus_of p sol.xs sol.us in
+  let signature =
+    Nx.Ptree.(pair (Problem.inputs p) (pair tensor tensor) @-> returns (Problem.inputs p))
+  in
   fun (ybar : ('w, 'd) Problem.value) ->
-    Rune.vmap
-      Nx.Ptree.(
-        pair (Problem.inputs p) (pair tensor tensor) @-> returns (Problem.inputs p))
+    Solver.vmap_fn
+      batch_rank
+      signature
       (fun ((i : ('p, ('w, 'd) Problem.value) Problem.Inputs.t), (taus_i, ybar_i)) ->
          let xs_i, us_i = Problem.split_taus p taus_i in
          bwd p { theta = i.theta; x0 = i.x0; us0 = i.us0; xs = xs_i; us = us_i } ybar_i)
       (inputs, (taus, ybar))
 
-(* Batched inputs — a leading batch axis on the parameters, the initial state
+(* Batched inputs — leading batch axes on the parameters, the initial state
    and every initial control — are solved as one batch, so the batch's step and
    damping schedule are the solve's, and the batch stops when its slowest
    member has converged. The derivative is taken member by member, which is
    what the implicit function theorem says: each member's solution does not
    depend on the others. *)
 let solve_fixed p ?alphas ?damping ?c1 ?conv_threshold ~max_iters inputs =
-  if not (Solver.is_batched inputs.Problem.Inputs.x0 inputs.us0)
+  let batch_rank =
+    Array.length (Solver.check_batch_shape inputs.Problem.Inputs.x0 inputs.us0)
+  in
+  if batch_rank = 0
   then solve_fixed_unbatched p ~max_iters ?alphas ?damping ?c1 ?conv_threshold inputs
   else
     Rune.custom_jvp
@@ -393,8 +413,8 @@ let solve_fixed p ?alphas ?damping ?c1 ?conv_threshold ~max_iters inputs =
            Rune.custom_transpose
              (Problem.inputs p)
              Nx.Ptree.tensor
-             (fun dinputs -> batched_tangent p ~theta ~sol dinputs)
-             ~transpose:(fun ybar -> batched_transpose p ~sol inputs ybar)
+             (fun dinputs -> batched_tangent p ~batch_rank ~theta ~sol dinputs)
+             ~transpose:(fun ybar -> batched_transpose p ~batch_rank ~sol inputs ybar)
              dinputs
          in
          taus, tangent)

@@ -43,10 +43,30 @@ let stack (ts : ('a, 'b, 'd) Nx.t array) : ('a, 'b, 'd) Nx.t =
 let unstack len (t : ('a, 'b, 'd) Nx.t) : ('a, 'b, 'd) Nx.t array =
   Array.init len ~f:(fun k -> slice [ I k ] t)
 
-(* [is_batched x0 us0] is [true] when the state and every control carry a
+(* [is_batched x0 us0] is [true] when the state or any control carries a
    leading batch axis. *)
 let is_batched x0 us0 =
   Array.length (shape x0) > 1 || Array.exists us0 ~f:(fun u -> Array.length (shape u) > 1)
+
+(* [batch_shape_of t] is the leading batch axes of a step-shaped tensor [t]
+   whose last axis is a state or control vector. *)
+let batch_shape_of t =
+  let s = shape t in
+  let r = Array.length s in
+  if r < 1 then invalid_arg "dilqr: expected a tensor with at least one dimension";
+  Array.sub s ~pos:0 ~len:(r - 1)
+
+(* [check_batch_shape x0 us0] returns the shared leading batch axes of [x0]
+   and every control in [us0], raising [Invalid_argument] on mismatch. *)
+let check_batch_shape x0 us0 =
+  let b = batch_shape_of x0 in
+  Array.iter us0 ~f:(fun u ->
+    if not (Array.equal Int.equal (batch_shape_of u) b)
+    then invalid_arg "dilqr: x0 and us0 must carry the same leading batch shape");
+  b
+
+let rec vmap_fn rank spec f =
+  if rank <= 0 then f else Rune.vmap spec (vmap_fn (rank - 1) spec f)
 
 (* [ks p x] is the step index of each step, a scalar row per step, beside
    [x]. *)
@@ -105,17 +125,21 @@ let rollout_unbatched
 let rollout_structure () = Nx.Ptree.(pair (list tensor) tensor)
 
 (* [rollout p theta x0 us] is {!rollout_unbatched}; batched inputs are rolled
-   out member by member. *)
+   out member by member across every leading batch axis. *)
 let rollout p theta x0 us0 =
-  if not (is_batched x0 us0)
+  let batch = check_batch_shape x0 us0 in
+  let rank = Array.length batch in
+  if rank = 0
   then rollout_unbatched p theta x0 us0
   else (
     let inputs : ('p, ('w, 'd) Problem.value) Problem.Inputs.t =
       { Problem.Inputs.theta; x0; us0 }
     in
+    let spec = Nx.Ptree.(Problem.inputs p @-> returns (rollout_structure ())) in
     let xs, cost =
-      Rune.vmap
-        Nx.Ptree.(Problem.inputs p @-> returns (rollout_structure ()))
+      vmap_fn
+        rank
+        spec
         (fun (i : ('p, ('w, 'd) Problem.value) Problem.Inputs.t) ->
            let xs, cost = rollout_unbatched p i.theta i.x0 i.us0 in
            Array.to_list xs, cost)
@@ -219,21 +243,25 @@ let tape_structure () = Nx.Ptree.(pair (block_rows ()) (pair tensor tensor))
 let blocks p theta (xs : ('w, 'd) Problem.value array) (us : ('w, 'd) Problem.value array)
   : (float, 'w, 'd) Lqr.tape
   =
-  let batched =
-    Array.exists xs ~f:(fun x -> Array.length (shape x) > 1)
-    || Array.exists us ~f:(fun u -> Array.length (shape u) > 1)
-  in
-  if not batched
+  let batch_shape = check_batch_shape xs.(0) us in
+  Array.iter xs ~f:(fun x ->
+    if not (Array.equal Int.equal (batch_shape_of x) batch_shape)
+    then invalid_arg "dilqr: xs and us must carry the same leading batch shape");
+  let batch = Array.length batch_shape in
+  if batch = 0
   then blocks_unbatched p theta xs us
   else (
     (* Stack after the batch axes so that each member is a [horizon; n] row
        for the vmap. *)
-    let batch = Array.length (shape xs.(0)) - 1 in
     let xs = Nx.stack ~axis:batch (Array.to_list xs)
     and us = Nx.stack ~axis:batch (Array.to_list us) in
+    let spec =
+      Nx.Ptree.(pair p.params (pair tensor tensor) @-> returns (tape_structure ()))
+    in
     let blocks, (fx, fxx) =
-      Rune.vmap
-        Nx.Ptree.(pair p.params (pair tensor tensor) @-> returns (tape_structure ()))
+      vmap_fn
+        batch
+        spec
         (fun (theta, (xs, us)) ->
            let { Lqr.blocks; fx; fxx } = blocks_t p theta xs us in
            blocks, (fx, fxx))
@@ -646,14 +674,15 @@ let single_layout (type d) : d layout =
   let state_like : d Nx.bool_t -> d Nx.bool_t = fun flags -> flags in
   { members = (fun flags -> flags); tape_like; state_like }
 
-let batch_layout (type d) (b : int) : d layout =
+let batch_layout (type d) (batch_shape : int array) : d layout =
+  let rank = Array.length batch_shape in
+  let axes = List.init rank ~f:Fn.id in
+  let target_shape = Array.append batch_shape [| 1; 1 |] in
   let tape_like : 'v 's. ('v, 's, d) Nx.t -> ('v, 's, d) Nx.t =
-    fun x -> reshape [| b; 1; 1 |] x
+    fun x -> reshape target_shape x
   in
-  let state_like : d Nx.bool_t -> d Nx.bool_t =
-    fun flags -> reshape [| b; 1; 1 |] flags
-  in
-  { members = (fun flags -> Nx.all ~axes:[ 0 ] flags); tape_like; state_like }
+  let state_like : d Nx.bool_t -> d Nx.bool_t = fun flags -> reshape target_shape flags in
+  { members = (fun flags -> Nx.all ~axes flags); tape_like; state_like }
 
 (* The per-member tensor work: one member's rollout, Riccati pass and trial.
    The dynamics and the losses are the problem's own, written for one member. *)
@@ -682,6 +711,19 @@ let initial_step p ~(common : (float, 'w, 'd) Lqr.common) ~value_grad =
     d, Infix.(sum ~axes:[ -1 ] (value_grad * d)))
   else zeros_like value_grad, zeros_like (sum ~axes:[ -1 ] value_grad)
 
+(* [count_initial_step p ~decrease ~d1 ~d2] folds a free initial state's step
+   into the line search's model coefficients. The model predicts a decrease
+   [α d1 + ½ α² d2], and moving [x₀] by [α d] decreases the value function by
+   [α (Vx·d) + ½ α² (dᵀ V d)] — the step is Newton's, so [Vx·d = −dᵀ V d]: the
+   first-order decrease goes to [d1] and the curvature it buys is
+   [dᵀ V d = −decrease], which [d2] must carry for the model to be exact at
+   [α = 1] (where it then predicts [½ d1], the decrease a Newton step really
+   makes on a quadratic). A pinned initial state contributes neither. *)
+let count_initial_step p ~decrease ~d1 ~d2 =
+  if not p.Problem.free_initial
+  then d1, d2
+  else Infix.(d1 + decrease), Infix.(d2 - decrease)
+
 (* [stacked_x0 xs] is the state a stacked trajectory starts from: step 0, the
    horizon being the second-to-last axis, so a batch's leading axes are kept. *)
 let stacked_x0 (xs : ('a, 'b, 'd) Nx.t) =
@@ -697,10 +739,11 @@ let fixed_backward_lane p theta xs us mu =
     Lqr.backward_lin ~common ~tape ~lin:(Lqr.lin_of_tape tape)
   in
   let d, decrease = initial_step p ~common ~value_grad in
+  let d1, d2 = count_initial_step p ~decrease ~d1 ~d2 in
   { Fixed_gains.ff = gains.Lqr.feedforward
   ; fb = gains.feedback
   ; d
-  ; d1 = (if p.Problem.free_initial then Infix.(d1 + decrease) else d1)
+  ; d1
   ; d2
   ; scale = fixed_scale common
   }
@@ -752,22 +795,27 @@ let single_fixed_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) fixed_kerne
       (fun theta d xs us ff fb alpha -> fixed_trial_lane p theta d xs us ff fb alpha)
   }
 
-let batched_fixed_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) fixed_kernels =
+let batched_fixed_kernels (p : ('w, 'p, 'd) Problem.t) (rank : int)
+  : ('w, 'p, 'd) fixed_kernels
+  =
   let rollout =
-    Rune.vmap
+    vmap_fn
+      rank
       Nx.Ptree.(
         pair p.Problem.params (pair tensor tensor) @-> returns (pair tensor tensor))
       (fun (theta, (x0, us)) -> fixed_rollout_lane p theta x0 us)
   in
   let backward =
-    Rune.vmap
+    vmap_fn
+      rank
       Nx.Ptree.(
         pair p.Problem.params (pair tensor (pair tensor tensor))
         @-> returns (fixed_gains ()))
       (fun (theta, (xs, (us, mu))) -> fixed_backward_lane p theta xs us mu)
   in
   let trial =
-    Rune.vmap
+    vmap_fn
+      rank
       Nx.Ptree.(
         pair
           p.Problem.params
@@ -1025,42 +1073,32 @@ let solve_fixed_with
   ; iters = state.count
   }
 
-(* The fixed-iteration solve. Batched inputs — a leading batch axis on the
+(* The fixed-iteration solve. Batched inputs — leading batch axes on the
    parameters, the initial state and every initial control — are solved as one
    batch: the members share the step and the damping schedule, the batch stops
    when the last of them has converged or could not be moved, and the dynamics
    and the losses stay written for one member. *)
 let solve_fixed p ?alphas ?damping ?c1 ?conv_threshold ~max_iters theta x0 us0 =
-  if not (is_batched x0 us0)
-  then (
-    let us = stack us0 in
-    solve_fixed_with
-      p
-      single_layout
-      (single_fixed_kernels p)
-      ?alphas
-      ?damping
-      ?c1
-      ?conv_threshold
-      ~max_iters
-      theta
-      x0
-      us)
-  else (
-    let b = (shape x0).(0) in
-    let us = Nx.stack ~axis:1 (Array.to_list us0) in
-    solve_fixed_with
-      p
-      (batch_layout b)
-      (batched_fixed_kernels p)
-      ?alphas
-      ?damping
-      ?c1
-      ?conv_threshold
-      ~max_iters
-      theta
-      x0
-      us)
+  let batch_shape = check_batch_shape x0 us0 in
+  let rank = Array.length batch_shape in
+  let us = Nx.stack ~axis:rank (Array.to_list us0) in
+  let layout, kernels =
+    if rank = 0
+    then single_layout, single_fixed_kernels p
+    else batch_layout batch_shape, batched_fixed_kernels p rank
+  in
+  solve_fixed_with
+    p
+    layout
+    kernels
+    ?alphas
+    ?damping
+    ?c1
+    ?conv_threshold
+    ~max_iters
+    theta
+    x0
+    us
 
 (* Scalar-read helper for the adaptive solver. *)
 let item_f t = item [] t
@@ -1135,7 +1173,8 @@ let eager_kernels (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd) kernels =
           Lqr.backward_lin ~common ~tape ~lin:(Lqr.lin_of_tape tape)
         in
         let d, decrease = initial_step p ~common ~value_grad in
-        gains, (if p.Problem.free_initial then Infix.(d1 + decrease) else d1), d2, d)
+        let d1, d2 = count_initial_step p ~decrease ~d1 ~d2 in
+        gains, d1, d2, d)
   ; trial =
       (fun theta d xs us gains alpha ->
         let x0 = Infix.(stacked_x0 xs + (d * alpha)) in
@@ -1175,7 +1214,7 @@ let compiled_kernels ?beam ?parallel (p : ('w, 'p, 'd) Problem.t) : ('w, 'p, 'd)
            Lqr.backward_lin ~common ~tape ~lin:(Lqr.lin_of_tape tape)
          in
          let d, decrease = initial_step p ~common ~value_grad in
-         let d1 = if p.Problem.free_initial then Infix.(d1 + decrease) else d1 in
+         let d1, d2 = count_initial_step p ~decrease ~d1 ~d2 in
          ((gains.Lqr.feedback, gains.feedforward), d), (d1, d2))
   in
   let trial =
