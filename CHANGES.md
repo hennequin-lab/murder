@@ -320,6 +320,12 @@ changes do not need an entry.
 
 ### symo
 
+- The metric averages its samples with a `Rune.vmap` over the sample axis
+  instead of a host loop folded at trace time. The compiled step's program used
+  to hold one copy of every per-leaf-pair factor estimate per sample, so a model
+  with many parameter tensors and more than a few samples could not be compiled
+  at all (tolk died on the graph); the program is now the size of one estimate,
+  and the sample count is a run-time cost alone.
 - The optimizer is the damped GGN: `S.ggn ~outputs` builds one gradient per
   output element, `S_g` is their orbit average (EMA'd with `beta_2` and
   debiased), and the step is `theta <- theta - eta (S_g + λI)^{-1} ḡ` by default

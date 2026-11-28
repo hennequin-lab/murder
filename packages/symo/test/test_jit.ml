@@ -133,6 +133,25 @@ let test_other_set () =
   let host x = Nx.Ptree.place (module M.State) Nx.Host.on x in
   check_state ~msg:"compiled step on another set" ~tol:1e-5 eager (host jitted)
 
+(* Several samples: the metric is the mean of their orbit averages, and the
+   compiled step must agree with the eager one. The samples are one axis of a
+   [Rune.vmap], so the step's program does not grow with their number. *)
+let test_several_samples () =
+  let compiled = M.Compiled.create ~config in
+  let grads = snd (Rune.value_and_grad M.ptree mlp_loss (params ())) in
+  let stacked (x : Nx.host Nx.float32_t) =
+    let row k =
+      let a = Float.of_int Int.(k + 1) in
+      unsqueeze ~axes:[ 0 ] Infix.(x *$ a)
+    in
+    concatenate ~axis:0 (List.map (List.range 0 3) ~f:row)
+  in
+  let samples = { Mlp.w1 = stacked grads.w1; w2 = stacked grads.w2 } in
+  let state = M.init ~config (params ()) in
+  let eager = M.step ~config ~state ~grads ~samples in
+  let jitted = M.Compiled.step compiled ~state ~grads ~samples in
+  check_state ~msg:"compiled step with several samples" ~tol:1e-5 eager jitted
+
 let test_state_threads () =
   (* The compiled step accepts the whole state as input leaves and returns the
      next one; a few more steps on the jitted state alone. *)
@@ -196,6 +215,7 @@ let tests =
   [ test "eager and jitted steps agree over a run" test_parity
   ; test "one jit for the whole training step" test_jitted_training_step
   ; test "compiled step on another set" test_other_set
+  ; test "compiled step with several samples" test_several_samples
   ; test "state threads through compiled calls" test_state_threads
   ; test "compiled calls replay instead of retracing" test_no_retrace
   ; test "jitted random group element" test_random_transform_jit

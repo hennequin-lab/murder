@@ -115,7 +115,9 @@ module type S = sig
 
   (** [prepare ~config ~state ~grads ~samples] is the traceable metric half of
       the step: the momentum, the metric averaged over [samples] and EMA'd with
-      [beta_2], and the debiased metric. *)
+      [beta_2], and the debiased metric. The samples are one axis of a
+      {!Rune.vmap}, so a compiled step's program is the size of one sample's
+      factor estimate whatever their number: the count is a run-time cost. *)
   val prepare
     :  config:config
     -> state:'d state
@@ -248,18 +250,22 @@ module Make (M : Nx.Ptree.S) (O : Orbit.S with type ('a, 'd) t = ('a, 'd) M.t) :
      orbit average of their outer products: the orbit average of the GGN when
      the samples are {!ggn}'s per-output gradients. Projection and factor
      estimation are linear, so the mean commutes with them and one packed
-     tensor accumulates it. *)
+     tensor per sample is what is averaged.
+
+     The samples are one more axis of a {!Rune.vmap} rather than a host loop.
+     The step is a compiled program, and a loop folded at trace time holds one
+     copy of every factor estimate per sample: a program that grows with the
+     number of samples, which the compiler cannot take on a model with many
+     leaves. Under a map the estimate is traced once and the lanes are the
+     samples, so the program's size is the estimate's alone. *)
   let sample_metric samples =
     let n = sample_count samples in
-    let sample i = P.map (module M) (fun _ x -> slice [ Nx.I i ] x) samples in
-    let estimate i =
-      O.Second_order.pack (O.Second_order.factors_of_pair (sample i) (sample i))
+    let ptree : (('d Nx.float32_t, 'd) M.t, 'd) Nx.Ptree.t =
+      Nx.Ptree.instantiate (module M)
     in
-    let total =
-      List.fold (List.range 1 n) ~init:(estimate 0) ~f:(fun acc i ->
-        Infix.(acc + estimate i))
-    in
-    Infix.(total /$ Float.of_int n)
+    let pack g = O.Second_order.pack (O.Second_order.factors_of_pair g g) in
+    Rune.vmap Nx.Ptree.(ptree @-> returns tensor) pack samples
+    |> fun packed -> Infix.(sum ~axes:[ 0 ] packed /$ Float.of_int n)
 
   (* Everything the solve needs, plus the pieces [finish] carries into the
      next state. *)

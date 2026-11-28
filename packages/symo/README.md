@@ -228,7 +228,11 @@ The suites are:
 - **The metric is the GGN.** `S.ggn ~outputs` takes one gradient of an output
   element per metric sample; projection and factor estimation are linear, so
   their mean is the orbit average of the GGN. `S_g` is that mean, EMA'd with
-  `β₂` and debiased, with no mean subtraction.
+  `β₂` and debiased, with no mean subtraction. The samples are one more axis of
+  a `Rune.vmap`, not a loop folded at trace time, so the compiled step's
+  program is the size of one factor estimate whatever the number of samples; the
+  count is a run-time cost (one backward pass per sample) and not a compile-time
+  one.
 - **The damping is absolute, and inverse by default.** `damping` is `λ` in
   `(S_g + λI)^{-1}` (`form = Inverse`, the default, gradient² units) or in
   `(S_g^{1/2} + λI)^{-1}` (`form = Root`, gradient units, where Adam's `ε`
