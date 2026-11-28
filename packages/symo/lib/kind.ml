@@ -51,8 +51,10 @@ let to_string t =
   | [ 1; 1 ] -> "a"
   | _ -> "?" ^ String.concat ~sep:"," (List.map t ~f:Int.to_string)
 
-(* The kinds of [V^{⊗k}] with the multiplicities of the stable range. *)
-let stable_kinds ~k =
+(* Every kind of [V^{⊗k}] for [k <= 2], in a canonical order: the kinds that
+   survive at any dimension are listed, and the ones whose irrep vanishes at a
+   given [n] are removed by {!kinds}. *)
+let all ~k =
   match k with
   | 0 -> [ [] ]
   | 1 -> [ []; [ 1 ] ]
@@ -61,7 +63,30 @@ let stable_kinds ~k =
     invalid_arg
       (Printf.sprintf "Symo.Kind: %d permuted axes per group (at most 2 supported)" k)
 
-let stable_multiplicity ~k : t -> int = function
+(* The dimension of the irrep [S^(n-|λ|, λ)]. It is zero — the kind is then
+   absent from [V^{⊗k}] — when the partition does not fit in [n], which for
+   [k = 2] means [n < 4] for [λ = [2]] and [λ = [1; 1]], and for [k = 1]
+   means [n = 1] for [λ = [1]]. The two-row values are the hook-length
+   formula's [n(n-3)/2] and [(n-1)(n-2)/2]. *)
+let dim ~n : t -> int = function
+  | [] -> 1
+  | [ 1 ] -> n - 1
+  | [ 2 ] -> n * (n - 3) / 2
+  | [ 1; 1 ] -> (n - 1) * (n - 2) / 2
+  | _ -> 0
+
+(* The kinds of [V^{⊗k}] at dimension [n]: {!all}, less the ones whose irrep
+   vanishes there. Below the stable range a kind disappears rather than
+   changing; the multiplicities of the survivors are {!multiplicity}'s. *)
+let kinds ~k ~n = List.filter (all ~k) ~f:(fun kind -> dim ~n kind > 0)
+
+(* The multiplicity of a kind in [V^{⊗k}], the dimension of its multiplicity
+   space: the number of copies the block decomposition carries. These are the
+   stable-range values, and they stay right at every dimension where {!check}
+   holds ([1] for the trivial kind at [k = 1]; [2], [3], [1] and [1] at
+   [k = 2]); [n = 2] with two permuted axes is where they do not, and it is
+   refused. *)
+let multiplicity ~k : t -> int = function
   | [] ->
     (match k with
      | 0 -> 1
@@ -83,20 +108,29 @@ let stable_multiplicity ~k : t -> int = function
      | _ -> 0)
   | _ -> 0
 
-(* The smallest dimension for which the stable multiplicities hold: the
-   partition algebra is semisimple for [n ≥ 2k]. *)
-let stable_dim ~k = 2 * k
-
-let check_stable ~k ~n =
-  if n < stable_dim ~k
+(* [check ~k ~n] accepts the dimensions at which the surviving kinds account
+   for [V^{⊗k}], [Σ_λ dim S_λ · m_λ = n^k], and refuses the others: at
+   [n = 2] with two permuted axes the survivors span 5 of the 4 dimensions of
+   [V ⊗ V], because [V] is the sum of the trivial and the sign representation
+   and extra relations appear. Every [n >= 3] passes for [k = 2], and every
+   [n >= 1] for [k <= 1]. *)
+let check ~k ~n =
+  let total =
+    List.fold (kinds ~k ~n) ~init:0 ~f:(fun acc kind ->
+      acc + (dim ~n kind * multiplicity ~k kind))
+  in
+  let expected = Int.(n ** k) in
+  if not (Int.equal total expected)
   then
     invalid_arg
       (Printf.sprintf
-         "Symo.Kind: %d permuted axes need dimension >= %d for a faithful block \
-          decomposition (got %d)"
+         "Symo.Kind: %d permuted axes of dimension %d: the isotypic kinds account for %d \
+          of the %d dimensions of the tensor power, and the extra relations there have \
+          no block decomposition"
          k
-         (stable_dim ~k)
-         n)
+         n
+         total
+         expected)
 
 (* ------------------------------------------------------------------------
    Canonical test vectors
@@ -170,13 +204,14 @@ let normalize v =
   Infix.(v *$ (1. /. norm))
 
 let test_vectors ~k ~n =
-  check_stable ~k ~n;
+  check ~k ~n;
+  let alive kind = dim ~n kind > 0 in
   let vectors =
     match k with
     | 0 -> [ [], 0, scalar float32 1.0 ]
     | 1 ->
-      let x = helmert n in
-      [ [], 0, ones n; [ 1 ], 0, x ]
+      let standard = if alive [ 1 ] then [ [ 1 ], 0, helmert n ] else [] in
+      [ [], 0, ones n ] @ standard
     | 2 ->
       let x = helmert n in
       let spread = Infix.(Nx.ones float32 [| n; n |] *$ (1. /. Float.of_int n)) in
@@ -184,17 +219,22 @@ let test_vectors ~k ~n =
       let row = outer x (ones n) in
       let column = outer (ones n) x in
       let diag_w = diagonal_part n x in
-      let e = elementary n 0 1 in
-      let s = s_vector n in
-      let a = project_antisymmetric Infix.(e - transpose e) in
-      [ [], 0, spread
-      ; [], 1, diagonal
-      ; [ 1 ], 0, row
-      ; [ 1 ], 1, column
-      ; [ 1 ], 2, diag_w
-      ; [ 2 ], 0, s
-      ; [ 1; 1 ], 0, a
-      ]
+      let symmetric_traceless =
+        (* needs a four-cycle: [n >= 4], which is exactly when the kind is
+           alive *)
+        if alive [ 2 ] then [ [ 2 ], 0, s_vector n ] else []
+      in
+      let antisymmetric =
+        if alive [ 1; 1 ]
+        then (
+          let e = elementary n 0 1 in
+          [ [ 1; 1 ], 0, project_antisymmetric Infix.(e - transpose e) ])
+        else []
+      in
+      [ [], 0, spread; [], 1, diagonal ]
+      @ [ [ 1 ], 0, row; [ 1 ], 1, column; [ 1 ], 2, diag_w ]
+      @ symmetric_traceless
+      @ antisymmetric
     | _ -> assert false
   in
   List.map vectors ~f:(fun (kind, copy, v) -> kind, copy, normalize v)

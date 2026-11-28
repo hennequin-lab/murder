@@ -116,7 +116,10 @@ module type S = sig
 
     (** [transport ~dims factors] re-encodes the operator at new dims (the
         permuted axes' dimensions; free axes are unchanged), preserving its
-        blocks, hence its distinct spectrum and any function of it. *)
+        blocks, hence its distinct spectrum and any function of it. The two
+        dims must have the same kinds, i.e. both be above or both below the
+        dimension at which one of them vanishes; raises [Invalid_argument]
+        otherwise. *)
     val transport : ?symmetric:bool -> dims:(int list, 'd) t -> 'd factors -> 'd factors
   end
 end
@@ -443,7 +446,7 @@ module Make (M : Model) : S with type ('a, 'd) t = ('a, 'd) M.t = struct
       Array.map kinds_arr ~f:(fun kind ->
         Array.init n_leaves ~f:(fun i ->
           List.fold2_exn kind leaf_k.(i) ~init:1 ~f:(fun acc k kg ->
-            acc * Kind.stable_multiplicity ~k:kg k)))
+            acc * Kind.multiplicity ~k:kg k)))
 
     let leaf_size =
       Array.map leaf_mult ~f:(fun mult ->

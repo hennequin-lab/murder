@@ -28,9 +28,12 @@
    distinct spectrum and any function of it (inverse, powers, square roots);
    only multiplicities — hence trace, determinant and norms — change.
 
-   The dims must be in the stable range per group ([n >= 2k], see
-   {!Kind.check_stable}); below it the algebra is not semisimple and the table
-   is not invertible. *)
+   The kinds are the ones that survive at the dims ({!Kind.kinds}): below the
+   stable range ([n < 2k]) a kind whose irrep vanishes is absent, so the blocks
+   are smaller and there are fewer of them. The compiled pair's components are
+   already a maximal independent subset ({!Compiler.independent}), so the table
+   that maps factors to block entries is surjective onto the entries and its
+   pseudo-inverse is an exact right inverse. *)
 
 open Base
 open Nx
@@ -113,8 +116,8 @@ let index_in_list list value =
 let build_group ~n ~lpos ~rpos =
   let k_l = Array.length lpos
   and k_r = Array.length rpos in
-  let kinds_l = Kind.stable_kinds ~k:k_l in
-  let kinds_r = Kind.stable_kinds ~k:k_r in
+  let kinds_l = Kind.kinds ~k:k_l ~n in
+  let kinds_r = Kind.kinds ~k:k_r ~n in
   let common = List.filter kinds_l ~f:(fun k -> List.exists kinds_r ~f:(Kind.equal k)) in
   let side_spec k =
     if Int.equal k 0
@@ -125,7 +128,10 @@ let build_group ~n ~lpos ~rpos =
     { Sides.left = List.init k_l ~f:(fun _ -> n); right = List.init k_r ~f:(fun _ -> n) }
   in
   let spec = { Sides.left = side_spec k_l; right = side_spec k_r } in
-  let compiler = Compiler.compile ~dims spec in
+  (* The per-group dictionary keeps every diagram — [select:false] — because
+     the pair's components are looked up in it, and a pair component may name a
+     diagram the rank selection would have dropped on its own. *)
+  let compiler = Compiler.compile ~select:false ~dims spec in
   let components = compiler.Compiler.basis.components in
   let d = List.length components in
   let index_of = Hashtbl.create (module String) in
@@ -239,13 +245,13 @@ let build (compiler : Compiler.t) =
     Array.of_list
       (List.map kinds ~f:(fun kind ->
          List.fold2_exn kind groups_list ~init:1 ~f:(fun acc k g ->
-           acc * Kind.stable_multiplicity ~k:g.k_l k)))
+           acc * Kind.multiplicity ~k:g.k_l k)))
   in
   let copies_r =
     Array.of_list
       (List.map kinds ~f:(fun kind ->
          List.fold2_exn kind groups_list ~init:1 ~f:(fun acc k g ->
-           acc * Kind.stable_multiplicity ~k:g.k_r k)))
+           acc * Kind.multiplicity ~k:g.k_r k)))
   in
   let perm_axis side i =
     List.exists basis.group_axes ~f:(fun axes ->
@@ -305,14 +311,12 @@ let build (compiler : Compiler.t) =
     let kind = List.nth_exn kinds ki in
     let a_parts =
       decode
-        (List.map2_exn kind groups_list ~f:(fun k g ->
-           Kind.stable_multiplicity ~k:g.k_l k))
+        (List.map2_exn kind groups_list ~f:(fun k g -> Kind.multiplicity ~k:g.k_l k))
         a
     in
     let b_parts =
       decode
-        (List.map2_exn kind groups_list ~f:(fun k g ->
-           Kind.stable_multiplicity ~k:g.k_r k))
+        (List.map2_exn kind groups_list ~f:(fun k g -> Kind.multiplicity ~k:g.k_r k))
         b
     in
     let product_of terms =

@@ -345,6 +345,16 @@ changes do not need an entry.
 
 ### symo
 
+- Dimensions below the stable range are supported. A kind whose irrep vanishes
+  at the given dimension is dropped (`Kind.kinds`, `Kind.dim`) instead of every
+  `n < 2k` being refused, and a size is accepted when the surviving kinds
+  account for the tensor power (`Kind.check`); two permuted axes of dimension
+  3 now work, of dimension 2 do not. Because the diagram basis is redundant
+  there, `Compiler.compile` keeps a maximal independent subset of the
+  components (a pivoted Cholesky of their Gram, `Compiler.independent`), so the
+  design matrix is positive definite, the factors identifiable and the
+  factor-to-block table a bijection; the estimate is still the exact orbit
+  average, which `test_orbit` checks by enumerating the group at `n = 3`.
 - The metric averages its samples with a `Rune.vmap` over the sample axis
   instead of a host loop folded at trace time. The compiled step's program used
   to hold one copy of every per-leaf-pair factor estimate per sample, so a model

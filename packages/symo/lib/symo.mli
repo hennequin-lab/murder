@@ -53,10 +53,17 @@
     function of it (only multiplicities, hence trace and determinant, change).
     The optimizer works on the blocks directly, so no surrogate is involved.
 
-    A permuted axis must be in the stable range ([n >= 2k] for [k] permuted
-    axes per group, i.e. at least 2, 4 and 6 for one, two and three permuted
-    axes); below it the algebra is not semisimple and the decomposition is not
-    faithful. The compiler raises [Invalid_argument] when a spec violates it.
+    {b Dimensions.} A permuted axis is supported wherever the isotypic kinds
+    whose irreps do not vanish account for the tensor power,
+    [Σ_λ dim S_λ · m_λ = n^k]; that is every [n >= 3] for [k = 2], and every
+    [n] for [k <= 1], so the stable range [n >= 2k] is well inside it. At
+    [n = 3] with two permuted axes the symmetric-traceless kind [2] is absent
+    ([S^(n-2,2)] has dimension zero) and the diagram basis carries one
+    relation: the compiler drops the redundant components, so the design
+    system stays positive definite and the factors identifiable. Two permuted
+    axes of dimension 2 are the one refused case (the survivors account for 5
+    of the 4 dimensions of [V ⊗ V]); the compiler raises [Invalid_argument]
+    there.
 
     {2 The damped GGN step}
 

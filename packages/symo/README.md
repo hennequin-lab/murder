@@ -243,11 +243,16 @@ The suites are:
   program: `S.Compiled` caches it, and `S.ggn` traces too, so a training step
   (forward, backward, metric and update) can be one `Rune.jit` function of the
   state, in the shape of Vega's optimizer steps.
-- **Permuted axes must be in the stable range.** A group with `k` permuted
-  axes needs dimension `n >= 2k` (2, 4 and 6 for one, two and three axes) for
-  the commutant to be semisimple and the block decomposition faithful; the
-  compiler raises `Invalid_argument` below it. Free (`Id`) axes have no such
-  constraint.
+- **Dimensions below the stable range.** A group with `k` permuted axes is
+  supported wherever the isotypic kinds that survive account for the tensor
+  power (`Σ_λ dim S_λ · m_λ = n^k`): every `n >= 3` for `k = 2` and every `n`
+  for `k <= 1`, so the stable range `n >= 2k` is well inside it. Below it a
+  kind whose irrep vanishes is dropped (at `n = 3` with two permuted axes the
+  symmetric-traceless `[2]` kind is gone), and the diagram basis carries one
+  relation: the compiler keeps a maximal independent subset of the components,
+  so the design matrix stays positive definite, the factors identifiable and
+  the block table a bijection on the operators. Two permuted axes of dimension
+  2 are the one refused case. Free (`Id`) axes have no constraint.
 - **The design matrix is factorized once, at compile time**, by Cholesky in
   float64 (with a jittered retry and an eigendecomposition pseudo-inverse
   fallback for degenerate bases). The per-call factor estimation is two small

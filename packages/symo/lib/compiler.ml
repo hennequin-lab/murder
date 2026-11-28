@@ -385,7 +385,76 @@ let basis_of_spec ~symmetric spec =
     Hashtbl.set basis_cache ~key ~data:basis;
     basis
 
-let compile_basis ~(dims : int list Sides.t) (basis : Basis.t) =
+(* The components enumerate the diagrams of the invariant subspace. In the
+   stable range they are independent, so they are a basis and every operator of
+   the commutant has one factor per component. Below it they are not: at
+   [n = 3] with two permuted axes the [2] kind's irrep vanishes and the
+   fifteen diagrams span fourteen dimensions, so one of them is a combination
+   of the others ({!Kind.check} accepts the size; it is the *diagram* basis
+   that is redundant, not the algebra). A maximal independent subset is what
+   makes the design matrix positive definite — hence the factors identifiable
+   — and what makes the factor-to-block table a bijection on the operators.
+
+   The dependency is exact, so the Gram of the components, computed from the
+   symbolic inner products in float64, reveals it: a pivoted Cholesky keeps
+   the components whose Schur-complement diagonal stays above [1e-12] of the
+   largest. Kept components are returned in their original order, so the
+   factor layout is deterministic. *)
+let independent ~(dims : int list Sides.t) (components : Component.t list) =
+  let a = Array.of_list components in
+  let d = Array.length a in
+  let at i j = (i * d) + j in
+  let gram =
+    Array.init (d * d) ~f:(fun k ->
+      Component.inner_product ~dims a.(k / d) a.(Int.rem k d))
+  in
+  let scale = ref 0.0 in
+  for i = 0 to d - 1 do
+    let x = gram.(at i i) in
+    if Float.( > ) x !scale then scale := x
+  done;
+  let tol = 1e-12 *. !scale in
+  let kept = Array.create ~len:d false in
+  let more = ref (Float.( > ) !scale 0.0) in
+  while !more do
+    let p = ref (-1)
+    and best = ref tol in
+    for i = 0 to d - 1 do
+      let x = gram.(at i i) in
+      if Float.( > ) x !best
+      then (
+        p := i;
+        best := x)
+    done;
+    if Int.(!p < 0)
+    then more := false
+    else (
+      let p = !p in
+      kept.(p) <- true;
+      let spp = gram.(at p p) in
+      let row = Array.init d ~f:(fun j -> gram.(at p j)) in
+      let col = Array.init d ~f:(fun i -> gram.(at i p)) in
+      for i = 0 to d - 1 do
+        if not (Int.equal i p)
+        then
+          for j = 0 to d - 1 do
+            if not (Int.equal j p)
+            then gram.(at i j) <- gram.(at i j) -. (col.(i) *. row.(j) /. spp)
+          done
+      done;
+      for i = 0 to d - 1 do
+        gram.(at p i) <- 0.0;
+        gram.(at i p) <- 0.0
+      done)
+  done;
+  List.filteri components ~f:(fun i _ -> kept.(i))
+
+let compile_basis ?(select = true) ~(dims : int list Sides.t) (basis : Basis.t) =
+  let basis =
+    if select
+    then { basis with components = independent ~dims basis.components }
+    else basis
+  in
   let components = basis.components in
   let applies = List.map components ~f:(compile_apply_component ~dims) in
   let apply_block ~factors v = compile_apply applies ~factors v in
@@ -451,12 +520,13 @@ let symmetric_basis_is_complete ~(dims : int list Sides.t) (spec : Symmetry.t) =
    so the estimator stays the projection onto the invariant subspace. The
    compiled closures and blocks are those of the full basis; the caller's
    [symmetric] request is otherwise unchanged. *)
-let compile ?(symmetric = false) ~dims spec =
+let compile ?(symmetric = false) ?(select = true) ~dims spec =
   let symmetric = symmetric && symmetric_basis_is_complete ~dims spec in
-  compile_basis ~dims (basis_of_spec ~symmetric spec)
+  compile_basis ~select ~dims (basis_of_spec ~symmetric spec)
 
-let compile_manual ?(symmetric = false) ~dims ~group_axes components =
+let compile_manual ?(symmetric = false) ?(select = true) ~dims ~group_axes components =
   let group_ids = List.init (List.length group_axes) ~f:Fn.id in
   compile_basis
+    ~select
     ~dims
     { Basis.label = "manual"; symmetric; components; group_axes; group_ids }

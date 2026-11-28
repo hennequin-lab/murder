@@ -113,6 +113,47 @@ let test_transport () =
     (distinct (symmetrize (cn.Compiler.dense_block ~factors:f)))
     (distinct (symmetrize (cm.Compiler.dense_block ~factors:fm)))
 
+(* Below the stable range the [2] kind is gone, so the operator has one block
+   fewer and the factors that belonged to it have no block to reach: the
+   spectrum is still the dense one, and transport between the two sizes is
+   refused rather than silently dropping a block. *)
+let test_below_stable () =
+  let cs = compile ~n:3 ~symmetric:true in
+  let cl = compile ~n:4 ~symmetric:true in
+  let bs = Blocks.build cs
+  and bl = Blocks.build cl in
+  equal ~msg:"kinds at n = 3" int 3 (List.length bs.Blocks.kinds);
+  equal ~msg:"kinds at n = 4" int 4 (List.length bl.Blocks.kinds);
+  equal
+    ~msg:"n = 3 blocks"
+    int
+    14
+    (List.length
+       (Blocks.to_blocks
+          bs
+          (random_factors (Nx.Rng.key 21) (List.length cs.Compiler.basis.components))));
+  (* the spectrum, with the [2] kind's eigenvalue absent at n = 3 *)
+  let factors =
+    random_factors (Nx.Rng.key 22) (List.length cs.Compiler.basis.components)
+  in
+  let dense = symmetrize (cs.Compiler.dense_block ~factors) in
+  let matrices = Blocks.block_matrices bs (Blocks.to_blocks bs factors) in
+  equal
+    ~msg:"block spectrum below the stable range"
+    (list (float 1e-4))
+    (distinct dense)
+    (block_eigenvalues matrices);
+  (* factors round-trip: the table is a bijection on the operators here *)
+  let back = Blocks.of_blocks bs (Blocks.to_blocks bs factors) in
+  List.iter2_exn factors back ~f:(fun a b ->
+    equal
+      ~msg:"factor round trip below the stable range"
+      (float 1e-4)
+      (item [] a)
+      (item [] b));
+  raises_match (Exn.invalid_arg ~sub:"do not have the same kinds") (fun () ->
+    ignore (Blocks.transport ~from_:bs ~to_:bl factors : _ list))
+
 (* Free axes and several groups: the blocks reproduce the dense spectrum. *)
 let test_free_axes () =
   let n = 8
@@ -255,6 +296,7 @@ let tests =
   ; test "transport preserves blocks and spectrum" test_transport
   ; test "free axes" test_free_axes
   ; test "two groups" test_two_groups
+  ; test "below the stable range" test_below_stable
   ; test "two permuted axes with a free axis" test_two_perms_free
   ; test "blockwise preconditioner" test_blockwise_preconditioner
   ]

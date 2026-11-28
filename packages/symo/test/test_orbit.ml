@@ -87,6 +87,21 @@ end
 
 module OF = Orbit.Make (Two_perms_free)
 
+(* Two permuted axes on a three-dimensional one: below the stable range
+   ([n < 2k = 4]), where the [2] kind's irrep vanishes and the fifteen
+   diagrams satisfy one relation. The estimation must still be the exact
+   orbit average, i.e. the projection onto the invariant subspace. *)
+module Below_stable = struct
+  type ('a, _) t = { w : 'a } [@@deriving ptree]
+
+  let dims : (int list, _) t = { w = [ 3; 3 ] }
+
+  let symmetries : (Symmetry.spec list, _) t =
+    { w = [ Symmetry.Perm 0; Symmetry.Perm 0 ] }
+end
+
+module OB = Orbit.Make (Below_stable)
+
 (* ------------------------------------------------------------------------
    Group enumeration
    ------------------------------------------------------------------------ *)
@@ -265,6 +280,34 @@ let test_second_order_exact () =
   let expected_v = Infix.(reshape [| l; r |] expected *@ vec v.w) in
   let got_v = (O.Second_order.apply ~factors v).w in
   check_leaf ~msg:"operator action" ~tol:1e-4 (reshape [| 2; 3 |] expected_v) got_v
+
+let test_below_stable_exact () =
+  let c = (OB.Second_order.large ()).w.(0) in
+  equal int 6 (List.length (group_elements c));
+  let x = Nx.Rng.normal ~key:(Nx.Rng.key 41) float32 [| 3; 3 |] in
+  let expected = exact_r2 c x in
+  let factors =
+    OB.Second_order.factors_of_pair { Below_stable.w = x } { Below_stable.w = x }
+  in
+  let assembled = c.dense_block ~factors:factors.w.(0) in
+  check_leaf
+    ~msg:"below the stable range: assembled block is the orbit average"
+    ~tol:1e-5
+    expected
+    assembled;
+  let perms = random_perms c in
+  check_leaf
+    ~msg:"below the stable range: block invariance"
+    ~tol:1e-5
+    assembled
+    (c.transform ~perms assembled);
+  (* [R1] too: the orbit average of a vector is its invariant projection. *)
+  let v = Nx.Rng.normal ~key:(Nx.Rng.key 42) float32 [| 3; 3 |] in
+  check_leaf
+    ~msg:"below the stable range: orbit average"
+    ~tol:1e-5
+    (exact_r1 OB.First_order.large.w v)
+    (OB.First_order.orbit_average { Below_stable.w = v }).w
 
 let test_two_groups_exact () =
   let c = O2.First_order.large.w in
@@ -494,6 +537,7 @@ let tests =
   ; test "first order commutes with the group" test_first_order_equivariant
   ; test "second order against the group" test_second_order_exact
   ; test "two permutation groups" test_two_groups_exact
+  ; test "below the stable range" test_below_stable_exact
   ; test "two permuted axes with a free axis" test_two_perms_free
   ; test "multi-leaf orbit machinery" test_multi_leaf
   ; test "multi-leaf invariance" test_multi_leaf_invariance

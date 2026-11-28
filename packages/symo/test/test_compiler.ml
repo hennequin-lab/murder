@@ -179,6 +179,50 @@ let test_left_tie () =
     ~dims:(dims ~left:[ 2; 2 ] ~right:[])
     (spec ~left:[ Symmetry.Perm 0; Perm 0 ] ~right:[ Symmetry.Absent ])
 
+(* Below the stable range ([n < 2k]): at [n = 3] with two permuted axes the
+   [2] kind's irrep vanishes and the diagram basis is redundant, so the
+   compiler keeps a maximal independent subset. The design matrix is then
+   positive definite and the factor round trip is exact, which is what
+   [check_basis] verifies. *)
+let test_below_stable () =
+  check_basis
+    ~name:"below the stable range"
+    ~dims:(dims ~left:[ 3; 3 ] ~right:[ 3; 3 ])
+    (spec ~left:[ Symmetry.Perm 0; Perm 0 ] ~right:[ Symmetry.Perm 0; Symmetry.Perm 0 ]);
+  let compiled =
+    Compiler.compile
+      ~dims:(dims ~left:[ 3; 3 ] ~right:[ 3; 3 ])
+      (spec ~left:[ Symmetry.Perm 0; Perm 0 ] ~right:[ Symmetry.Perm 0; Symmetry.Perm 0 ])
+  in
+  (* Fifteen diagrams, fourteen of them independent: one is dropped. *)
+  equal int 14 (List.length compiled.basis.components);
+  (* The symmetric request keeps the symmetric operators only, whose number is
+     [Σ_λ m_λ(m_λ+1)/2 = 3 + 6 + 1]. *)
+  let symmetric =
+    Compiler.compile
+      ~symmetric:true
+      ~dims:(dims ~left:[ 3; 3 ] ~right:[ 3; 3 ])
+      (spec ~left:[ Symmetry.Perm 0; Perm 0 ] ~right:[ Symmetry.Perm 0; Symmetry.Perm 0 ])
+  in
+  equal int 10 (List.length symmetric.basis.components)
+
+let test_kinds_at_small_n () =
+  (* The kinds of [V^{⊗2}]: the symmetric-traceless [2] kind vanishes at
+     [n = 3], and with it the antisymmetric [1; 1] at [n = 2]. *)
+  equal int 4 (List.length (Kind.kinds ~k:2 ~n:4));
+  equal (list (list int)) [ []; [ 1 ]; [ 1; 1 ] ] (Kind.kinds ~k:2 ~n:3);
+  equal (list (list int)) [ []; [ 1 ] ] (Kind.kinds ~k:2 ~n:2);
+  equal int 0 (Kind.dim ~n:3 [ 2 ]);
+  equal int 1 (Kind.dim ~n:3 [ 1; 1 ]);
+  (* n = 1 has no standard representation, n >= 2 does. *)
+  equal (list (list int)) [ [] ] (Kind.kinds ~k:1 ~n:1);
+  equal (list (list int)) [ []; [ 1 ] ] (Kind.kinds ~k:1 ~n:2);
+  (* The one refused size: two permuted axes of dimension 2 (the survivors
+     account for 5 of the 4 dimensions). *)
+  raises_match (Exn.invalid_arg ~sub:"account for") (fun () -> Kind.check ~k:2 ~n:2);
+  List.iter [ 3; 4; 5 ] ~f:(fun n -> Kind.check ~k:2 ~n);
+  Kind.check ~k:1 ~n:1
+
 let test_compile_manual () =
   let d = dims ~left:[ 2; 3 ] ~right:[ 2; 3 ] in
   let s = spec ~left:[ Symmetry.Id; Perm 0 ] ~right:[ Symmetry.Id; Symmetry.Perm 0 ] in
@@ -207,6 +251,8 @@ let tests =
   ; test "scalar factor" test_scalar_factor
   ; test "scalar factors, two groups" test_scalar_factor_two_groups
   ; test "left-only tie" test_left_tie
+  ; test "below the stable range" test_below_stable
+  ; test "kinds at small dimensions" test_kinds_at_small_n
   ; test "manual compilation" test_compile_manual
   ]
 
